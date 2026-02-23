@@ -76,6 +76,17 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 - Logging quality must be high (Yandex Logging).
 - Sensitive inputs in chat should be deleted after parsing with user notice.
 
+### 3.7 Backend foundation and migrations (Phase 2)
+
+- Runtime foundation is async (bot + worker paths).
+- PostgreSQL access uses `psycopg3` as the primary driver family.
+- Data access style is plain SQL only (no ORM).
+- Alembic-first policy:
+  - Alembic is the schema source of truth,
+  - every DDL change goes through Alembic revisions,
+  - direct/manual schema edits in PostgreSQL are not allowed.
+- Current PostgreSQL instance is clean; baseline schema must be bootstrapped by the first Alembic migration.
+
 ## 4. Functional Workflow Summary
 
 Seller flow:
@@ -124,6 +135,8 @@ Cancel/failure states:
 ## 6. Technical and Platform Constraints
 
 - All services in Python.
+- Application data access: plain SQL via `psycopg3` (no ORM).
+- Database schema management via Alembic migrations only.
 - Infrastructure changes via Terraform only (avoid drift).
 - YC CLI allowed for checks/debugging only.
 - OS Login must be enabled and used (`yc compute ssh`).
@@ -215,6 +228,21 @@ yc compute ssh --name <bot-instance-name> --folder-id b1gmeblqlrrvm912n1uq
 yc compute ssh --name qpi-db --folder-id b1gmeblqlrrvm912n1uq
 ```
 
+DB migration workflow (Phase 2 baseline):
+
+```bash
+alembic upgrade head
+alembic current
+alembic history
+alembic revision -m "<change_description>"
+alembic downgrade -1
+```
+
+Rules:
+
+- Never apply manual DDL directly in PostgreSQL.
+- Validate every revision on a clean DB path (`upgrade`, optional `downgrade`, then `upgrade` again).
+
 ## 11. Security and Risk Notes (MVP)
 
 Accepted temporary risks:
@@ -242,3 +270,4 @@ Required controls even in MVP:
 - 2026-02-23: DB moved to private-only subnet, NAT gateway + route table added.
 - 2026-02-23: Documentation consolidated into this single `AGENTS.md` file.
 - 2026-02-23: Added `PLAN.md` and split documentation responsibilities between `AGENTS.md` and `PLAN.md`.
+- 2026-02-23: Phase 2 backend decisions locked (`async` runtime, `psycopg3`, Alembic-first migration policy) and runbook updated.

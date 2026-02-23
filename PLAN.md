@@ -127,6 +127,30 @@ Cancel/error states:
 3. TON/USDT transfer path for withdrawals.
 4. Yandex Cloud primitives: Compute, VPC, Logging.
 
+## 2.10 Backend Persistence Baseline (Phase 2 Decision)
+
+Assessment:
+
+1. `asyncpg`:
+   - best raw async PostgreSQL performance,
+   - but introduces separate patterns for async runtime and sync operational scripts/migrations.
+2. `psycopg3`:
+   - one driver family for both async and sync use cases,
+   - lower operational complexity for MVP,
+   - performance is sufficient for expected load (~100 concurrent users).
+
+Decision:
+
+1. Service foundation is async for both bot and worker runtime paths.
+2. PostgreSQL access driver is `psycopg3`.
+3. Runtime DB access uses `psycopg.AsyncConnection` / `psycopg_pool.AsyncConnectionPool`.
+4. Data access is plain SQL only (no ORM).
+5. Alembic is the only schema migration source of truth:
+   - no manual DDL in PostgreSQL,
+   - every schema change must be a reviewed Alembic revision,
+   - all environments move schema only via `alembic upgrade`.
+6. Initial PostgreSQL state is clean (no schema objects), so first migration bootstraps baseline schema from zero.
+
 ## 3. Implementation Plan
 
 ## Phase 0: Specification Lock
@@ -168,26 +192,72 @@ Status:
 
 - Completed.
 
-## Phase 2: Backend Foundation
+## Phase 2: Backend Foundation (Detailed Plan)
 
-Deliverables:
+Goal:
 
-1. Service layout:
-   - `services/bot_api`
-   - `services/worker`
-   - shared domain modules
-2. PostgreSQL migrations and schema.
-3. Config, DB session management, structured logging library.
-4. Ledger primitives with transactional guarantees.
+- Establish the code and database foundation for all later product phases, with strict schema governance and transactional safety.
+
+Workstreams and deliverables:
+
+1. Foundation skeleton and boundaries
+   - Create package layout:
+     - `services/bot_api`
+     - `services/worker`
+     - `libs/config`
+     - `libs/db`
+     - `libs/domain`
+     - `libs/logging`
+   - Define import boundaries so domain logic is reusable by bot handlers and worker jobs.
+2. Alembic bootstrap and migration discipline
+   - Initialize Alembic config and env.
+   - Configure migration execution against PostgreSQL 18.
+   - Lock policy: schema changes only via Alembic revisions; no direct DDL in DB.
+   - Add migration checklist to PR expectations (upgrade + downgrade + re-upgrade on clean DB).
+3. Baseline migration `0001_initial` (from clean DB)
+   - Create foundational schema for:
+     - identities/roles,
+     - shops and WB token linkage metadata,
+     - listings and slot accounting,
+     - assignment lifecycle storage,
+     - balances, holds/reserves, immutable ledger entries,
+     - withdrawal requests, payout records, admin audit actions.
+   - Add constraints/indexes for uniqueness and state integrity (`order_id`, slot ownership, idempotency keys).
+4. DB access layer (`psycopg3`, plain SQL only)
+   - Implement async connection pool setup and lifecycle hooks.
+   - Provide transaction helper utilities (read-write/read-only, retry policy for serialization/deadlock cases).
+   - Implement repository/query modules with parameterized SQL (no ORM/query builder dependency).
+5. Ledger and reservation transactional primitives
+   - Implement atomic SQL flows for:
+     - collateral lock,
+     - slot reserve/release,
+     - reward unlock,
+     - withdrawal request state transitions.
+   - Enforce append-only ledger entries and explicit references to business events.
+6. Configuration and structured logging baseline
+   - Centralize settings loading for services and workers.
+   - Add correlation IDs and DB operation context fields in logs.
+7. Test baseline for data correctness
+   - Migration smoke tests: empty DB -> `upgrade head` -> downgrade -> `upgrade head`.
+   - Concurrency tests for double-reserve/double-spend prevention.
+   - Ledger invariant tests (sum consistency, idempotent replays).
+8. Developer runbook outputs
+   - Document local/CI commands for migrations and DB checks.
+   - Document rollback expectations for failed deployments.
 
 Exit criteria:
 
-1. Reproducible migrations.
-2. Ledger invariants covered by tests.
+1. Fresh PostgreSQL instance reaches target schema with `alembic upgrade head`.
+2. No schema drift: DB DDL matches Alembic history only.
+3. All balance-changing operations are transactional and auditable.
+4. Reservation/order uniqueness constraints are enforced at DB level.
+5. Migration smoke tests pass in CI.
+6. Core ledger invariants have automated tests.
+7. Bot and worker can start with shared config/logging/db foundation.
 
 Status:
 
-- Pending.
+- Planned (ready to start).
 
 ## Phase 3: Seller Features
 
