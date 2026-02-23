@@ -1,0 +1,11 @@
+folder_id = "b1gmeblqlrrvm912n1uq"
+
+# Restrict SSH (OS Login) to your own IP.
+admin_ipv4_cidrs = ["0.0.0.0/0"]
+
+# Optional overrides
+# project      = "qpi"
+# private_subnet_cidr = "10.131.0.0/24"
+# bot_memory_gb = 2
+# db_name      = "qpi"
+# db_user      = "qpi"
