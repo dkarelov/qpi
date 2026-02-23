@@ -4,13 +4,15 @@ Last updated: 2026-02-23 UTC
 
 ## 1. Purpose and Maintenance Rules
 
-This file is the single source of truth for product requirements, architecture decisions, infrastructure state, and operational rules.
+This file is the operational source of truth for architecture decisions, infrastructure state, constraints, and runbooks.
 
 Maintenance policy:
 
-- Update this file in every change set that affects product behavior, infrastructure, runbooks, or constraints.
-- Keep this file internally consistent with Terraform code and deployed infrastructure.
-- Do not keep parallel Markdown documentation files for the same scope.
+- Keep exactly two project docs:
+  - `AGENTS.md`: decisions, constraints, deployed state, runbooks.
+  - `PLAN.md`: detailed requirements baseline, phased implementation plan, and phase status.
+- Update `AGENTS.md` and `PLAN.md` together when decisions, requirements, or execution status changes.
+- Keep both files internally consistent with Terraform code and deployed infrastructure.
 
 ## 2. Product Scope (MVP)
 
@@ -31,6 +33,8 @@ Out-of-scope (MVP):
 - Dispute handling.
 - Automated on-chain deposit reconciliation.
 - Advanced wallet security (multisig/HSM).
+
+Detailed baseline requirements and phase-by-phase execution plan are tracked in `PLAN.md`.
 
 ## 3. Confirmed Product Decisions
 
@@ -237,3 +241,4 @@ Required controls even in MVP:
 - 2026-02-23: Initial Terraform baseline deployed (bot IG, DB VM, SGs, logging, static IP).
 - 2026-02-23: DB moved to private-only subnet, NAT gateway + route table added.
 - 2026-02-23: Documentation consolidated into this single `AGENTS.md` file.
+- 2026-02-23: Added `PLAN.md` and split documentation responsibilities between `AGENTS.md` and `PLAN.md`.
