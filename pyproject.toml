@@ -8,7 +8,6 @@ version = "0.1.0"
 description = "QPI backend foundation"
 requires-python = ">=3.11"
 dependencies = [
-  "alembic>=1.14,<2.0",
   "psycopg[binary]>=3.2,<4.0",
   "psycopg-pool>=3.2,<4.0",
   "pydantic-settings>=2.7,<3.0",
@@ -26,6 +25,7 @@ dev = [
 [project.scripts]
 qpi-bot-api = "services.bot_api.main:cli"
 qpi-worker = "services.worker.main:cli"
+qpi-db-schema = "libs.db.schema_cli:cli"
 
 [tool.setuptools.packages.find]
 include = ["libs*", "services*"]

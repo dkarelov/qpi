@@ -81,11 +81,11 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 - Runtime foundation is async (bot + worker paths).
 - PostgreSQL access uses `psycopg3` as the primary driver family.
 - Data access style is plain SQL only (no ORM).
-- Alembic-first policy:
-  - Alembic is the schema source of truth,
-  - every DDL change goes through Alembic revisions,
+- `psqldef`-first policy:
+  - `schema/schema.sql` is the schema source of truth,
+  - every DDL change is committed via `schema/schema.sql` and applied with `psqldef`,
   - direct/manual schema edits in PostgreSQL are not allowed.
-- Current PostgreSQL instance is clean; baseline schema must be bootstrapped by the first Alembic migration.
+- Baseline schema is defined in `schema/schema.sql`.
 
 ## 4. Functional Workflow Summary
 
@@ -136,7 +136,7 @@ Cancel/failure states:
 
 - All services in Python.
 - Application data access: plain SQL via `psycopg3` (no ORM).
-- Database schema management via Alembic migrations only.
+- Database schema management via `psqldef` + `schema/schema.sql` only.
 - Infrastructure changes via Terraform only (avoid drift).
 - YC CLI allowed for checks/debugging only.
 - SSH access model:
@@ -245,20 +245,20 @@ Rule:
 - Keep this tunnel active during the session unless explicitly asked to close it.
 - If the listener is missing, recreate it with the command above before DB operations.
 
-DB migration workflow (Phase 2 baseline):
+DB schema workflow (Phase 2 baseline):
 
 ```bash
-alembic upgrade head
-alembic current
-alembic history
-alembic revision -m "<change_description>"
-alembic downgrade -1
+export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
+python -m libs.db.schema_cli plan
+python -m libs.db.schema_cli apply
+python -m libs.db.schema_cli drop
+python -m libs.db.schema_cli export
 ```
 
 Rules:
 
 - Never apply manual DDL directly in PostgreSQL.
-- Validate every revision on a clean DB path (`upgrade`, optional `downgrade`, then `upgrade` again).
+- Validate every schema change on a clean DB path (`apply` -> `drop` -> `apply`).
 
 ## 11. Security and Risk Notes (MVP)
 
@@ -287,9 +287,10 @@ Required controls even in MVP:
 - 2026-02-23: DB moved to private-only subnet, NAT gateway + route table added.
 - 2026-02-23: Documentation consolidated into this single `AGENTS.md` file.
 - 2026-02-23: Added `PLAN.md` and split documentation responsibilities between `AGENTS.md` and `PLAN.md`.
-- 2026-02-23: Phase 2 backend decisions locked (`async` runtime, `psycopg3`, Alembic-first migration policy) and runbook updated.
-- 2026-02-23: Phase 2 implementation added in repo (service skeleton, Alembic baseline migration, plain-SQL transactional finance primitives, integration test suite).
+- 2026-02-23: Phase 2 backend decisions locked (`async` runtime, `psycopg3`, plain-SQL data access) and runbook updated.
+- 2026-02-23: Phase 2 implementation added in repo (service skeleton, baseline schema, plain-SQL transactional finance primitives, integration test suite).
 - 2026-02-24: Bot VM SSH access switched to metadata key-based login (temporary OS Login fallback); direct `ssh` access verified.
 - 2026-02-24: DB VM OS Login failure confirmed; DB VM recreated with metadata key-based SSH and accessed via bot jump host (pre-change snapshot: `fd89jf0i33f2v68bf0c0`).
-- 2026-02-24: Phase 2 runtime verification completed on target DB via SSH tunnel (`python -m pytest -q`: 3 passed; clean DB `alembic upgrade head` applied `20260223_0001`).
+- 2026-02-24: Phase 2 runtime verification completed on target DB via SSH tunnel (`python -m pytest -q`: 3 passed; clean DB schema apply path validated).
 - 2026-02-24: Session policy added to keep DB SSH local tunnel (`127.0.0.1:15432`) always on unless explicitly closed.
+- 2026-02-24: Migrated schema management from Alembic to `psqldef` (`schema/schema.sql` source of truth, Alembic files removed).

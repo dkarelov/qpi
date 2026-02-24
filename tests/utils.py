@@ -3,27 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import psycopg
-from alembic import command
-from alembic.config import Config
+
+from libs.db.psqldef import run_psqldef
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-
-def _sqlalchemy_database_url(database_url: str) -> str:
-    if database_url.startswith("postgresql+psycopg://"):
-        return database_url
-    if database_url.startswith("postgresql://"):
-        return "postgresql+psycopg://" + database_url[len("postgresql://") :]
-    if database_url.startswith("postgres://"):
-        return "postgresql+psycopg://" + database_url[len("postgres://") :]
-    return database_url
-
-
-def make_alembic_config(database_url: str) -> Config:
-    cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
-    cfg.set_main_option("script_location", str(PROJECT_ROOT / "migrations"))
-    cfg.set_main_option("sqlalchemy.url", _sqlalchemy_database_url(database_url))
-    return cfg
+SCHEMA_FILE = PROJECT_ROOT / "schema" / "schema.sql"
+EMPTY_SCHEMA_FILE = PROJECT_ROOT / "schema" / "empty.sql"
 
 
 def reset_public_schema(database_url: str) -> None:
@@ -33,12 +18,17 @@ def reset_public_schema(database_url: str) -> None:
             cur.execute("CREATE SCHEMA public")
 
 
-def run_upgrade(database_url: str, revision: str = "head") -> None:
-    command.upgrade(make_alembic_config(database_url), revision)
+def run_schema_apply(database_url: str) -> None:
+    run_psqldef(database_url, mode="apply", schema_file=SCHEMA_FILE)
 
 
-def run_downgrade(database_url: str, revision: str = "base") -> None:
-    command.downgrade(make_alembic_config(database_url), revision)
+def run_schema_drop(database_url: str) -> None:
+    run_psqldef(
+        database_url,
+        mode="apply",
+        schema_file=EMPTY_SCHEMA_FILE,
+        enable_drop=True,
+    )
 
 
 def table_exists(database_url: str, table_name: str) -> bool:

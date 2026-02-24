@@ -1,0 +1,2 @@
+-- Intentionally empty desired schema.
+-- Use with: psqldef --enable-drop ... --apply

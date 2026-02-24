@@ -7,7 +7,7 @@ import pytest_asyncio
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from tests.utils import reset_public_schema, run_upgrade
+from tests.utils import reset_public_schema, run_schema_apply
 
 
 @pytest.fixture(scope="session")
@@ -21,7 +21,7 @@ def test_database_url() -> str:
 @pytest.fixture
 def migrated_database(test_database_url: str) -> str:
     reset_public_schema(test_database_url)
-    run_upgrade(test_database_url, "head")
+    run_schema_apply(test_database_url)
     return test_database_url
 
 

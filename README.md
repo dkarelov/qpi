@@ -4,9 +4,9 @@ This repository now includes the full Phase 2 backend baseline:
 
 - async Python service skeletons (`services/bot_api`, `services/worker`),
 - shared libs (`libs/config`, `libs/db`, `libs/domain`, `libs/logging`),
-- Alembic-first PostgreSQL schema management,
+- `psqldef`-based PostgreSQL schema management (`schema/schema.sql` as source of truth),
 - plain SQL transactional finance primitives via `psycopg3`,
-- integration tests for migration path, reservation race safety, and ledger invariants.
+- integration tests for schema apply/drop path, reservation race safety, and ledger invariants.
 
 ## Local Setup
 
@@ -20,11 +20,11 @@ cp .env.example .env
 ## Migration Commands
 
 ```bash
-alembic upgrade head
-alembic current
-alembic history
-alembic revision -m "add_new_change"
-alembic downgrade -1
+export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
+make migrate-plan
+make migrate-up
+make migrate-down
+make migrate-export
 ```
 
 ## Runtime Checks

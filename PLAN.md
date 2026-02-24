@@ -137,7 +137,7 @@ Assessment:
 
 1. `asyncpg`:
    - best raw async PostgreSQL performance,
-   - but introduces separate patterns for async runtime and sync operational scripts/migrations.
+   - but introduces separate patterns for async runtime and operational tooling.
 2. `psycopg3`:
    - one driver family for both async and sync use cases,
    - lower operational complexity for MVP,
@@ -149,11 +149,11 @@ Decision:
 2. PostgreSQL access driver is `psycopg3`.
 3. Runtime DB access uses `psycopg.AsyncConnection` / `psycopg_pool.AsyncConnectionPool`.
 4. Data access is plain SQL only (no ORM).
-5. Alembic is the only schema migration source of truth:
+5. `psqldef` is the schema management tool and `schema/schema.sql` is the source of truth:
    - no manual DDL in PostgreSQL,
-   - every schema change must be a reviewed Alembic revision,
-   - all environments move schema only via `alembic upgrade`.
-6. Initial PostgreSQL state is clean (no schema objects), so first migration bootstraps baseline schema from zero.
+   - every schema change must be a reviewed update to `schema/schema.sql`,
+   - all environments move schema only via `psqldef`.
+6. Initial PostgreSQL state is clean (no schema objects), so baseline schema is bootstrapped from `schema/schema.sql`.
 
 ## 3. Implementation Plan
 
@@ -213,12 +213,12 @@ Workstreams and deliverables:
      - `libs/domain`
      - `libs/logging`
    - Define import boundaries so domain logic is reusable by bot handlers and worker jobs.
-2. Alembic bootstrap and migration discipline
-   - Initialize Alembic config and env.
-   - Configure migration execution against PostgreSQL 18.
-   - Lock policy: schema changes only via Alembic revisions; no direct DDL in DB.
-   - Add migration checklist to PR expectations (upgrade + downgrade + re-upgrade on clean DB).
-3. Baseline migration `0001_initial` (from clean DB)
+2. `psqldef` bootstrap and schema discipline
+   - Add canonical schema definition (`schema/schema.sql`) and drop-safe empty schema (`schema/empty.sql`).
+   - Configure schema execution against PostgreSQL 18 via `psqldef`.
+   - Lock policy: schema changes only via `schema/schema.sql`; no direct DDL in DB.
+   - Add schema checklist to PR expectations (`apply` + `drop` + `apply` on clean DB).
+3. Baseline schema bootstrap (from clean DB)
    - Create foundational schema for:
      - identities/roles,
      - shops and WB token linkage metadata,
@@ -242,7 +242,7 @@ Workstreams and deliverables:
    - Centralize settings loading for services and workers.
    - Add correlation IDs and DB operation context fields in logs.
 7. Test baseline for data correctness
-   - Migration smoke tests: empty DB -> `upgrade head` -> downgrade -> `upgrade head`.
+   - Schema smoke tests: empty DB -> `psqldef apply` -> `psqldef drop` -> `psqldef apply`.
    - Concurrency tests for double-reserve/double-spend prevention.
    - Ledger invariant tests (sum consistency, idempotent replays).
 8. Developer runbook outputs
@@ -251,20 +251,20 @@ Workstreams and deliverables:
 
 Exit criteria:
 
-1. Fresh PostgreSQL instance reaches target schema with `alembic upgrade head`.
-2. No schema drift: DB DDL matches Alembic history only.
+1. Fresh PostgreSQL instance reaches target schema with `psqldef --apply`.
+2. No schema drift: DB DDL matches `schema/schema.sql`.
 3. All balance-changing operations are transactional and auditable.
 4. Reservation/order uniqueness constraints are enforced at DB level.
-5. Migration smoke tests pass in CI.
+5. Schema smoke tests pass in CI.
 6. Core ledger invariants have automated tests.
 7. Bot and worker can start with shared config/logging/db foundation.
 
 Status:
 
-- Completed in repository (service skeleton, Alembic baseline, plain-SQL `psycopg3` domain layer, and integration tests added).
+- Completed in repository (service skeleton, `psqldef` schema baseline, plain-SQL `psycopg3` domain layer, and integration tests added).
 - Runtime-validated on 2026-02-24 against target PostgreSQL via SSH tunnel:
   - `TEST_DATABASE_URL=... python -m pytest -q` -> `3 passed`,
-  - clean DB path executed with `alembic upgrade head` -> `20260223_0001 (head)`.
+  - clean DB path executed with `psqldef --apply` against baseline schema.
 - Phase 3 is unblocked and ready to start.
 
 ## Phase 3: Seller Features

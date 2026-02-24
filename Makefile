@@ -1,13 +1,16 @@
-.PHONY: migrate-up migrate-down migrate-current test lint
+.PHONY: migrate-plan migrate-up migrate-down migrate-export test lint
+
+migrate-plan:
+	python -m libs.db.schema_cli plan
 
 migrate-up:
-	alembic upgrade head
+	python -m libs.db.schema_cli apply
 
 migrate-down:
-	alembic downgrade -1
+	python -m libs.db.schema_cli drop
 
-migrate-current:
-	alembic current
+migrate-export:
+	python -m libs.db.schema_cli export
 
 test:
 	pytest
