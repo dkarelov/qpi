@@ -1,6 +1,6 @@
 # QPI PLAN
 
-Last updated: 2026-02-23 UTC
+Last updated: 2026-02-24 UTC
 
 ## 1. Purpose
 
@@ -107,7 +107,11 @@ Cancel/error states:
 
 1. Python-only implementation for bot and backend services.
 2. Infrastructure created/changed via Terraform (avoid drift).
-3. OS Login enabled and used for access (`yc compute ssh`).
+3. Access to VMs:
+   - target model: OS Login,
+   - temporary fallback in current state: bot and DB VMs use metadata-injected key-based SSH,
+   - DB VM is private-only and is reached through SSH jump via bot VM,
+   - local DB access for app/tests uses SSH local forward `127.0.0.1:15432 -> 10.131.0.28:5432` via bot VM, kept active during sessions and recreated if missing.
 4. Initial expected load: about 100 concurrent users.
 5. Deployment mode: webhook.
 6. Initial zone: `ru-central1-d`.
@@ -178,7 +182,7 @@ Deliverables:
 1. Bot runtime in instance group (`size=1`, preemptible VM, static public IP).
 2. Self-hosted PostgreSQL VM (`non-preemptible`, PostgreSQL 18).
 3. Security groups, SA/IAM, logging group.
-4. OS Login enabled on VMs.
+4. SSH access configured for operations (target OS Login, temporary bot + DB key-based fallback with DB jump via bot).
 5. Private DB networking with NAT gateway for outbound internet.
 
 Exit criteria:
@@ -257,7 +261,11 @@ Exit criteria:
 
 Status:
 
-- Planned (ready to start).
+- Completed in repository (service skeleton, Alembic baseline, plain-SQL `psycopg3` domain layer, and integration tests added).
+- Runtime-validated on 2026-02-24 against target PostgreSQL via SSH tunnel:
+  - `TEST_DATABASE_URL=... python -m pytest -q` -> `3 passed`,
+  - clean DB path executed with `alembic upgrade head` -> `20260223_0001 (head)`.
+- Phase 3 is unblocked and ready to start.
 
 ## Phase 3: Seller Features
 
@@ -276,7 +284,7 @@ Exit criteria:
 
 Status:
 
-- Pending.
+- Pending (ready to start).
 
 ## Phase 4: Buyer Features
 
@@ -375,8 +383,8 @@ Status:
 ## 4. Recommended Execution Order
 
 1. Finish remaining artifacts of Phase 0 (formal schema/state docs).
-2. Start Phase 2 foundation.
-3. Implement Phases 3 and 4 for core user value.
+2. Start Phase 3 seller features.
+3. Implement Phase 4 buyer features for core user value completion.
 4. Implement Phases 5 and 6 for automation and money flows.
 5. Complete Phases 7 and 8 before production launch.
 

@@ -141,6 +141,14 @@ locals {
     log_group_id = yandex_logging_group.main.id
   })
 
+  bot_ssh_keys_metadata = join("\n", [
+    for key in var.bot_ssh_public_keys : "ubuntu:${trimspace(key)}"
+  ])
+
+  db_ssh_keys_metadata = join("\n", [
+    for key in var.db_ssh_public_keys : "ubuntu:${trimspace(key)}"
+  ])
+
   db_cloud_init = templatefile("${path.module}/cloud-init/db.yaml.tftpl", {
     postgres_version = var.postgres_version
     db_name          = var.db_name
@@ -191,11 +199,16 @@ resource "yandex_compute_instance_group" "bot" {
 
     service_account_id = yandex_iam_service_account.bot_vm.id
 
-    metadata = {
-      enable-oslogin     = "true"
-      serial-port-enable = "1"
-      user-data          = local.bot_cloud_init
-    }
+    metadata = merge(
+      {
+        enable-oslogin     = "false"
+        serial-port-enable = "1"
+        user-data          = local.bot_cloud_init
+      },
+      length(var.bot_ssh_public_keys) > 0 ? {
+        "ssh-keys" = local.bot_ssh_keys_metadata
+      } : {}
+    )
   }
 
   scale_policy {
@@ -253,11 +266,16 @@ resource "yandex_compute_instance" "db" {
     security_group_ids = [yandex_vpc_security_group.db.id]
   }
 
-  metadata = {
-    enable-oslogin     = "true"
-    serial-port-enable = "1"
-    user-data          = local.db_cloud_init
-  }
+  metadata = merge(
+    {
+      enable-oslogin     = "false"
+      serial-port-enable = "1"
+      user-data          = local.db_cloud_init
+    },
+    length(var.db_ssh_public_keys) > 0 ? {
+      "ssh-keys" = local.db_ssh_keys_metadata
+    } : {}
+  )
 
   labels = {
     project = var.project

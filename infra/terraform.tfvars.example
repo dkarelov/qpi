@@ -1,7 +1,17 @@
 folder_id = "b1gmeblqlrrvm912n1uq"
 
-# Restrict SSH (OS Login) to your own IP.
+# Restrict SSH to your own IP.
 admin_ipv4_cidrs = ["0.0.0.0/0"]
+
+# Inject SSH public keys for key-based access to bot VM.
+bot_ssh_public_keys = [
+  "ssh-rsa AAAA... user@example.com",
+]
+
+# Inject SSH public keys for key-based access to DB VM.
+db_ssh_public_keys = [
+  "ssh-rsa AAAA... user@example.com",
+]
 
 # Optional overrides
 # project      = "qpi"

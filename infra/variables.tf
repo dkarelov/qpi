@@ -39,9 +39,21 @@ variable "private_subnet_cidr" {
 }
 
 variable "admin_ipv4_cidrs" {
-  description = "IPv4 CIDRs allowed to SSH (OS Login) into VMs."
+  description = "IPv4 CIDRs allowed to SSH into VMs."
   type        = list(string)
   default     = ["0.0.0.0/0"]
+}
+
+variable "bot_ssh_public_keys" {
+  description = "SSH public keys injected into bot VM metadata as ubuntu user authorized keys."
+  type        = list(string)
+  default     = []
+}
+
+variable "db_ssh_public_keys" {
+  description = "SSH public keys injected into DB VM metadata as ubuntu user authorized keys."
+  type        = list(string)
+  default     = []
 }
 
 variable "deletion_protection" {

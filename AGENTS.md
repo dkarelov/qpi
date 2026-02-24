@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-02-23 UTC
+Last updated: 2026-02-24 UTC
 
 ## 1. Purpose and Maintenance Rules
 
@@ -139,7 +139,11 @@ Cancel/failure states:
 - Database schema management via Alembic migrations only.
 - Infrastructure changes via Terraform only (avoid drift).
 - YC CLI allowed for checks/debugging only.
-- OS Login must be enabled and used (`yc compute ssh`).
+- SSH access model:
+  - temporary fallback: key-based SSH for bot and DB VMs (`ubuntu` + metadata `ssh-keys`, `enable-oslogin=false`),
+  - DB VM is private-only and is accessed via SSH jump host through the bot VM,
+  - local DB access for app/tests uses SSH local forward `127.0.0.1:15432 -> 10.131.0.28:5432` via bot VM, kept active during work sessions (recreate if missing),
+  - OS Login should be restored for both VMs after root-cause fix.
 - Target initial load: ~100 concurrent users.
 - Deployment mode: Telegram webhook.
 - Zone: `ru-central1-d`.
@@ -167,14 +171,15 @@ Network:
 Logging and access:
 
 - Yandex Logging group enabled.
-- OS Login enabled on VMs.
+- Bot VM currently uses key-based SSH (`enable-oslogin=false`, metadata `ssh-keys`).
+- DB VM currently uses key-based SSH (`enable-oslogin=false`, metadata `ssh-keys`) and is accessed through the bot jump host.
 
 ## 8. Deployed Resource Snapshot (As Implemented)
 
 - Bot instance group: `cl17ilrmf3ukgtg14gbe` (`qpi-bot-ig`)
 - Bot public IP: `158.160.187.114`
-- DB instance: `fv4ii9h4960ot6g5ei29` (`qpi-db`)
-- DB private IP: `10.131.0.9`
+- DB instance: `fv4drfqh36622f5lf1vc` (`qpi-db`)
+- DB private IP: `10.131.0.28`
 - DB public IP: none
 - NAT gateway: `enpkq1bnf0ij8jcjmf7s` (`qpi-nat-gw`)
 - Private route table: `enpmdt4gs3gav0qd4nce` (`qpi-rt-private`)
@@ -224,9 +229,21 @@ Access:
 
 ```bash
 yc compute instance-group list-instances --name qpi-bot-ig --folder-id b1gmeblqlrrvm912n1uq
-yc compute ssh --name <bot-instance-name> --folder-id b1gmeblqlrrvm912n1uq
-yc compute ssh --name qpi-db --folder-id b1gmeblqlrrvm912n1uq
+ssh -i ~/.ssh/id_rsa ubuntu@158.160.187.114
+ssh -o ProxyCommand="ssh -i ~/.ssh/id_rsa -W %h:%p ubuntu@158.160.187.114" -i ~/.ssh/id_rsa ubuntu@10.131.0.28
 ```
+
+DB local tunnel (session default):
+
+```bash
+ssh -fNT -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -i ~/.ssh/id_rsa -L 127.0.0.1:15432:10.131.0.28:5432 ubuntu@158.160.187.114
+ss -ltnp | rg ':15432\\b'
+```
+
+Rule:
+
+- Keep this tunnel active during the session unless explicitly asked to close it.
+- If the listener is missing, recreate it with the command above before DB operations.
 
 DB migration workflow (Phase 2 baseline):
 
@@ -271,3 +288,8 @@ Required controls even in MVP:
 - 2026-02-23: Documentation consolidated into this single `AGENTS.md` file.
 - 2026-02-23: Added `PLAN.md` and split documentation responsibilities between `AGENTS.md` and `PLAN.md`.
 - 2026-02-23: Phase 2 backend decisions locked (`async` runtime, `psycopg3`, Alembic-first migration policy) and runbook updated.
+- 2026-02-23: Phase 2 implementation added in repo (service skeleton, Alembic baseline migration, plain-SQL transactional finance primitives, integration test suite).
+- 2026-02-24: Bot VM SSH access switched to metadata key-based login (temporary OS Login fallback); direct `ssh` access verified.
+- 2026-02-24: DB VM OS Login failure confirmed; DB VM recreated with metadata key-based SSH and accessed via bot jump host (pre-change snapshot: `fd89jf0i33f2v68bf0c0`).
+- 2026-02-24: Phase 2 runtime verification completed on target DB via SSH tunnel (`python -m pytest -q`: 3 passed; clean DB `alembic upgrade head` applied `20260223_0001`).
+- 2026-02-24: Session policy added to keep DB SSH local tunnel (`127.0.0.1:15432`) always on unless explicitly closed.
