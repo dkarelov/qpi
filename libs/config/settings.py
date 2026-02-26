@@ -180,6 +180,62 @@ class DailyReportScrapperSettings(BaseAppSettings):
         return value
 
 
+class OrderTrackerSettings(BaseAppSettings):
+    """Settings for 5-minute order tracker cloud function."""
+
+    order_tracker_advisory_lock_id: int = Field(
+        default=7006001,
+        alias="ORDER_TRACKER_ADVISORY_LOCK_ID",
+    )
+    order_tracker_reservation_expiry_batch_size: int = Field(
+        default=100,
+        alias="ORDER_TRACKER_RESERVATION_EXPIRY_BATCH_SIZE",
+    )
+    order_tracker_wb_event_batch_size: int = Field(
+        default=200,
+        alias="ORDER_TRACKER_WB_EVENT_BATCH_SIZE",
+    )
+    order_tracker_delivery_expiry_batch_size: int = Field(
+        default=200,
+        alias="ORDER_TRACKER_DELIVERY_EXPIRY_BATCH_SIZE",
+    )
+    order_tracker_unlock_batch_size: int = Field(
+        default=200,
+        alias="ORDER_TRACKER_UNLOCK_BATCH_SIZE",
+    )
+    order_tracker_delivery_expiry_days: int = Field(
+        default=60,
+        alias="ORDER_TRACKER_DELIVERY_EXPIRY_DAYS",
+    )
+    order_tracker_unlock_days: int = Field(default=15, alias="ORDER_TRACKER_UNLOCK_DAYS")
+
+    @field_validator("order_tracker_advisory_lock_id")
+    @classmethod
+    def validate_order_tracker_lock_id(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("ORDER_TRACKER_ADVISORY_LOCK_ID must be >= 1")
+        return value
+
+    @field_validator(
+        "order_tracker_reservation_expiry_batch_size",
+        "order_tracker_wb_event_batch_size",
+        "order_tracker_delivery_expiry_batch_size",
+        "order_tracker_unlock_batch_size",
+    )
+    @classmethod
+    def validate_order_tracker_batch_size(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("ORDER_TRACKER_*_BATCH_SIZE must be >= 1")
+        return value
+
+    @field_validator("order_tracker_delivery_expiry_days", "order_tracker_unlock_days")
+    @classmethod
+    def validate_order_tracker_days(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("ORDER_TRACKER_*_DAYS must be >= 1")
+        return value
+
+
 @lru_cache(maxsize=1)
 def get_bot_api_settings() -> BotApiSettings:
     return BotApiSettings()
@@ -193,3 +249,8 @@ def get_worker_settings() -> WorkerSettings:
 @lru_cache(maxsize=1)
 def get_daily_report_scrapper_settings() -> DailyReportScrapperSettings:
     return DailyReportScrapperSettings()
+
+
+@lru_cache(maxsize=1)
+def get_order_tracker_settings() -> OrderTrackerSettings:
+    return OrderTrackerSettings()

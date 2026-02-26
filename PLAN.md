@@ -84,9 +84,10 @@ Out of scope (MVP):
    - `wb_product_id` (int),
    - `ordered_at` (RFC3339 UTC string).
 9. Unlock timer starts from WB pickup timestamp.
-10. Reward unlock rule: 14 days after pickup.
-11. If returned within 14 days: cancel reward.
-12. After 14 days: return cancellation not needed (policy assumption).
+10. Reward unlock rule: 15 days after pickup.
+11. If returned within 15 days: cancel reward.
+12. After 15 days: return cancellation not needed (policy assumption).
+13. If no pickup is detected within 60 days after `order_verified`, transition to `delivery_expired`.
 
 ### Admin/finance requirements
 
@@ -120,6 +121,7 @@ Cancel/error states:
 - `expired_2h`
 - `wb_invalid`
 - `returned_within_14d`
+- `delivery_expired`
 
 ## 2.7 Non-Functional and Platform Requirements
 
@@ -581,10 +583,12 @@ Deliverables:
 3. Orchestrate assignment lifecycle post-`order_verified` using PostgreSQL contracts:
    - pickup detection from raw WB report data,
    - transition to `picked_up_wait_unlock`,
-   - 14-day unlock checks to `eligible_for_withdrawal`,
-   - return cancellation within 14 days (`returned_within_14d`).
+   - 15-day unlock checks to `eligible_for_withdrawal`,
+   - return cancellation within 15 days (`returned_within_14d`),
+   - timeout cancellation with `order_verified` -> `delivery_expired` after 60 days without pickup.
 4. Enforce idempotent transitions and replay safety across CF retries/restarts.
 5. Add CI/CD workflow: push to `main` auto-deploys this CF.
+6. MVP behavior: ignore correction operations (`Коррекция продаж`, `Коррекция возвратов`) in orchestration logic and track this as post-MVP TODO.
 
 Exit criteria:
 
@@ -595,7 +599,32 @@ Exit criteria:
 
 Status:
 
-- Pending.
+- Completed in repository (application/runtime layer + tests + CI deploy workflow).
+- Implemented artifacts:
+  - `schema/schema.sql`:
+    - assignment status includes `delivery_expired`,
+    - Phase 6 polling indexes added (`idx_assignments_order_tracking_order_id`, `idx_assignments_unlock_due`).
+  - `libs/domain/order_tracker.py`:
+    - 5-minute orchestration with advisory-lock overlap guard,
+    - reservation timeout processing (`reserved` -> `expired_2h`) moved into CF ownership,
+    - WB event matching by `srid = order_id` with MVP operation contract:
+      - `Продажа` -> pickup transition (`order_verified` -> `picked_up_wait_unlock`) and unlock schedule (`+15 days`),
+      - `Возврат` -> cancellation (`returned_within_14d`) when in allowed window,
+      - `Коррекция продаж` / `Коррекция возвратов` ignored in MVP.
+    - delivery timeout transition (`order_verified` -> `delivery_expired`) after 60 days without pickup.
+    - reward unlock execution (`picked_up_wait_unlock` -> `eligible_for_withdrawal`).
+  - `services/order_tracker/main.py`: cloud function handler + local `--once` runtime.
+  - `.github/workflows/deploy_order_tracker.yml`: auto-deploy on `main` push.
+- `services/worker/main.py`: reservation-expiry ownership removed (worker tick is noop placeholder).
+- integration coverage added in `tests/test_order_tracker_phase6.py`.
+- Validation on 2026-02-26 via active SSH tunnel:
+  - `ruff check .` -> passed,
+  - `TEST_DATABASE_URL=.../qpi_test python -m pytest -q tests/test_order_tracker_phase6.py` -> `6 passed`,
+  - `TEST_DATABASE_URL=.../qpi_test python -m pytest -q -m "not migration_smoke"` -> `34 passed, 1 deselected`,
+  - `RUN_MIGRATION_SMOKE=1 TEST_DATABASE_URL=.../qpi_test_scratch python -m pytest -q -m migration_smoke` -> `1 passed, 34 deselected`,
+  - `DATABASE_URL=.../qpi_test python -m services.order_tracker.main --once` -> successful runtime smoke.
+- TODO (post-MVP):
+  - define and implement correction-operation semantics in order tracking (`Коррекция продаж`, `Коррекция возвратов`).
 
 ## Phase 7: Finance and Admin Controls
 
@@ -654,9 +683,8 @@ Status:
 ## 4. Recommended Execution Order
 
 1. Finish remaining artifacts of Phase 0 (formal schema/state docs).
-2. Implement Phase 6 `order-tracker` CF and migrate timeout ownership from VM worker.
-3. Implement Phase 7 finance/admin controls for production money operations.
-4. Complete Phases 8 and 9 before production launch.
+2. Implement Phase 7 finance/admin controls for production money operations.
+3. Complete Phases 8 and 9 before production launch.
 
 ## 5. Tracking Policy
 

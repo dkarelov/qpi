@@ -1,14 +1,14 @@
-# QPI Phase 5 Daily Report Baseline
+# QPI Phase 6 Order Tracker Baseline
 
-This repository includes Phase 2 foundation, Phase 3 seller features, Phase 4 buyer features, and Phase 5 daily report scrapper:
+This repository includes Phase 2 foundation, Phase 3 seller features, Phase 4 buyer features, Phase 5 daily report scrapper, and Phase 6 order tracker:
 
-- async Python services (`services/bot_api`, `services/worker`, `services/daily_report_scrapper`),
+- async Python services (`services/bot_api`, `services/worker`, `services/daily_report_scrapper`, `services/order_tracker`),
 - shared libs (`libs/config`, `libs/db`, `libs/domain`, `libs/logging`, `libs/integrations`),
 - `psqldef`-based PostgreSQL schema management (`schema/schema.sql` source of truth),
 - plain SQL transactional domain logic via `psycopg3`,
 - seller domain + bot handlers (`libs/domain/seller.py`, `services/bot_api/seller_handlers.py`),
 - buyer domain + bot handlers (`libs/domain/buyer.py`, `services/bot_api/buyer_handlers.py`),
-- reservation timeout processor in worker (`reserved` -> `expired_2h`),
+- reservation timeout + order lifecycle processor in order-tracker (`reserved` -> `expired_2h`, pickup/return/unlock flow),
 - daily report scrapper for WB `reportDetailByPeriod` ingestion (`services/daily_report_scrapper`),
 - WB integrations (`libs/integrations/wb.py`, `libs/integrations/wb_reports.py`),
 - integration tests for schema lifecycle, finance invariants, seller flow, buyer flow, and phase 5 report ingestion.
@@ -38,6 +38,7 @@ make migrate-export
 qpi-bot-api --once
 qpi-worker --once
 qpi-daily-report-scrapper --once
+qpi-order-tracker --once
 ```
 
 Seller command smoke check:
@@ -60,6 +61,13 @@ Daily report scrapper smoke check:
 DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi \
 TOKEN_CIPHER_KEY=<cipher-key> \
 python -m services.daily_report_scrapper.main --once
+```
+
+Order tracker smoke check:
+
+```bash
+DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi \
+python -m services.order_tracker.main --once
 ```
 
 ## Test Commands

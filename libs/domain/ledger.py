@@ -22,7 +22,7 @@ from libs.domain.models import (
     WithdrawalRequestResult,
 )
 
-_CANCELLATION_STATES = {"expired_2h", "wb_invalid", "returned_within_14d"}
+_CANCELLATION_STATES = {"expired_2h", "wb_invalid", "returned_within_14d", "delivery_expired"}
 
 
 class FinanceService:

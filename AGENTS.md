@@ -69,9 +69,10 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 - Reservation timeout: 2 hours.
 - Valid decoded payload moves assignment to `order_verified`.
 - Unlock timer starts from WB pickup timestamp.
-- Unlock period: 14 days after pickup.
-- If returned within 14 days: cancel reward.
-- After 14 days: do not cancel for return (per WB policy assumption).
+- Unlock period: 15 days after pickup.
+- If returned within 15 days: cancel reward.
+- After 15 days: do not cancel for return (per WB policy assumption).
+- If no pickup is detected within 60 days after `order_verified`, assignment is cancelled as `delivery_expired`.
 
 ### 3.4 WB token handling (MVP)
 
@@ -119,12 +120,12 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 - Separate repositories per service are optional post-MVP once contracts and deployment boundaries stabilize.
 - Services exchange state via PostgreSQL tables/contracts (DB-mediated integration).
 - Bot service remains always-on VM runtime.
-- Phase 4 temporary ownership: reservation timeout (`reserved` -> `expired_2h`) is executed in the VM worker service.
+- Reservation timeout ownership has been migrated to Phase 6 `order-tracker` CF (`reserved` -> `expired_2h`).
 - Phase 5 target cloud function: `daily-report-scrapper` running every 1 hour:
   - requests WB `reportDetailByPeriod` for last 3 days,
   - stores raw dumps in PostgreSQL,
   - invalidates seller token in PostgreSQL on WB `401` with message containing `withdrawn` or `token expired`.
-- Phase 6 target cloud function: `order-tracker` orchestrator running every 5 minutes.
+- Phase 6 cloud function: `order-tracker` orchestrator running every 5 minutes.
 
 ### 3.10 Phase 3 implementation baseline
 
@@ -160,7 +161,7 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - `/start` (including `shop_<slug>` deep-link payload),
   - `/shop`, `/reserve`, `/submit_order`, `/my_orders`,
   - sensitive payload input flagged for deletion.
-- `services/worker/main.py` now executes reservation expiry processing each tick (Phase 4 temporary runtime owner until Phase 6 `order-tracker` CF).
+- `services/worker/main.py` remains as VM worker placeholder runtime (Phase 6 migrated reservation expiry ownership to `order-tracker` CF).
 
 ### 3.12 Phase 5 implementation baseline
 
@@ -178,6 +179,28 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - cloud function handler `services.daily_report_scrapper.main.handler`,
   - local CLI smoke mode (`--once`).
 - `.github/workflows/deploy_daily_report_scrapper.yml` provides auto-deploy on `main` push for Phase 5 CF runtime changes.
+
+### 3.13 Phase 6 implementation baseline
+
+- `schema/schema.sql` now includes:
+  - assignment status `delivery_expired`,
+  - Phase 6 polling indexes:
+    - `idx_assignments_order_tracking_order_id`,
+    - `idx_assignments_unlock_due`.
+- `libs/domain/order_tracker.py` provides Phase 6 orchestration:
+  - advisory-lock guarded `run_once`,
+  - reservation expiry processing in CF path (`reserved` -> `expired_2h`),
+  - WB event-driven transitions from `wb_report_rows` by `srid = order_id`:
+    - `Продажа` -> pickup (`order_verified` -> `picked_up_wait_unlock`) with `unlock_at = pickup_at + 15 days`,
+    - `Возврат` -> cancellation (`returned_within_14d`) when return is within unlock window,
+    - correction operations (`Коррекция продаж`, `Коррекция возвратов`) are ignored in MVP.
+  - `order_verified` timeout cancellation to `delivery_expired` after 60 days without pickup.
+  - reward unlock processing to `eligible_for_withdrawal`.
+- `services/order_tracker/main.py` provides:
+  - cloud function handler `services.order_tracker.main.handler`,
+  - local CLI smoke mode (`--once`).
+- `.github/workflows/deploy_order_tracker.yml` provides auto-deploy on `main` push for Phase 6 CF runtime changes.
+- `services/worker/main.py` no longer owns reservation expiry processing.
 
 ## 4. Functional Workflow Summary
 
@@ -202,7 +225,7 @@ Buyer flow:
 3. Submit base64-encoded plugin confirmation payload within 2 hours.
 4. Bot decodes/validates payload and records normalized order fields (`order_id`, `wb_product_id`, `ordered_at`).
 5. Valid payload moves assignment to `order_verified`; then order tracking continues for pickup/return.
-6. After 14 days from pickup with no cancellation condition, reward becomes withdrawable.
+6. After 15 days from pickup with no cancellation condition, reward becomes withdrawable.
 7. Buyer requests withdrawal; admin approves; payout sent.
 
 Automation checkpoints:
@@ -212,8 +235,9 @@ Automation checkpoints:
 - Raw WB report ingestion.
 - Seller token invalidation on report API `401` (`withdrawn`/`token expired`).
 - Pickup detection (via orchestrator + WB report data).
-- 14-day unlock check.
-- Return detection (within 14 days only).
+- 15-day unlock check.
+- Return detection (within 15 days only).
+- Delivery timeout cancellation (`order_verified` -> `delivery_expired`) after 60 days without pickup.
 
 ## 5. State Model (Assignment)
 
@@ -232,6 +256,7 @@ Cancel/failure states:
 - `expired_2h`
 - `wb_invalid`
 - `returned_within_14d`
+- `delivery_expired`
 
 ## 6. Technical and Platform Constraints
 
@@ -373,7 +398,7 @@ export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
 python -m services.bot_api.main --buyer-command "/start" --telegram-id 10002 --telegram-username buyer
 ```
 
-Worker reservation timeout smoke check:
+Worker smoke check (noop placeholder in current phase):
 
 ```bash
 export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
@@ -386,6 +411,13 @@ Daily report scrapper smoke check:
 export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
 export TOKEN_CIPHER_KEY=<cipher-key>
 python -m services.daily_report_scrapper.main --once
+```
+
+Order tracker smoke check:
+
+```bash
+export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
+python -m services.order_tracker.main --once
 ```
 
 Test runbook:
@@ -437,6 +469,9 @@ Required controls even in MVP:
   - tamper-protection/signature mechanism.
 - Post-MVP listing ownership check:
   - direct WB catalog/product endpoint vs cached report data.
+- Post-MVP order-tracker semantics for WB correction operations:
+  - `Коррекция продаж`,
+  - `Коррекция возвратов`.
 - Post-MVP decision on extracting CF services from monorepo into dedicated repositories.
 - Replace temporary app-level token cipher with managed secret storage/KMS-backed encryption.
 
@@ -479,3 +514,11 @@ Required controls even in MVP:
   - daily-report-scrapper runtime handler/CLI added,
   - auto-deploy GitHub workflow added for daily-report-scrapper CF,
   - integration suite expanded and validated against tunneled PostgreSQL (`23 passed`, `1 deselected`; migration smoke `1 passed`).
+- 2026-02-26: Phase 6 implemented in repository:
+  - `order-tracker` domain orchestration service and CF runtime added,
+  - reservation timeout ownership migrated from VM worker to CF path,
+  - WB event transitions implemented with MVP operation mapping (`Продажа` pickup, `Возврат` cancel, corrections ignored),
+  - unlock window changed to 15 days and delivery timeout cancellation added (`order_verified` -> `delivery_expired` after 60 days),
+  - auto-deploy GitHub workflow added for order-tracker CF,
+  - integration coverage added in `tests/test_order_tracker_phase6.py`,
+  - verification run completed on tunneled PostgreSQL (`34 passed`, `1 deselected`; migration smoke `1 passed`; order-tracker `--once` smoke successful).
