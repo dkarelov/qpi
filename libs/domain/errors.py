@@ -19,3 +19,11 @@ class InsufficientFundsError(DomainError):
 
 class NoSlotsAvailableError(DomainError):
     """Raised when listing has no free slots for reservation."""
+
+
+class PayloadValidationError(DomainError):
+    """Raised when buyer payload cannot be decoded or violates contract."""
+
+
+class DuplicateOrderError(DomainError):
+    """Raised when order_id is already linked to another assignment."""

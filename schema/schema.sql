@@ -57,6 +57,8 @@ CREATE INDEX idx_assignments_buyer_status ON public.assignments USING btree (buy
 
 CREATE INDEX idx_assignments_listing_status ON public.assignments USING btree (listing_id, status);
 
+CREATE INDEX idx_assignments_reserved_expires_at ON public.assignments USING btree (reservation_expires_at) WHERE (status = 'reserved'::text);
+
 CREATE UNIQUE INDEX uq_assignments_order_id ON public.assignments USING btree (order_id) WHERE (order_id IS NOT NULL);
 
 ALTER TABLE ONLY "public"."assignments" ADD CONSTRAINT "assignments_buyer_user_id_fkey" FOREIGN KEY ("buyer_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;

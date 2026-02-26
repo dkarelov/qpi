@@ -92,12 +92,23 @@ class WorkerSettings(BaseAppSettings):
     """Settings for the background worker process."""
 
     worker_poll_interval_seconds: int = Field(default=30, alias="WORKER_POLL_INTERVAL_SECONDS")
+    worker_reservation_expiry_batch_size: int = Field(
+        default=100,
+        alias="WORKER_RESERVATION_EXPIRY_BATCH_SIZE",
+    )
 
     @field_validator("worker_poll_interval_seconds")
     @classmethod
     def validate_poll_interval(cls, value: int) -> int:
         if value < 1:
             raise ValueError("WORKER_POLL_INTERVAL_SECONDS must be >= 1")
+        return value
+
+    @field_validator("worker_reservation_expiry_batch_size")
+    @classmethod
+    def validate_expiry_batch_size(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("WORKER_RESERVATION_EXPIRY_BATCH_SIZE must be >= 1")
         return value
 
 

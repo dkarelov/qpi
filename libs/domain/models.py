@@ -77,3 +77,58 @@ class DeleteExecutionResult:
 class TokenInvalidationResult:
     changed: bool
     paused_listings_count: int
+
+
+@dataclass(frozen=True)
+class BuyerBootstrapResult:
+    user_id: int
+    created_user: bool
+    buyer_available_account_id: int
+    buyer_withdraw_pending_account_id: int
+
+
+@dataclass(frozen=True)
+class BuyerShopResult:
+    shop_id: int
+    slug: str
+    title: str
+
+
+@dataclass(frozen=True)
+class BuyerListingResult:
+    listing_id: int
+    shop_id: int
+    wb_product_id: int
+    discount_percent: int
+    reward_usdt: Decimal
+    slot_count: int
+    available_slots: int
+
+
+@dataclass(frozen=True)
+class BuyerOrderSubmitResult:
+    assignment_id: int
+    changed: bool
+    status: str
+    order_id: str
+    wb_product_id: int
+    ordered_at: datetime
+
+
+@dataclass(frozen=True)
+class BuyerAssignmentView:
+    assignment_id: int
+    listing_id: int
+    shop_slug: str
+    wb_product_id: int
+    status: str
+    reward_usdt: Decimal
+    reservation_expires_at: datetime
+    order_id: str | None
+    ordered_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ReservationExpiryResult:
+    processed_count: int
+    expired_count: int

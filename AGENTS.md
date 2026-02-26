@@ -116,6 +116,7 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 - Decompose backend into multiple microservices (separate repositories preferred for CI/CD isolation).
 - Services exchange state via PostgreSQL tables/contracts (DB-mediated integration).
 - Bot service remains always-on VM runtime.
+- Phase 4 temporary ownership: reservation timeout (`reserved` -> `expired_2h`) is executed in the VM worker service.
 - `order-tracker` is target cloud function orchestrator running every 5 minutes.
 - `daily-report-scrapper` is target cloud function running every 1 hour:
   - requests WB `reportDetailByPeriod` for last 3 days,
@@ -140,6 +141,23 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - warning-before-confirm delete UX,
   - token ping check before persistence (reject on failure).
 - `libs/integrations/wb.py` provides minimal WB ping client with in-process 3-per-30s throttling.
+
+### 3.11 Phase 4 implementation baseline
+
+- `schema/schema.sql` now includes timeout polling support index:
+  - `idx_assignments_reserved_expires_at` (`reservation_expires_at` where `status='reserved'`).
+- `libs/domain/buyer.py` is the plain-SQL transactional buyer service:
+  - buyer bootstrap/account guarantees,
+  - shop deep-link resolution and active listing browse,
+  - slot reservation with idempotency,
+  - strict base64 payload decode/validation (`v`, `order_id`, `wb_product_id`, `ordered_at` RFC3339 UTC),
+  - `order_verified` transition with normalized `buyer_orders` persistence,
+  - reservation expiry processor (`reserved` -> `expired_2h`) using existing finance transactional primitives.
+- `services/bot_api/buyer_handlers.py` provides Russian buyer command handlers:
+  - `/start` (including `shop_<slug>` deep-link payload),
+  - `/shop`, `/reserve`, `/submit_order`, `/my_orders`,
+  - sensitive payload input flagged for deletion.
+- `services/worker/main.py` now executes reservation expiry processing each tick (Phase 4 temporary runtime owner until Phase 5 `order-tracker` CF).
 
 ## 4. Functional Workflow Summary
 
@@ -327,6 +345,20 @@ export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
 python -m services.bot_api.main --seller-command "/start" --telegram-id 10001 --telegram-username seller
 ```
 
+Buyer command smoke check:
+
+```bash
+export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
+python -m services.bot_api.main --buyer-command "/start" --telegram-id 10002 --telegram-username buyer
+```
+
+Worker reservation timeout smoke check:
+
+```bash
+export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
+python -m services.worker.main --once
+```
+
 Rules:
 
 - Never apply manual DDL directly in PostgreSQL.
@@ -383,3 +415,9 @@ Required controls even in MVP:
   - seller transactional domain service and bot seller command handlers added,
   - WB ping integration + token persistence guard added,
   - integration suite expanded and validated against tunneled PostgreSQL (`10 passed`).
+- 2026-02-26: Phase 4 implemented in repository:
+  - buyer transactional domain service and buyer command handlers added,
+  - strict base64 payload validation and `order_verified` transition implemented,
+  - reservation expiry processor added to worker runtime (`reserved` -> `expired_2h`),
+  - schema timeout index added for reserved-expiry polling,
+  - integration suite expanded and validated against tunneled PostgreSQL (`21 passed`).

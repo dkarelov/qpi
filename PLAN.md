@@ -493,7 +493,28 @@ Exit criteria:
 
 Status:
 
-- Pending.
+- Completed in repository.
+- Implemented artifacts:
+  - `libs/domain/buyer.py`: plain-SQL `BuyerService` with:
+    - buyer bootstrap/account guarantees,
+    - deep-link shop resolution and active listing browse,
+    - slot reservation/idempotency,
+    - strict payload decode/validation (`v`, `order_id`, `wb_product_id`, `ordered_at` RFC3339 UTC),
+    - normalized `buyer_orders` persistence and `order_verified` transition,
+    - reservation expiry processor (`reserved` -> `expired_2h`).
+  - `services/bot_api/buyer_handlers.py`: Russian buyer command handlers:
+    - `/start` (`shop_<slug>` deep-link support), `/shop`, `/reserve`, `/submit_order`, `/my_orders`.
+  - `services/bot_api/main.py`: buyer command execution path via `--buyer-command`.
+  - `services/worker/main.py`: reservation expiry execution each tick; `--once` runs one expiry sweep.
+  - `libs/domain/ledger.py`: reservation guard updated to reject deleted listings.
+  - `schema/schema.sql`: timeout polling index
+    - `idx_assignments_reserved_expires_at`.
+  - expanded integration suite in `tests/test_buyer_phase4.py`.
+- Runtime validation on 2026-02-26 against target PostgreSQL via active SSH tunnel:
+  - `TEST_DATABASE_URL=postgresql://qpi:***@127.0.0.1:15432/qpi python -m pytest -q` -> `21 passed`,
+  - `DATABASE_URL=... python -m libs.db.schema_cli plan` -> `-- Nothing is modified --`,
+  - `python -m services.bot_api.main --buyer-command '/start' ...` succeeds with DB connectivity,
+  - `python -m services.worker.main --once` runs reservation expiry tick successfully.
 
 ## Phase 5: Workflow Automation (Cloud Functions)
 
@@ -578,8 +599,8 @@ Status:
 ## 4. Recommended Execution Order
 
 1. Finish remaining artifacts of Phase 0 (formal schema/state docs).
-2. Implement Phase 4 buyer features for core user value completion.
-3. Implement Phases 5 and 6 for automation and money flows.
+2. Implement Phase 5 workflow automation (`order-tracker` CF, `daily-report-scrapper` CF).
+3. Implement Phase 6 finance/admin controls for production money operations.
 4. Complete Phases 7 and 8 before production launch.
 
 ## 5. Tracking Policy

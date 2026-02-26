@@ -1,15 +1,16 @@
-# QPI Phase 3 Seller Baseline
+# QPI Phase 4 Buyer Baseline
 
-This repository now includes Phase 2 foundation plus Phase 3 seller implementation:
+This repository includes Phase 2 foundation, Phase 3 seller features, and Phase 4 buyer features:
 
-- async Python service skeletons (`services/bot_api`, `services/worker`),
-- shared libs (`libs/config`, `libs/db`, `libs/domain`, `libs/logging`),
-- `psqldef`-based PostgreSQL schema management (`schema/schema.sql` as source of truth),
-- plain SQL transactional finance primitives via `psycopg3`,
-- seller transactional domain service (`libs/domain/seller.py`),
-- seller command handlers (`services/bot_api/seller_handlers.py`),
+- async Python services (`services/bot_api`, `services/worker`),
+- shared libs (`libs/config`, `libs/db`, `libs/domain`, `libs/logging`, `libs/integrations`),
+- `psqldef`-based PostgreSQL schema management (`schema/schema.sql` source of truth),
+- plain SQL transactional domain logic via `psycopg3`,
+- seller domain + bot handlers (`libs/domain/seller.py`, `services/bot_api/seller_handlers.py`),
+- buyer domain + bot handlers (`libs/domain/buyer.py`, `services/bot_api/buyer_handlers.py`),
+- reservation timeout processor in worker (`reserved` -> `expired_2h`),
 - WB ping validation client (`libs/integrations/wb.py`),
-- integration tests for schema apply/drop path, reservation race safety, ledger invariants, and seller Phase 3 flows.
+- integration tests for schema lifecycle, finance invariants, seller flow, and buyer flow.
 
 ## Local Setup
 
@@ -42,6 +43,13 @@ Seller command smoke check:
 ```bash
 DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi \
 python -m services.bot_api.main --seller-command "/start" --telegram-id 1001 --telegram-username seller
+```
+
+Buyer command smoke check:
+
+```bash
+DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi \
+python -m services.bot_api.main --buyer-command "/start" --telegram-id 2001 --telegram-username buyer
 ```
 
 ## Test Commands

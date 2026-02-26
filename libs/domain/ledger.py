@@ -102,7 +102,7 @@ class FinanceService:
 
                 await cur.execute(
                     """
-                    SELECT id, status, reward_usdt, available_slots
+                    SELECT id, status, reward_usdt, available_slots, deleted_at
                     FROM listings
                     WHERE id = %s
                     FOR UPDATE
@@ -112,6 +112,9 @@ class FinanceService:
                 listing = await cur.fetchone()
                 if listing is None:
                     raise NotFoundError(f"listing {listing_id} not found")
+
+                if listing["deleted_at"] is not None:
+                    raise InvalidStateError("listing is deleted")
 
                 if listing["status"] != "active":
                     raise InvalidStateError("listing must be active for reservation")

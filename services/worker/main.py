@@ -5,6 +5,7 @@ import asyncio
 
 from libs.config.settings import get_worker_settings
 from libs.db.pool import DatabasePool
+from libs.domain.buyer import BuyerService
 from libs.logging.setup import configure_logging, get_logger
 
 
@@ -27,11 +28,24 @@ async def run_service(run_once: bool = False) -> None:
         await db_pool.check()
         logger.info("db_connectivity_ok")
 
+        buyer_service = BuyerService(db_pool.pool)
+
+        async def run_tick() -> None:
+            result = await buyer_service.process_expired_reservations(
+                batch_size=settings.worker_reservation_expiry_batch_size
+            )
+            logger.info(
+                "reservation_expiry_tick",
+                processed_count=result.processed_count,
+                expired_count=result.expired_count,
+            )
+
         if run_once:
+            await run_tick()
             return
 
         while True:
-            logger.info("worker_tick")
+            await run_tick()
             await asyncio.sleep(settings.worker_poll_interval_seconds)
     finally:
         await db_pool.close()

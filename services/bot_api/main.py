@@ -5,9 +5,11 @@ import asyncio
 
 from libs.config.settings import get_bot_api_settings
 from libs.db.pool import DatabasePool
+from libs.domain.buyer import BuyerService
 from libs.domain.seller import SellerService
 from libs.integrations.wb import WbPingClient
 from libs.logging.setup import configure_logging, get_logger
+from services.bot_api.buyer_handlers import BuyerCommandProcessor
 from services.bot_api.seller_handlers import SellerCommandProcessor
 
 
@@ -15,6 +17,7 @@ async def run_service(
     *,
     run_once: bool = False,
     seller_command: str | None = None,
+    buyer_command: str | None = None,
     telegram_id: int = 0,
     telegram_username: str | None = None,
 ) -> None:
@@ -35,6 +38,9 @@ async def run_service(
     try:
         await db_pool.check()
         logger.info("db_connectivity_ok")
+
+        if seller_command and buyer_command:
+            raise ValueError("use only one of --seller-command or --buyer-command")
 
         if seller_command:
             seller_service = SellerService(db_pool.pool)
@@ -63,6 +69,26 @@ async def run_service(
             )
             return
 
+        if buyer_command:
+            buyer_service = BuyerService(db_pool.pool)
+            processor = BuyerCommandProcessor(
+                buyer_service=buyer_service,
+                bot_username=settings.telegram_bot_username,
+            )
+            response = await processor.handle(
+                telegram_id=telegram_id,
+                username=telegram_username,
+                text=buyer_command,
+            )
+            logger.info(
+                "buyer_command_processed",
+                command=buyer_command,
+                telegram_id=telegram_id,
+                delete_source_message=response.delete_source_message,
+                response=response.text,
+            )
+            return
+
         if run_once:
             return
 
@@ -82,6 +108,11 @@ def cli() -> None:
         help="process one seller command and exit",
     )
     parser.add_argument(
+        "--buyer-command",
+        default=None,
+        help="process one buyer command and exit",
+    )
+    parser.add_argument(
         "--telegram-id",
         type=int,
         default=0,
@@ -99,6 +130,7 @@ def cli() -> None:
             run_service(
                 run_once=args.once,
                 seller_command=args.seller_command,
+                buyer_command=args.buyer_command,
                 telegram_id=args.telegram_id,
                 telegram_username=args.telegram_username,
             )
