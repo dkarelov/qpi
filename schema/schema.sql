@@ -97,6 +97,53 @@ ALTER TABLE ONLY "public"."buyer_orders" ADD CONSTRAINT "buyer_orders_buyer_user
 
 ALTER TABLE ONLY "public"."buyer_orders" ADD CONSTRAINT "buyer_orders_listing_id_fkey" FOREIGN KEY ("listing_id") REFERENCES "public"."listings" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 
+CREATE TABLE "public"."wb_report_rows" (
+    "realizationreport_id" bigint,
+    "date_from" date,
+    "date_to" date,
+    "create_dt" timestamp with time zone,
+    "currency_name" text,
+    "rrd_id" bigint NOT NULL,
+    "gi_id" bigint,
+    "subject_name" text,
+    "nm_id" bigint,
+    "brand_name" text,
+    "sa_name" text,
+    "ts_name" text,
+    "quantity" integer,
+    "retail_price" numeric(20,6),
+    "retail_amount" numeric(20,6),
+    "office_name" text,
+    "supplier_oper_name" text,
+    "order_dt" timestamp with time zone,
+    "sale_dt" timestamp with time zone,
+    "rr_dt" timestamp with time zone,
+    "retail_price_withdisc_rub" numeric(20,6),
+    "delivery_amount" integer,
+    "return_amount" integer,
+    "supplier_promo" numeric(20,6),
+    "ppvz_spp_prc" numeric(20,6),
+    "ppvz_for_pay" numeric(20,6),
+    "ppvz_office_name" text,
+    "ppvz_office_id" bigint,
+    "sticker_id" text,
+    "site_country" text,
+    "assembly_id" bigint,
+    "srid" text NOT NULL,
+    "report_type" smallint,
+    "order_uid" text,
+    "delivery_method" text,
+    "uuid_promocode" text,
+    "sale_price_promocode_discount_prc" numeric(20,6),
+    CONSTRAINT wb_report_rows_pkey PRIMARY KEY ("rrd_id", "srid")
+);
+
+CREATE INDEX idx_wb_report_rows_srid ON public.wb_report_rows USING btree (srid);
+
+CREATE INDEX idx_wb_report_rows_sale_dt ON public.wb_report_rows USING btree (sale_dt);
+
+CREATE INDEX idx_wb_report_rows_order_dt ON public.wb_report_rows USING btree (order_dt);
+
 CREATE TABLE "public"."balance_holds" (
     "id" bigserial NOT NULL,
     "account_id" bigint NOT NULL,

@@ -551,7 +551,24 @@ Exit criteria:
 
 Status:
 
-- Pending.
+- Completed in repository (application/runtime layer + tests + CI deploy workflow).
+- Implemented artifacts:
+  - `schema/schema.sql`: `wb_report_rows` with projected-only report fields and lookup indexes.
+  - `libs/integrations/wb_reports.py`: WB `reportDetailByPeriod` client.
+  - `libs/domain/daily_report.py`: Phase 5 orchestration:
+    - valid-shop token selection,
+    - 3-day pagination sync with retry,
+    - strict row projection to requested column set only,
+    - idempotent upsert to PostgreSQL,
+    - token invalidation + listing pause on matching `401` messages.
+  - `services/daily_report_scrapper/main.py`: cloud function handler + local `--once` runtime.
+  - `.github/workflows/deploy_daily_report_scrapper.yml`: auto-deploy on `main` push.
+  - expanded integration coverage in `tests/test_daily_report_phase5.py`.
+- Validation on 2026-02-26 via active SSH tunnel:
+  - `ruff check .` -> passed,
+  - `TEST_DATABASE_URL=.../qpi_test pytest -q -m "not migration_smoke"` -> `23 passed, 1 deselected`,
+  - `RUN_MIGRATION_SMOKE=1 TEST_DATABASE_URL=.../qpi_test_scratch pytest -q -m migration_smoke` -> `1 passed, 23 deselected`,
+  - `DATABASE_URL=.../qpi_test TOKEN_CIPHER_KEY=... python -m services.daily_report_scrapper.main --once` -> successful runtime smoke.
 
 ## Phase 6: Order Tracker (Cloud Function)
 
@@ -636,10 +653,9 @@ Status:
 ## 4. Recommended Execution Order
 
 1. Finish remaining artifacts of Phase 0 (formal schema/state docs).
-2. Implement Phase 5 `daily-report-scrapper` CF with auto-deploy CI/CD.
-3. Implement Phase 6 `order-tracker` CF and migrate timeout ownership from VM worker.
-4. Implement Phase 7 finance/admin controls for production money operations.
-5. Complete Phases 8 and 9 before production launch.
+2. Implement Phase 6 `order-tracker` CF and migrate timeout ownership from VM worker.
+3. Implement Phase 7 finance/admin controls for production money operations.
+4. Complete Phases 8 and 9 before production launch.
 
 ## 5. Tracking Policy
 

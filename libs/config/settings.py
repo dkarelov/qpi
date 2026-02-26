@@ -112,6 +112,74 @@ class WorkerSettings(BaseAppSettings):
         return value
 
 
+class DailyReportScrapperSettings(BaseAppSettings):
+    """Settings for hourly WB report scrapper cloud function."""
+
+    token_cipher_key: str = Field(alias="TOKEN_CIPHER_KEY")
+    wb_report_api_url: str = Field(
+        default="https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod",
+        alias="WB_REPORT_API_URL",
+    )
+    wb_report_timeout_seconds: int = Field(default=120, alias="WB_REPORT_TIMEOUT_SECONDS")
+    wb_report_concurrency: int = Field(default=4, alias="WB_REPORT_CONCURRENCY")
+    wb_report_limit: int = Field(default=100000, alias="WB_REPORT_LIMIT")
+    wb_report_days_back: int = Field(default=3, alias="WB_REPORT_DAYS_BACK")
+    wb_report_max_retries: int = Field(default=3, alias="WB_REPORT_MAX_RETRIES")
+    wb_report_retry_delay_seconds: float = Field(
+        default=1.0,
+        alias="WB_REPORT_RETRY_DELAY_SECONDS",
+    )
+
+    @field_validator("token_cipher_key")
+    @classmethod
+    def validate_token_cipher_key(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("TOKEN_CIPHER_KEY must not be empty")
+        return value
+
+    @field_validator("wb_report_timeout_seconds")
+    @classmethod
+    def validate_wb_report_timeout(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("WB_REPORT_TIMEOUT_SECONDS must be >= 1")
+        return value
+
+    @field_validator("wb_report_concurrency")
+    @classmethod
+    def validate_wb_report_concurrency(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("WB_REPORT_CONCURRENCY must be >= 1")
+        return value
+
+    @field_validator("wb_report_limit")
+    @classmethod
+    def validate_wb_report_limit(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("WB_REPORT_LIMIT must be >= 1")
+        return value
+
+    @field_validator("wb_report_days_back")
+    @classmethod
+    def validate_wb_report_days_back(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("WB_REPORT_DAYS_BACK must be >= 1")
+        return value
+
+    @field_validator("wb_report_max_retries")
+    @classmethod
+    def validate_wb_report_max_retries(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("WB_REPORT_MAX_RETRIES must be >= 0")
+        return value
+
+    @field_validator("wb_report_retry_delay_seconds")
+    @classmethod
+    def validate_wb_report_retry_delay_seconds(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("WB_REPORT_RETRY_DELAY_SECONDS must be > 0")
+        return value
+
+
 @lru_cache(maxsize=1)
 def get_bot_api_settings() -> BotApiSettings:
     return BotApiSettings()
@@ -120,3 +188,8 @@ def get_bot_api_settings() -> BotApiSettings:
 @lru_cache(maxsize=1)
 def get_worker_settings() -> WorkerSettings:
     return WorkerSettings()
+
+
+@lru_cache(maxsize=1)
+def get_daily_report_scrapper_settings() -> DailyReportScrapperSettings:
+    return DailyReportScrapperSettings()

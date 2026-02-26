@@ -25,6 +25,7 @@ dev = [
 [project.scripts]
 qpi-bot-api = "services.bot_api.main:cli"
 qpi-worker = "services.worker.main:cli"
+qpi-daily-report-scrapper = "services.daily_report_scrapper.main:cli"
 qpi-db-schema = "libs.db.schema_cli:cli"
 
 [tool.setuptools.packages.find]

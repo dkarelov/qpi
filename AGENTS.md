@@ -162,6 +162,22 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - sensitive payload input flagged for deletion.
 - `services/worker/main.py` now executes reservation expiry processing each tick (Phase 4 temporary runtime owner until Phase 6 `order-tracker` CF).
 
+### 3.12 Phase 5 implementation baseline
+
+- `schema/schema.sql` now includes `wb_report_rows` with projected-only WB report columns:
+  - `realizationreport_id`, `date_from`, `date_to`, `create_dt`, `currency_name`, `rrd_id`, `gi_id`, `subject_name`, `nm_id`, `brand_name`, `sa_name`, `ts_name`, `quantity`, `retail_price`, `retail_amount`, `office_name`, `supplier_oper_name`, `order_dt`, `sale_dt`, `rr_dt`, `retail_price_withdisc_rub`, `delivery_amount`, `return_amount`, `supplier_promo`, `ppvz_spp_prc`, `ppvz_for_pay`, `ppvz_office_name`, `ppvz_office_id`, `sticker_id`, `site_country`, `assembly_id`, `srid`, `report_type`, `order_uid`, `delivery_method`, `uuid_promocode`, `sale_price_promocode_discount_prc`.
+- `libs/integrations/wb_reports.py` provides minimal async WB `reportDetailByPeriod` client.
+- `libs/domain/daily_report.py` provides Phase 5 orchestration:
+  - target-shop selection (valid tokens + non-deleted listings),
+  - 3-day report sync with pagination/retry,
+  - strict row projection to `wb_report_rows`,
+  - idempotent upsert (`ON CONFLICT (rrd_id, srid)`),
+  - token invalidation on `401` message containing `withdrawn` / `token expired` via seller transactional API.
+- `services/daily_report_scrapper/main.py` provides:
+  - cloud function handler `services.daily_report_scrapper.main.handler`,
+  - local CLI smoke mode (`--once`).
+- `.github/workflows/deploy_daily_report_scrapper.yml` provides auto-deploy on `main` push for Phase 5 CF runtime changes.
+
 ## 4. Functional Workflow Summary
 
 Seller flow:
@@ -363,6 +379,14 @@ export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
 python -m services.worker.main --once
 ```
 
+Daily report scrapper smoke check:
+
+```bash
+export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
+export TOKEN_CIPHER_KEY=<cipher-key>
+python -m services.daily_report_scrapper.main --once
+```
+
 Test runbook:
 
 ```bash
@@ -448,3 +472,9 @@ Required controls even in MVP:
   - Phase 5/6 decomposition locked (`daily-report-scrapper` first, `order-tracker` second),
   - later phases shifted by +1 in `PLAN.md`,
   - CF delivery strategy locked to monorepo sub-services with auto-deploy CI/CD on `main` push.
+- 2026-02-26: Phase 5 implemented in repository:
+  - `wb_report_rows` projected-column table added in schema (PG-only storage contract),
+  - WB report client + Phase 5 orchestration service added,
+  - daily-report-scrapper runtime handler/CLI added,
+  - auto-deploy GitHub workflow added for daily-report-scrapper CF,
+  - integration suite expanded and validated against tunneled PostgreSQL (`23 passed`, `1 deselected`; migration smoke `1 passed`).

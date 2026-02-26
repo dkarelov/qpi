@@ -1,16 +1,17 @@
-# QPI Phase 4 Buyer Baseline
+# QPI Phase 5 Daily Report Baseline
 
-This repository includes Phase 2 foundation, Phase 3 seller features, and Phase 4 buyer features:
+This repository includes Phase 2 foundation, Phase 3 seller features, Phase 4 buyer features, and Phase 5 daily report scrapper:
 
-- async Python services (`services/bot_api`, `services/worker`),
+- async Python services (`services/bot_api`, `services/worker`, `services/daily_report_scrapper`),
 - shared libs (`libs/config`, `libs/db`, `libs/domain`, `libs/logging`, `libs/integrations`),
 - `psqldef`-based PostgreSQL schema management (`schema/schema.sql` source of truth),
 - plain SQL transactional domain logic via `psycopg3`,
 - seller domain + bot handlers (`libs/domain/seller.py`, `services/bot_api/seller_handlers.py`),
 - buyer domain + bot handlers (`libs/domain/buyer.py`, `services/bot_api/buyer_handlers.py`),
 - reservation timeout processor in worker (`reserved` -> `expired_2h`),
-- WB ping validation client (`libs/integrations/wb.py`),
-- integration tests for schema lifecycle, finance invariants, seller flow, and buyer flow.
+- daily report scrapper for WB `reportDetailByPeriod` ingestion (`services/daily_report_scrapper`),
+- WB integrations (`libs/integrations/wb.py`, `libs/integrations/wb_reports.py`),
+- integration tests for schema lifecycle, finance invariants, seller flow, buyer flow, and phase 5 report ingestion.
 
 ## Local Setup
 
@@ -36,6 +37,7 @@ make migrate-export
 ```bash
 qpi-bot-api --once
 qpi-worker --once
+qpi-daily-report-scrapper --once
 ```
 
 Seller command smoke check:
@@ -50,6 +52,14 @@ Buyer command smoke check:
 ```bash
 DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi \
 python -m services.bot_api.main --buyer-command "/start" --telegram-id 2001 --telegram-username buyer
+```
+
+Daily report scrapper smoke check:
+
+```bash
+DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi \
+TOKEN_CIPHER_KEY=<cipher-key> \
+python -m services.daily_report_scrapper.main --once
 ```
 
 ## Test Commands

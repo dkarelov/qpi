@@ -1,5 +1,15 @@
 """Configuration helpers."""
 
-from libs.config.settings import BaseAppSettings, BotApiSettings, WorkerSettings
+from libs.config.settings import (
+    BaseAppSettings,
+    BotApiSettings,
+    DailyReportScrapperSettings,
+    WorkerSettings,
+)
 
-__all__ = ["BaseAppSettings", "BotApiSettings", "WorkerSettings"]
+__all__ = [
+    "BaseAppSettings",
+    "BotApiSettings",
+    "WorkerSettings",
+    "DailyReportScrapperSettings",
+]
