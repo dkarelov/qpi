@@ -7,7 +7,7 @@ import pytest_asyncio
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from tests.utils import reset_public_schema, run_schema_apply
+from tests.utils import assert_safe_test_database, run_schema_apply, truncate_public_tables
 
 
 @pytest.fixture(scope="session")
@@ -15,20 +15,34 @@ def test_database_url() -> str:
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is not set; database integration tests are skipped")
+    assert_safe_test_database(url)
     return url
 
 
-@pytest.fixture
-def migrated_database(test_database_url: str) -> str:
-    reset_public_schema(test_database_url)
+@pytest.fixture(scope="session")
+def prepared_database(test_database_url: str) -> str:
     run_schema_apply(test_database_url)
     return test_database_url
 
 
+@pytest.fixture
+def isolated_database(prepared_database: str) -> str:
+    truncate_public_tables(prepared_database)
+    return prepared_database
+
+
+@pytest.fixture(scope="session")
+def migration_smoke_database_url(test_database_url: str) -> str:
+    if os.getenv("RUN_MIGRATION_SMOKE") != "1":
+        pytest.skip("RUN_MIGRATION_SMOKE is not set to 1; migration smoke is skipped")
+    assert_safe_test_database(test_database_url, require_scratch_name=True)
+    return test_database_url
+
+
 @pytest_asyncio.fixture
-async def db_pool(migrated_database: str):
+async def db_pool(isolated_database: str):
     pool = AsyncConnectionPool(
-        conninfo=migrated_database,
+        conninfo=isolated_database,
         min_size=1,
         max_size=4,
         open=False,

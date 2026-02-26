@@ -34,6 +34,9 @@ include = ["libs*", "services*"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+markers = [
+  "migration_smoke: destructive schema apply/drop smoke; requires RUN_MIGRATION_SMOKE=1 and disposable *_test DB",
+]
 
 [tool.ruff]
 line-length = 100

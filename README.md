@@ -54,9 +54,24 @@ python -m services.bot_api.main --buyer-command "/start" --telegram-id 2001 --te
 
 ## Test Commands
 
-Integration tests require a reachable PostgreSQL database.
-Set `TEST_DATABASE_URL`, then run:
+Integration tests require a reachable dedicated test database.
+Safety rules:
+
+- `TEST_DATABASE_URL` database name must contain `test`,
+- migration smoke tests are destructive and require disposable DB name containing
+  `test` plus one of `scratch|tmp|disposable`.
+
+Main integration suite (non-destructive schema lifecycle; truncates data in test DB per test):
 
 ```bash
-pytest
+TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
+pytest -q -m "not migration_smoke"
+```
+
+Migration smoke suite (destructive `apply/drop/apply`, opt-in):
+
+```bash
+RUN_MIGRATION_SMOKE=1 \
+TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test_scratch \
+pytest -q -m migration_smoke
 ```

@@ -510,6 +510,10 @@ Status:
   - `schema/schema.sql`: timeout polling index
     - `idx_assignments_reserved_expires_at`.
   - expanded integration suite in `tests/test_buyer_phase4.py`.
+  - test execution model hardened:
+    - default integration suite no longer drops/recreates `public` per test,
+    - schema is applied once and tables are truncated per test in dedicated test DB,
+    - migration smoke (`apply/drop/apply`) is explicit opt-in (`RUN_MIGRATION_SMOKE=1`) and marked `migration_smoke`.
 - Runtime validation on 2026-02-26 against target PostgreSQL via active SSH tunnel:
   - `TEST_DATABASE_URL=postgresql://qpi:***@127.0.0.1:15432/qpi python -m pytest -q` -> `21 passed`,
   - `DATABASE_URL=... python -m libs.db.schema_cli plan` -> `-- Nothing is modified --`,

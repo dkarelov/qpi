@@ -359,10 +359,26 @@ export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
 python -m services.worker.main --once
 ```
 
+Test runbook:
+
+```bash
+# Main integration suite (no schema drop/recreate per test):
+TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
+pytest -q -m "not migration_smoke"
+
+# Destructive migration smoke (explicit only):
+RUN_MIGRATION_SMOKE=1 \
+TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test_scratch \
+pytest -q -m migration_smoke
+```
+
 Rules:
 
 - Never apply manual DDL directly in PostgreSQL.
 - Validate every schema change on a clean DB path (`apply` -> `drop` -> `apply`).
+- Test safety guardrails:
+  - all tests require `TEST_DATABASE_URL` DB name containing `test`,
+  - migration smoke additionally requires disposable DB naming (`scratch|tmp|disposable`) and `RUN_MIGRATION_SMOKE=1`.
 
 ## 11. Security and Risk Notes (MVP)
 
@@ -421,3 +437,6 @@ Required controls even in MVP:
   - reservation expiry processor added to worker runtime (`reserved` -> `expired_2h`),
   - schema timeout index added for reserved-expiry polling,
   - integration suite expanded and validated against tunneled PostgreSQL (`21 passed`).
+- 2026-02-26: Test workflow hardened:
+  - default integration suite switched from `drop/create public` to schema-apply-once + table truncate per test,
+  - destructive migration smoke kept as explicit opt-in (`RUN_MIGRATION_SMOKE=1`) with disposable DB-name safety checks.
