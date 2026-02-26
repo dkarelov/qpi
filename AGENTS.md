@@ -289,7 +289,9 @@ Compute:
 - Bot VM shape: 2 vCPU, 2 GB RAM, 20 GB network-SSD.
 - DB VM: non-preemptible, 2 vCPU, 4 GB RAM, 40 GB network-SSD.
 - PostgreSQL target version: 18+ (current bootstrap path installs 18).
-- Planned next runtime components (not yet deployed): `daily-report-scrapper` CF (1-hour trigger, Phase 5), `order-tracker` CF (5-minute trigger, Phase 6).
+- Runtime components status:
+  - `daily-report-scrapper` CF: not yet deployed in current folder state.
+  - `order-tracker` CF: function + timer trigger provisioned (5-minute schedule); function version rollout is CI/CD-owned.
 
 Network:
 
@@ -314,6 +316,8 @@ Logging and access:
 - Private route table: `enpmdt4gs3gav0qd4nce` (`qpi-rt-private`)
 - Private subnet: `fl8oled9cdd9u2efqaae` (`qpi-private-ru-central1-d`, `10.131.0.0/24`)
 - Logging group: `e2345psnoc0appog5lil` (`qpi-prod-logs`)
+- Order tracker function: `d4edjmt28evde0urt9q4` (`qpi-order-tracker`)
+- Order tracker timer trigger: `a1s1jvo6m2ncc5n0ql7t` (`qpi-order-tracker-every-5m`, cron `0 */5 * * ? *`)
 
 Note:
 
@@ -522,3 +526,7 @@ Required controls even in MVP:
   - auto-deploy GitHub workflow added for order-tracker CF,
   - integration coverage added in `tests/test_order_tracker_phase6.py`,
   - verification run completed on tunneled PostgreSQL (`34 passed`, `1 deselected`; migration smoke `1 passed`; order-tracker `--once` smoke successful).
+- 2026-02-26: Cloud wiring for Phase 6 completed:
+  - YC function `qpi-order-tracker` created (`d4edjmt28evde0urt9q4`) in folder `b1gmeblqlrrvm912n1uq`,
+  - YC timer trigger `qpi-order-tracker-every-5m` created (`a1s1jvo6m2ncc5n0ql7t`, cron `0 */5 * * ? *`),
+  - GitHub Actions secret `YC_ORDER_TRACKER_CF_ID` configured for repo `dkarelov/qpi`.
