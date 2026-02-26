@@ -401,19 +401,95 @@ Status:
 
 ## Phase 4: Buyer Features
 
-Deliverables:
+Goal:
 
-1. Buyer deep-link entry and listing browse.
-2. Slot acceptance and reserve lock.
-3. 2-hour reservation timeout logic.
-4. Base64 payload submission from browser plugin and strict decode/validation.
-5. Assignment and order status view for buyer.
+- Deliver complete buyer-side flow from deep-link listing entry to `order_verified`, including deterministic reservation timeout handling and strict payload checks.
+
+Execution steps:
+
+1. Contract freeze for buyer + cross-service interfaces
+   - Define buyer handler contracts (shop entry, listing browse, reserve slot, submit payload, status view).
+   - Freeze payload validation contract for MVP mock payload:
+     - base64 decode required,
+     - JSON required,
+     - required fields `v`, `order_id`, `wb_product_id`, `ordered_at`,
+     - strict RFC3339 UTC parse for `ordered_at`.
+   - Freeze transition contract:
+     - successful validation moves assignment to `order_verified`,
+     - `1 order_id = 1 slot` uniqueness remains DB-enforced.
+2. Schema and DB-contract check via `psqldef`
+   - Reuse/validate `buyer_orders` + `assignments` contract introduced in Phase 3.
+   - Add only minimal indexes/constraints if needed for:
+     - timeout polling (`reserved` + `reservation_expires_at`),
+     - payload idempotency.
+   - Validate clean path: `apply -> drop -> apply`.
+3. Buyer domain service implementation (plain SQL, `psycopg3`, async)
+   - Add `BuyerService` transactional primitives:
+     - buyer bootstrap/account guarantees,
+     - shop deep-link resolution by active shop slug,
+     - active listing browse with slot availability projection,
+     - slot reservation create/idempotent retry behavior,
+     - payload submission/decode/validation + normalized order persistence,
+     - assignment status listing for buyer dashboard.
+4. Reservation and timeout behavior
+   - Reservation path:
+     - only active non-deleted listings are reservable,
+     - reserve is atomic and decrements slots exactly once.
+   - Timeout path (Phase 4 temporary runtime):
+     - implement reservation expiry processor in `services/worker`,
+     - transition stale `reserved` assignments to `expired_2h`,
+     - release slot and reserved funds with existing transactional primitives.
+   - Keep contract compatible with Phase 5 migration to `order-tracker` CF.
+5. Payload submission validation path
+   - Implement strict validation sequence:
+     - base64 decode -> JSON parse -> field/type checks -> timestamp parse,
+     - `wb_product_id` must match listing product,
+     - reject duplicate `order_id`.
+   - On success:
+     - persist normalized order data in `buyer_orders`,
+     - update assignment status to `order_verified`,
+     - ensure idempotent re-submit behavior for same assignment/key.
+6. Bot handler integration for buyer UX (Russian-only)
+   - Add conversational flow in `services/bot_api`:
+     - deep-link entry by shop slug,
+     - listing browse,
+     - reserve command/action,
+     - payload submit command/action,
+     - buyer assignments/status view.
+   - Keep sensitive payload-input cleanup behavior aligned with MVP security requirements.
+7. Test expansion (integration-first)
+   - Buyer bootstrap and deep-link resolution tests.
+   - Listing browse visibility tests (active vs paused/deleted).
+   - Reservation success/concurrency/idempotency tests.
+   - Timeout expiry processor tests (`reserved` -> `expired_2h` + rollback).
+   - Payload validation matrix tests:
+     - malformed base64,
+     - invalid JSON,
+     - missing/invalid fields,
+     - invalid timestamp,
+     - mismatched `wb_product_id`,
+     - duplicate `order_id`.
+   - Success path tests:
+     - valid payload -> `order_verified`,
+     - normalized `buyer_orders` row persisted.
+   - Keep all Phase 2/3 integration tests green.
+8. Ops and docs updates
+   - Update runbook commands for buyer-flow smoke checks.
+   - Update `AGENTS.md` and `PLAN.md` with runtime ownership of timeout job in Phase 4 and planned migration to Phase 5 CF.
+9. Phase completion validation
+   - Run `python -m pytest -q` against PostgreSQL through active SSH tunnel.
+   - Verify buyer end-to-end scenario in bot:
+     - deep-link -> browse -> reserve -> submit valid payload -> `order_verified`.
 
 Exit criteria:
 
-1. Deterministic reserve/timeout behavior.
-2. Duplicate or mismatched decoded `order_id`/`wb_product_id` rejected.
-3. Valid payload transitions assignment to `order_verified`.
+1. Buyer can reserve slot only on active listings with deterministic slot accounting.
+2. Reservation timeout transitions are deterministic and rollback reserve effects correctly.
+3. Invalid payloads are rejected with no incorrect state transitions.
+4. Duplicate or mismatched decoded `order_id`/`wb_product_id` is rejected.
+5. Valid payload transitions assignment to `order_verified` and stores normalized order record.
+6. Buyer status view reflects assignment/order state accurately.
+7. Integration tests cover buyer success/failure paths and pass.
 
 Status:
 
