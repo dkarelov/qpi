@@ -164,7 +164,7 @@ variable "cf_runtime" {
 variable "cf_memory_mb" {
   description = "Memory (MB) allocated to managed Cloud Functions."
   type        = number
-  default     = 256
+  default     = 128
 
   validation {
     condition     = var.cf_memory_mb >= 128

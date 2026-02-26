@@ -137,17 +137,18 @@ Cancel/error states:
 4. Service-to-service integration is database-mediated via PostgreSQL contracts.
 5. MVP implementation mode for CF services is monorepo sub-services with Terraform-managed deployment from `infra/`.
 6. Cloud function runtime changes (code/env/trigger/log wiring) are applied through Terraform, not mutable out-of-band deploy commands.
-7. Dedicated repositories per CF are post-MVP optional after service contracts stabilize.
-8. Access to VMs:
+7. CF packaging/hashing must be service-scoped so unrelated repository files (for example root docs) do not force both function redeploys.
+8. Dedicated repositories per CF are post-MVP optional after service contracts stabilize.
+9. Access to VMs:
    - target model: OS Login,
    - temporary fallback in current state: bot and DB VMs use metadata-injected key-based SSH,
    - DB VM is private-only and is reached through SSH jump via bot VM,
    - local DB access for app/tests uses SSH local forward `127.0.0.1:15432 -> 10.131.0.28:5432` via bot VM, kept active during sessions and recreated if missing.
-9. Initial expected load: about 100 concurrent users.
-10. Deployment mode: webhook.
-11. Initial zone: `ru-central1-d`.
-12. Logging: structured logs to Yandex Logging.
-13. One active infrastructure environment for MVP.
+10. Initial expected load: about 100 concurrent users.
+11. Deployment mode: webhook.
+12. Initial zone: `ru-central1-d`.
+13. Logging: structured logs to Yandex Logging.
+14. One active infrastructure environment for MVP.
 
 ## 2.8 Security/Operations Constraints (MVP)
 
@@ -569,7 +570,8 @@ Status:
     - idempotent upsert to PostgreSQL,
     - token invalidation + listing pause on matching `401` messages.
   - `services/daily_report_scrapper/main.py`: cloud function handler + local `--once` runtime.
-  - `infra/serverless.tf`: function runtime packaging from repo source, env wiring, 1-hour trigger, log options.
+  - `infra/serverless.tf`: function runtime packaging from service-scoped archive, env wiring, 1-hour trigger, log options.
+  - CF runtime memory target applied as `128 MB`.
   - `.github/workflows/deploy_terraform.yml`: CI deployment injects `TOKEN_YC_JSON_LOGGER` into `requirements.txt` in workspace before Terraform apply.
   - `infra/main.tf` + `infra/cloud-init/db.yaml.tftpl`: DB access wiring for CF source CIDR (`198.18.0.0/15`).
   - legacy GH deploy workflow removed; CF runtime delivery is Terraform-only.
@@ -623,7 +625,8 @@ Status:
     - delivery timeout transition (`order_verified` -> `delivery_expired`) after 60 days without pickup.
     - reward unlock execution (`picked_up_wait_unlock` -> `eligible_for_withdrawal`).
   - `services/order_tracker/main.py`: cloud function handler + local `--once` runtime.
-  - `infra/serverless.tf`: function runtime packaging from repo source, env wiring, 5-minute trigger, log options.
+  - `infra/serverless.tf`: function runtime packaging from service-scoped archive, env wiring, 5-minute trigger, log options.
+  - CF runtime memory target applied as `128 MB`.
   - legacy GH deploy workflow removed; CF runtime delivery is Terraform-only.
 - `services/worker/main.py`: reservation-expiry ownership removed (worker tick is noop placeholder).
 - integration coverage added in `tests/test_order_tracker_phase6.py`.

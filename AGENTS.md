@@ -116,7 +116,7 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 
 - Decompose backend into multiple microservices with DB-mediated contracts.
 - Implementation mode for Phases 5-6: CF services are delivered as monorepo sub-services in this repository.
-- Cloud Function runtime deployment is Terraform-managed in `infra/` (function config, code package, env, logging, triggers).
+- Cloud Function runtime deployment is Terraform-managed in `infra/` (function config, service-scoped code package, env, logging, triggers).
 - Separate repositories per service are optional post-MVP once contracts and deployment boundaries stabilize.
 - Services exchange state via PostgreSQL tables/contracts (DB-mediated integration).
 - Bot service remains always-on VM runtime.
@@ -179,7 +179,7 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - cloud function handler `services.daily_report_scrapper.main.handler`,
   - local CLI smoke mode (`--once`).
 - Terraform serverless layer (`infra/serverless.tf`) now manages:
-  - `qpi-daily-report-scrapper` function code package from repository source,
+  - `qpi-daily-report-scrapper` function code package from service-scoped archive (daily-report service + shared runtime libs),
   - runtime env/log wiring,
   - 1-hour timer trigger.
 
@@ -203,7 +203,7 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - cloud function handler `services.order_tracker.main.handler`,
   - local CLI smoke mode (`--once`).
 - Terraform serverless layer (`infra/serverless.tf`) now manages:
-  - `qpi-order-tracker` function code package from repository source,
+  - `qpi-order-tracker` function code package from service-scoped archive (order-tracker service + shared runtime libs),
   - runtime env/log wiring,
   - 5-minute timer trigger.
 - `services/worker/main.py` no longer owns reservation expiry processing.
@@ -300,6 +300,7 @@ Compute:
 - Runtime components status:
   - `daily-report-scrapper` CF: deployed and Terraform-managed (hourly trigger).
   - `order-tracker` CF: deployed and Terraform-managed (5-minute trigger).
+  - CF runtime memory: `128 MB` per function.
   - DB runtime access for CFs:
     - DB SG permits CF ingress on `5432`,
     - PostgreSQL `pg_hba.conf` includes serverless source CIDR `198.18.0.0/15`.
@@ -564,3 +565,7 @@ Required controls even in MVP:
 - 2026-02-26: CF application logging format corrected for Yandex Logging UI:
   - `libs/logging/setup.py` migrated to `yc_json_logger`-backed wrapper, preserving `logger.info("event", key=value)` call style while emitting YC-structured fields (`message`, `level`, `logger`, payload extras),
   - deployment workflow now injects private `TOKEN_YC_JSON_LOGGER` into `requirements.txt` in CI workspace before Terraform apply (secret is not committed to repo).
+- 2026-02-26: CF runtime packaging and sizing refined:
+  - CF memory reduced from `256 MB` to `128 MB` for both `qpi-daily-report-scrapper` and `qpi-order-tracker` and applied in cloud,
+  - Terraform packaging split into per-function service-scoped archives (instead of one whole-repo archive),
+  - unrelated root docs/flows (for example `AGENTS.md` and `PLAN.md`) are excluded from CF package hashes, so they do not force both CF redeploys.

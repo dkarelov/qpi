@@ -18,13 +18,8 @@ locals {
     yandex_compute_instance.db.network_interface[0].ip_address,
     var.db_name,
   )
-}
 
-data "archive_file" "cloud_functions_source" {
-  type        = "zip"
-  source_dir  = "${path.module}/.."
-  output_path = "${path.module}/.terraform/cloud-functions-source.zip"
-  excludes = [
+  cf_common_package_excludes = [
     ".git",
     ".github",
     ".mypy_cache",
@@ -35,7 +30,41 @@ data "archive_file" "cloud_functions_source" {
     "qpi.egg-info",
     "tests",
     "__pycache__",
+    "**/__pycache__",
+    "**/__pycache__/*",
+    "*.pyc",
+    "**/*.pyc",
+    "AGENTS.md",
+    "PLAN.md",
+    "README.md",
+    ".env.example",
+    ".gitignore",
+    "Makefile",
+    "services/bot_api",
+    "services/worker",
   ]
+
+  daily_report_scrapper_package_excludes = concat(local.cf_common_package_excludes, [
+    "services/order_tracker",
+  ])
+
+  order_tracker_package_excludes = concat(local.cf_common_package_excludes, [
+    "services/daily_report_scrapper",
+  ])
+}
+
+data "archive_file" "daily_report_scrapper_source" {
+  type        = "zip"
+  source_dir  = "${path.module}/.."
+  output_path = "${path.module}/.terraform/daily-report-scrapper-source.zip"
+  excludes    = local.daily_report_scrapper_package_excludes
+}
+
+data "archive_file" "order_tracker_source" {
+  type        = "zip"
+  source_dir  = "${path.module}/.."
+  output_path = "${path.module}/.terraform/order-tracker-source.zip"
+  excludes    = local.order_tracker_package_excludes
 }
 
 resource "yandex_function" "daily_report_scrapper" {
@@ -47,10 +76,10 @@ resource "yandex_function" "daily_report_scrapper" {
   memory             = var.cf_memory_mb
   execution_timeout  = var.cf_execution_timeout
   service_account_id = yandex_iam_service_account.bot_vm.id
-  user_hash          = data.archive_file.cloud_functions_source.output_base64sha256
+  user_hash          = data.archive_file.daily_report_scrapper_source.output_base64sha256
 
   content {
-    zip_filename = data.archive_file.cloud_functions_source.output_path
+    zip_filename = data.archive_file.daily_report_scrapper_source.output_path
   }
 
   connectivity {
@@ -108,10 +137,10 @@ resource "yandex_function" "order_tracker" {
   memory             = var.cf_memory_mb
   execution_timeout  = var.cf_execution_timeout
   service_account_id = yandex_iam_service_account.bot_vm.id
-  user_hash          = data.archive_file.cloud_functions_source.output_base64sha256
+  user_hash          = data.archive_file.order_tracker_source.output_base64sha256
 
   content {
-    zip_filename = data.archive_file.cloud_functions_source.output_path
+    zip_filename = data.archive_file.order_tracker_source.output_path
   }
 
   connectivity {
