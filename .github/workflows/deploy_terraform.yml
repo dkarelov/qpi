@@ -22,10 +22,17 @@ jobs:
     env:
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
       TOKEN_YC_JSON_LOGGER: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+      TF_VAR_cf_token_cipher_key: ${{ secrets.TOKEN_CIPHER_KEY }}
       TF_VAR_folder_id: ${{ vars.YC_FOLDER_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        run: |
+          test -n "${YC_TOKEN}" || { echo "YC_TOKEN is required"; exit 1; }
+          test -n "${TOKEN_YC_JSON_LOGGER}" || { echo "TOKEN_YC_JSON_LOGGER is required"; exit 1; }
+          test -n "${TF_VAR_cf_token_cipher_key}" || { echo "TOKEN_CIPHER_KEY is required"; exit 1; }
 
       - name: Inject private dependency token into requirements (CI workspace only)
         run: |

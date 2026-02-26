@@ -19,3 +19,4 @@ db_ssh_public_keys = [
 # bot_memory_gb = 2
 # db_name      = "qpi"
 # db_user      = "qpi"
+# cf_token_cipher_key = "<set-a-strong-shared-key-for-bot-and-cf>"

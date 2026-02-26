@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-02-26 UTC
+Last updated: 2026-02-27 UTC
 
 ## 1. Purpose and Maintenance Rules
 
@@ -569,3 +569,13 @@ Required controls even in MVP:
   - CF memory reduced from `256 MB` to `128 MB` for both `qpi-daily-report-scrapper` and `qpi-order-tracker` and applied in cloud,
   - Terraform packaging split into per-function service-scoped archives (instead of one whole-repo archive),
   - unrelated root docs/flows (for example `AGENTS.md` and `PLAN.md`) are excluded from CF package hashes, so they do not force both CF redeploys.
+- 2026-02-27: CF observability hardening implemented:
+  - logging messages now inline key fields as `key=value` in the visible message text (not only JSON extras),
+  - `daily-report-scrapper` logs per-shop lifecycle/counters (`shop_id`, pages, rows, final `rrd_id`) and explicit failure stage/severity (`token_decrypt`, `wb_api`, `pagination_stall`),
+  - `order-tracker` logs phase-level counters (reservation/WB/delivery/unlock) and run durations with warning on lock-not-acquired,
+  - runtime diagnosis for current live shop failure: seller token decrypt failure caused by `TOKEN_CIPHER_KEY` drift (`phase5-live-key` at token creation vs current CF env `change-me`).
+- 2026-02-27: `TOKEN_CIPHER_KEY` drift fix implemented and verified:
+  - Terraform variable `cf_token_cipher_key` is now mandatory (no insecure default fallback),
+  - CI workflow exports `TF_VAR_cf_token_cipher_key` from GitHub secret `TOKEN_CIPHER_KEY` and fails fast when missing,
+  - GitHub repo secret `TOKEN_CIPHER_KEY` configured and daily-report CF redeployed with aligned key,
+  - live invoke confirms recovery (`shops_failed=0`, shop processed successfully).

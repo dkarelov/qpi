@@ -13,6 +13,7 @@ from libs.domain.buyer import BuyerService
 from libs.domain.errors import InvalidStateError, NotFoundError
 from libs.domain.ledger import FinanceService
 from libs.domain.models import ReservationExpiryResult
+from libs.logging.setup import EventLogger, get_logger
 
 _PICKUP_OPERATION = "Продажа"
 _RETURN_OPERATION = "Возврат"
@@ -50,14 +51,17 @@ class _UnlockCandidate:
 class WbEventProcessResult:
     processed_count: int
     pickup_count: int
+    pickup_skipped_count: int
     return_cancelled_count: int
     return_ignored_after_unlock_count: int
+    return_skipped_count: int
 
 
 @dataclass(frozen=True)
 class BatchProcessResult:
     processed_count: int
     changed_count: int
+    skipped_count: int
 
 
 @dataclass(frozen=True)
@@ -92,6 +96,7 @@ class OrderTrackerService:
         unlock_days: int,
         buyer_service: BuyerService | None = None,
         finance_service: FinanceService | None = None,
+        logger: EventLogger | None = None,
     ) -> None:
         if advisory_lock_id < 1:
             raise ValueError("advisory_lock_id must be >= 1")
@@ -119,11 +124,16 @@ class OrderTrackerService:
         self._unlock_days = unlock_days
         self._buyer_service = buyer_service or BuyerService(pool)
         self._finance_service = finance_service or FinanceService(pool)
+        self._logger = logger or get_logger(__name__)
         self._lock_connection: AsyncConnection | None = None
 
     async def run_once(self) -> OrderTrackerRunResult:
         lock_acquired = await self._try_acquire_lock()
         if not lock_acquired:
+            self._logger.warning(
+                "order_tracker_lock_not_acquired",
+                advisory_lock_id=self._advisory_lock_id,
+            )
             return OrderTrackerRunResult(
                 lock_acquired=False,
                 reservation_expiry_processed_count=0,
@@ -140,9 +150,42 @@ class OrderTrackerService:
 
         try:
             reservation_result = await self._process_expired_reservations()
+            self._logger.info(
+                "order_tracker_reservation_expiry_phase",
+                processed_count=reservation_result.processed_count,
+                changed_count=reservation_result.expired_count,
+                skipped_count=reservation_result.processed_count - reservation_result.expired_count,
+                batch_size=self._reservation_expiry_batch_size,
+            )
             wb_result = await self._process_wb_events()
+            self._logger.info(
+                "order_tracker_wb_phase",
+                processed_count=wb_result.processed_count,
+                pickup_count=wb_result.pickup_count,
+                pickup_skipped_count=wb_result.pickup_skipped_count,
+                return_cancelled_count=wb_result.return_cancelled_count,
+                return_ignored_after_unlock_count=wb_result.return_ignored_after_unlock_count,
+                return_skipped_count=wb_result.return_skipped_count,
+                batch_size=self._wb_event_batch_size,
+            )
             delivery_expired_result = await self._process_delivery_expired()
+            self._logger.info(
+                "order_tracker_delivery_expiry_phase",
+                processed_count=delivery_expired_result.processed_count,
+                changed_count=delivery_expired_result.changed_count,
+                skipped_count=delivery_expired_result.skipped_count,
+                batch_size=self._delivery_expiry_batch_size,
+                delivery_expiry_days=self._delivery_expiry_days,
+            )
             unlock_result = await self._process_unlocks()
+            self._logger.info(
+                "order_tracker_unlock_phase",
+                processed_count=unlock_result.processed_count,
+                changed_count=unlock_result.changed_count,
+                skipped_count=unlock_result.skipped_count,
+                batch_size=self._unlock_batch_size,
+                unlock_days=self._unlock_days,
+            )
             return OrderTrackerRunResult(
                 lock_acquired=True,
                 reservation_expiry_processed_count=reservation_result.processed_count,
@@ -195,18 +238,23 @@ class OrderTrackerService:
     async def _process_wb_events(self) -> WbEventProcessResult:
         candidates = await self._list_wb_event_candidates()
         pickup_count = 0
+        pickup_skipped_count = 0
         return_cancelled_count = 0
         return_ignored_after_unlock_count = 0
+        return_skipped_count = 0
 
         for candidate in candidates:
             if candidate.supplier_oper_name == _PICKUP_OPERATION:
                 if candidate.assignment_status != "order_verified" or candidate.event_at is None:
+                    pickup_skipped_count += 1
                     continue
                 if await self._mark_assignment_picked_up(
                     assignment_id=candidate.assignment_id,
                     pickup_at=candidate.event_at,
                 ):
                     pickup_count += 1
+                else:
+                    pickup_skipped_count += 1
                 continue
 
             if candidate.supplier_oper_name != _RETURN_OPERATION:
@@ -230,15 +278,20 @@ class OrderTrackerService:
                     idempotency_key=f"{_RETURN_IDEMPOTENCY_PREFIX}:{candidate.assignment_id}",
                 )
             except (InvalidStateError, NotFoundError):
+                return_skipped_count += 1
                 continue
             if result.changed:
                 return_cancelled_count += 1
+            else:
+                return_skipped_count += 1
 
         return WbEventProcessResult(
             processed_count=len(candidates),
             pickup_count=pickup_count,
+            pickup_skipped_count=pickup_skipped_count,
             return_cancelled_count=return_cancelled_count,
             return_ignored_after_unlock_count=return_ignored_after_unlock_count,
+            return_skipped_count=return_skipped_count,
         )
 
     async def _list_wb_event_candidates(self) -> list[_WbEventCandidate]:
@@ -328,6 +381,7 @@ class OrderTrackerService:
     async def _process_delivery_expired(self) -> BatchProcessResult:
         candidates = await self._list_delivery_expired_candidates()
         changed_count = 0
+        skipped_count = 0
 
         for candidate in candidates:
             try:
@@ -339,11 +393,18 @@ class OrderTrackerService:
                     idempotency_key=f"{_DELIVERY_EXPIRED_IDEMPOTENCY_PREFIX}:{candidate.assignment_id}",
                 )
             except (InvalidStateError, NotFoundError):
+                skipped_count += 1
                 continue
             if result.changed:
                 changed_count += 1
+            else:
+                skipped_count += 1
 
-        return BatchProcessResult(processed_count=len(candidates), changed_count=changed_count)
+        return BatchProcessResult(
+            processed_count=len(candidates),
+            changed_count=changed_count,
+            skipped_count=skipped_count,
+        )
 
     async def _list_delivery_expired_candidates(self) -> list[_DeliveryExpiredCandidate]:
         async def operation(conn: AsyncConnection) -> list[_DeliveryExpiredCandidate]:
@@ -389,6 +450,7 @@ class OrderTrackerService:
     async def _process_unlocks(self) -> BatchProcessResult:
         candidates = await self._list_unlock_candidates()
         changed_count = 0
+        skipped_count = 0
 
         for candidate in candidates:
             buyer_available_account_id = await self._ensure_buyer_available_account_id(
@@ -402,11 +464,18 @@ class OrderTrackerService:
                     idempotency_key=f"{_UNLOCK_IDEMPOTENCY_PREFIX}:{candidate.assignment_id}",
                 )
             except (InvalidStateError, NotFoundError):
+                skipped_count += 1
                 continue
             if result.changed:
                 changed_count += 1
+            else:
+                skipped_count += 1
 
-        return BatchProcessResult(processed_count=len(candidates), changed_count=changed_count)
+        return BatchProcessResult(
+            processed_count=len(candidates),
+            changed_count=changed_count,
+            skipped_count=skipped_count,
+        )
 
     async def _list_unlock_candidates(self) -> list[_UnlockCandidate]:
         async def operation(conn: AsyncConnection) -> list[_UnlockCandidate]:

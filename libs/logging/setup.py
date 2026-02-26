@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import logging
 from contextvars import ContextVar
+from datetime import date, datetime
 from typing import Any
 
 _CONFIGURED = False
-_LOG_CONTEXT: ContextVar[dict[str, Any]] = ContextVar("qpi_log_context", default={})
+_LOG_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar("qpi_log_context", default=None)
 
 
 class EventLogger:
@@ -15,13 +17,45 @@ class EventLogger:
         self._logger = logger
 
     def _compose_extra(self, fields: dict[str, Any] | None = None) -> dict[str, Any]:
-        extra = dict(_LOG_CONTEXT.get())
+        extra = dict(_LOG_CONTEXT.get() or {})
         if fields:
             extra.update(fields)
         return extra
 
+    def _render_value(self, value: Any) -> str:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        if isinstance(value, str):
+            text = value.replace("\n", "\\n").strip()
+            if not text:
+                return '""'
+            if any(char.isspace() for char in text):
+                return f'"{text}"'
+            return text
+        if isinstance(value, (int, float, bool)) or value is None:
+            return str(value)
+        try:
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+        except TypeError:
+            return repr(value)
+
+    def _format_event(self, event: object, fields: dict[str, Any]) -> str:
+        message = str(event)
+        if not fields:
+            return message
+        rendered_fields = " ".join(
+            f"{key}={self._render_value(fields[key])}" for key in sorted(fields)
+        )
+        return f"{message} {rendered_fields}"
+
     def _log(self, level: int, event: object, **fields: Any) -> None:
-        self._logger.log(level, event, extra=self._compose_extra(fields))
+        self._logger.log(
+            level,
+            self._format_event(event, fields),
+            extra=self._compose_extra(fields),
+        )
 
     def debug(self, event: object, **fields: Any) -> None:
         self._log(logging.DEBUG, event, **fields)
@@ -36,7 +70,11 @@ class EventLogger:
         self._log(logging.ERROR, event, **fields)
 
     def exception(self, event: object, **fields: Any) -> None:
-        self._logger.error(event, exc_info=True, extra=self._compose_extra(fields))
+        self._logger.error(
+            self._format_event(event, fields),
+            exc_info=True,
+            extra=self._compose_extra(fields),
+        )
 
 
 def configure_logging(

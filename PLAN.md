@@ -1,6 +1,6 @@
 # QPI PLAN
 
-Last updated: 2026-02-26 UTC
+Last updated: 2026-02-27 UTC
 
 ## 1. Purpose
 
@@ -582,6 +582,15 @@ Status:
   - `RUN_MIGRATION_SMOKE=1 TEST_DATABASE_URL=.../qpi_test_scratch pytest -q -m migration_smoke` -> `1 passed, 23 deselected`,
   - `DATABASE_URL=.../qpi_test TOKEN_CIPHER_KEY=... python -m services.daily_report_scrapper.main --once` -> successful runtime smoke.
   - live invoke in YC (2026-02-26): `{"shops_total": 1, "shops_processed": 1, "shops_failed": 0, ... , "ok": true}`.
+- Follow-up on 2026-02-27 (observability hardening):
+  - `libs/logging/setup.py` now inlines log fields into the `message` (`key=value`) so critical counters are visible in YC log rows without opening JSON details.
+  - `daily-report-scrapper` now emits per-shop logs with explicit failure stage/severity and counters (`shop_id`, `rows_*`, `pages_fetched`, `final_rrd_id`, `status_code`, retry metadata).
+  - live diagnosis became actionable: current `shops_failed=1` is `token_decrypt` (cipher key drift: shop token encrypted under `phase5-live-key`, current CF `TOKEN_CIPHER_KEY=change-me`).
+- Follow-up on 2026-02-27 (key drift remediation):
+  - `infra/variables.tf`: `cf_token_cipher_key` changed to required input (no default `change-me` fallback).
+  - `.github/workflows/deploy_terraform.yml`: CI now passes `TF_VAR_cf_token_cipher_key` from secret `TOKEN_CIPHER_KEY` and validates required secrets before plan/apply.
+  - live Terraform apply rotated CF env key to the canonical value; one-shot invoke verified recovery:
+    - `{"shops_total":1,"shops_processed":1,"shops_failed":0,"rows_seen":47,"rows_upserted":2,...}`.
 
 ## Phase 6: Order Tracker (Cloud Function)
 
@@ -637,6 +646,9 @@ Status:
   - `RUN_MIGRATION_SMOKE=1 TEST_DATABASE_URL=.../qpi_test_scratch python -m pytest -q -m migration_smoke` -> `1 passed, 34 deselected`,
   - `DATABASE_URL=.../qpi_test python -m services.order_tracker.main --once` -> successful runtime smoke.
   - live invoke in YC (2026-02-26): `{"lock_acquired": true, ..., "ok": true}`.
+- Follow-up on 2026-02-27 (observability hardening):
+  - `order-tracker` now logs phase-level counters and run duration in visible message text (`reservation`, `wb`, `delivery_expiry`, `unlock` phases).
+  - lock-not-acquired completion is now logged as warning, not plain info.
 - TODO (post-MVP):
   - define and implement correction-operation semantics in order tracking (`Коррекция продаж`, `Коррекция возвратов`).
 

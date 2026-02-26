@@ -231,7 +231,6 @@ variable "cf_db_statement_timeout_ms" {
 variable "cf_token_cipher_key" {
   description = "TOKEN_CIPHER_KEY used by daily-report-scrapper."
   type        = string
-  default     = "change-me"
   sensitive   = true
 
   validation {
