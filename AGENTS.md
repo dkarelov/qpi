@@ -113,15 +113,18 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 
 ### 3.9 Runtime decomposition (post-Phase 2 target)
 
-- Decompose backend into multiple microservices (separate repositories preferred for CI/CD isolation).
+- Decompose backend into multiple microservices with DB-mediated contracts.
+- Implementation mode for Phases 5-6: CF services are delivered as monorepo sub-services in this repository.
+- CI/CD mode for CF services: push to `main` auto-deploys affected functions (no manual deploy step).
+- Separate repositories per service are optional post-MVP once contracts and deployment boundaries stabilize.
 - Services exchange state via PostgreSQL tables/contracts (DB-mediated integration).
 - Bot service remains always-on VM runtime.
 - Phase 4 temporary ownership: reservation timeout (`reserved` -> `expired_2h`) is executed in the VM worker service.
-- `order-tracker` is target cloud function orchestrator running every 5 minutes.
-- `daily-report-scrapper` is target cloud function running every 1 hour:
+- Phase 5 target cloud function: `daily-report-scrapper` running every 1 hour:
   - requests WB `reportDetailByPeriod` for last 3 days,
   - stores raw dumps in PostgreSQL,
   - invalidates seller token in PostgreSQL on WB `401` with message containing `withdrawn` or `token expired`.
+- Phase 6 target cloud function: `order-tracker` orchestrator running every 5 minutes.
 
 ### 3.10 Phase 3 implementation baseline
 
@@ -157,7 +160,7 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - `/start` (including `shop_<slug>` deep-link payload),
   - `/shop`, `/reserve`, `/submit_order`, `/my_orders`,
   - sensitive payload input flagged for deletion.
-- `services/worker/main.py` now executes reservation expiry processing each tick (Phase 4 temporary runtime owner until Phase 5 `order-tracker` CF).
+- `services/worker/main.py` now executes reservation expiry processing each tick (Phase 4 temporary runtime owner until Phase 6 `order-tracker` CF).
 
 ## 4. Functional Workflow Summary
 
@@ -219,6 +222,7 @@ Cancel/failure states:
 - Application data access: plain SQL via `psycopg3` (no ORM).
 - Database schema management via `psqldef` + `schema/schema.sql` only.
 - Runtime model: always-on bot VM + event/schedule-driven cloud functions for orchestrators/scrappers.
+- Cloud function deployment policy: automatic deploy on `main` push via CI/CD workflows.
 - Infrastructure changes via Terraform only (avoid drift).
 - YC CLI allowed for checks/debugging only.
 - SSH access model:
@@ -243,7 +247,7 @@ Compute:
 - Bot VM shape: 2 vCPU, 2 GB RAM, 20 GB network-SSD.
 - DB VM: non-preemptible, 2 vCPU, 4 GB RAM, 40 GB network-SSD.
 - PostgreSQL target version: 18+ (current bootstrap path installs 18).
-- Planned next runtime components (not yet deployed): `order-tracker` CF (5-minute trigger), `daily-report-scrapper` CF (1-hour trigger).
+- Planned next runtime components (not yet deployed): `daily-report-scrapper` CF (1-hour trigger, Phase 5), `order-tracker` CF (5-minute trigger, Phase 6).
 
 Network:
 
@@ -408,7 +412,7 @@ Required controls even in MVP:
   - tamper-protection/signature mechanism.
 - Post-MVP listing ownership check:
   - direct WB catalog/product endpoint vs cached report data.
-- Final split of services by repository and deployment boundaries.
+- Post-MVP decision on extracting CF services from monorepo into dedicated repositories.
 - Replace temporary app-level token cipher with managed secret storage/KMS-backed encryption.
 
 ## 13. Change Log
@@ -440,3 +444,7 @@ Required controls even in MVP:
 - 2026-02-26: Test workflow hardened:
   - default integration suite switched from `drop/create public` to schema-apply-once + table truncate per test,
   - destructive migration smoke kept as explicit opt-in (`RUN_MIGRATION_SMOKE=1`) with disposable DB-name safety checks.
+- 2026-02-26: Phase plan updated:
+  - Phase 5/6 decomposition locked (`daily-report-scrapper` first, `order-tracker` second),
+  - later phases shifted by +1 in `PLAN.md`,
+  - CF delivery strategy locked to monorepo sub-services with auto-deploy CI/CD on `main` push.

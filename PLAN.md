@@ -127,20 +127,22 @@ Cancel/error states:
 2. Infrastructure created/changed via Terraform (avoid drift).
 3. Runtime decomposition target:
    - bot remains always-running VM service,
-   - `order-tracker` runs as cloud function every 5 minutes,
-   - `daily-report-scrapper` runs as cloud function every 1 hour.
+   - `daily-report-scrapper` runs as cloud function every 1 hour (Phase 5, first priority),
+   - `order-tracker` runs as cloud function every 5 minutes (Phase 6, after Phase 5).
 4. Service-to-service integration is database-mediated via PostgreSQL contracts.
-5. Codebases can be split into separate repositories per service for CI/CD isolation.
-6. Access to VMs:
+5. MVP implementation mode for CF services is monorepo sub-services with path-scoped CI/CD workflows.
+6. CI/CD requirement: push to `main` must auto-deploy affected cloud function(s) without manual deploy steps.
+7. Dedicated repositories per CF are post-MVP optional after service contracts stabilize.
+8. Access to VMs:
    - target model: OS Login,
    - temporary fallback in current state: bot and DB VMs use metadata-injected key-based SSH,
    - DB VM is private-only and is reached through SSH jump via bot VM,
    - local DB access for app/tests uses SSH local forward `127.0.0.1:15432 -> 10.131.0.28:5432` via bot VM, kept active during sessions and recreated if missing.
-7. Initial expected load: about 100 concurrent users.
-8. Deployment mode: webhook.
-9. Initial zone: `ru-central1-d`.
-10. Logging: structured logs to Yandex Logging.
-11. One active infrastructure environment for MVP.
+9. Initial expected load: about 100 concurrent users.
+10. Deployment mode: webhook.
+11. Initial zone: `ru-central1-d`.
+12. Logging: structured logs to Yandex Logging.
+13. One active infrastructure environment for MVP.
 
 ## 2.8 Security/Operations Constraints (MVP)
 
@@ -439,7 +441,7 @@ Execution steps:
      - implement reservation expiry processor in `services/worker`,
      - transition stale `reserved` assignments to `expired_2h`,
      - release slot and reserved funds with existing transactional primitives.
-   - Keep contract compatible with Phase 5 migration to `order-tracker` CF.
+   - Keep contract compatible with Phase 6 migration to `order-tracker` CF.
 5. Payload submission validation path
    - Implement strict validation sequence:
      - base64 decode -> JSON parse -> field/type checks -> timestamp parse,
@@ -475,7 +477,7 @@ Execution steps:
    - Keep all Phase 2/3 integration tests green.
 8. Ops and docs updates
    - Update runbook commands for buyer-flow smoke checks.
-   - Update `AGENTS.md` and `PLAN.md` with runtime ownership of timeout job in Phase 4 and planned migration to Phase 5 CF.
+   - Update `AGENTS.md` and `PLAN.md` with runtime ownership of timeout job in Phase 4 and planned migration to Phase 6 CF.
 9. Phase completion validation
    - Run `python -m pytest -q` against PostgreSQL through active SSH tunnel.
    - Verify buyer end-to-end scenario in bot:
@@ -520,33 +522,64 @@ Status:
   - `python -m services.bot_api.main --buyer-command '/start' ...` succeeds with DB connectivity,
   - `python -m services.worker.main --once` runs reservation expiry tick successfully.
 
-## Phase 5: Workflow Automation (Cloud Functions)
+## Phase 5: Daily Report Scrapper (Cloud Function)
 
 Deliverables:
 
-1. `order-tracker` cloud function (5-minute trigger) for:
-   - reserve expiry,
-   - order lifecycle orchestration from `order_verified` to unlock/release states,
-   - pickup detection,
-   - 14-day unlock checks,
-   - return checks.
-2. `daily-report-scrapper` cloud function (1-hour trigger):
-   - fetch last 3 days WB `reportDetailByPeriod`,
-   - persist raw report rows in PostgreSQL for downstream matching,
-   - invalidate seller token on `401` with message containing `withdrawn` or `token expired`.
-3. Retry/idempotency guards.
+1. Implement `daily-report-scrapper` as a monorepo sub-service (`services/daily_report_scrapper`) using the existing QPI stack:
+   - plain SQL,
+   - `psycopg3` async pool/transactions,
+   - existing token cipher and seller-domain invalidation primitives.
+2. Add hourly cloud function runtime (Terraform + trigger + env wiring).
+3. Fetch WB `reportDetailByPeriod` for the last 3 days with pagination support.
+4. Persist raw report rows in PostgreSQL with idempotent writes (dedupe-safe re-runs).
+5. Invalidate seller token only when WB response is HTTP `401` and message contains `withdrawn` or `token expired`:
+   - use existing seller-domain transactional API,
+   - auto-pause affected active listings in the same business transaction.
+6. Add retry/backoff, bounded concurrency, and run-level idempotency/overlap guards.
+7. Add CI/CD workflow: push to `main` auto-deploys this CF; no manual deploy steps.
+8. Reuse policy from `~/e-comet/reports`:
+   - allowed: request/pagination/stream-parse logic patterns,
+   - not allowed as foundation: full fork and ClickHouse/`aioscrapper`-coupled architecture.
 
 Exit criteria:
 
-1. End-to-end transition automation works across restarts.
-2. No duplicate unlock/payout events.
-3. Raw WB report ingestion is repeatable and deduplicated.
+1. Hourly CF ingests 3-day WB report window into PostgreSQL.
+2. Re-run of same window is deduplicated and does not corrupt state.
+3. Token invalidation + listing pause trigger only for required `401` message patterns.
+4. CI/CD redeploy on `main` push is active and validated.
 
 Status:
 
 - Pending.
 
-## Phase 6: Finance and Admin Controls
+## Phase 6: Order Tracker (Cloud Function)
+
+Deliverables:
+
+1. Implement `order-tracker` as a monorepo sub-service (`services/order_tracker`) with 5-minute trigger.
+2. Migrate timeout ownership from VM worker to CF:
+   - process reservation expiry (`reserved` -> `expired_2h`) in CF path.
+3. Orchestrate assignment lifecycle post-`order_verified` using PostgreSQL contracts:
+   - pickup detection from raw WB report data,
+   - transition to `picked_up_wait_unlock`,
+   - 14-day unlock checks to `eligible_for_withdrawal`,
+   - return cancellation within 14 days (`returned_within_14d`).
+4. Enforce idempotent transitions and replay safety across CF retries/restarts.
+5. Add CI/CD workflow: push to `main` auto-deploys this CF.
+
+Exit criteria:
+
+1. End-to-end automated transitions work across restarts.
+2. No duplicate unlock/cancel events under retries.
+3. Reservation expiry ownership is fully removed from VM worker runtime.
+4. CI/CD redeploy on `main` push is active and validated.
+
+Status:
+
+- Pending.
+
+## Phase 7: Finance and Admin Controls
 
 Deliverables:
 
@@ -564,7 +597,7 @@ Status:
 
 - Pending.
 
-## Phase 7: Observability and Reliability
+## Phase 8: Observability and Reliability
 
 Deliverables:
 
@@ -582,7 +615,7 @@ Status:
 
 - Pending.
 
-## Phase 8: Hardening and Launch
+## Phase 9: Hardening and Launch
 
 Deliverables:
 
@@ -603,9 +636,10 @@ Status:
 ## 4. Recommended Execution Order
 
 1. Finish remaining artifacts of Phase 0 (formal schema/state docs).
-2. Implement Phase 5 workflow automation (`order-tracker` CF, `daily-report-scrapper` CF).
-3. Implement Phase 6 finance/admin controls for production money operations.
-4. Complete Phases 7 and 8 before production launch.
+2. Implement Phase 5 `daily-report-scrapper` CF with auto-deploy CI/CD.
+3. Implement Phase 6 `order-tracker` CF and migrate timeout ownership from VM worker.
+4. Implement Phase 7 finance/admin controls for production money operations.
+5. Complete Phases 8 and 9 before production launch.
 
 ## 5. Tracking Policy
 
