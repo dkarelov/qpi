@@ -82,6 +82,13 @@ resource "yandex_vpc_security_group" "db" {
     security_group_id = yandex_vpc_security_group.bot.id
   }
 
+  ingress {
+    protocol       = "TCP"
+    description    = "PostgreSQL from VPC subnets (Cloud Functions connectivity)"
+    port           = 5432
+    v4_cidr_blocks = ["0.0.0.0/0"]
+  }
+
   dynamic "ingress" {
     for_each = toset(var.admin_ipv4_cidrs)
     content {
@@ -150,11 +157,14 @@ locals {
   ])
 
   db_cloud_init = templatefile("${path.module}/cloud-init/db.yaml.tftpl", {
-    postgres_version = var.postgres_version
-    db_name          = var.db_name
-    db_user          = var.db_user
-    db_password      = random_password.db_password.result
+    postgres_version         = var.postgres_version
+    db_name                  = var.db_name
+    db_user                  = var.db_user
+    db_password              = random_password.db_password.result
+    serverless_postgres_cidr = var.serverless_postgres_cidr
   })
+
+  operator_ssh_private_key_path = pathexpand(var.operator_ssh_private_key_path)
 }
 
 resource "yandex_compute_instance_group" "bot" {
@@ -280,5 +290,26 @@ resource "yandex_compute_instance" "db" {
   labels = {
     project = var.project
     role    = "db"
+  }
+}
+
+resource "terraform_data" "db_pg_hba_serverless" {
+  triggers_replace = {
+    db_id                    = yandex_compute_instance.db.id
+    postgres_version         = tostring(var.postgres_version)
+    serverless_postgres_cidr = var.serverless_postgres_cidr
+    bot_public_ip            = yandex_vpc_address.bot_public_ip.external_ipv4_address[0].address
+    db_private_ip            = yandex_compute_instance.db.network_interface[0].ip_address
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      bash -lc 'set -euo pipefail
+      ssh -o StrictHostKeyChecking=no \
+        -o ProxyCommand="ssh -i ${local.operator_ssh_private_key_path} -W %h:%p ubuntu@${yandex_vpc_address.bot_public_ip.external_ipv4_address[0].address}" \
+        -i ${local.operator_ssh_private_key_path} \
+        ubuntu@${yandex_compute_instance.db.network_interface[0].ip_address} \
+        "sudo bash -ceu '\''grep -Fqx \"host all all ${var.serverless_postgres_cidr} scram-sha-256\" /etc/postgresql/${var.postgres_version}/main/pg_hba.conf || echo \"host all all ${var.serverless_postgres_cidr} scram-sha-256\" >> /etc/postgresql/${var.postgres_version}/main/pg_hba.conf; systemctl reload postgresql'\''"'
+    EOT
   }
 }

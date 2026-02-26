@@ -126,14 +126,17 @@ Cancel/error states:
 ## 2.7 Non-Functional and Platform Requirements
 
 1. Python-only implementation for bot and backend services.
-2. Infrastructure created/changed via Terraform (avoid drift).
+2. Strict DevOps policy for infrastructure:
+   - all infrastructure mutations must be implemented in Terraform and applied from Terraform,
+   - direct mutable `yc` operations are prohibited for normal delivery,
+   - `yc` is read-only tool for debugging/checks/investigation.
 3. Runtime decomposition target:
    - bot remains always-running VM service,
    - `daily-report-scrapper` runs as cloud function every 1 hour (Phase 5, first priority),
    - `order-tracker` runs as cloud function every 5 minutes (Phase 6, after Phase 5).
 4. Service-to-service integration is database-mediated via PostgreSQL contracts.
-5. MVP implementation mode for CF services is monorepo sub-services with path-scoped CI/CD workflows.
-6. CI/CD requirement: push to `main` must auto-deploy affected cloud function(s) without manual deploy steps.
+5. MVP implementation mode for CF services is monorepo sub-services with Terraform-managed deployment from `infra/`.
+6. Cloud function runtime changes (code/env/trigger/log wiring) are applied through Terraform, not mutable out-of-band deploy commands.
 7. Dedicated repositories per CF are post-MVP optional after service contracts stabilize.
 8. Access to VMs:
    - target model: OS Login,
@@ -539,7 +542,7 @@ Deliverables:
    - use existing seller-domain transactional API,
    - auto-pause affected active listings in the same business transaction.
 6. Add retry/backoff, bounded concurrency, and run-level idempotency/overlap guards.
-7. Add CI/CD workflow: push to `main` auto-deploys this CF; no manual deploy steps.
+7. Keep deployment Terraform-managed (`infra/serverless.tf`) for function code, env, log wiring, and timer trigger.
 8. Reuse policy from `~/e-comet/reports`:
    - allowed: request/pagination/stream-parse logic patterns,
    - not allowed as foundation: full fork and ClickHouse/`aioscrapper`-coupled architecture.
@@ -549,12 +552,13 @@ Exit criteria:
 1. Hourly CF ingests 3-day WB report window into PostgreSQL.
 2. Re-run of same window is deduplicated and does not corrupt state.
 3. Token invalidation + listing pause trigger only for required `401` message patterns.
-4. CI/CD redeploy on `main` push is active and validated.
+4. Terraform apply deploys runnable CF runtime and logs are present in Yandex Logging.
 
 Status:
 
-- Completed in repository (application/runtime layer + tests + CI deploy workflow).
+- Completed in repository and deployed via Terraform.
 - Implemented artifacts:
+  - `libs/logging/setup.py`: migrated to `yc_json_logger`-backed wrapper so app logs emit YC-structured records (`message`, `level`, `logger`, extra fields).
   - `schema/schema.sql`: `wb_report_rows` with projected-only report fields and lookup indexes.
   - `libs/integrations/wb_reports.py`: WB `reportDetailByPeriod` client.
   - `libs/domain/daily_report.py`: Phase 5 orchestration:
@@ -565,13 +569,17 @@ Status:
     - idempotent upsert to PostgreSQL,
     - token invalidation + listing pause on matching `401` messages.
   - `services/daily_report_scrapper/main.py`: cloud function handler + local `--once` runtime.
-  - `.github/workflows/deploy_daily_report_scrapper.yml`: auto-deploy on `main` push.
+  - `infra/serverless.tf`: function runtime packaging from repo source, env wiring, 1-hour trigger, log options.
+  - `.github/workflows/deploy_terraform.yml`: CI deployment injects `TOKEN_YC_JSON_LOGGER` into `requirements.txt` in workspace before Terraform apply.
+  - `infra/main.tf` + `infra/cloud-init/db.yaml.tftpl`: DB access wiring for CF source CIDR (`198.18.0.0/15`).
+  - legacy GH deploy workflow removed; CF runtime delivery is Terraform-only.
   - expanded integration coverage in `tests/test_daily_report_phase5.py`.
 - Validation on 2026-02-26 via active SSH tunnel:
   - `ruff check .` -> passed,
   - `TEST_DATABASE_URL=.../qpi_test pytest -q -m "not migration_smoke"` -> `23 passed, 1 deselected`,
   - `RUN_MIGRATION_SMOKE=1 TEST_DATABASE_URL=.../qpi_test_scratch pytest -q -m migration_smoke` -> `1 passed, 23 deselected`,
   - `DATABASE_URL=.../qpi_test TOKEN_CIPHER_KEY=... python -m services.daily_report_scrapper.main --once` -> successful runtime smoke.
+  - live invoke in YC (2026-02-26): `{"shops_total": 1, "shops_processed": 1, "shops_failed": 0, ... , "ok": true}`.
 
 ## Phase 6: Order Tracker (Cloud Function)
 
@@ -587,7 +595,7 @@ Deliverables:
    - return cancellation within 15 days (`returned_within_14d`),
    - timeout cancellation with `order_verified` -> `delivery_expired` after 60 days without pickup.
 4. Enforce idempotent transitions and replay safety across CF retries/restarts.
-5. Add CI/CD workflow: push to `main` auto-deploys this CF.
+5. Keep deployment Terraform-managed (`infra/serverless.tf`) for function code, env, log wiring, and timer trigger.
 6. MVP behavior: ignore correction operations (`Коррекция продаж`, `Коррекция возвратов`) in orchestration logic and track this as post-MVP TODO.
 
 Exit criteria:
@@ -595,12 +603,13 @@ Exit criteria:
 1. End-to-end automated transitions work across restarts.
 2. No duplicate unlock/cancel events under retries.
 3. Reservation expiry ownership is fully removed from VM worker runtime.
-4. CI/CD redeploy on `main` push is active and validated.
+4. Terraform apply deploys runnable CF runtime and logs are present in Yandex Logging.
 
 Status:
 
-- Completed in repository (application/runtime layer + tests + CI deploy workflow).
+- Completed in repository and deployed via Terraform.
 - Implemented artifacts:
+  - `libs/logging/setup.py`: migrated to `yc_json_logger`-backed wrapper so app logs emit YC-structured records (`message`, `level`, `logger`, extra fields).
   - `schema/schema.sql`:
     - assignment status includes `delivery_expired`,
     - Phase 6 polling indexes added (`idx_assignments_order_tracking_order_id`, `idx_assignments_unlock_due`).
@@ -614,7 +623,8 @@ Status:
     - delivery timeout transition (`order_verified` -> `delivery_expired`) after 60 days without pickup.
     - reward unlock execution (`picked_up_wait_unlock` -> `eligible_for_withdrawal`).
   - `services/order_tracker/main.py`: cloud function handler + local `--once` runtime.
-  - `.github/workflows/deploy_order_tracker.yml`: auto-deploy on `main` push.
+  - `infra/serverless.tf`: function runtime packaging from repo source, env wiring, 5-minute trigger, log options.
+  - legacy GH deploy workflow removed; CF runtime delivery is Terraform-only.
 - `services/worker/main.py`: reservation-expiry ownership removed (worker tick is noop placeholder).
 - integration coverage added in `tests/test_order_tracker_phase6.py`.
 - Validation on 2026-02-26 via active SSH tunnel:
@@ -623,6 +633,7 @@ Status:
   - `TEST_DATABASE_URL=.../qpi_test python -m pytest -q -m "not migration_smoke"` -> `34 passed, 1 deselected`,
   - `RUN_MIGRATION_SMOKE=1 TEST_DATABASE_URL=.../qpi_test_scratch python -m pytest -q -m migration_smoke` -> `1 passed, 34 deselected`,
   - `DATABASE_URL=.../qpi_test python -m services.order_tracker.main --once` -> successful runtime smoke.
+  - live invoke in YC (2026-02-26): `{"lock_acquired": true, ..., "ok": true}`.
 - TODO (post-MVP):
   - define and implement correction-operation semantics in order tracking (`Коррекция продаж`, `Коррекция возвратов`).
 

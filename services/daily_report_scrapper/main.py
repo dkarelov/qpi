@@ -11,9 +11,9 @@ from libs.integrations.wb_reports import WbReportClient
 from libs.logging.setup import configure_logging, get_logger
 
 
-async def run_once() -> DailyReportRunResult:
+async def run_once(*, request_id: str | None = None) -> DailyReportRunResult:
     settings = get_daily_report_scrapper_settings()
-    configure_logging("daily_report_scrapper", settings.log_level)
+    configure_logging("daily_report_scrapper", settings.log_level, request_id=request_id)
     logger = get_logger(__name__)
 
     db_pool = DatabasePool(
@@ -52,7 +52,8 @@ async def run_once() -> DailyReportRunResult:
 
 
 def handler(event, context):
-    result = asyncio.run(run_once())
+    request_id = getattr(context, "request_id", None)
+    result = asyncio.run(run_once(request_id=request_id))
     payload = asdict(result)
     payload["ok"] = True
     return payload

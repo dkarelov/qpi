@@ -116,7 +116,7 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 
 - Decompose backend into multiple microservices with DB-mediated contracts.
 - Implementation mode for Phases 5-6: CF services are delivered as monorepo sub-services in this repository.
-- CI/CD mode for CF services: push to `main` auto-deploys affected functions (no manual deploy step).
+- Cloud Function runtime deployment is Terraform-managed in `infra/` (function config, code package, env, logging, triggers).
 - Separate repositories per service are optional post-MVP once contracts and deployment boundaries stabilize.
 - Services exchange state via PostgreSQL tables/contracts (DB-mediated integration).
 - Bot service remains always-on VM runtime.
@@ -178,7 +178,10 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 - `services/daily_report_scrapper/main.py` provides:
   - cloud function handler `services.daily_report_scrapper.main.handler`,
   - local CLI smoke mode (`--once`).
-- `.github/workflows/deploy_daily_report_scrapper.yml` provides auto-deploy on `main` push for Phase 5 CF runtime changes.
+- Terraform serverless layer (`infra/serverless.tf`) now manages:
+  - `qpi-daily-report-scrapper` function code package from repository source,
+  - runtime env/log wiring,
+  - 1-hour timer trigger.
 
 ### 3.13 Phase 6 implementation baseline
 
@@ -199,7 +202,10 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 - `services/order_tracker/main.py` provides:
   - cloud function handler `services.order_tracker.main.handler`,
   - local CLI smoke mode (`--once`).
-- `.github/workflows/deploy_order_tracker.yml` provides auto-deploy on `main` push for Phase 6 CF runtime changes.
+- Terraform serverless layer (`infra/serverless.tf`) now manages:
+  - `qpi-order-tracker` function code package from repository source,
+  - runtime env/log wiring,
+  - 5-minute timer trigger.
 - `services/worker/main.py` no longer owns reservation expiry processing.
 
 ## 4. Functional Workflow Summary
@@ -264,9 +270,11 @@ Cancel/failure states:
 - Application data access: plain SQL via `psycopg3` (no ORM).
 - Database schema management via `psqldef` + `schema/schema.sql` only.
 - Runtime model: always-on bot VM + event/schedule-driven cloud functions for orchestrators/scrappers.
-- Cloud function deployment policy: automatic deploy on `main` push via CI/CD workflows.
-- Infrastructure changes via Terraform only (avoid drift).
-- YC CLI allowed for checks/debugging only.
+- Cloud function deployment policy: apply via Terraform from `infra/`; no out-of-band mutable deploy commands.
+- Strict DevOps policy:
+  - any infrastructure mutation (create/update/delete of cloud resources, IAM, schedules/triggers, networking, managed settings, runtime bindings) must be done via Terraform code in `infra/` and applied with Terraform,
+  - direct mutable `yc` commands are prohibited for normal operations and delivery,
+  - `yc` is allowed only for read-only checks/debugging/investigation.
 - SSH access model:
   - temporary fallback: key-based SSH for bot and DB VMs (`ubuntu` + metadata `ssh-keys`, `enable-oslogin=false`),
   - DB VM is private-only and is accessed via SSH jump host through the bot VM,
@@ -290,8 +298,11 @@ Compute:
 - DB VM: non-preemptible, 2 vCPU, 4 GB RAM, 40 GB network-SSD.
 - PostgreSQL target version: 18+ (current bootstrap path installs 18).
 - Runtime components status:
-  - `daily-report-scrapper` CF: not yet deployed in current folder state.
-  - `order-tracker` CF: function + timer trigger provisioned (5-minute schedule); function version rollout is CI/CD-owned.
+  - `daily-report-scrapper` CF: deployed and Terraform-managed (hourly trigger).
+  - `order-tracker` CF: deployed and Terraform-managed (5-minute trigger).
+  - DB runtime access for CFs:
+    - DB SG permits CF ingress on `5432`,
+    - PostgreSQL `pg_hba.conf` includes serverless source CIDR `198.18.0.0/15`.
 
 Network:
 
@@ -316,8 +327,10 @@ Logging and access:
 - Private route table: `enpmdt4gs3gav0qd4nce` (`qpi-rt-private`)
 - Private subnet: `fl8oled9cdd9u2efqaae` (`qpi-private-ru-central1-d`, `10.131.0.0/24`)
 - Logging group: `e2345psnoc0appog5lil` (`qpi-prod-logs`)
+- Daily report function: `d4ee0tvqv3jutd2kk3ng` (`qpi-daily-report-scrapper`)
+- Daily report timer trigger: `a1siq0set9h5s5urpfcl` (`qpi-daily-report-scrapper-every-1h`, cron `0 * ? * * *`)
 - Order tracker function: `d4edjmt28evde0urt9q4` (`qpi-order-tracker`)
-- Order tracker timer trigger: `a1s1jvo6m2ncc5n0ql7t` (`qpi-order-tracker-every-5m`, cron `0 */5 * * ? *`)
+- Order tracker timer trigger: `a1s1jvo6m2ncc5n0ql7t` (`qpi-order-tracker-every-5m`, cron `*/5 * ? * * *`)
 
 Note:
 
@@ -353,8 +366,16 @@ Common commands:
 terraform -chdir=infra init
 terraform -chdir=infra fmt
 terraform -chdir=infra validate
-YC_TOKEN="$(yc config get token)" terraform -chdir=infra plan
-YC_TOKEN="$(yc config get token)" terraform -chdir=infra apply
+# private dependency in requirements.txt uses ${TOKEN_YC_JSON_LOGGER}; render it in workspace before apply
+TOKEN_YC_JSON_LOGGER="<github-pat>" python - <<'PY'
+from pathlib import Path
+import os
+p = Path("requirements.txt")
+p.write_text(p.read_text(encoding="utf-8").replace("${TOKEN_YC_JSON_LOGGER}", os.environ["TOKEN_YC_JSON_LOGGER"]), encoding="utf-8")
+PY
+TF_VAR_cf_token_cipher_key="<cipher-key>" YC_TOKEN="$(yc config get token)" terraform -chdir=infra plan
+TF_VAR_cf_token_cipher_key="<cipher-key>" YC_TOKEN="$(yc config get token)" terraform -chdir=infra apply
+git checkout -- requirements.txt  # restore placeholder after local apply
 terraform -chdir=infra output
 ```
 
@@ -451,6 +472,7 @@ Accepted temporary risks:
 
 - Hot wallet with one key.
 - Broad SSH allowlist (`0.0.0.0/0`) for now.
+- Broad DB SG ingress rule on `5432` (`0.0.0.0/0`) while DB remains private-only and serverless CIDR handling is stabilized.
 - Manual finance operations.
 
 Required controls even in MVP:
@@ -477,6 +499,7 @@ Required controls even in MVP:
   - `Коррекция продаж`,
   - `Коррекция возвратов`.
 - Post-MVP decision on extracting CF services from monorepo into dedicated repositories.
+- Terraform remote-state + CI apply strategy for fully automated CF redeploy on `main` (without out-of-band deploy actions).
 - Replace temporary app-level token cipher with managed secret storage/KMS-backed encryption.
 
 ## 13. Change Log
@@ -528,5 +551,16 @@ Required controls even in MVP:
   - verification run completed on tunneled PostgreSQL (`34 passed`, `1 deselected`; migration smoke `1 passed`; order-tracker `--once` smoke successful).
 - 2026-02-26: Cloud wiring for Phase 6 completed:
   - YC function `qpi-order-tracker` created (`d4edjmt28evde0urt9q4`) in folder `b1gmeblqlrrvm912n1uq`,
-  - YC timer trigger `qpi-order-tracker-every-5m` created (`a1s1jvo6m2ncc5n0ql7t`, cron `0 */5 * * ? *`),
+  - YC timer trigger `qpi-order-tracker-every-5m` created (`a1s1jvo6m2ncc5n0ql7t`, cron `*/5 * ? * * *`),
   - GitHub Actions secret `YC_ORDER_TRACKER_CF_ID` configured for repo `dkarelov/qpi`.
+- 2026-02-26: Infrastructure governance policy tightened:
+  - all DevOps infrastructure mutations are Terraform-only,
+  - `yc` usage is restricted to read-only debugging/checks.
+- 2026-02-26: Cloud Functions migrated to Terraform-managed runtime delivery:
+  - `infra/serverless.tf` now deploys real CF handlers from repo source with runtime env, VPC connectivity, and logging options,
+  - both CFs (`daily-report-scrapper`, `order-tracker`) are live and validated by direct invoke,
+  - DB connectivity for CFs fixed by Terraform-managed DB SG ingress + PostgreSQL `pg_hba` rule for serverless CIDR `198.18.0.0/15`,
+  - `terraform plan` is clean after apply (no drift).
+- 2026-02-26: CF application logging format corrected for Yandex Logging UI:
+  - `libs/logging/setup.py` migrated to `yc_json_logger`-backed wrapper, preserving `logger.info("event", key=value)` call style while emitting YC-structured fields (`message`, `level`, `logger`, payload extras),
+  - deployment workflow now injects private `TOKEN_YC_JSON_LOGGER` into `requirements.txt` in CI workspace before Terraform apply (secret is not committed to repo).

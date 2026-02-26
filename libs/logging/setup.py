@@ -1,46 +1,79 @@
 from __future__ import annotations
 
 import logging
-import sys
-
-import structlog
+from contextvars import ContextVar
+from typing import Any
 
 _CONFIGURED = False
+_LOG_CONTEXT: ContextVar[dict[str, Any]] = ContextVar("qpi_log_context", default={})
 
 
-def configure_logging(service_name: str, log_level: str = "INFO") -> None:
+class EventLogger:
+    """Compatibility wrapper: supports logger.info("event", key=value)."""
+
+    def __init__(self, logger: logging.Logger) -> None:
+        self._logger = logger
+
+    def _compose_extra(self, fields: dict[str, Any] | None = None) -> dict[str, Any]:
+        extra = dict(_LOG_CONTEXT.get())
+        if fields:
+            extra.update(fields)
+        return extra
+
+    def _log(self, level: int, event: object, **fields: Any) -> None:
+        self._logger.log(level, event, extra=self._compose_extra(fields))
+
+    def debug(self, event: object, **fields: Any) -> None:
+        self._log(logging.DEBUG, event, **fields)
+
+    def info(self, event: object, **fields: Any) -> None:
+        self._log(logging.INFO, event, **fields)
+
+    def warning(self, event: object, **fields: Any) -> None:
+        self._log(logging.WARNING, event, **fields)
+
+    def error(self, event: object, **fields: Any) -> None:
+        self._log(logging.ERROR, event, **fields)
+
+    def exception(self, event: object, **fields: Any) -> None:
+        self._logger.error(event, exc_info=True, extra=self._compose_extra(fields))
+
+
+def configure_logging(
+    service_name: str,
+    log_level: str = "INFO",
+    *,
+    request_id: str | None = None,
+) -> None:
     """Configure JSON structured logging once per process."""
 
     global _CONFIGURED
-    if _CONFIGURED:
-        return
 
     level = getattr(logging, log_level.upper(), logging.INFO)
 
-    logging.basicConfig(
-        format="%(message)s",
-        stream=sys.stdout,
-        level=level,
-    )
-
-    structlog.configure(
-        processors=[
-            structlog.contextvars.merge_contextvars,
-            structlog.stdlib.add_log_level,
-            structlog.stdlib.add_logger_name,
-            structlog.processors.TimeStamper(fmt="iso", utc=True),
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            structlog.processors.JSONRenderer(),
-        ],
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        wrapper_class=structlog.stdlib.BoundLogger,
-        cache_logger_on_first_use=True,
-    )
-
-    structlog.contextvars.bind_contextvars(service=service_name)
-    _CONFIGURED = True
+    if not _CONFIGURED:
+        cf_env = request_id is not None
+        try:
+            from yc_json_logger import setup_logging as yc_setup_logging
+        except ImportError:
+            # Local fallback for environments where private dependency isn't installed yet.
+            logging.basicConfig(format="%(levelname)s %(message)s", level=level, force=True)
+        else:
+            try:
+                yc_setup_logging(level=level, request_id="", cf_env=cf_env)
+            except Exception:
+                # Defensive fallback if runtime logger handlers are not in expected state.
+                logging.basicConfig(format="%(levelname)s %(message)s", level=level, force=True)
+        _CONFIGURED = True
+    else:
+        logging.getLogger().setLevel(level)
 
 
-def get_logger(name: str):
-    return structlog.get_logger(name)
+    context: dict[str, Any] = {"service": service_name}
+    if request_id:
+        context["request_id"] = request_id
+    _LOG_CONTEXT.set(context)
+
+
+def get_logger(name: str) -> EventLogger:
+    return EventLogger(logging.getLogger(name))

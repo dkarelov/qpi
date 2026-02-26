@@ -48,3 +48,28 @@ output "private_subnet_id" {
   description = "Private subnet ID for DB and future private services."
   value       = yandex_vpc_subnet.private.id
 }
+
+output "cf_trigger_invoker_service_account_id" {
+  description = "Service account ID used by timer triggers to invoke functions."
+  value       = yandex_iam_service_account.cf_trigger_invoker.id
+}
+
+output "daily_report_scrapper_function_id" {
+  description = "Cloud Function ID for daily-report-scrapper."
+  value       = yandex_function.daily_report_scrapper.id
+}
+
+output "daily_report_scrapper_trigger_id" {
+  description = "Timer trigger ID for daily-report-scrapper."
+  value       = yandex_function_trigger.daily_report_scrapper_timer.id
+}
+
+output "order_tracker_function_id" {
+  description = "Cloud Function ID for order-tracker."
+  value       = yandex_function.order_tracker.id
+}
+
+output "order_tracker_trigger_id" {
+  description = "Timer trigger ID for order-tracker."
+  value       = yandex_function_trigger.order_tracker_timer.id
+}

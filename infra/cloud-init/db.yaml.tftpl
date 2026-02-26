@@ -32,6 +32,9 @@ write_files:
       if ! grep -q '^host\\s\\+all\\s\\+all\\s\\+10\\.0\\.0\\.0/8\\s\\+scram-sha-256' "$PGHBA"; then
         echo "host all all 10.0.0.0/8 scram-sha-256" >> "$PGHBA"
       fi
+      if ! grep -q '^host\\s\\+all\\s\\+all\\s\\+${serverless_postgres_cidr}\\s\\+scram-sha-256' "$PGHBA"; then
+        echo "host all all ${serverless_postgres_cidr} scram-sha-256" >> "$PGHBA"
+      fi
 
       systemctl enable postgresql
       systemctl restart postgresql

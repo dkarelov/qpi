@@ -10,9 +10,9 @@ from libs.domain.order_tracker import OrderTrackerRunResult, OrderTrackerService
 from libs.logging.setup import configure_logging, get_logger
 
 
-async def run_once() -> OrderTrackerRunResult:
+async def run_once(*, request_id: str | None = None) -> OrderTrackerRunResult:
     settings = get_order_tracker_settings()
-    configure_logging("order_tracker", settings.log_level)
+    configure_logging("order_tracker", settings.log_level, request_id=request_id)
     logger = get_logger(__name__)
 
     db_pool = DatabasePool(
@@ -49,7 +49,8 @@ async def run_once() -> OrderTrackerRunResult:
 
 
 def handler(event, context):
-    result = asyncio.run(run_once())
+    request_id = getattr(context, "request_id", None)
+    result = asyncio.run(run_once(request_id=request_id))
     payload = asdict(result)
     payload["ok"] = True
     return payload
