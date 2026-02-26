@@ -31,7 +31,8 @@ class DatabasePool:
     async def _configure_connection(self, conn: AsyncConnection) -> None:
         async with conn.cursor() as cur:
             await cur.execute("SET TIME ZONE 'UTC'")
-            await cur.execute("SET statement_timeout = %s", (self._statement_timeout_ms,))
+            await cur.execute(f"SET statement_timeout = {int(self._statement_timeout_ms)}")
+        await conn.commit()
 
     async def open(self) -> None:
         await self._pool.open(wait=True)

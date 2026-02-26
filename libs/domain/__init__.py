@@ -7,9 +7,11 @@ from libs.domain.errors import (
     NotFoundError,
 )
 from libs.domain.ledger import FinanceService
+from libs.domain.seller import SellerService
 
 __all__ = [
     "FinanceService",
+    "SellerService",
     "InsufficientFundsError",
     "InvalidStateError",
     "NoSlotsAvailableError",

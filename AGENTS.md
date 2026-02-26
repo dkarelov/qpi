@@ -81,6 +81,7 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 - Regular token checks are performed by `daily-report-scrapper` while requesting WB reports.
 - If report request returns HTTP `401` and error detail contains `withdrawn` or `token expired`, token is invalidated in PostgreSQL.
 - On token invalidation, listings are auto-paused via explicit SQL updates in application transaction (no PG trigger in MVP).
+- Stored seller tokens are persisted as reversible application-level ciphertext using `TOKEN_CIPHER_KEY` (temporary MVP mechanism; KMS/HSM-backed secrets are post-MVP).
 
 ### 3.5 Finance flow (MVP)
 
@@ -120,6 +121,25 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - requests WB `reportDetailByPeriod` for last 3 days,
   - stores raw dumps in PostgreSQL,
   - invalidates seller token in PostgreSQL on WB `401` with message containing `withdrawn` or `token expired`.
+
+### 3.10 Phase 3 implementation baseline
+
+- `schema/schema.sql` now includes seller lifecycle metadata:
+  - shop token invalidation metadata (`wb_token_last_error`, `wb_token_status_source`, `wb_token_invalidated_at`),
+  - shop/listing soft-delete fields (`deleted_at`, `deleted_by_user_id`),
+  - listing activation/pause metadata (`activated_at`, `paused_at`, `pause_reason`, `pause_source`),
+  - `buyer_orders` normalized order table baseline for upcoming buyer/plugin flow.
+- `libs/domain/seller.py` is the plain-SQL transactional seller service:
+  - seller bootstrap/account guarantees,
+  - multi-shop/multi-listing create/list/delete,
+  - listing activation/pause/unpause,
+  - delete transfer split enforcement (assignment-linked -> buyer, unassigned -> seller),
+  - token invalidation API for scrapper (`manual`, `scrapper_401_withdrawn`, `scrapper_401_token_expired`).
+- `services/bot_api/seller_handlers.py` provides Russian seller command handlers:
+  - `/start`, `/shop_*`, `/token_set`, `/listing_*`,
+  - warning-before-confirm delete UX,
+  - token ping check before persistence (reject on failure).
+- `libs/integrations/wb.py` provides minimal WB ping client with in-process 3-per-30s throttling.
 
 ## 4. Functional Workflow Summary
 
@@ -300,6 +320,13 @@ python -m libs.db.schema_cli drop
 python -m libs.db.schema_cli export
 ```
 
+Seller command smoke check:
+
+```bash
+export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
+python -m services.bot_api.main --seller-command "/start" --telegram-id 10001 --telegram-username seller
+```
+
 Rules:
 
 - Never apply manual DDL directly in PostgreSQL.
@@ -334,6 +361,7 @@ Required controls even in MVP:
 - Post-MVP listing ownership check:
   - direct WB catalog/product endpoint vs cached report data.
 - Final split of services by repository and deployment boundaries.
+- Replace temporary app-level token cipher with managed secret storage/KMS-backed encryption.
 
 ## 13. Change Log
 
@@ -350,3 +378,8 @@ Required controls even in MVP:
 - 2026-02-24: Migrated schema management from Alembic to `psqldef` (`schema/schema.sql` source of truth, Alembic files removed).
 - 2026-02-26: Product flow updated to plugin base64 confirmation (buyer order validation) and target runtime decomposition into bot VM + CF orchestrators (`order-tracker`, `daily-report-scrapper`).
 - 2026-02-26: Deletion policy locked: soft delete only, warning (no block) on active/open entities, and transfer split on confirmed delete (assignment-linked reserves -> buyers irreversible; unassigned collateral -> seller).
+- 2026-02-26: Phase 3 implemented in repository:
+  - schema evolved for seller lifecycle + `buyer_orders` baseline,
+  - seller transactional domain service and bot seller command handlers added,
+  - WB ping integration + token persistence guard added,
+  - integration suite expanded and validated against tunneled PostgreSQL (`10 passed`).

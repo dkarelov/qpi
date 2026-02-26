@@ -5,10 +5,19 @@ import asyncio
 
 from libs.config.settings import get_bot_api_settings
 from libs.db.pool import DatabasePool
+from libs.domain.seller import SellerService
+from libs.integrations.wb import WbPingClient
 from libs.logging.setup import configure_logging, get_logger
+from services.bot_api.seller_handlers import SellerCommandProcessor
 
 
-async def run_service(run_once: bool = False) -> None:
+async def run_service(
+    *,
+    run_once: bool = False,
+    seller_command: str | None = None,
+    telegram_id: int = 0,
+    telegram_username: str | None = None,
+) -> None:
     settings = get_bot_api_settings()
     configure_logging("bot_api", settings.log_level)
     logger = get_logger(__name__)
@@ -27,6 +36,33 @@ async def run_service(run_once: bool = False) -> None:
         await db_pool.check()
         logger.info("db_connectivity_ok")
 
+        if seller_command:
+            seller_service = SellerService(db_pool.pool)
+            wb_ping_client = WbPingClient(
+                timeout_seconds=settings.wb_ping_timeout_seconds,
+                max_requests=settings.wb_ping_rate_limit_count,
+                window_seconds=settings.wb_ping_rate_limit_window_seconds,
+            )
+            processor = SellerCommandProcessor(
+                seller_service=seller_service,
+                wb_ping_client=wb_ping_client,
+                token_cipher_key=settings.token_cipher_key,
+                bot_username=settings.telegram_bot_username,
+            )
+            response = await processor.handle(
+                telegram_id=telegram_id,
+                username=telegram_username,
+                text=seller_command,
+            )
+            logger.info(
+                "seller_command_processed",
+                command=seller_command,
+                telegram_id=telegram_id,
+                delete_source_message=response.delete_source_message,
+                response=response.text,
+            )
+            return
+
         if run_once:
             return
 
@@ -40,10 +76,33 @@ async def run_service(run_once: bool = False) -> None:
 def cli() -> None:
     parser = argparse.ArgumentParser(description="QPI bot API service")
     parser.add_argument("--once", action="store_true", help="start, run checks, and exit")
+    parser.add_argument(
+        "--seller-command",
+        default=None,
+        help="process one seller command and exit",
+    )
+    parser.add_argument(
+        "--telegram-id",
+        type=int,
+        default=0,
+        help="telegram id used with --seller-command",
+    )
+    parser.add_argument(
+        "--telegram-username",
+        default=None,
+        help="telegram username used with --seller-command",
+    )
     args = parser.parse_args()
 
     try:
-        asyncio.run(run_service(run_once=args.once))
+        asyncio.run(
+            run_service(
+                run_once=args.once,
+                seller_command=args.seller_command,
+                telegram_id=args.telegram_id,
+                telegram_username=args.telegram_username,
+            )
+        )
     except KeyboardInterrupt:
         pass
 

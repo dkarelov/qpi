@@ -386,7 +386,18 @@ Exit criteria:
 
 Status:
 
-- Pending (detailed plan approved; implementation not started).
+- Completed in repository.
+- Implemented artifacts:
+  - schema evolution in `schema/schema.sql` (seller lifecycle metadata + `buyer_orders` baseline),
+  - `SellerService` plain-SQL transactional implementation (`libs/domain/seller.py`),
+  - seller command handlers (`services/bot_api/seller_handlers.py`) and bot command execution path,
+  - WB ping integration with rate limiting (`libs/integrations/wb.py`),
+  - token reversible cipher helper (`libs/security/token_cipher.py`),
+  - expanded integration coverage (`tests/test_seller_phase3.py`).
+- Runtime validation on 2026-02-26 against target PostgreSQL via active SSH tunnel:
+  - `TEST_DATABASE_URL=postgresql://qpi:***@127.0.0.1:15432/qpi python -m pytest -q` -> `10 passed`,
+  - `DATABASE_URL=... python -m libs.db.schema_cli plan` -> `-- Nothing is modified --`,
+  - `python -m services.bot_api.main --seller-command '/start' ...` command path succeeds with DB connectivity.
 
 ## Phase 4: Buyer Features
 
@@ -491,10 +502,9 @@ Status:
 ## 4. Recommended Execution Order
 
 1. Finish remaining artifacts of Phase 0 (formal schema/state docs).
-2. Start Phase 3 seller features.
-3. Implement Phase 4 buyer features for core user value completion.
-4. Implement Phases 5 and 6 for automation and money flows.
-5. Complete Phases 7 and 8 before production launch.
+2. Implement Phase 4 buyer features for core user value completion.
+3. Implement Phases 5 and 6 for automation and money flows.
+4. Complete Phases 7 and 8 before production launch.
 
 ## 5. Tracking Policy
 

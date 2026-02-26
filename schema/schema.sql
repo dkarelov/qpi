@@ -65,6 +65,36 @@ ALTER TABLE ONLY "public"."assignments" ADD CONSTRAINT "assignments_listing_id_f
 
 ALTER TABLE "public"."assignments" ADD CONSTRAINT "assignments_idempotency_key_key" UNIQUE (idempotency_key);
 
+CREATE TABLE "public"."buyer_orders" (
+    "id" bigserial NOT NULL,
+    "assignment_id" bigint NOT NULL,
+    "listing_id" bigint NOT NULL,
+    "buyer_user_id" bigint NOT NULL,
+    "order_id" text NOT NULL,
+    "wb_product_id" bigint NOT NULL,
+    "ordered_at" timestamp with time zone NOT NULL,
+    "payload_version" integer NOT NULL,
+    "raw_payload_json" jsonb NOT NULL DEFAULT '{}'::jsonb,
+    "source" text NOT NULL DEFAULT 'plugin_base64'::text,
+    "created_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    "updated_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    CONSTRAINT buyer_orders_pkey PRIMARY KEY ("id")
+);
+
+CREATE UNIQUE INDEX uq_buyer_orders_order_id ON public.buyer_orders USING btree (order_id);
+
+CREATE UNIQUE INDEX uq_buyer_orders_assignment_id ON public.buyer_orders USING btree (assignment_id);
+
+CREATE INDEX idx_buyer_orders_listing_id ON public.buyer_orders USING btree (listing_id);
+
+CREATE INDEX idx_buyer_orders_buyer_user_id ON public.buyer_orders USING btree (buyer_user_id);
+
+ALTER TABLE ONLY "public"."buyer_orders" ADD CONSTRAINT "buyer_orders_assignment_id_fkey" FOREIGN KEY ("assignment_id") REFERENCES "public"."assignments" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE ONLY "public"."buyer_orders" ADD CONSTRAINT "buyer_orders_buyer_user_id_fkey" FOREIGN KEY ("buyer_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE ONLY "public"."buyer_orders" ADD CONSTRAINT "buyer_orders_listing_id_fkey" FOREIGN KEY ("listing_id") REFERENCES "public"."listings" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
 CREATE TABLE "public"."balance_holds" (
     "id" bigserial NOT NULL,
     "account_id" bigint NOT NULL,
@@ -134,6 +164,12 @@ CREATE TABLE "public"."listings" (
     "available_slots" integer NOT NULL CONSTRAINT listings_available_slots_check CHECK (available_slots >= 0),
     "collateral_required_usdt" numeric(20,6) NOT NULL CONSTRAINT listings_collateral_required_usdt_check CHECK (collateral_required_usdt >= 0::numeric),
     "status" text NOT NULL DEFAULT 'draft'::text CONSTRAINT listings_status_check CHECK (status = ANY (ARRAY['draft'::text, 'active'::text, 'paused'::text])),
+    "activated_at" timestamp with time zone,
+    "paused_at" timestamp with time zone,
+    "pause_reason" text,
+    "pause_source" text CONSTRAINT listings_pause_source_check CHECK (pause_source = ANY (ARRAY['manual'::text, 'scrapper_401_withdrawn'::text, 'scrapper_401_token_expired'::text])),
+    "deleted_at" timestamp with time zone,
+    "deleted_by_user_id" bigint,
     "created_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
     "updated_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
     CONSTRAINT listings_pkey PRIMARY KEY ("id"),
@@ -144,9 +180,13 @@ CREATE INDEX idx_listings_seller_status ON public.listings USING btree (seller_u
 
 CREATE INDEX idx_listings_shop_status ON public.listings USING btree (shop_id, status);
 
+CREATE INDEX idx_listings_seller_active ON public.listings USING btree (seller_user_id) WHERE (deleted_at IS NULL);
+
 ALTER TABLE ONLY "public"."listings" ADD CONSTRAINT "listings_seller_user_id_fkey" FOREIGN KEY ("seller_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 
 ALTER TABLE ONLY "public"."listings" ADD CONSTRAINT "listings_shop_id_fkey" FOREIGN KEY ("shop_id") REFERENCES "public"."shops" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE ONLY "public"."listings" ADD CONSTRAINT "listings_deleted_by_user_id_fkey" FOREIGN KEY ("deleted_by_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 
 CREATE TABLE "public"."payouts" (
     "id" bigserial NOT NULL,
@@ -170,9 +210,14 @@ CREATE TABLE "public"."shops" (
     "seller_user_id" bigint NOT NULL,
     "slug" text NOT NULL,
     "title" text NOT NULL,
-    "wb_token_ciphertext" text NOT NULL,
+    "wb_token_ciphertext" text,
     "wb_token_status" text NOT NULL DEFAULT 'unknown'::text CONSTRAINT shops_wb_token_status_check CHECK (wb_token_status = ANY (ARRAY['unknown'::text, 'valid'::text, 'invalid'::text, 'expired'::text])),
     "wb_token_last_validated_at" timestamp with time zone,
+    "wb_token_last_error" text,
+    "wb_token_status_source" text CONSTRAINT shops_wb_token_status_source_check CHECK (wb_token_status_source = ANY (ARRAY['manual'::text, 'scrapper_401_withdrawn'::text, 'scrapper_401_token_expired'::text])),
+    "wb_token_invalidated_at" timestamp with time zone,
+    "deleted_at" timestamp with time zone,
+    "deleted_by_user_id" bigint,
     "created_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
     "updated_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
     CONSTRAINT shops_pkey PRIMARY KEY ("id")
@@ -180,9 +225,13 @@ CREATE TABLE "public"."shops" (
 
 CREATE INDEX idx_shops_seller_user_id ON public.shops USING btree (seller_user_id);
 
+CREATE INDEX idx_shops_seller_active ON public.shops USING btree (seller_user_id) WHERE (deleted_at IS NULL);
+
 ALTER TABLE ONLY "public"."shops" ADD CONSTRAINT "shops_seller_user_id_fkey" FOREIGN KEY ("seller_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 
-ALTER TABLE "public"."shops" ADD CONSTRAINT "shops_slug_key" UNIQUE (slug);
+ALTER TABLE ONLY "public"."shops" ADD CONSTRAINT "shops_deleted_by_user_id_fkey" FOREIGN KEY ("deleted_by_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+CREATE UNIQUE INDEX uq_shops_slug_active ON public.shops USING btree (slug) WHERE (deleted_at IS NULL);
 
 CREATE TABLE "public"."users" (
     "id" bigserial NOT NULL,
