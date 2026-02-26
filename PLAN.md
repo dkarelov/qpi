@@ -557,8 +557,9 @@ Status:
   - `libs/integrations/wb_reports.py`: WB `reportDetailByPeriod` client.
   - `libs/domain/daily_report.py`: Phase 5 orchestration:
     - valid-shop token selection,
-    - 3-day pagination sync with retry,
-    - strict row projection to requested column set only,
+    - 3-day pagination sync with retry (`period=daily`, `dateTo=yesterday`),
+    - strict row projection to requested reduced column set only,
+    - supplier operation allowlist (`Возврат`, `Продажа`, `Коррекция продаж`, `Коррекция возвратов`),
     - idempotent upsert to PostgreSQL,
     - token invalidation + listing pause on matching `401` messages.
   - `services/daily_report_scrapper/main.py`: cloud function handler + local `--once` runtime.

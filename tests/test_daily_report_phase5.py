@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -16,38 +16,29 @@ from tests.helpers import create_listing, create_user
 
 _EXPECTED_REPORT_COLUMNS = {
     "realizationreport_id",
-    "date_from",
-    "date_to",
     "create_dt",
     "currency_name",
     "rrd_id",
-    "gi_id",
     "subject_name",
     "nm_id",
     "brand_name",
     "sa_name",
     "ts_name",
     "quantity",
-    "retail_price",
     "retail_amount",
     "office_name",
     "supplier_oper_name",
     "order_dt",
     "sale_dt",
-    "rr_dt",
-    "retail_price_withdisc_rub",
     "delivery_amount",
     "return_amount",
     "supplier_promo",
-    "ppvz_spp_prc",
-    "ppvz_for_pay",
     "ppvz_office_name",
     "ppvz_office_id",
     "sticker_id",
     "site_country",
     "assembly_id",
     "srid",
-    "report_type",
     "order_uid",
     "delivery_method",
     "uuid_promocode",
@@ -69,6 +60,15 @@ class StubErrorReportClient:
 
     async def fetch_report_detail_page(self, **kwargs):
         raise self._error
+
+
+class StubCaptureReportClient:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    async def fetch_report_detail_page(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        return []
 
 
 async def _prepare_shop_with_token(
@@ -181,6 +181,11 @@ async def test_daily_report_scrapper_ingests_projected_columns_and_deduplicates(
             "rrd_id": 100002,
             "srid": None,
         },
+        {
+            "rrd_id": 100003,
+            "srid": "order-srid-ignored",
+            "supplier_oper_name": "Логистика",
+        },
     ]
 
     service = DailyReportScrapperService(
@@ -199,9 +204,9 @@ async def test_daily_report_scrapper_ingests_projected_columns_and_deduplicates(
 
     assert first.shops_total == 1
     assert first.shops_processed == 1
-    assert first.rows_seen == 2
+    assert first.rows_seen == 3
     assert first.rows_upserted == 1
-    assert first.rows_skipped == 1
+    assert first.rows_skipped == 2
 
     assert second.shops_total == 1
     assert second.shops_processed == 1
@@ -229,12 +234,10 @@ async def test_daily_report_scrapper_ingests_projected_columns_and_deduplicates(
                 """
                 SELECT
                     realizationreport_id,
-                    date_from,
-                    date_to,
                     currency_name,
                     rrd_id,
                     srid,
-                    report_type,
+                    supplier_oper_name,
                     delivery_method,
                     uuid_promocode,
                     sale_price_promocode_discount_prc
@@ -245,12 +248,10 @@ async def test_daily_report_scrapper_ingests_projected_columns_and_deduplicates(
             )
             row = await cur.fetchone()
             assert row["realizationreport_id"] == 401
-            assert row["date_from"] == date(2026, 2, 24)
-            assert row["date_to"] == date(2026, 2, 26)
             assert row["currency_name"] == "RUB"
             assert row["rrd_id"] == 100001
             assert row["srid"] == "order-srid-1"
-            assert row["report_type"] == 1
+            assert row["supplier_oper_name"] == "Продажа"
             assert row["delivery_method"] == "pickup"
             assert row["uuid_promocode"] == "promo-1"
             assert row["sale_price_promocode_discount_prc"] == Decimal("3.140000")
@@ -322,3 +323,45 @@ def test_classify_token_invalidation_source() -> None:
     ) == "scrapper_401_withdrawn"
     assert classify_token_invalidation_source(401, "unknown auth error") is None
     assert classify_token_invalidation_source(500, "token expired") is None
+
+
+@pytest.mark.asyncio
+async def test_daily_report_scrapper_uses_yesterday_date_to(db_pool, monkeypatch) -> None:
+    cipher_key = "phase5-test-key"
+    await _prepare_shop_with_token(
+        db_pool,
+        seller_telegram_id=860003,
+        slug="phase5-shop-date-window",
+        token_plaintext="wb-token-window",
+        cipher_key=cipher_key,
+    )
+
+    fixed_now = datetime(2026, 2, 26, 12, 0, 0, tzinfo=UTC)
+
+    class _FixedDateTime:
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fixed_now
+            return fixed_now.astimezone(tz)
+
+    monkeypatch.setattr("libs.domain.daily_report.datetime", _FixedDateTime)
+
+    capture_client = StubCaptureReportClient()
+    service = DailyReportScrapperService(
+        db_pool,
+        token_cipher_key=cipher_key,
+        wb_client=capture_client,
+        concurrency=1,
+        request_limit=100000,
+        max_retries=0,
+        retry_delay_seconds=0.1,
+        days_back=3,
+    )
+
+    result = await service.run_once()
+    assert result.shops_total == 1
+    assert result.shops_processed == 1
+    assert len(capture_client.calls) == 1
+    assert capture_client.calls[0]["date_from"] == date(2026, 2, 23)
+    assert capture_client.calls[0]["date_to"] == date(2026, 2, 25)

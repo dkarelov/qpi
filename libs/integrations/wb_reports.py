@@ -28,9 +28,14 @@ class WbReportClient:
         *,
         endpoint: str = "https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod",
         timeout_seconds: int = 60,
+        period: str = "daily",
     ) -> None:
         self._endpoint = endpoint
         self._timeout_seconds = timeout_seconds
+        period_normalized = period.strip().lower()
+        if period_normalized not in {"daily", "weekly"}:
+            raise ValueError("period must be one of: daily, weekly")
+        self._period = period_normalized
 
     async def fetch_report_detail_page(
         self,
@@ -60,6 +65,7 @@ class WbReportClient:
     ) -> list[dict[str, Any]]:
         query = urllib.parse.urlencode(
             {
+                "period": self._period,
                 "dateFrom": date_from.isoformat(),
                 "dateTo": date_to.isoformat(),
                 "limit": str(limit),
@@ -91,10 +97,15 @@ class WbReportClient:
         except TimeoutError as exc:
             raise WbReportApiError(status_code=None, message="timeout") from exc
 
+        if status == 204:
+            return []
+        if not payload.strip():
+            return []
+
         try:
             data = json.loads(payload)
         except json.JSONDecodeError as exc:
-            raise WbReportApiError(status_code=200, message="invalid JSON response") from exc
+            raise WbReportApiError(status_code=status, message="invalid JSON response") from exc
 
         if isinstance(data, list):
             return [row for row in data if isinstance(row, dict)]
@@ -103,7 +114,7 @@ class WbReportClient:
             if isinstance(rows, list):
                 return [row for row in rows if isinstance(row, dict)]
 
-        raise WbReportApiError(status_code=200, message="unexpected response body")
+        raise WbReportApiError(status_code=status, message="unexpected response body")
 
 
 def _extract_message(payload: str) -> str | None:

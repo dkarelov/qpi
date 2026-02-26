@@ -16,41 +16,38 @@ from libs.security.token_cipher import decrypt_token
 _SCRAPPER_WITHDRAWN_SOURCE = "scrapper_401_withdrawn"
 _SCRAPPER_EXPIRED_SOURCE = "scrapper_401_token_expired"
 _RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504, 522, 524}
+_ALLOWED_SUPPLIER_OPER_NAMES = {
+    "Возврат",
+    "Продажа",
+    "Коррекция продаж",
+    "Коррекция возвратов",
+}
 
 _REPORT_COLUMN_NAMES = (
     "realizationreport_id",
-    "date_from",
-    "date_to",
     "create_dt",
     "currency_name",
     "rrd_id",
-    "gi_id",
     "subject_name",
     "nm_id",
     "brand_name",
     "sa_name",
     "ts_name",
     "quantity",
-    "retail_price",
     "retail_amount",
     "office_name",
     "supplier_oper_name",
     "order_dt",
     "sale_dt",
-    "rr_dt",
-    "retail_price_withdisc_rub",
     "delivery_amount",
     "return_amount",
     "supplier_promo",
-    "ppvz_spp_prc",
-    "ppvz_for_pay",
     "ppvz_office_name",
     "ppvz_office_id",
     "sticker_id",
     "site_country",
     "assembly_id",
     "srid",
-    "report_type",
     "order_uid",
     "delivery_method",
     "uuid_promocode",
@@ -148,8 +145,9 @@ class DailyReportScrapperService:
             )
 
         today = datetime.now(UTC).date()
-        date_from = today - timedelta(days=self._days_back)
-        date_to = today
+        # WB report endpoint returns finalized report rows only up to yesterday.
+        date_to = today - timedelta(days=1)
+        date_from = date_to - timedelta(days=self._days_back - 1)
 
         semaphore = asyncio.Semaphore(self._concurrency)
 
@@ -352,43 +350,40 @@ def classify_token_invalidation_source(status_code: int | None, message: str | N
 def project_report_row(row: dict[str, Any]) -> dict[str, Any] | None:
     rrd_id = _to_int(row.get("rrd_id"))
     srid = _to_text(row.get("srid"))
-    if rrd_id is None or srid is None:
+    supplier_oper_name = _to_text(row.get("supplier_oper_name"))
+    if (
+        rrd_id is None
+        or srid is None
+        or supplier_oper_name is None
+        or supplier_oper_name not in _ALLOWED_SUPPLIER_OPER_NAMES
+    ):
         return None
 
     return {
         "realizationreport_id": _to_int(row.get("realizationreport_id")),
-        "date_from": _to_date(row.get("date_from")),
-        "date_to": _to_date(row.get("date_to")),
         "create_dt": _to_datetime(row.get("create_dt")),
         "currency_name": _to_text(row.get("currency_name")),
         "rrd_id": rrd_id,
-        "gi_id": _to_int(row.get("gi_id")),
         "subject_name": _to_text(row.get("subject_name")),
         "nm_id": _to_int(row.get("nm_id")),
         "brand_name": _to_text(row.get("brand_name")),
         "sa_name": _to_text(row.get("sa_name")),
         "ts_name": _to_text(row.get("ts_name")),
         "quantity": _to_int(row.get("quantity")),
-        "retail_price": _to_decimal(row.get("retail_price")),
         "retail_amount": _to_decimal(row.get("retail_amount")),
         "office_name": _to_text(row.get("office_name")),
-        "supplier_oper_name": _to_text(row.get("supplier_oper_name")),
+        "supplier_oper_name": supplier_oper_name,
         "order_dt": _to_datetime(row.get("order_dt")),
         "sale_dt": _to_datetime(row.get("sale_dt")),
-        "rr_dt": _to_datetime(row.get("rr_dt")),
-        "retail_price_withdisc_rub": _to_decimal(row.get("retail_price_withdisc_rub")),
         "delivery_amount": _to_int(row.get("delivery_amount")),
         "return_amount": _to_int(row.get("return_amount")),
         "supplier_promo": _to_decimal(row.get("supplier_promo")),
-        "ppvz_spp_prc": _to_decimal(row.get("ppvz_spp_prc")),
-        "ppvz_for_pay": _to_decimal(row.get("ppvz_for_pay")),
         "ppvz_office_name": _to_text(row.get("ppvz_office_name")),
         "ppvz_office_id": _to_int(row.get("ppvz_office_id")),
         "sticker_id": _to_text(row.get("sticker_id")),
         "site_country": _to_text(row.get("site_country")),
         "assembly_id": _to_int(row.get("assembly_id")),
         "srid": srid,
-        "report_type": _to_int(row.get("report_type")),
         "order_uid": _to_text(row.get("order_uid")),
         "delivery_method": _to_text(row.get("delivery_method")),
         "uuid_promocode": _to_text(row.get("uuid_promocode")),
@@ -421,25 +416,6 @@ def _to_decimal(value: Any) -> Decimal | None:
         return Decimal(str(value))
     except (InvalidOperation, ValueError):
         return None
-
-
-def _to_date(value: Any) -> date | None:
-    if value is None or value == "":
-        return None
-    if isinstance(value, date) and not isinstance(value, datetime):
-        return value
-    if isinstance(value, datetime):
-        return value.date()
-
-    text = str(value).strip()
-    if not text:
-        return None
-
-    try:
-        return date.fromisoformat(text)
-    except ValueError:
-        parsed_dt = _to_datetime(text)
-        return parsed_dt.date() if parsed_dt else None
 
 
 def _to_datetime(value: Any) -> datetime | None:

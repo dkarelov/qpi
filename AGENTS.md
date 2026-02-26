@@ -165,12 +165,13 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 ### 3.12 Phase 5 implementation baseline
 
 - `schema/schema.sql` now includes `wb_report_rows` with projected-only WB report columns:
-  - `realizationreport_id`, `date_from`, `date_to`, `create_dt`, `currency_name`, `rrd_id`, `gi_id`, `subject_name`, `nm_id`, `brand_name`, `sa_name`, `ts_name`, `quantity`, `retail_price`, `retail_amount`, `office_name`, `supplier_oper_name`, `order_dt`, `sale_dt`, `rr_dt`, `retail_price_withdisc_rub`, `delivery_amount`, `return_amount`, `supplier_promo`, `ppvz_spp_prc`, `ppvz_for_pay`, `ppvz_office_name`, `ppvz_office_id`, `sticker_id`, `site_country`, `assembly_id`, `srid`, `report_type`, `order_uid`, `delivery_method`, `uuid_promocode`, `sale_price_promocode_discount_prc`.
+  - `realizationreport_id`, `create_dt`, `currency_name`, `rrd_id`, `subject_name`, `nm_id`, `brand_name`, `sa_name`, `ts_name`, `quantity`, `retail_amount`, `office_name`, `supplier_oper_name`, `order_dt`, `sale_dt`, `delivery_amount`, `return_amount`, `supplier_promo`, `ppvz_office_name`, `ppvz_office_id`, `sticker_id`, `site_country`, `assembly_id`, `srid`, `order_uid`, `delivery_method`, `uuid_promocode`, `sale_price_promocode_discount_prc`.
 - `libs/integrations/wb_reports.py` provides minimal async WB `reportDetailByPeriod` client.
 - `libs/domain/daily_report.py` provides Phase 5 orchestration:
   - target-shop selection (valid tokens + non-deleted listings),
-  - 3-day report sync with pagination/retry,
+  - 3-day report sync with pagination/retry (`period=daily`, `dateTo=yesterday`),
   - strict row projection to `wb_report_rows`,
+  - supplier operation allowlist (`Возврат`, `Продажа`, `Коррекция продаж`, `Коррекция возвратов`),
   - idempotent upsert (`ON CONFLICT (rrd_id, srid)`),
   - token invalidation on `401` message containing `withdrawn` / `token expired` via seller transactional API.
 - `services/daily_report_scrapper/main.py` provides:
