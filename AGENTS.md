@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-02-24 UTC
+Last updated: 2026-02-26 UTC
 
 ## 1. Purpose and Maintenance Rules
 
@@ -25,7 +25,7 @@ In-scope:
 - One Telegram bot (PTB) with role-based flows (seller, buyer, admin).
 - Russian-only UX.
 - No Telegram Mini App (anonymity requirement).
-- WB integration for product ownership/order/pickup/return checks.
+- WB integration for token validity and order/pickup/return checks.
 - USDT ledger and payouts (TON ecosystem), with manual ops for MVP.
 
 Out-of-scope (MVP):
@@ -45,40 +45,63 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 ### 3.2 Listing and collateral
 
 - Seller creates listings for full WB products (not samples).
+- Seller can own multiple shops.
+- Each shop can contain multiple listings.
+- Seller bot flow must support create and delete for both shops and listings.
+- Delete is soft delete only (no physical DB delete).
+- Deletion is never blocked by active listings/open assignments.
+- If active listings/open assignments exist, bot must show warning before delete confirmation.
+- On confirmed delete:
+  - assignment-linked reserved funds transfer to buyers immediately and irreversibly,
+  - unassigned collateral is returned to seller.
 - Seller sets discount from 10% to 100%.
 - Seller must provide full collateral for all `N` slots before listing activation.
 - Rewards are reserved per buyer/slot after accept.
 
 ### 3.3 Buyer assignment rules
 
+- Buyer must submit a base64-encoded purchase confirmation blob from external browser plugin within 2 hours after slot reservation.
+- Bot decodes payload (pre-agreed format) and validates `wb_product_id`, `order_id`, and `ordered_at`.
+- MVP mock payload contract (subject to finalization): base64-encoded JSON with `v`, `order_id`, `wb_product_id`, `ordered_at` (RFC3339 UTC).
+- MVP uses unsigned payload parsing/validation only; tamper-protection/signature validation is post-MVP.
 - `1 order_id = 1 slot`.
-- `order_id` must belong to listing `product_id`.
+- Decoded `order_id` must belong to listing `product_id`.
 - Reservation timeout: 2 hours.
+- Valid decoded payload moves assignment to `order_verified`.
 - Unlock timer starts from WB pickup timestamp.
 - Unlock period: 14 days after pickup.
 - If returned within 14 days: cancel reward.
 - After 14 days: do not cancel for return (per WB policy assumption).
 
-### 3.4 Finance flow (MVP)
+### 3.4 WB token handling (MVP)
+
+- Initial token validation is live `GET https://statistics-api.wildberries.ru/ping` with seller-provided token in `Authorization` header.
+- If initial ping fails, token is not stored in PostgreSQL and seller is asked to submit a valid token.
+- Bot flow must respect WB ping limits (3 requests per 30 seconds per ping domain).
+- Regular token checks are performed by `daily-report-scrapper` while requesting WB reports.
+- If report request returns HTTP `401` and error detail contains `withdrawn` or `token expired`, token is invalidated in PostgreSQL.
+- On token invalidation, listings are auto-paused via explicit SQL updates in application transaction (no PG trigger in MVP).
+
+### 3.5 Finance flow (MVP)
 
 - Deposits: manual credit by admin.
 - Withdrawals: buyer requests -> admin approval required -> payout.
 - If fee policy changes, user should be notified.
 
-### 3.5 Display and localization
+### 3.6 Display and localization
 
 - Money display format: `~350 руб. (4.55 USDT)`.
 - Primary ledger currency: USDT.
 
-### 3.6 Operations and moderation
+### 3.7 Operations and moderation
 
 - Minimal admin control panel is acceptable.
 - Logging quality must be high (Yandex Logging).
 - Sensitive inputs in chat should be deleted after parsing with user notice.
 
-### 3.7 Backend foundation and migrations (Phase 2)
+### 3.8 Backend foundation and migrations (Phase 2)
 
-- Runtime foundation is async (bot + worker paths).
+- Runtime foundation is async (bot + background paths).
 - PostgreSQL access uses `psycopg3` as the primary driver family.
 - Data access style is plain SQL only (no ORM).
 - `psqldef`-first policy:
@@ -87,30 +110,50 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - direct/manual schema edits in PostgreSQL are not allowed.
 - Baseline schema is defined in `schema/schema.sql`.
 
+### 3.9 Runtime decomposition (post-Phase 2 target)
+
+- Decompose backend into multiple microservices (separate repositories preferred for CI/CD isolation).
+- Services exchange state via PostgreSQL tables/contracts (DB-mediated integration).
+- Bot service remains always-on VM runtime.
+- `order-tracker` is target cloud function orchestrator running every 5 minutes.
+- `daily-report-scrapper` is target cloud function running every 1 hour:
+  - requests WB `reportDetailByPeriod` for last 3 days,
+  - stores raw dumps in PostgreSQL,
+  - invalidates seller token in PostgreSQL on WB `401` with message containing `withdrawn` or `token expired`.
+
 ## 4. Functional Workflow Summary
 
 Seller flow:
 
 1. Register in bot.
 2. Create shop and submit WB read-only token.
-3. Create listing(s) with WB product binding, discount, reward, slots.
-4. Fund collateral.
-5. Share shop deep link in Telegram channels.
+3. Seller token is checked live via `https://statistics-api.wildberries.ru/ping`; invalid token is rejected and not stored.
+4. Create/delete shop(s), create/delete listing(s) per shop.
+5. Create listing(s) with WB product binding, discount, reward, slots.
+6. Delete uses soft-delete semantics and shows warning when active/open entities exist.
+7. If deletion is confirmed:
+   - assignment-linked reserved funds transfer to buyers immediately and irreversibly,
+   - unassigned collateral is returned to seller.
+8. Fund collateral and activate listing.
+9. Share shop deep link in Telegram channels.
 
 Buyer flow:
 
 1. Open shop via deep link.
 2. Accept available slot (funds reserved).
-3. Submit `order_id` within 2 hours.
-4. Bot verifies order and tracks pickup/return.
-5. After 14 days from pickup with no cancellation condition, reward becomes withdrawable.
-6. Buyer requests withdrawal; admin approves; payout sent.
+3. Submit base64-encoded plugin confirmation payload within 2 hours.
+4. Bot decodes/validates payload and records normalized order fields (`order_id`, `wb_product_id`, `ordered_at`).
+5. Valid payload moves assignment to `order_verified`; then order tracking continues for pickup/return.
+6. After 14 days from pickup with no cancellation condition, reward becomes withdrawable.
+7. Buyer requests withdrawal; admin approves; payout sent.
 
 Automation checkpoints:
 
 - Reservation timeout.
-- Order verification.
-- Pickup detection.
+- Order payload validation and normalization.
+- Raw WB report ingestion.
+- Seller token invalidation on report API `401` (`withdrawn`/`token expired`).
+- Pickup detection (via orchestrator + WB report data).
 - 14-day unlock check.
 - Return detection (within 14 days only).
 
@@ -137,6 +180,7 @@ Cancel/failure states:
 - All services in Python.
 - Application data access: plain SQL via `psycopg3` (no ORM).
 - Database schema management via `psqldef` + `schema/schema.sql` only.
+- Runtime model: always-on bot VM + event/schedule-driven cloud functions for orchestrators/scrappers.
 - Infrastructure changes via Terraform only (avoid drift).
 - YC CLI allowed for checks/debugging only.
 - SSH access model:
@@ -161,6 +205,7 @@ Compute:
 - Bot VM shape: 2 vCPU, 2 GB RAM, 20 GB network-SSD.
 - DB VM: non-preemptible, 2 vCPU, 4 GB RAM, 40 GB network-SSD.
 - PostgreSQL target version: 18+ (current bootstrap path installs 18).
+- Planned next runtime components (not yet deployed): `order-tracker` CF (5-minute trigger), `daily-report-scrapper` CF (1-hour trigger).
 
 Network:
 
@@ -280,6 +325,15 @@ Required controls even in MVP:
 - Final payout integration details and transaction broadcast implementation.
 - Tightening SSH ingress from `0.0.0.0/0` to operator CIDRs before production launch.
 - Optional domain/TLS strategy if webhook setup is hardened later.
+- Final base64 payload contract from browser plugin:
+  - canonical fields/types,
+  - encoding details,
+  - MVP mock payload is accepted now; final schema versioning is pending.
+- Post-MVP payload integrity:
+  - tamper-protection/signature mechanism.
+- Post-MVP listing ownership check:
+  - direct WB catalog/product endpoint vs cached report data.
+- Final split of services by repository and deployment boundaries.
 
 ## 13. Change Log
 
@@ -294,3 +348,5 @@ Required controls even in MVP:
 - 2026-02-24: Phase 2 runtime verification completed on target DB via SSH tunnel (`python -m pytest -q`: 3 passed; clean DB schema apply path validated).
 - 2026-02-24: Session policy added to keep DB SSH local tunnel (`127.0.0.1:15432`) always on unless explicitly closed.
 - 2026-02-24: Migrated schema management from Alembic to `psqldef` (`schema/schema.sql` source of truth, Alembic files removed).
+- 2026-02-26: Product flow updated to plugin base64 confirmation (buyer order validation) and target runtime decomposition into bot VM + CF orchestrators (`order-tracker`, `daily-report-scrapper`).
+- 2026-02-26: Deletion policy locked: soft delete only, warning (no block) on active/open entities, and transfer split on confirmed delete (assignment-linked reserves -> buyers irreversible; unassigned collateral -> seller).

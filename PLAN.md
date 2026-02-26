@@ -1,6 +1,6 @@
 # QPI PLAN
 
-Last updated: 2026-02-24 UTC
+Last updated: 2026-02-26 UTC
 
 ## 1. Purpose
 
@@ -37,7 +37,7 @@ Out of scope (MVP):
 ## 2.3 Core Actors
 
 - Seller: creates shop/listings, provides WB token, funds collateral.
-- Buyer: accepts listing slot, submits order ID, gets unlockable reward.
+- Buyer: accepts listing slot, submits base64 plugin confirmation payload, gets unlockable reward.
 - Admin: credits deposits manually, approves withdrawals, monitors logs.
 
 ## 2.4 Functional Requirements
@@ -45,30 +45,48 @@ Out of scope (MVP):
 ### Seller requirements
 
 1. Seller registration/profile in bot.
-2. Shop creation with public deep link.
-3. WB read-only token submission/validation.
-4. Listing creation with:
+2. Seller can create multiple shops, each with public deep link.
+3. Seller can delete shops (soft delete only).
+4. WB read-only token submission/validation.
+5. Listing creation with:
    - `wb_product_id`
    - discount percent (`10..100`)
    - reward amount in USDT
    - slot count `N`
-5. Listing `wb_product_id` must belong to seller WB account.
-6. Listing activation requires full collateral for all `N` slots.
-7. Listing auto-pauses if WB token becomes invalid/expired.
+6. Each shop can contain multiple listings.
+7. Seller can delete listings (soft delete only).
+8. Initial token validation must use live `GET https://statistics-api.wildberries.ru/ping`.
+9. Token is persisted only after successful ping response.
+10. Token ping validation must respect WB ping limits (3 requests per 30 seconds per domain).
+11. MVP: product ownership check for listing creation is skipped (post-MVP TODO).
+12. Listing activation requires full collateral for all `N` slots.
+13. Listing auto-pauses if WB token becomes invalid/expired.
+14. Deletion is not blocked by active listings/open assignments; bot must show warning before confirmation.
+15. If deletion is confirmed:
+    - assignment-linked reserved funds transfer to buyers immediately and irreversibly,
+    - unassigned collateral is returned to seller.
 
 ### Buyer requirements
 
 1. Buyer enters from shop deep link.
 2. Buyer sees active listings and accepts one slot.
 3. On accept, one reward slot is reserved/locked.
-4. Buyer must submit `order_id` within 2 hours, else reservation expires.
-5. `order_id` rules:
-   - one `order_id` can be used only once,
-   - order must match listing `wb_product_id`.
-6. Unlock timer starts from WB pickup timestamp.
-7. Reward unlock rule: 14 days after pickup.
-8. If returned within 14 days: cancel reward.
-9. After 14 days: return cancellation not needed (policy assumption).
+4. Buyer must submit base64-encoded purchase confirmation payload from browser plugin within 2 hours, else reservation expires.
+5. Bot must decode payload using pre-agreed format and validate:
+   - `order_id` presence and uniqueness (`1 order_id = 1 slot`),
+   - `wb_product_id` matches listing,
+   - `ordered_at` parse/validity.
+6. MVP uses mock unsigned payload parsing/validation; tamper-protection/signature checks are post-MVP.
+7. Valid payload transitions assignment to `order_verified`.
+8. Mock payload contract for MVP (subject to change) is base64-encoded JSON:
+   - `v` (int, payload version),
+   - `order_id` (string),
+   - `wb_product_id` (int),
+   - `ordered_at` (RFC3339 UTC string).
+9. Unlock timer starts from WB pickup timestamp.
+10. Reward unlock rule: 14 days after pickup.
+11. If returned within 14 days: cancel reward.
+12. After 14 days: return cancellation not needed (policy assumption).
 
 ### Admin/finance requirements
 
@@ -107,16 +125,22 @@ Cancel/error states:
 
 1. Python-only implementation for bot and backend services.
 2. Infrastructure created/changed via Terraform (avoid drift).
-3. Access to VMs:
+3. Runtime decomposition target:
+   - bot remains always-running VM service,
+   - `order-tracker` runs as cloud function every 5 minutes,
+   - `daily-report-scrapper` runs as cloud function every 1 hour.
+4. Service-to-service integration is database-mediated via PostgreSQL contracts.
+5. Codebases can be split into separate repositories per service for CI/CD isolation.
+6. Access to VMs:
    - target model: OS Login,
    - temporary fallback in current state: bot and DB VMs use metadata-injected key-based SSH,
    - DB VM is private-only and is reached through SSH jump via bot VM,
    - local DB access for app/tests uses SSH local forward `127.0.0.1:15432 -> 10.131.0.28:5432` via bot VM, kept active during sessions and recreated if missing.
-4. Initial expected load: about 100 concurrent users.
-5. Deployment mode: webhook.
-6. Initial zone: `ru-central1-d`.
-7. Logging: structured logs to Yandex Logging.
-8. One active infrastructure environment for MVP.
+7. Initial expected load: about 100 concurrent users.
+8. Deployment mode: webhook.
+9. Initial zone: `ru-central1-d`.
+10. Logging: structured logs to Yandex Logging.
+11. One active infrastructure environment for MVP.
 
 ## 2.8 Security/Operations Constraints (MVP)
 
@@ -127,9 +151,12 @@ Cancel/error states:
 ## 2.9 External Integrations
 
 1. Telegram Bot API via python-telegram-bot.
-2. WB API for token validation, product ownership, order/pickup/return checks.
-3. TON/USDT transfer path for withdrawals.
-4. Yandex Cloud primitives: Compute, VPC, Logging.
+2. Browser plugin output contract: buyer-provided base64 payload with order confirmation fields.
+3. WB API for:
+   - initial token validation via `GET https://statistics-api.wildberries.ru/ping`,
+   - report ingestion (`reportDetailByPeriod`) for pickup/return signals and token invalidation events.
+4. TON/USDT transfer path for withdrawals.
+5. Yandex Cloud primitives: Compute, VPC, Logging, Cloud Functions.
 
 ## 2.10 Backend Persistence Baseline (Phase 2 Decision)
 
@@ -145,7 +172,7 @@ Assessment:
 
 Decision:
 
-1. Service foundation is async for both bot and worker runtime paths.
+1. Service foundation is async for bot and background runtime paths.
 2. PostgreSQL access driver is `psycopg3`.
 3. Runtime DB access uses `psycopg.AsyncConnection` / `psycopg_pool.AsyncConnectionPool`.
 4. Data access is plain SQL only (no ORM).
@@ -163,7 +190,7 @@ Deliverables:
 
 1. Freeze state machine and transitions.
 2. Freeze ledger model and accounting invariants.
-3. Freeze contracts between bot handlers and worker jobs.
+3. Freeze contracts between bot handlers and scheduled orchestrator/scrapper services.
 
 Exit criteria:
 
@@ -267,24 +294,99 @@ Status:
   - clean DB path executed with `psqldef --apply` against baseline schema.
 - Phase 3 is unblocked and ready to start.
 
-## Phase 3: Seller Features
+## Phase 3: Seller Features (Detailed Execution Plan)
 
-Deliverables:
+Goal:
 
-1. Seller onboarding.
-2. Shop creation and deep-link generation.
-3. WB token save/validate.
-4. Listing creation with ownership checks and collateral checks.
-5. Listing activation/pause behavior.
+- Deliver complete seller-side bot flow with strict listing activation rules and CF-ready contracts for token invalidation and order lifecycle integration.
+
+Execution steps:
+
+1. Contract freeze for seller + cross-service interfaces
+   - Define seller command/handler contracts (onboarding, shop create/delete, token set, listing create/delete, listing activate/pause).
+   - Define DB-level contracts consumed later by `order-tracker` and `daily-report-scrapper` (status enums, token status transitions, idempotency keys).
+2. Schema evolution via `psqldef`
+   - Add/adjust schema for seller lifecycle completeness:
+     - listing activation metadata (`activated_at`, pause reason/source where needed),
+     - explicit token validation metadata (`last_error`, status change source),
+     - new order domain table baseline (normalized columns from plugin payload) to unblock Phase 4/5.
+   - Validate clean path: `apply -> drop -> apply`.
+3. Seller domain service implementation (plain SQL, `psycopg3`, async)
+   - Add `SellerService` transactional primitives:
+     - seller bootstrap + account guarantees,
+     - shop creation + unique slug/deep-link payload generation,
+     - shop/listing soft-delete operations with warning metadata and no blocking guards,
+     - token save (encrypted) + status updates,
+     - listing draft creation with invariant checks,
+     - listing activation guarded by token validity + collateral sufficiency,
+     - listing pause/unpause flows with explicit reason codes.
+4. Minimal live token validation integration
+   - Validate seller token at onboarding/update with `GET https://statistics-api.wildberries.ru/ping`.
+   - Reject and do not persist token if ping is not successful.
+   - Respect WB ping throttling limits in bot flow.
+   - Keep implementation minimal (no broad multi-API WB client abstraction in MVP).
+   - Track product ownership check as post-MVP TODO.
+5. Bot handler integration for seller UX (Russian-only)
+   - Add conversational flow in `services/bot_api`:
+     - `/start` seller onboarding,
+     - shop setup,
+     - shop list/delete,
+     - token submit/update,
+     - listing creation wizard,
+     - listing list/delete,
+     - activation/pause controls and status rendering.
+   - Show explicit irreversible-warning copy before delete confirmation when active/open entities exist.
+   - Delete sensitive token messages after parsing and show cleanup notice.
+6. Collateral and activation policy enforcement
+   - MVP activation model: single command performs atomic collateral lock and switches status to `active` on success.
+   - On insufficient collateral or invalid token, listing remains non-active with explicit user-facing reason.
+   - Ensure idempotent retries for activation command.
+   - On confirmed delete:
+     - transfer assignment-linked reserved funds to buyers immediately and irreversibly,
+     - return unassigned collateral to seller.
+7. Token invalidation interoperability
+   - Implement DB API used by `daily-report-scrapper` for token invalidation writes.
+   - In scrapper invalidation transaction, explicitly update affected listings to `paused`.
+   - Do not use PostgreSQL trigger for this in MVP (keep side effects explicit and observable).
+   - Record provenance (`manual`, `scrapper_401_withdrawn`, `scrapper_401_token_expired`).
+8. Test expansion (integration-first)
+   - Seller onboarding/account bootstrap idempotency tests.
+   - Shop slug uniqueness and deep-link generation tests.
+   - Multi-shop/multi-listing CRUD tests with soft-delete semantics.
+   - Delete confirmation warning tests for active listings/open assignments.
+   - Confirmed-delete transfer split tests:
+     - assignment-linked reserves -> buyers (irreversible),
+     - unassigned collateral -> seller.
+   - Token ping validation success/failure tests (token not persisted on failure).
+   - Listing draft/activation success + failure matrix tests.
+   - Idempotent activation/no double collateral lock tests.
+   - Token invalidation auto-pause tests.
+   - Keep existing Phase 2 integration suite green.
+9. Ops and docs updates
+   - Update service runbook and env var documentation.
+   - Update architecture notes in `AGENTS.md` and status/progress in `PLAN.md`.
+10. Phase completion validation
+   - Run `python -m pytest -q` against PostgreSQL through active SSH tunnel.
+   - Verify end-to-end seller scenario in bot:
+     - onboard -> create shop -> set token -> create listing -> activate -> pause on token invalidation.
 
 Exit criteria:
 
-1. Listings activate only with valid WB token + full collateral.
-2. Token invalidation auto-pauses listing.
+1. Listings activate only when both conditions are met:
+   - WB token is valid,
+   - seller available balance covers full listing collateral.
+2. Activation is idempotent and cannot double-lock collateral.
+3. Token invalidation (including scrapper-driven invalidation) automatically pauses active listings.
+4. Seller flow is fully operable through Telegram bot commands.
+5. Shop/listing create-delete flows work with soft-delete semantics and warning UX.
+6. Confirmed deletion applies transfer split:
+   - assignment-linked reserves to buyers (irreversible),
+   - unassigned collateral to seller.
+7. Integration tests cover seller success/failure paths and pass.
 
 Status:
 
-- Pending (ready to start).
+- Pending (detailed plan approved; implementation not started).
 
 ## Phase 4: Buyer Features
 
@@ -293,34 +395,40 @@ Deliverables:
 1. Buyer deep-link entry and listing browse.
 2. Slot acceptance and reserve lock.
 3. 2-hour reservation timeout logic.
-4. Order ID submission and validation.
-5. Assignment status view for buyer.
+4. Base64 payload submission from browser plugin and strict decode/validation.
+5. Assignment and order status view for buyer.
 
 Exit criteria:
 
 1. Deterministic reserve/timeout behavior.
-2. Duplicate or mismatched order IDs rejected.
+2. Duplicate or mismatched decoded `order_id`/`wb_product_id` rejected.
+3. Valid payload transitions assignment to `order_verified`.
 
 Status:
 
 - Pending.
 
-## Phase 5: Workflow Automation (Worker)
+## Phase 5: Workflow Automation (Cloud Functions)
 
 Deliverables:
 
-1. Scheduled jobs for:
+1. `order-tracker` cloud function (5-minute trigger) for:
    - reserve expiry,
-   - WB verification,
+   - order lifecycle orchestration from `order_verified` to unlock/release states,
    - pickup detection,
    - 14-day unlock checks,
    - return checks.
-2. Retry/idempotency guards.
+2. `daily-report-scrapper` cloud function (1-hour trigger):
+   - fetch last 3 days WB `reportDetailByPeriod`,
+   - persist raw report rows in PostgreSQL for downstream matching,
+   - invalidate seller token on `401` with message containing `withdrawn` or `token expired`.
+3. Retry/idempotency guards.
 
 Exit criteria:
 
 1. End-to-end transition automation works across restarts.
 2. No duplicate unlock/payout events.
+3. Raw WB report ingestion is repeatable and deduplicated.
 
 Status:
 
@@ -350,7 +458,7 @@ Deliverables:
 
 1. Structured logs with correlation IDs.
 2. Logging queries/dashboard for key errors.
-3. Alerts/runbooks for worker, WB integration, payout failures.
+3. Alerts/runbooks for CF orchestrators, WB integration, payout failures.
 4. DB backup/restore runbook.
 
 Exit criteria:
