@@ -231,6 +231,7 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - `services/bot_api/main.py` defaults to real webhook runtime (command processors remain for internal smoke/testing).
   - `services/bot_api/telegram_runtime.py` now provides:
     - PTB webhook runtime with idempotent `setWebhook`,
+    - direct TLS webhook mode with cert/key paths (`WEBHOOK_TLS_CERT_PATH`, `WEBHOOK_TLS_KEY_PATH`) and self-signed cert upload during `setWebhook`,
     - callback contract parsing (`v1:<flow>:<action>:<id>`),
     - role-aware button shell (`seller`/`buyer`/`admin`),
     - stateful input prompts with sensitive message deletion notices,
@@ -262,6 +263,10 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
     - `list_buyer_withdrawal_history`.
 - Bot deployment automation:
   - `infra/cloud-init/bot.yaml.tftpl` provisions `/etc/qpi/bot.env` and `qpi-bot.service`.
+  - IP-mode webhook TLS baseline is self-signed:
+    - cloud-init generates `/etc/qpi/webhook.crt` + `/etc/qpi/webhook.key` for bot public IP SAN,
+    - bot runtime publishes webhook with uploaded certificate (`has_custom_certificate=true`),
+    - webhook endpoint remains `https://<bot_public_ip>:8443/telegram/webhook`.
   - `.github/workflows/deploy_bot.yml` provides bot rollout pipeline:
     - lint/tests gate,
     - artifact rollout to VM,
@@ -584,7 +589,7 @@ Required controls even in MVP:
 - Production handling policy for secrets (wallet key/token lifecycle, rotation cadence).
 - Final payout integration details and transaction broadcast implementation.
 - Tightening SSH ingress from `0.0.0.0/0` to operator CIDRs before production launch.
-- Optional domain/TLS strategy if webhook setup is hardened later.
+- Optional migration from current self-signed IP TLS webhook to domain-managed trusted TLS.
 - Final base64 payload contract from browser plugin:
   - canonical fields/types,
   - encoding details,
@@ -691,3 +696,8 @@ Required controls even in MVP:
   - bot runtime now exposes `/healthz` and logs correlation fields (`telegram_update_id`, `shop_id`, `listing_id`, `assignment_id`, `withdrawal_request_id`, `ledger_entry_id` where applicable),
   - Terraform bot cloud-init now provisions `/etc/qpi/bot.env` + `qpi-bot.service`,
   - GitHub workflow `deploy_bot.yml` added for bot rollout with lint/tests gate, health verification, and rollback hook.
+- 2026-02-27: Phase 7 live rollout verified on production bot VM:
+  - bot runtime deployed as `qpi-bot.service` and healthy on `http://158.160.187.114:18080/healthz`,
+  - webhook runtime switched to direct TLS with self-signed IP certificate (`/etc/qpi/webhook.crt`, `/etc/qpi/webhook.key`),
+  - Telegram webhook registered with uploaded custom certificate (`has_custom_certificate=true`) at `https://158.160.187.114:8443/telegram/webhook`,
+  - live DB schema applied via `schema_cli` including `manual_deposits` and Phase 7 state/index updates.

@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 from libs.config.settings import BotApiSettings
@@ -159,12 +160,16 @@ class TelegramWebhookRuntime:
 
     def run(self) -> None:
         webhook_url = self._build_webhook_url()
+        tls_enabled = bool(
+            self._settings.webhook_tls_cert_path and self._settings.webhook_tls_key_path,
+        )
         self._logger.info(
             "telegram_webhook_runtime_starting",
             webhook_url=webhook_url,
             listen_host=self._settings.webhook_listen_host,
             listen_port=self._settings.webhook_listen_port,
             webhook_path=self._settings.webhook_path,
+            webhook_tls_enabled=tls_enabled,
             callback_version=CALLBACK_VERSION,
             admins_count=len(self._admin_telegram_ids),
         )
@@ -176,6 +181,10 @@ class TelegramWebhookRuntime:
             logger=self._logger,
         )
         self._health_server.start()
+        run_kwargs: dict[str, Any] = {}
+        if tls_enabled:
+            run_kwargs["cert"] = self._settings.webhook_tls_cert_path
+            run_kwargs["key"] = self._settings.webhook_tls_key_path
         try:
             application.run_webhook(
                 listen=self._settings.webhook_listen_host,
@@ -185,6 +194,7 @@ class TelegramWebhookRuntime:
                 secret_token=self._settings.webhook_secret_token,
                 drop_pending_updates=False,
                 allowed_updates=Update.ALL_TYPES,
+                **run_kwargs,
             )
         finally:
             self._health_server.stop()
@@ -250,10 +260,13 @@ class TelegramWebhookRuntime:
 
     async def _ensure_webhook_registration(self, *, application: Application) -> None:
         desired_url = self._build_webhook_url()
+        cert_path = self._settings.webhook_tls_cert_path
+        key_path = self._settings.webhook_tls_key_path
+        has_custom_certificate = bool(cert_path and key_path)
         webhook_info = await application.bot.get_webhook_info()
         webhook_matches = (
             webhook_info.url == desired_url
-            and webhook_info.has_custom_certificate is False
+            and webhook_info.has_custom_certificate is has_custom_certificate
         )
         if webhook_matches:
             self._logger.info(
@@ -263,12 +276,26 @@ class TelegramWebhookRuntime:
             )
             return
 
-        await application.bot.set_webhook(
-            url=desired_url,
-            secret_token=self._settings.webhook_secret_token,
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=False,
-        )
+        if has_custom_certificate:
+            assert cert_path is not None  # narrowed by has_custom_certificate
+            cert_file = Path(cert_path)
+            if not cert_file.exists():
+                raise FileNotFoundError(f"WEBHOOK_TLS_CERT_PATH does not exist: {cert_file}")
+            with cert_file.open("rb") as certificate_stream:
+                await application.bot.set_webhook(
+                    url=desired_url,
+                    secret_token=self._settings.webhook_secret_token,
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=False,
+                    certificate=certificate_stream,
+                )
+        else:
+            await application.bot.set_webhook(
+                url=desired_url,
+                secret_token=self._settings.webhook_secret_token,
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=False,
+            )
         refreshed = await application.bot.get_webhook_info()
         self._logger.info(
             "telegram_webhook_registered",

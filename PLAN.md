@@ -670,6 +670,7 @@ Execution streams:
    - Add a real `python-telegram-bot` application runtime for `services/bot_api`.
    - Keep existing domain services and command processors reusable, but add Telegram update adapters (messages, callbacks, deep links).
    - Implement webhook bootstrap with idempotent registration (`setWebhook`) and startup health checks.
+   - Support direct-IP TLS webhook mode with self-signed certificate upload for Telegram webhook validation.
    - Introduce callback-data versioning (`v1:<flow>:<action>:<id>`) to keep button payloads stable and testable.
 2. Role router and button-first UX shell
    - Add unified role-aware root menu (`seller`, `buyer`, `admin`) with Russian copy only.
@@ -765,6 +766,10 @@ Status:
   - finance schema/domain closure for deposits and withdrawal query APIs,
   - bot VM runtime prerequisites + bot rollout CI with health check/rollback,
   - observability correlation fields and operational runbooks.
+- Live rollout verified on 2026-02-27:
+  - bot service healthy on VM (`qpi-bot.service`, `/healthz`),
+  - webhook served on `https://158.160.187.114:8443/telegram/webhook` with uploaded custom certificate (`has_custom_certificate=true`),
+  - DB schema applied on production DB with Phase 7 additions (`manual_deposits`, status/index updates).
 - Next operational milestone: execute Phase 8 hardening + live Telegram UAT sign-off.
 
 ## Phase 8: Launch Hardening and UAT

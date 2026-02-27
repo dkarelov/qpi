@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -59,6 +59,8 @@ class BotApiSettings(BaseAppSettings):
         default="change-me-webhook-secret",
         alias="WEBHOOK_SECRET_TOKEN",
     )
+    webhook_tls_cert_path: str | None = Field(default=None, alias="WEBHOOK_TLS_CERT_PATH")
+    webhook_tls_key_path: str | None = Field(default=None, alias="WEBHOOK_TLS_KEY_PATH")
     webhook_set_enabled: bool = Field(default=True, alias="WEBHOOK_SET_ENABLED")
     bot_health_host: str = Field(default="0.0.0.0", alias="BOT_HEALTH_HOST")
     bot_health_port: int = Field(default=18080, alias="BOT_HEALTH_PORT")
@@ -106,6 +108,24 @@ class BotApiSettings(BaseAppSettings):
             raise ValueError("WEBHOOK_SECRET_TOKEN must not be empty")
         return value
 
+    @field_validator("webhook_tls_cert_path", "webhook_tls_key_path", mode="before")
+    @classmethod
+    def normalize_optional_tls_path(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        return value
+
+    @model_validator(mode="after")
+    def validate_webhook_tls_pair(self):
+        if bool(self.webhook_tls_cert_path) != bool(self.webhook_tls_key_path):
+            raise ValueError(
+                "WEBHOOK_TLS_CERT_PATH and WEBHOOK_TLS_KEY_PATH must be set together",
+            )
+        return self
+
     @field_validator("bot_health_host")
     @classmethod
     def validate_bot_health_host(cls, value: str) -> str:
@@ -125,6 +145,8 @@ class BotApiSettings(BaseAppSettings):
     def parse_admin_telegram_ids(cls, value):
         if value in (None, "", []):
             return []
+        if isinstance(value, int):
+            return [value]
         if isinstance(value, str):
             raw_items = [item.strip() for item in value.split(",")]
             items = [item for item in raw_items if item]

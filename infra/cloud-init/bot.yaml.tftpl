@@ -7,6 +7,7 @@ packages:
   - gnupg
   - lsb-release
   - jq
+  - openssl
   - python3-venv
 write_files:
   - path: /etc/qpi/bootstrap.env
@@ -30,6 +31,8 @@ write_files:
       WEBHOOK_LISTEN_PORT=${bot_webhook_port}
       WEBHOOK_PATH=telegram/webhook
       WEBHOOK_SECRET_TOKEN=${bot_webhook_secret_token}
+      WEBHOOK_TLS_CERT_PATH=/etc/qpi/webhook.crt
+      WEBHOOK_TLS_KEY_PATH=/etc/qpi/webhook.key
       WEBHOOK_SET_ENABLED=true
       BOT_HEALTH_HOST=0.0.0.0
       BOT_HEALTH_PORT=${bot_health_port}
@@ -80,6 +83,16 @@ runcmd:
     install -m 0755 -d /opt/qpi
     install -m 0755 -d /opt/qpi/releases
     install -m 0755 -d /opt/qpi/current
+    if [ ! -f /etc/qpi/webhook.crt ] || [ ! -f /etc/qpi/webhook.key ]; then
+      openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
+        -keyout /etc/qpi/webhook.key \
+        -out /etc/qpi/webhook.crt \
+        -days 3650 \
+        -subj "/CN=${bot_public_ip}" \
+        -addext "subjectAltName=IP:${bot_public_ip}"
+      chmod 0640 /etc/qpi/webhook.key /etc/qpi/webhook.crt
+      chown root:ubuntu /etc/qpi/webhook.key /etc/qpi/webhook.crt
+    fi
     chown -R ubuntu:ubuntu /opt/qpi
     systemctl daemon-reload
     systemctl enable qpi-bot.service

@@ -170,6 +170,7 @@ locals {
       yandex_vpc_address.bot_public_ip.external_ipv4_address[0].address,
       var.bot_webhook_port,
     )
+    bot_public_ip            = yandex_vpc_address.bot_public_ip.external_ipv4_address[0].address
     bot_webhook_port         = var.bot_webhook_port
     bot_webhook_secret_token = var.bot_webhook_secret_token
     bot_health_port          = var.bot_health_port
