@@ -170,6 +170,45 @@ async def test_shop_deeplink_resolution_and_listing_visibility(db_pool) -> None:
 
 
 @pytest.mark.asyncio
+async def test_admin_can_bootstrap_buyer_and_operate_buyer_flow(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="admin-buyer-shop",
+        wb_product_id=5099,
+        reward_usdt=Decimal("3.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            admin_user_id = await create_user(
+                conn,
+                telegram_id=839900,
+                role="admin",
+                username="admin_buyer",
+            )
+
+    bootstrap = await buyer_service.bootstrap_buyer(telegram_id=839900, username="admin_buyer")
+    assert bootstrap.created_user is False
+    assert bootstrap.user_id == admin_user_id
+
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=bootstrap.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:admin-buyer:1",
+    )
+    assert reservation.created is True
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT role FROM users WHERE id = %s", (admin_user_id,))
+            row = await cur.fetchone()
+            assert row["role"] == "admin"
+
+
+@pytest.mark.asyncio
 async def test_reservation_is_idempotent_and_decrements_slot_once(db_pool) -> None:
     buyer_service = BuyerService(db_pool)
     fixture = await _prepare_reservable_listing(

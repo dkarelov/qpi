@@ -79,7 +79,7 @@ class SellerService:
                     user_id = created["id"]
                     created_user = True
                 else:
-                    if existing["role"] != "seller":
+                    if existing["role"] not in {"seller", "admin"}:
                         raise InvalidStateError("telegram user already exists with non-seller role")
                     user_id = existing["id"]
                     if username is not None:
@@ -1156,7 +1156,7 @@ class SellerService:
             SELECT id
             FROM users
             WHERE id = %s
-              AND role = 'seller'
+              AND role IN ('seller', 'admin')
             """,
             (user_id,),
         )

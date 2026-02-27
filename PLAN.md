@@ -111,6 +111,7 @@ Out of scope (MVP):
    - listings active/total,
    - orders in progress/completed/picked up,
    - balance free/total.
+7. Admin accounts from `ADMIN_TELEGRAM_IDS` must be able to open seller/buyer modes in the same chat for operations/testing, without being blocked by strict single-role bootstrap checks.
 
 ## 2.5 Money and Pricing Rules
 
@@ -998,6 +999,7 @@ Status:
   - seller role now opens with dashboard summary and tree sections (`Магазины`, `Листинги`, `Баланс`),
   - create actions moved into section screens (`Создать магазин` under shops, `Создать листинг` under listings, top-up/history under balance),
   - buyer/admin roles now open from dashboard summaries with section-first navigation,
+  - admin role-switch regression fixed: admin users can open seller/buyer modes without `non-seller/non-buyer role` bootstrap errors,
   - all inline button labels updated to emoji/icon-prefixed format.
 - Verification:
   - `ruff check services/bot_api/telegram_runtime.py tests/test_telegram_runtime_ux_phase9.py` passed.

@@ -90,6 +90,36 @@ async def test_seller_bootstrap_is_idempotent_and_creates_accounts(db_pool) -> N
 
 
 @pytest.mark.asyncio
+async def test_admin_can_bootstrap_seller_and_operate_seller_flow(db_pool) -> None:
+    service = SellerService(db_pool)
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            admin_user_id = await create_user(
+                conn,
+                telegram_id=7099,
+                role="admin",
+                username="admin_seller",
+            )
+
+    result = await service.bootstrap_seller(telegram_id=7099, username="admin_seller")
+
+    assert result.created_user is False
+    assert result.user_id == admin_user_id
+
+    shop = await service.create_shop(seller_user_id=result.user_id, title="Admin Seller Shop")
+    shops = await service.list_shops(seller_user_id=result.user_id)
+
+    assert [item.shop_id for item in shops] == [shop.shop_id]
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT role FROM users WHERE id = %s", (admin_user_id,))
+            row = await cur.fetchone()
+            assert row["role"] == "admin"
+
+
+@pytest.mark.asyncio
 async def test_shop_slug_uniqueness_and_multi_listing_crud(db_pool) -> None:
     service = SellerService(db_pool)
     seller = await service.bootstrap_seller(telegram_id=7002, username="seller_b")

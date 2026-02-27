@@ -89,7 +89,7 @@ class BuyerService:
                     user_id = created["id"]
                     created_user = True
                 else:
-                    if existing["role"] != "buyer":
+                    if existing["role"] not in {"buyer", "admin"}:
                         raise InvalidStateError("telegram user already exists with non-buyer role")
                     user_id = existing["id"]
                     if username is not None:
@@ -393,7 +393,7 @@ class BuyerService:
                     SELECT id
                     FROM users
                     WHERE id = %s
-                      AND role = 'buyer'
+                      AND role IN ('buyer', 'admin')
                     """,
                     (user_id,),
                 )

@@ -42,6 +42,7 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 ### 3.1 Roles and entry points
 
 - Single bot with role-based behavior (chosen for simplicity and reliability).
+- Admin operators are allowed to open seller and buyer modes with the same Telegram account for live ops/testing flows (no separate seller/buyer account is required for menu access).
 
 ### 3.2 Listing and collateral
 
@@ -803,3 +804,6 @@ Required controls even in MVP:
 - 2026-02-27: Callback resilience hardening deployed:
   - bot now logs warning and continues callback handling if `answerCallbackQuery` fails (for example stale callback IDs),
   - this prevents callback flow abortion on Telegram callback-answer timeout edge cases.
+- 2026-02-27: Admin role-switch regression fix:
+  - seller/buyer bootstrap paths now accept existing `admin` role users (in addition to native role) and keep stored role unchanged,
+  - admin operators can switch into seller/buyer menus again without `non-seller/non-buyer role` errors.
