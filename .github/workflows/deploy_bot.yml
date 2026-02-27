@@ -78,6 +78,10 @@ jobs:
           if ! ssh-keygen -y -f ~/.ssh/bot_vm_key >/dev/null 2>&1; then
             printf '%b' "${BOT_VM_SSH_PRIVATE_KEY}" > ~/.ssh/bot_vm_key
           fi
+          # Fallback: allow secret to be provided as base64-encoded private key.
+          if ! ssh-keygen -y -f ~/.ssh/bot_vm_key >/dev/null 2>&1; then
+            printf '%s' "${BOT_VM_SSH_PRIVATE_KEY}" | base64 -d > ~/.ssh/bot_vm_key
+          fi
           # Normalize potential CRLF if secret was pasted from Windows clipboard.
           sed -i 's/\r$//' ~/.ssh/bot_vm_key
           ssh-keygen -y -f ~/.ssh/bot_vm_key >/dev/null
