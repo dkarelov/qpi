@@ -99,6 +99,19 @@ Out of scope (MVP):
 5. All admin and balance-changing actions are auditable.
 6. Minimal admin control UI is acceptable (Telegram admin flow).
 
+### Shared Telegram UX requirements
+
+1. Every button press must produce visible feedback (`edit`, `reply`, or alert); silent no-op callbacks are not allowed.
+2. Menus must follow a tree structure; avoid a single root screen with all actions.
+3. Create/secondary actions must be nested in section screens (for example `Shops -> Create shop`, `Listings -> Create listing`, `Balance -> Deposit/History`).
+4. Every button label must include a suitable emoji/icon prefix.
+5. Each role must open with a role dashboard summary screen before showing action tree.
+6. Seller dashboard minimum metrics:
+   - shops total,
+   - listings active/total,
+   - orders in progress/completed/picked up,
+   - balance free/total.
+
 ## 2.5 Money and Pricing Rules
 
 1. Ledger source of truth is USDT with fixed precision.
@@ -914,7 +927,91 @@ Status:
   - local non-DB checks passed; DB integration execution depends on `TEST_DATABASE_URL` availability in runtime environment.
 - Pending operational step: apply Terraform and execute live Phase 8 rollout verification on production.
 
-## Phase 9: Launch Hardening and UAT
+## Phase 9: Bot UX Information Architecture and Dashboards
+
+Goal:
+
+- Convert current flat role menus into a predictable, feedback-safe, dashboard-first UX tree for seller, buyer, and admin.
+
+Execution streams:
+
+1. UX interaction contract hardening (no silent callbacks)
+   - Add explicit UX invariant at transport layer: every callback path must return one of:
+     - edited message,
+     - reply message,
+     - alert/toast (`answerCallbackQuery` text).
+   - Add fallback handlers for:
+     - unknown action,
+     - missing entity id,
+     - empty data states.
+   - Add telemetry counters/log events for callback outcomes (`handled`, `empty_state`, `fallback`, `error`) to detect regressions.
+2. Seller IA refactor to tree menu
+   - Seller root screen becomes dashboard + compact section buttons.
+   - Move actions into section screens:
+     - `Магазины` screen: shops list + `Создать магазин` action,
+     - `Листинги` screen: listings list + `Создать листинг` action,
+     - `Баланс` screen: summary + `Пополнить` + `Мои пополнения / Проверить`.
+   - Ensure empty states always respond (for example "магазинов пока нет").
+3. Buyer IA refactor to tree menu
+   - Buyer root screen becomes dashboard with key counters.
+   - Section screens:
+     - `Магазины`,
+     - `Задания`,
+     - `Баланс и вывод`.
+   - Keep withdrawal steps guided and stateful while preserving sensitive-input deletion behavior.
+4. Admin IA refactor to tree menu
+   - Admin root screen becomes operations dashboard (pending withdrawals, deposit exceptions, recent actions).
+   - Group actions into sections:
+     - `Выводы`,
+     - `Депозиты`,
+     - `Исключения`.
+   - Keep manual finance actions auditable and idempotent.
+5. Emoji/icon design pass
+   - Define fixed icon dictionary per role/section/action.
+   - Apply icons to all inline buttons consistently (including back/menu actions).
+   - Review labels for brevity and scanability in mobile Telegram UI.
+6. Dashboard data contracts
+   - Add explicit domain query APIs for dashboard aggregates where missing.
+   - Seller dashboard contract:
+     - shops total,
+     - listings active/total,
+     - orders in progress/completed/picked up,
+     - balance free/total.
+   - Define analogous compact contracts for buyer/admin dashboards.
+7. Verification and rollout
+   - Add callback UX tests asserting each button action returns visible feedback.
+   - Add menu-structure tests to prevent flat-root regressions.
+   - Execute live Telegram UX smoke with accounts (`seller`, `buyer`, `admin`) and capture evidence for each section path.
+
+Exit criteria:
+
+1. No known button path results in "nothing happened".
+2. Root menus are compact and section-based (tree IA) for all roles.
+3. All buttons contain suitable emoji/icon prefixes.
+4. Each role opens to a dashboard summary screen with actionable section navigation below.
+5. Regression tests cover callback feedback guarantees and tree navigation contract.
+
+Status:
+
+- Implemented in repository on 2026-02-27:
+  - callback handling hardened to avoid silent no-op button behavior (`query.message` guard + explicit fallback path),
+  - seller role now opens with dashboard summary and tree sections (`Магазины`, `Листинги`, `Баланс`),
+  - create actions moved into section screens (`Создать магазин` under shops, `Создать листинг` under listings, top-up/history under balance),
+  - buyer/admin roles now open from dashboard summaries with section-first navigation,
+  - all inline button labels updated to emoji/icon-prefixed format.
+- Verification:
+  - `ruff check services/bot_api/telegram_runtime.py tests/test_telegram_runtime_ux_phase9.py` passed.
+  - `python -m py_compile services/bot_api/telegram_runtime.py tests/test_telegram_runtime_ux_phase9.py` passed.
+  - Added menu-structure/emoji contract tests in `tests/test_telegram_runtime_ux_phase9.py`.
+  - `PYTHONPATH=. /home/darker/venv/bin/pytest -q tests/test_telegram_runtime_ux_phase9.py tests/test_bot_callback_contract.py` passed (`11 passed`).
+- Live rollout verified on production bot VM (2026-02-27 UTC):
+  - deployed release: `/opt/qpi/releases/20260227232627-phase9ux`,
+  - bot service active and healthy (`/healthz` returns `ready=true`),
+  - webhook endpoint is live on `https://158.160.187.114:8443/telegram/webhook` and returns expected `400` for invalid payload with valid secret token,
+  - deployed runtime contains Phase 9 dashboard/tree/emoji menu code paths.
+  - callback processing remains functional even when Telegram rejects `answerCallbackQuery` for stale callback IDs (`telegram_callback_answer_failed` warning + handler continues).
+
+## Phase 10: Launch Hardening and UAT
 
 Goal:
 
@@ -957,18 +1054,13 @@ Status:
 
 - Pending.
 
-## Phase 10: Reserved
-
-Status:
-
-- Reserved for post-launch refinements.
-
 ## 4. Recommended Execution Order
 
 1. Finish remaining artifacts of Phase 0 (formal schema/state docs).
 2. Phase 7 is implemented in repository (streams 1-8 complete).
 3. Execute Phase 8 stream 1-8 (blockchain checker CF + auto-confirmed collateral top-ups).
-4. Execute Phase 9 stream 1-2 (hardening + UAT + launch sign-off).
+4. Phase 9 live Telegram UX validation on production bot runtime is completed.
+5. Execute Phase 10 stream 1-2 (hardening + UAT + launch sign-off).
 
 ## 5. Tracking Policy
 

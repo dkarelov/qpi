@@ -219,7 +219,7 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - both CF runtimes (`daily-report-scrapper`, `order-tracker`) operate on live data.
 - Scope decision:
   - Phase 7 includes observability/runbook baseline for operations,
-  - hardening + formal UAT/sign-off are tracked in Phase 9.
+  - hardening + formal UAT/sign-off are tracked in Phase 10.
 - Bot runtime target for Phase 7:
   - production PTB webhook application on bot VM,
   - command processors remain as internal/testing adapters, but user-facing interaction is button-first.
@@ -303,7 +303,25 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - function `qpi-blockchain-checker`,
   - timer trigger every 5 minutes,
   - runtime env for shard settings and TonAPI settings.
-- Launch hardening and formal UAT/sign-off remain in Phase 9.
+- Launch hardening and formal UAT/sign-off remain in Phase 10.
+
+### 3.17 Phase 9 UX rules and implementation baseline
+
+- Every inline button press must always produce visible feedback in chat:
+  - message update, new reply, or alert,
+  - silent no-op behavior is not allowed.
+- Menu information architecture must be tree-structured:
+  - no single-screen "all buttons at once" layout,
+  - create actions are nested inside their domain sections (for example `Shops -> Create shop`, `Listings -> Create listing`, `Balance -> Deposit / History`).
+- Every button label must start with a meaningful emoji/icon prefix.
+- Each role must open to a role dashboard on first screen (before action buttons):
+  - seller dashboard minimum fields: `магазинов всего`, `листинги активные / всего`, `заказы в процессе / совершенные / выкупленные`, `баланс свободный / общий`,
+  - buyer and admin dashboards must provide analogous key summary counters for their role.
+- Implemented in `services/bot_api/telegram_runtime.py`:
+  - seller/buyer/admin first-screen dashboards with section navigation below,
+  - tree-structured seller flow (`Магазины` -> `Создать магазин`, `Листинги` -> `Создать листинг`, `Баланс` -> `Пополнить`/`Мои пополнения`),
+  - admin section routing (`Выводы`, `Депозиты`, `Исключения`) with dashboard summary,
+  - callback guard for missing Telegram message context to prevent silent button no-op.
 
 ## 4. Functional Workflow Summary
 
@@ -542,6 +560,9 @@ python -m services.order_tracker.main --once
 Test runbook:
 
 ```bash
+# Use project test tooling from shared venv:
+# /home/darker/venv (includes pytest-asyncio and other dev deps)
+
 # Main integration suite (no schema drop/recreate per test):
 TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
 pytest -q -m "not migration_smoke"
@@ -757,3 +778,28 @@ Required controls even in MVP:
   - rollout artifact packaging switched to `git archive` to avoid transient `tar: file changed as we read it` failures,
   - SSH key prep in workflow now supports multiline, escaped `\\n`, and base64-encoded secret forms with validation before `scp/ssh`,
   - repository secret `BOT_VM_SSH_PRIVATE_KEY` rotated to base64 form for stable GitHub Actions parsing.
+- 2026-02-27: UX refinement rules locked for next phase:
+  - every button click must always return visible feedback (no silent callbacks),
+  - bot menus must be tree-structured (no flat "F16 panel" root),
+  - all button labels require emoji/icon prefixes,
+  - each role must open from a dashboard summary screen with key role metrics.
+- 2026-02-27: Phase numbering update applied:
+  - Phase 9 and Phase 10 switched,
+  - UX information-architecture/dashboard refinement is now Phase 9,
+  - launch hardening + UAT/sign-off is now Phase 10.
+- 2026-02-27: Phase 9 UX refinement implemented in repository:
+  - Telegram runtime menus are dashboard-first and section-tree structured for seller/buyer/admin,
+  - seller `Создать` and `Баланс` actions moved under their corresponding sections,
+  - all inline button labels now have emoji/icon prefixes,
+  - callback handler now guards missing message context to prevent silent button behavior,
+  - UX contract tests added in `tests/test_telegram_runtime_ux_phase9.py`.
+- 2026-02-27: Local tooling clarification:
+  - test/dev dependency execution is expected from shared venv `/home/darker/venv` (includes `pytest-asyncio` and other `.[dev]` packages).
+- 2026-02-27: Phase 9 bot UX rollout deployed and verified on production:
+  - bot release `/opt/qpi/releases/20260227232627-phase9ux` is active,
+  - health check passed on `http://158.160.187.114:18080/healthz`,
+  - webhook listener on `:8443` is active and serves expected validation errors for malformed updates with correct secret token,
+  - deployed runtime confirms dashboard/tree/emoji menu changes are present.
+- 2026-02-27: Callback resilience hardening deployed:
+  - bot now logs warning and continues callback handling if `answerCallbackQuery` fails (for example stale callback IDs),
+  - this prevents callback flow abortion on Telegram callback-answer timeout edge cases.
