@@ -12,6 +12,12 @@ on:
       - "pyproject.toml"
       - ".github/workflows/deploy_terraform.yml"
   workflow_dispatch:
+    inputs:
+      apply:
+        description: "Run terraform apply (requires shared state backend configured for CI)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -49,7 +55,17 @@ jobs:
           infra/scripts/with_private_requirements.sh -- \
             terraform -chdir=infra plan -input=false -no-color
 
+      - name: Guard apply without shared CI state
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply == 'true' }}
+        run: |
+          if [[ ! -f "infra/terraform.tfstate" ]]; then
+            echo "Refusing terraform apply in CI without shared backend state."
+            echo "Current backend is local state; configure remote backend before enabling CI apply."
+            exit 1
+          fi
+
       - name: Terraform Apply
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply == 'true' }}
         run: |
           infra/scripts/with_private_requirements.sh -- \
             terraform -chdir=infra apply -input=false -auto-approve -no-color

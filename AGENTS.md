@@ -749,3 +749,7 @@ Required controls even in MVP:
   - Terraform CI workflow now uses the wrapper for `plan/apply` instead of inline ad-hoc token replacement logic,
   - bot rollout now passes `TOKEN_YC_JSON_LOGGER` only to rollout-time `pip install` on VM (release artifact keeps placeholder form),
   - `infra/scripts/remote_rollout_bot.sh` now fails fast when private dependency placeholder is present but token is missing.
+- 2026-02-27: Terraform CI behavior corrected for local-state backend:
+  - push pipeline now runs Terraform plan only,
+  - Terraform apply is available only via `workflow_dispatch` with explicit `apply=true`,
+  - workflow now fails fast for manual apply attempts when shared backend state is not configured in CI.
