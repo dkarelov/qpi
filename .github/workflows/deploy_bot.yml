@@ -65,14 +65,7 @@ jobs:
         run: |
           release_id="${GITHUB_SHA::12}"
           archive_name="qpi-bot-${release_id}.tar.gz"
-          tar \
-            --exclude='.git' \
-            --exclude='.pytest_cache' \
-            --exclude='.ruff_cache' \
-            --exclude='infra/.terraform' \
-            --exclude='infra/terraform.tfstate' \
-            --exclude='infra/terraform.tfstate.backup' \
-            -czf "${archive_name}" .
+          git archive --format=tar.gz --output="${archive_name}" "${GITHUB_SHA}"
           echo "release_id=${release_id}" >> "${GITHUB_OUTPUT}"
           echo "archive_name=${archive_name}" >> "${GITHUB_OUTPUT}"
 
