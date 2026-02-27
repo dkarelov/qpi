@@ -2,8 +2,10 @@
 
 from libs.config.settings import (
     BaseAppSettings,
+    BlockchainCheckerSettings,
     BotApiSettings,
     DailyReportScrapperSettings,
+    OrderTrackerSettings,
     WorkerSettings,
 )
 
@@ -12,4 +14,6 @@ __all__ = [
     "BotApiSettings",
     "WorkerSettings",
     "DailyReportScrapperSettings",
+    "OrderTrackerSettings",
+    "BlockchainCheckerSettings",
 ]

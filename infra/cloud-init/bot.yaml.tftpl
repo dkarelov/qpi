@@ -43,6 +43,11 @@ write_files:
       WB_PING_TIMEOUT_SECONDS=10
       WB_PING_RATE_LIMIT_COUNT=3
       WB_PING_RATE_LIMIT_WINDOW_SECONDS=30
+      SELLER_COLLATERAL_SHARD_KEY=${seller_collateral_shard_key}
+      SELLER_COLLATERAL_SHARD_ADDRESS=${seller_collateral_shard_address}
+      SELLER_COLLATERAL_SHARD_CHAIN=${seller_collateral_shard_chain}
+      SELLER_COLLATERAL_SHARD_ASSET=${seller_collateral_shard_asset}
+      SELLER_COLLATERAL_INVOICE_TTL_HOURS=${seller_collateral_invoice_ttl_hours}
   - path: /etc/systemd/system/qpi-bot.service
     owner: root:root
     permissions: "0644"

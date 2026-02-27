@@ -12,6 +12,7 @@ from typing import Any
 from libs.config.settings import BotApiSettings
 from libs.db.pool import DatabasePool
 from libs.domain.buyer import BuyerService
+from libs.domain.deposit_intents import DepositIntentService
 from libs.domain.errors import (
     DomainError,
     DuplicateOrderError,
@@ -155,6 +156,7 @@ class TelegramWebhookRuntime:
         self._seller_service: SellerService | None = None
         self._buyer_service: BuyerService | None = None
         self._finance_service: FinanceService | None = None
+        self._deposit_service: DepositIntentService | None = None
         self._seller_processor: SellerCommandProcessor | None = None
         self._buyer_processor: BuyerCommandProcessor | None = None
 
@@ -226,6 +228,16 @@ class TelegramWebhookRuntime:
         self._seller_service = SellerService(self._db_pool.pool)
         self._buyer_service = BuyerService(self._db_pool.pool)
         self._finance_service = FinanceService(self._db_pool.pool)
+        self._deposit_service = DepositIntentService(
+            self._db_pool.pool,
+            invoice_ttl_hours=self._settings.seller_collateral_invoice_ttl_hours,
+        )
+        await self._deposit_service.ensure_default_shard(
+            shard_key=self._settings.seller_collateral_shard_key,
+            deposit_address=self._settings.seller_collateral_shard_address,
+            chain=self._settings.seller_collateral_shard_chain,
+            asset=self._settings.seller_collateral_shard_asset,
+        )
         wb_ping_client = WbPingClient(
             timeout_seconds=self._settings.wb_ping_timeout_seconds,
             max_requests=self._settings.wb_ping_rate_limit_count,
@@ -732,6 +744,26 @@ class TelegramWebhookRuntime:
                 seller_user_id=seller.user_id,
             )
             return
+        if action == "topup_prompt":
+            self._set_prompt(
+                context,
+                role=_ROLE_SELLER,
+                prompt_type="seller_topup_amount",
+                sensitive=False,
+                extra={"seller_user_id": seller.user_id},
+            )
+            await self._replace_message(
+                query_message,
+                "Введите сумму пополнения в USDT (например, 1.23).",
+                self._seller_menu_markup(),
+            )
+            return
+        if action == "topup_history":
+            await self._render_seller_topup_history(
+                query_message=query_message,
+                seller_user_id=seller.user_id,
+            )
+            return
 
         await self._replace_message(
             query_message,
@@ -1054,7 +1086,7 @@ class TelegramWebhookRuntime:
         except InsufficientFundsError:
             await self._replace_message(
                 query_message,
-                "Недостаточно средств на seller_available для активации.",
+                "Недостаточно средств на seller для активации. Откройте «Пополнить».",
             )
             return
 
@@ -1209,13 +1241,49 @@ class TelegramWebhookRuntime:
         required_total = sum((item.collateral_required_usdt for item in listings), Decimal("0"))
         text = (
             "Баланс продавца:\n"
-            f"seller_available: {snapshot.seller_available_usdt} USDT\n"
+            f"seller: {snapshot.seller_available_usdt} USDT\n"
             f"seller_collateral: {snapshot.seller_collateral_usdt} USDT\n"
             "Коллатераль по листингам:\n"
             f"locked_total={locked_total} USDT\n"
             f"required_total={required_total} USDT"
         )
         await self._replace_message(query_message, text, self._seller_menu_markup())
+
+    async def _render_seller_topup_history(
+        self,
+        *,
+        query_message: Message | None,
+        seller_user_id: int,
+    ) -> None:
+        intents = await self._deposit_service.list_seller_deposit_intents(
+            seller_user_id=seller_user_id,
+            limit=10,
+        )
+        if not intents:
+            await self._replace_message(
+                query_message,
+                "Пополнений пока нет. Нажмите «Пополнить».",
+                self._seller_menu_markup(),
+            )
+            return
+
+        lines = ["Последние пополнения:"]
+        for item in intents:
+            suffix_text = f"{item.suffix_code:03d}"
+            lines.append(
+                f"intent#{item.deposit_intent_id} · status={item.status}\n"
+                f"expected={item.expected_amount_usdt} USDT · suffix={suffix_text}\n"
+                f"expires={item.expires_at:%Y-%m-%d %H:%M UTC}\n"
+                f"tx_hash={item.tx_hash or '-'}"
+            )
+            if item.review_reason:
+                lines.append(f"reason={item.review_reason}")
+
+        await self._replace_message(
+            query_message,
+            "\n".join(lines),
+            self._seller_menu_markup(),
+        )
 
     async def _handle_buyer_callback(
         self,
@@ -1452,7 +1520,7 @@ class TelegramWebhookRuntime:
         )
         text = (
             "Баланс покупателя:\n"
-            f"buyer_available: {snapshot.buyer_available_usdt} USDT\n"
+            f"buyer: {snapshot.buyer_available_usdt} USDT\n"
             f"buyer_withdraw_pending: {snapshot.buyer_withdraw_pending_usdt} USDT"
         )
         await self._replace_message(
@@ -1950,6 +2018,160 @@ class TelegramWebhookRuntime:
             created=result.created,
         )
 
+    async def _render_admin_deposit_exceptions(
+        self,
+        *,
+        query_message: Message | None,
+    ) -> None:
+        review_txs = await self._deposit_service.list_admin_review_txs(limit=20)
+        expired_intents = await self._deposit_service.list_admin_expired_intents(limit=20)
+
+        lines = ["Исключения по депозитам:"]
+        if review_txs:
+            lines.append("manual_review tx:")
+            for tx in review_txs:
+                lines.append(
+                    f"tx#{tx.chain_tx_id} · amount={tx.amount_usdt} · "
+                    f"suffix={tx.suffix_code or '-'}\n"
+                    f"hash={tx.tx_hash}\n"
+                    f"reason={tx.review_reason or '-'} · "
+                    f"intent={tx.matched_intent_id or '-'}"
+                )
+        else:
+            lines.append("manual_review tx: пусто")
+
+        if expired_intents:
+            lines.append("expired intents:")
+            for intent in expired_intents:
+                lines.append(
+                    f"intent#{intent.deposit_intent_id} · "
+                    f"seller_tg={intent.seller_telegram_id}\n"
+                    f"expected={intent.expected_amount_usdt} · "
+                    f"suffix={intent.suffix_code:03d}\n"
+                    f"expired_at={intent.expires_at:%Y-%m-%d %H:%M UTC}"
+                )
+        else:
+            lines.append("expired intents: пусто")
+
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        text="Привязать tx -> intent",
+                        callback_data=build_callback(
+                            flow=_ROLE_ADMIN,
+                            action="deposit_attach_prompt",
+                        ),
+                    ),
+                    InlineKeyboardButton(
+                        text="Отменить intent",
+                        callback_data=build_callback(
+                            flow=_ROLE_ADMIN,
+                            action="deposit_cancel_prompt",
+                        ),
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="Меню админа",
+                        callback_data=build_callback(flow=_ROLE_ADMIN, action="menu"),
+                    )
+                ],
+            ]
+        )
+        await self._replace_message(query_message, "\n\n".join(lines), keyboard)
+
+    async def _execute_admin_deposit_attach(
+        self,
+        *,
+        query_message: Message | None,
+        admin_user_id: int,
+        chain_tx_id: int,
+        deposit_intent_id: int,
+    ) -> None:
+        try:
+            result = await self._deposit_service.credit_intent_from_chain_tx(
+                deposit_intent_id=deposit_intent_id,
+                chain_tx_id=chain_tx_id,
+                idempotency_key=(
+                    f"tg-admin-deposit-attach:{admin_user_id}:{chain_tx_id}:{deposit_intent_id}"
+                ),
+                admin_user_id=admin_user_id,
+                allow_expired=True,
+            )
+        except (NotFoundError, InvalidStateError, ValueError) as exc:
+            await self._replace_message(
+                query_message,
+                f"Привязка отклонена: {exc}",
+                self._admin_menu_markup(),
+            )
+            return
+        except InsufficientFundsError:
+            await self._replace_message(
+                query_message,
+                "Недостаточно средств на system_payout для зачисления.",
+                self._admin_menu_markup(),
+            )
+            return
+
+        if result.changed:
+            message = (
+                "Зачисление выполнено.\n"
+                f"intent_id={deposit_intent_id}\n"
+                f"chain_tx_id={chain_tx_id}\n"
+                f"ledger_entry_id={result.ledger_entry_id}"
+            )
+        else:
+            message = (
+                "Операция уже применена ранее (idempotent replay).\n"
+                f"intent_id={deposit_intent_id}\n"
+                f"chain_tx_id={chain_tx_id}\n"
+                f"ledger_entry_id={result.ledger_entry_id}"
+            )
+        await self._replace_message(query_message, message, self._admin_menu_markup())
+        self._logger.info(
+            "admin_deposit_attach_processed",
+            chain_tx_id=chain_tx_id,
+            deposit_intent_id=deposit_intent_id,
+            changed=result.changed,
+            ledger_entry_id=result.ledger_entry_id,
+        )
+
+    async def _execute_admin_deposit_cancel(
+        self,
+        *,
+        query_message: Message | None,
+        admin_user_id: int,
+        deposit_intent_id: int,
+        reason: str,
+    ) -> None:
+        try:
+            changed = await self._deposit_service.cancel_deposit_intent(
+                deposit_intent_id=deposit_intent_id,
+                admin_user_id=admin_user_id,
+                reason=reason,
+                idempotency_key=f"tg-admin-deposit-cancel:{admin_user_id}:{deposit_intent_id}",
+            )
+        except (NotFoundError, InvalidStateError, ValueError) as exc:
+            await self._replace_message(
+                query_message,
+                f"Отмена отклонена: {exc}",
+                self._admin_menu_markup(),
+            )
+            return
+
+        message = (
+            f"intent#{deposit_intent_id} отменен."
+            if changed
+            else f"intent#{deposit_intent_id} уже был отменен."
+        )
+        await self._replace_message(query_message, message, self._admin_menu_markup())
+        self._logger.info(
+            "admin_deposit_cancel_processed",
+            deposit_intent_id=deposit_intent_id,
+            changed=changed,
+        )
+
     async def _resolve_manual_deposit_target(
         self,
         *,
@@ -1962,10 +2184,7 @@ class TelegramWebhookRuntime:
         }
         required_role = required_role_by_account_kind.get(account_kind)
         if required_role is None:
-            raise ValueError(
-                "account_kind must be seller|buyer "
-                "(or seller_available|buyer_available)",
-            )
+            raise ValueError("account_kind must be seller|buyer")
 
         async with self._db_pool.connection() as conn:
             async with conn.transaction():
@@ -2038,10 +2257,7 @@ class TelegramWebhookRuntime:
         }
         mapped = aliases.get(normalized)
         if mapped is None:
-            raise ValueError(
-                "account_kind must be seller|buyer "
-                "(or seller_available|buyer_available)",
-            )
+            raise ValueError("account_kind must be seller|buyer")
         return mapped
 
     async def _notify_buyer_withdraw_status(
@@ -2198,12 +2414,42 @@ class TelegramWebhookRuntime:
                 (
                     "Введите депозит: <telegram_id> <account_kind> "
                     "<amount_usdt> <reference_or_comment>\n"
-                    "account_kind: seller | buyer "
-                    "(также поддерживается seller_available | buyer_available)\n"
+                    "account_kind: seller | buyer\n"
                     "Примеры:\n"
                     "10002 buyer 1.0 welcome_bonus\n"
                     "10002 buyer 5.000000 tx:0xabc123"
                 ),
+                self._admin_menu_markup(),
+            )
+            return
+        if action == "deposit_exceptions":
+            await self._render_admin_deposit_exceptions(query_message=query_message)
+            return
+        if action == "deposit_attach_prompt":
+            self._set_prompt(
+                context,
+                role=_ROLE_ADMIN,
+                prompt_type="admin_deposit_attach",
+                sensitive=False,
+                extra={"admin_user_id": admin_user_id},
+            )
+            await self._replace_message(
+                query_message,
+                "Введите: <chain_tx_id> <deposit_intent_id>.",
+                self._admin_menu_markup(),
+            )
+            return
+        if action == "deposit_cancel_prompt":
+            self._set_prompt(
+                context,
+                role=_ROLE_ADMIN,
+                prompt_type="admin_deposit_cancel",
+                sensitive=False,
+                extra={"admin_user_id": admin_user_id},
+            )
+            await self._replace_message(
+                query_message,
+                "Введите: <deposit_intent_id> <reason>.",
                 self._admin_menu_markup(),
             )
             return
@@ -2316,6 +2562,67 @@ class TelegramWebhookRuntime:
                     f"Листинг создан: id={listing.listing_id}, status={listing.status}, "
                     f"reward={listing.reward_usdt} USDT, "
                     f"slots={listing.available_slots}/{listing.slot_count}"
+                ),
+                reply_markup=self._seller_menu_markup(),
+            )
+            return
+
+        if prompt_type == "seller_topup_amount":
+            seller_user_id = int(prompt_state.get("seller_user_id", 0))
+            if seller_user_id < 1:
+                self._clear_prompt(context)
+                await message.reply_text(
+                    "Ошибка контекста пополнения. Откройте меню продавца заново.",
+                    reply_markup=self._seller_menu_markup(),
+                )
+                return
+            try:
+                amount = Decimal(text)
+            except InvalidOperation:
+                await message.reply_text(
+                    "Неверный формат суммы. Повторите ввод.",
+                    reply_markup=self._seller_menu_markup(),
+                )
+                return
+            if amount <= Decimal("0.000000"):
+                await message.reply_text(
+                    "Сумма должна быть больше 0.",
+                    reply_markup=self._seller_menu_markup(),
+                )
+                return
+
+            shards = await self._deposit_service.list_active_shards()
+            if not shards:
+                await message.reply_text(
+                    "Депозитный адрес недоступен. Обратитесь к администратору.",
+                    reply_markup=self._seller_menu_markup(),
+                )
+                return
+            target_shard = next(
+                (
+                    shard
+                    for shard in shards
+                    if shard.shard_key == self._settings.seller_collateral_shard_key
+                ),
+                shards[0],
+            )
+            intent = await self._deposit_service.create_seller_deposit_intent(
+                seller_user_id=seller_user_id,
+                request_amount_usdt=amount,
+                shard_id=target_shard.shard_id,
+                idempotency_key=f"tg-seller-topup:{seller_user_id}:{update.update_id}",
+            )
+            self._clear_prompt(context)
+            suffix_text = f"{intent.suffix_code:03d}"
+            await message.reply_text(
+                (
+                    "Инвойс на пополнение создан.\n"
+                    f"intent_id={intent.deposit_intent_id}\n"
+                    f"Адрес: {intent.deposit_address}\n"
+                    f"Сумма к переводу: {intent.expected_amount_usdt} USDT\n"
+                    f"(base={intent.base_amount_usdt}, suffix={suffix_text})\n"
+                    f"TTL: до {intent.expires_at:%Y-%m-%d %H:%M UTC}\n"
+                    "После перевода нажмите «Мои пополнения / Проверить»."
                 ),
                 reply_markup=self._seller_menu_markup(),
             )
@@ -2572,6 +2879,55 @@ class TelegramWebhookRuntime:
             )
             return
 
+        if prompt_type == "admin_deposit_attach":
+            admin_user_id = int(prompt_state.get("admin_user_id", 0))
+            tokens = text.split(maxsplit=1)
+            if len(tokens) != 2:
+                await message.reply_text("Формат: <chain_tx_id> <deposit_intent_id>")
+                return
+            chain_tx_raw, intent_raw = tokens
+            if not chain_tx_raw.isdigit() or not intent_raw.isdigit():
+                await message.reply_text("chain_tx_id и deposit_intent_id должны быть числами.")
+                return
+            if admin_user_id < 1:
+                self._clear_prompt(context)
+                await message.reply_text("Ошибка контекста админа. Откройте меню заново.")
+                return
+            self._clear_prompt(context)
+            await self._execute_admin_deposit_attach(
+                query_message=message,
+                admin_user_id=admin_user_id,
+                chain_tx_id=int(chain_tx_raw),
+                deposit_intent_id=int(intent_raw),
+            )
+            return
+
+        if prompt_type == "admin_deposit_cancel":
+            admin_user_id = int(prompt_state.get("admin_user_id", 0))
+            tokens = text.split(maxsplit=1)
+            if len(tokens) != 2:
+                await message.reply_text("Формат: <deposit_intent_id> <reason>")
+                return
+            intent_raw, reason = tokens
+            if not intent_raw.isdigit():
+                await message.reply_text("deposit_intent_id должен быть числом.")
+                return
+            if not reason.strip():
+                await message.reply_text("reason не может быть пустым.")
+                return
+            if admin_user_id < 1:
+                self._clear_prompt(context)
+                await message.reply_text("Ошибка контекста админа. Откройте меню заново.")
+                return
+            self._clear_prompt(context)
+            await self._execute_admin_deposit_cancel(
+                query_message=message,
+                admin_user_id=admin_user_id,
+                deposit_intent_id=int(intent_raw),
+                reason=reason,
+            )
+            return
+
         self._clear_prompt(context)
         await message.reply_text("Неизвестный тип ввода. Отправьте /start.")
 
@@ -2759,6 +3115,16 @@ class TelegramWebhookRuntime:
                         callback_data=build_callback(flow=_ROLE_SELLER, action="balance"),
                     ),
                     InlineKeyboardButton(
+                        text="Пополнить",
+                        callback_data=build_callback(flow=_ROLE_SELLER, action="topup_prompt"),
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="Мои пополнения / Проверить",
+                        callback_data=build_callback(flow=_ROLE_SELLER, action="topup_history"),
+                    ),
+                    InlineKeyboardButton(
                         text="Сменить роль",
                         callback_data=build_callback(flow=_ROLE_SELLER, action="back"),
                     ),
@@ -2821,7 +3187,14 @@ class TelegramWebhookRuntime:
                             flow=_ROLE_ADMIN,
                             action="manual_deposit_prompt",
                         ),
-                    )
+                    ),
+                    InlineKeyboardButton(
+                        text="Исключения депозитов",
+                        callback_data=build_callback(
+                            flow=_ROLE_ADMIN,
+                            action="deposit_exceptions",
+                        ),
+                    ),
                 ],
                 [
                     InlineKeyboardButton(

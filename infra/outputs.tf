@@ -91,3 +91,13 @@ output "order_tracker_trigger_id" {
   description = "Timer trigger ID for order-tracker."
   value       = yandex_function_trigger.order_tracker_timer.id
 }
+
+output "blockchain_checker_function_id" {
+  description = "Cloud Function ID for blockchain-checker."
+  value       = yandex_function.blockchain_checker.id
+}
+
+output "blockchain_checker_trigger_id" {
+  description = "Timer trigger ID for blockchain-checker."
+  value       = yandex_function_trigger.blockchain_checker_timer.id
+}

@@ -207,3 +207,110 @@ class WithdrawalRequestDetail:
 class ReservationExpiryResult:
     processed_count: int
     expired_count: int
+
+
+@dataclass(frozen=True)
+class DepositShardView:
+    shard_id: int
+    shard_key: str
+    deposit_address: str
+    chain: str
+    asset: str
+    is_active: bool
+
+
+@dataclass(frozen=True)
+class DepositIntentCreateResult:
+    deposit_intent_id: int
+    shard_id: int
+    deposit_address: str
+    request_amount_usdt: Decimal
+    base_amount_usdt: Decimal
+    expected_amount_usdt: Decimal
+    suffix_code: int
+    expires_at: datetime
+    created: bool
+
+
+@dataclass(frozen=True)
+class SellerDepositIntentView:
+    deposit_intent_id: int
+    status: str
+    request_amount_usdt: Decimal
+    expected_amount_usdt: Decimal
+    suffix_code: int
+    deposit_address: str
+    expires_at: datetime
+    created_at: datetime
+    credited_amount_usdt: Decimal | None
+    tx_hash: str | None
+    review_reason: str | None
+
+
+@dataclass(frozen=True)
+class ChainIncomingTxRow:
+    chain_tx_id: int
+    shard_id: int
+    tx_hash: str
+    tx_lt: int
+    query_id: str
+    trace_id: str
+    source_address: str | None
+    destination_address: str | None
+    amount_raw: str
+    amount_usdt: Decimal
+    occurred_at: datetime
+    suffix_code: int | None
+    status: str
+    matched_intent_id: int | None
+    review_reason: str | None
+
+
+@dataclass(frozen=True)
+class ChainTxUpsertResult:
+    chain_tx_id: int
+    created: bool
+
+
+@dataclass(frozen=True)
+class DepositIntentRow:
+    deposit_intent_id: int
+    seller_user_id: int
+    target_account_id: int
+    shard_id: int
+    status: str
+    expected_amount_usdt: Decimal
+    suffix_code: int
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class DepositIntentCreditResult:
+    changed: bool
+    ledger_entry_id: int | None
+    credited_amount_usdt: Decimal | None
+
+
+@dataclass(frozen=True)
+class AdminDepositReviewTxView:
+    chain_tx_id: int
+    shard_id: int
+    deposit_address: str
+    tx_hash: str
+    amount_usdt: Decimal
+    suffix_code: int | None
+    status: str
+    review_reason: str | None
+    occurred_at: datetime
+    matched_intent_id: int | None
+
+
+@dataclass(frozen=True)
+class AdminExpiredDepositIntentView:
+    deposit_intent_id: int
+    seller_user_id: int
+    seller_telegram_id: int
+    expected_amount_usdt: Decimal
+    suffix_code: int
+    status: str
+    expires_at: datetime

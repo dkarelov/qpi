@@ -71,6 +71,23 @@ class BotApiSettings(BaseAppSettings):
         default=30,
         alias="WB_PING_RATE_LIMIT_WINDOW_SECONDS",
     )
+    seller_collateral_shard_key: str = Field(default="mvp-1", alias="SELLER_COLLATERAL_SHARD_KEY")
+    seller_collateral_shard_address: str = Field(
+        default="UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH",
+        alias="SELLER_COLLATERAL_SHARD_ADDRESS",
+    )
+    seller_collateral_shard_chain: str = Field(
+        default="ton_mainnet",
+        alias="SELLER_COLLATERAL_SHARD_CHAIN",
+    )
+    seller_collateral_shard_asset: str = Field(
+        default="USDT",
+        alias="SELLER_COLLATERAL_SHARD_ASSET",
+    )
+    seller_collateral_invoice_ttl_hours: int = Field(
+        default=24,
+        alias="SELLER_COLLATERAL_INVOICE_TTL_HOURS",
+    )
 
     @field_validator("token_cipher_key")
     @classmethod
@@ -174,6 +191,29 @@ class BotApiSettings(BaseAppSettings):
     def validate_wb_ping_rate_limit_window(cls, value: int) -> int:
         if value < 1:
             raise ValueError("WB_PING_RATE_LIMIT_WINDOW_SECONDS must be >= 1")
+        return value
+
+    @field_validator("seller_collateral_shard_key", "seller_collateral_shard_address")
+    @classmethod
+    def validate_seller_collateral_shard_fields(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("SELLER_COLLATERAL_SHARD_* must not be empty")
+        return normalized
+
+    @field_validator("seller_collateral_shard_chain", "seller_collateral_shard_asset")
+    @classmethod
+    def validate_seller_collateral_chain_asset(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("SELLER_COLLATERAL_SHARD_CHAIN/ASSET must not be empty")
+        return normalized
+
+    @field_validator("seller_collateral_invoice_ttl_hours")
+    @classmethod
+    def validate_seller_collateral_invoice_ttl_hours(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("SELLER_COLLATERAL_INVOICE_TTL_HOURS must be >= 1")
         return value
 
 
@@ -325,6 +365,106 @@ class OrderTrackerSettings(BaseAppSettings):
         return value
 
 
+class BlockchainCheckerSettings(BaseAppSettings):
+    """Settings for 5-minute blockchain checker cloud function."""
+
+    seller_collateral_shard_key: str = Field(default="mvp-1", alias="SELLER_COLLATERAL_SHARD_KEY")
+    seller_collateral_shard_address: str = Field(
+        default="UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH",
+        alias="SELLER_COLLATERAL_SHARD_ADDRESS",
+    )
+    seller_collateral_shard_chain: str = Field(
+        default="ton_mainnet",
+        alias="SELLER_COLLATERAL_SHARD_CHAIN",
+    )
+    seller_collateral_shard_asset: str = Field(
+        default="USDT",
+        alias="SELLER_COLLATERAL_SHARD_ASSET",
+    )
+    seller_collateral_invoice_ttl_hours: int = Field(
+        default=24,
+        alias="SELLER_COLLATERAL_INVOICE_TTL_HOURS",
+    )
+    blockchain_checker_advisory_lock_id: int = Field(
+        default=7008001,
+        alias="BLOCKCHAIN_CHECKER_ADVISORY_LOCK_ID",
+    )
+    blockchain_checker_match_batch_size: int = Field(
+        default=200,
+        alias="BLOCKCHAIN_CHECKER_MATCH_BATCH_SIZE",
+    )
+    blockchain_checker_confirmations_required: int = Field(
+        default=1,
+        alias="BLOCKCHAIN_CHECKER_CONFIRMATIONS_REQUIRED",
+    )
+    tonapi_base_url: str = Field(default="https://tonapi.io", alias="TONAPI_BASE_URL")
+    tonapi_api_key: str | None = Field(default=None, alias="TONAPI_API_KEY")
+    tonapi_timeout_seconds: int = Field(default=30, alias="TONAPI_TIMEOUT_SECONDS")
+    tonapi_page_limit: int = Field(default=100, alias="TONAPI_PAGE_LIMIT")
+    tonapi_max_pages_per_shard: int = Field(default=20, alias="TONAPI_MAX_PAGES_PER_SHARD")
+    tonapi_unauth_min_interval_seconds: float = Field(
+        default=4.0,
+        alias="TONAPI_UNAUTH_MIN_INTERVAL_SECONDS",
+    )
+    tonapi_usdt_jetton_master: str = Field(
+        default="EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+        alias="TONAPI_USDT_JETTON_MASTER",
+    )
+
+    @field_validator(
+        "seller_collateral_shard_key",
+        "seller_collateral_shard_address",
+        "seller_collateral_shard_chain",
+        "seller_collateral_shard_asset",
+        "tonapi_base_url",
+        "tonapi_usdt_jetton_master",
+    )
+    @classmethod
+    def validate_non_empty_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("configured value must not be empty")
+        return normalized
+
+    @field_validator("tonapi_api_key", mode="before")
+    @classmethod
+    def normalize_optional_tonapi_api_key(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        return value
+
+    @field_validator("seller_collateral_invoice_ttl_hours")
+    @classmethod
+    def validate_invoice_ttl_hours(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("SELLER_COLLATERAL_INVOICE_TTL_HOURS must be >= 1")
+        return value
+
+    @field_validator(
+        "blockchain_checker_advisory_lock_id",
+        "blockchain_checker_match_batch_size",
+        "blockchain_checker_confirmations_required",
+        "tonapi_timeout_seconds",
+        "tonapi_page_limit",
+        "tonapi_max_pages_per_shard",
+    )
+    @classmethod
+    def validate_positive_int(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("configured integer must be >= 1")
+        return value
+
+    @field_validator("tonapi_unauth_min_interval_seconds")
+    @classmethod
+    def validate_tonapi_unauth_min_interval_seconds(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("TONAPI_UNAUTH_MIN_INTERVAL_SECONDS must be >= 0")
+        return value
+
+
 @lru_cache(maxsize=1)
 def get_bot_api_settings() -> BotApiSettings:
     return BotApiSettings()
@@ -343,3 +483,8 @@ def get_daily_report_scrapper_settings() -> DailyReportScrapperSettings:
 @lru_cache(maxsize=1)
 def get_order_tracker_settings() -> OrderTrackerSettings:
     return OrderTrackerSettings()
+
+
+@lru_cache(maxsize=1)
+def get_blockchain_checker_settings() -> BlockchainCheckerSettings:
+    return BlockchainCheckerSettings()

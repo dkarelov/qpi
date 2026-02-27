@@ -1,7 +1,9 @@
 """Domain services and typed errors for marketplace flows."""
 
 from libs.domain.buyer import BuyerService
+from libs.domain.blockchain_checker import BlockchainCheckerService
 from libs.domain.daily_report import DailyReportScrapperService
+from libs.domain.deposit_intents import DepositIntentService
 from libs.domain.errors import (
     DuplicateOrderError,
     InsufficientFundsError,
@@ -18,6 +20,8 @@ __all__ = [
     "SellerService",
     "BuyerService",
     "DailyReportScrapperService",
+    "DepositIntentService",
+    "BlockchainCheckerService",
     "InsufficientFundsError",
     "InvalidStateError",
     "NoSlotsAvailableError",

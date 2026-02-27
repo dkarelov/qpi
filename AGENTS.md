@@ -275,33 +275,35 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
     - health verification,
     - rollback-on-error hook.
 
-### 3.16 Phase 8 planning baseline (new): blockchain checker for collateral top-ups
+### 3.16 Phase 8 implementation baseline: blockchain checker for collateral top-ups
 
 - Objective:
   - remove manual admin blockchain checks for seller collateral funding.
-- Planned runtime component:
-  - new Cloud Function `blockchain-checker` scheduled every 5 minutes.
-- Planned matching baseline:
-  - monitor inbound USDT transfers to service shard deposit addresses,
-  - create expected deposit intents from seller bot flow with amount-suffix contract:
-    - `base_amount = ceil(required_amount_usdt * 10) / 10` (round up to 1 decimal),
-    - `expected_amount = base_amount + suffix/10000`,
-    - `suffix` in `001..999`,
-  - enforce one active invoice per `(shard_id, suffix)` with `TTL=24h`,
-  - incoming tx is valid when suffix resolves to active intent and `received_amount >= expected_amount`,
-  - overpayment above expected is credited in full and closes the matched intent,
-  - MVP shard configuration: one active shard address (global active invoice cap = 999),
-  - credit seller balance automatically on deterministic match,
-  - route unmatched/ambiguous cases to admin manual review queue.
-- Planned data contracts:
-  - expected-deposit intent table (intent lifecycle, expiry, linked seller/account, linked tx/ledger entry),
-  - shard registry table (small pool of deposit addresses),
-  - raw incoming chain transaction table (tx hash, from/to, amount, cursor/finality metadata, processing state).
-- Planned operational constraints:
-  - idempotent crediting (one tx -> one ledger credit),
-  - immutable audit links (`deposit_intent_id`, `suffix`, `tx_hash`, `ledger_entry_id`),
-  - Terraform-managed CF deployment and timer trigger.
-- Launch hardening and formal UAT/sign-off have been shifted to Phase 9.
+- Runtime components added in repository:
+  - domain service `libs/domain/deposit_intents.py` for expected-invoice lifecycle, shard registry, chain tx ingestion/matching helpers, and admin recovery actions,
+  - integration client `libs/integrations/tonapi.py` (mainnet read path, optional API key, unauth throttle support),
+  - orchestration service `libs/domain/blockchain_checker.py` with advisory-lock guarded 5-minute run,
+  - Cloud Function entrypoint `services/blockchain_checker/main.py`.
+- Matching contract implemented:
+  - invoice amount formula: `base_amount = ceil(request_amount*10)/10`, `expected_amount = base_amount + suffix/10000`,
+  - suffix space `001..999`, one active suffix per `(shard_id, suffix)` via partial unique index,
+  - invoice `TTL=24h`,
+  - deterministic auto-credit when `received_amount >= expected_amount` and payment is on-time,
+  - overpayment credits full received amount,
+  - partial/late payments route to `manual_review`.
+- Schema contracts added in `schema/schema.sql`:
+  - `deposit_shards`,
+  - `deposit_intents`,
+  - `chain_incoming_txs`,
+  - `chain_scan_cursors`.
+- Telegram UX additions (button-first):
+  - seller: `Пополнить`, `Мои пополнения / Проверить`,
+  - admin: `Исключения депозитов`, `Привязать tx -> intent`, `Отменить intent`.
+- Terraform serverless wiring added:
+  - function `qpi-blockchain-checker`,
+  - timer trigger every 5 minutes,
+  - runtime env for shard settings and TonAPI settings.
+- Launch hardening and formal UAT/sign-off remain in Phase 9.
 
 ## 4. Functional Workflow Summary
 
@@ -617,10 +619,7 @@ Required controls even in MVP:
 ## 12. Open Items / Pending Inputs
 
 - Production handling policy for secrets (wallet key/token lifecycle, rotation cadence).
-- Blockchain checker Phase 8 lock inputs:
-  - TON/USDT provider choice for read path (toncenter/tonapi/other) and SLA limits,
-  - exact matching tolerance policy (`exact` vs bounded delta),
-  - confirmation/finality threshold before credit.
+- Optional TonAPI API key enablement for higher read throughput (current MVP mode supports unauth throttled polling).
 - Final payout integration details and transaction broadcast implementation.
 - Tightening SSH ingress from `0.0.0.0/0` to operator CIDRs before production launch.
 - Optional migration from current self-signed IP TLS webhook to domain-managed trusted TLS.
@@ -744,3 +743,8 @@ Required controls even in MVP:
   - suffix space is `001..999` with 24h TTL invoices and one active suffix per `(shard_id, suffix)`,
   - amount formula is `ceil(required*10)/10 + suffix/10000`,
   - MVP starts with one shard address (`999` concurrent invoices cap).
+- 2026-02-27: Phase 8 repository implementation completed:
+  - added expected-deposit schema contracts (`deposit_shards`, `deposit_intents`, `chain_incoming_txs`, `chain_scan_cursors`),
+  - implemented seller top-up invoice flow and admin exception actions in Telegram runtime,
+  - implemented TonAPI integration client and `blockchain-checker` orchestration service/entrypoint,
+  - wired Terraform-managed `qpi-blockchain-checker` function and 5-minute trigger with configurable shard/TonAPI runtime env.

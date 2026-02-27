@@ -280,6 +280,112 @@ ALTER TABLE "public"."manual_deposits" ADD CONSTRAINT "manual_deposits_idempoten
 
 ALTER TABLE "public"."manual_deposits" ADD CONSTRAINT "manual_deposits_ledger_entry_id_key" UNIQUE (ledger_entry_id);
 
+CREATE TABLE "public"."deposit_shards" (
+    "id" bigserial NOT NULL,
+    "shard_key" text NOT NULL,
+    "deposit_address" text NOT NULL,
+    "chain" text NOT NULL CONSTRAINT deposit_shards_chain_check CHECK (chain = ANY (ARRAY['ton_mainnet'::text])),
+    "asset" text NOT NULL CONSTRAINT deposit_shards_asset_check CHECK (asset = 'USDT'::text),
+    "is_active" boolean NOT NULL DEFAULT true,
+    "created_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    "updated_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    CONSTRAINT deposit_shards_pkey PRIMARY KEY ("id")
+);
+
+ALTER TABLE "public"."deposit_shards" ADD CONSTRAINT "deposit_shards_shard_key_key" UNIQUE (shard_key);
+
+ALTER TABLE "public"."deposit_shards" ADD CONSTRAINT "deposit_shards_deposit_address_key" UNIQUE (deposit_address);
+
+CREATE TABLE "public"."chain_scan_cursors" (
+    "source_key" text NOT NULL,
+    "last_lt" bigint NOT NULL DEFAULT 0,
+    "updated_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    CONSTRAINT chain_scan_cursors_pkey PRIMARY KEY ("source_key")
+);
+
+CREATE TABLE "public"."chain_incoming_txs" (
+    "id" bigserial NOT NULL,
+    "shard_id" bigint NOT NULL,
+    "provider" text NOT NULL,
+    "chain" text NOT NULL CONSTRAINT chain_incoming_txs_chain_check CHECK (chain = ANY (ARRAY['ton_mainnet'::text])),
+    "asset" text NOT NULL CONSTRAINT chain_incoming_txs_asset_check CHECK (asset = 'USDT'::text),
+    "tx_hash" text NOT NULL,
+    "tx_lt" bigint NOT NULL,
+    "query_id" text NOT NULL,
+    "trace_id" text NOT NULL,
+    "operation_type" text NOT NULL,
+    "source_address" text,
+    "destination_address" text,
+    "amount_raw" text NOT NULL,
+    "amount_usdt" numeric(20,6) NOT NULL CONSTRAINT chain_incoming_txs_amount_usdt_check CHECK (amount_usdt > 0::numeric),
+    "occurred_at" timestamp with time zone NOT NULL,
+    "suffix_code" smallint CONSTRAINT chain_incoming_txs_suffix_code_check CHECK (suffix_code >= 1 AND suffix_code <= 999),
+    "status" text NOT NULL CONSTRAINT chain_incoming_txs_status_check CHECK (status = ANY (ARRAY['ingested'::text, 'credited'::text, 'manual_review'::text])),
+    "review_reason" text,
+    "matched_intent_id" bigint,
+    "credited_ledger_entry_id" bigint,
+    "raw_payload_json" jsonb NOT NULL DEFAULT '{}'::jsonb,
+    "processed_at" timestamp with time zone,
+    "created_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    "updated_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    CONSTRAINT chain_incoming_txs_pkey PRIMARY KEY ("id")
+);
+
+CREATE INDEX idx_chain_incoming_txs_status ON public.chain_incoming_txs USING btree (status, occurred_at);
+
+CREATE INDEX idx_chain_incoming_txs_shard_suffix ON public.chain_incoming_txs USING btree (shard_id, suffix_code) WHERE (status = ANY (ARRAY['ingested'::text, 'manual_review'::text]));
+
+ALTER TABLE ONLY "public"."chain_incoming_txs" ADD CONSTRAINT "chain_incoming_txs_shard_id_fkey" FOREIGN KEY ("shard_id") REFERENCES "public"."deposit_shards" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE ONLY "public"."chain_incoming_txs" ADD CONSTRAINT "chain_incoming_txs_credited_ledger_entry_id_fkey" FOREIGN KEY ("credited_ledger_entry_id") REFERENCES "public"."ledger_entries" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE "public"."chain_incoming_txs" ADD CONSTRAINT "chain_incoming_txs_credited_ledger_entry_id_key" UNIQUE (credited_ledger_entry_id);
+
+CREATE UNIQUE INDEX uq_chain_incoming_txs_provider_identity ON public.chain_incoming_txs USING btree (shard_id, tx_hash, tx_lt, query_id, operation_type);
+
+CREATE TABLE "public"."deposit_intents" (
+    "id" bigserial NOT NULL,
+    "seller_user_id" bigint NOT NULL,
+    "target_account_id" bigint NOT NULL,
+    "shard_id" bigint NOT NULL,
+    "request_amount_usdt" numeric(20,6) NOT NULL CONSTRAINT deposit_intents_request_amount_usdt_check CHECK (request_amount_usdt > 0::numeric),
+    "base_amount_usdt" numeric(20,6) NOT NULL CONSTRAINT deposit_intents_base_amount_usdt_check CHECK (base_amount_usdt > 0::numeric),
+    "expected_amount_usdt" numeric(20,6) NOT NULL CONSTRAINT deposit_intents_expected_amount_usdt_check CHECK (expected_amount_usdt > 0::numeric),
+    "suffix_code" smallint NOT NULL CONSTRAINT deposit_intents_suffix_code_check CHECK (suffix_code >= 1 AND suffix_code <= 999),
+    "status" text NOT NULL CONSTRAINT deposit_intents_status_check CHECK (status = ANY (ARRAY['pending'::text, 'matched'::text, 'credited'::text, 'expired'::text, 'manual_review'::text, 'cancelled'::text])),
+    "expires_at" timestamp with time zone NOT NULL,
+    "matched_chain_tx_id" bigint,
+    "credited_ledger_entry_id" bigint,
+    "credited_amount_usdt" numeric(20,6),
+    "review_reason" text,
+    "idempotency_key" text NOT NULL,
+    "created_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    "updated_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    CONSTRAINT deposit_intents_pkey PRIMARY KEY ("id")
+);
+
+CREATE INDEX idx_deposit_intents_seller_status ON public.deposit_intents USING btree (seller_user_id, status, created_at);
+
+CREATE INDEX idx_deposit_intents_expiry_pending ON public.deposit_intents USING btree (expires_at) WHERE (status = ANY (ARRAY['pending'::text, 'matched'::text]));
+
+ALTER TABLE ONLY "public"."deposit_intents" ADD CONSTRAINT "deposit_intents_seller_user_id_fkey" FOREIGN KEY ("seller_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE ONLY "public"."deposit_intents" ADD CONSTRAINT "deposit_intents_target_account_id_fkey" FOREIGN KEY ("target_account_id") REFERENCES "public"."accounts" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE ONLY "public"."deposit_intents" ADD CONSTRAINT "deposit_intents_shard_id_fkey" FOREIGN KEY ("shard_id") REFERENCES "public"."deposit_shards" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE ONLY "public"."deposit_intents" ADD CONSTRAINT "deposit_intents_matched_chain_tx_id_fkey" FOREIGN KEY ("matched_chain_tx_id") REFERENCES "public"."chain_incoming_txs" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE ONLY "public"."deposit_intents" ADD CONSTRAINT "deposit_intents_credited_ledger_entry_id_fkey" FOREIGN KEY ("credited_ledger_entry_id") REFERENCES "public"."ledger_entries" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE "public"."deposit_intents" ADD CONSTRAINT "deposit_intents_credited_ledger_entry_id_key" UNIQUE (credited_ledger_entry_id);
+
+ALTER TABLE "public"."deposit_intents" ADD CONSTRAINT "deposit_intents_idempotency_key_key" UNIQUE (idempotency_key);
+
+CREATE UNIQUE INDEX uq_deposit_intents_active_suffix ON public.deposit_intents USING btree (shard_id, suffix_code) WHERE (status = ANY (ARRAY['pending'::text, 'matched'::text, 'manual_review'::text]));
+
+ALTER TABLE ONLY "public"."chain_incoming_txs" ADD CONSTRAINT "chain_incoming_txs_matched_intent_id_fkey" FOREIGN KEY ("matched_intent_id") REFERENCES "public"."deposit_intents" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
 CREATE TABLE "public"."shops" (
     "id" bigserial NOT NULL,
     "seller_user_id" bigint NOT NULL,

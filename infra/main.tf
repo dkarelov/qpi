@@ -180,6 +180,11 @@ locals {
       ",",
       [for id in var.bot_admin_telegram_ids : tostring(id)]
     )
+    seller_collateral_shard_key         = var.seller_collateral_shard_key
+    seller_collateral_shard_address     = var.seller_collateral_shard_address
+    seller_collateral_shard_chain       = var.seller_collateral_shard_chain
+    seller_collateral_shard_asset       = var.seller_collateral_shard_asset
+    seller_collateral_invoice_ttl_hours = var.seller_collateral_invoice_ttl_hours
   })
 
   bot_ssh_keys_metadata = join("\n", [

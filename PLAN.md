@@ -793,6 +793,11 @@ Design baseline for planning:
 5. Invoice TTL is fixed at 24 hours; suffix is released after credit/expiry/manual-cancel.
 6. Keep manual admin fallback for ambiguity/failures.
 7. Keep withdrawal flow unchanged in this phase.
+8. Locked implementation profile:
+   - network: TON mainnet,
+   - provider: TonAPI,
+   - confirmation threshold: 1,
+   - matching precision: strict `received_amount >= expected_amount` with no epsilon.
 
 Execution streams:
 
@@ -903,7 +908,11 @@ Exit criteria:
 
 Status:
 
-- Planned (clarification inputs pending before implementation lock).
+- Implemented in repository:
+  - schema/domain/bot/CF/Terraform streams are coded,
+  - integration tests for Phase 8 scenarios added (`tests/test_blockchain_checker_phase8.py`),
+  - local non-DB checks passed; DB integration execution depends on `TEST_DATABASE_URL` availability in runtime environment.
+- Pending operational step: apply Terraform and execute live Phase 8 rollout verification on production.
 
 ## Phase 9: Launch Hardening and UAT
 

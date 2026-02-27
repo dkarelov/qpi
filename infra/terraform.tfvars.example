@@ -25,3 +25,5 @@ db_ssh_public_keys = [
 # db_user      = "qpi"
 # cf_token_cipher_key = "<set-a-strong-shared-key-for-bot-and-cf>"
 # bot_webhook_secret_token = "<set-a-random-webhook-secret>"
+# seller_collateral_shard_address = "UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH"
+# tonapi_api_key = "<optional-tonapi-api-key>"

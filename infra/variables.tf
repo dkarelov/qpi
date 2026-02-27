@@ -452,3 +452,140 @@ variable "daily_report_scrapper_cron_expression" {
   type        = string
   default     = "0 * ? * * *"
 }
+
+variable "seller_collateral_shard_key" {
+  description = "Shard key used for seller collateral top-up invoices."
+  type        = string
+  default     = "mvp-1"
+}
+
+variable "seller_collateral_shard_address" {
+  description = "TON deposit address used by MVP shard for seller collateral top-ups."
+  type        = string
+  default     = "UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH"
+}
+
+variable "seller_collateral_shard_chain" {
+  description = "Blockchain identifier for seller collateral shard."
+  type        = string
+  default     = "ton_mainnet"
+}
+
+variable "seller_collateral_shard_asset" {
+  description = "Asset identifier for seller collateral shard."
+  type        = string
+  default     = "USDT"
+}
+
+variable "seller_collateral_invoice_ttl_hours" {
+  description = "TTL hours for generated seller collateral deposit intents."
+  type        = number
+  default     = 24
+
+  validation {
+    condition     = var.seller_collateral_invoice_ttl_hours >= 1
+    error_message = "seller_collateral_invoice_ttl_hours must be >= 1."
+  }
+}
+
+variable "blockchain_checker_advisory_lock_id" {
+  description = "Advisory lock ID used by blockchain-checker."
+  type        = number
+  default     = 7008001
+
+  validation {
+    condition     = var.blockchain_checker_advisory_lock_id >= 1
+    error_message = "blockchain_checker_advisory_lock_id must be >= 1."
+  }
+}
+
+variable "blockchain_checker_match_batch_size" {
+  description = "Batch size of ingested chain tx rows processed per blockchain-checker run."
+  type        = number
+  default     = 200
+
+  validation {
+    condition     = var.blockchain_checker_match_batch_size >= 1
+    error_message = "blockchain_checker_match_batch_size must be >= 1."
+  }
+}
+
+variable "blockchain_checker_confirmations_required" {
+  description = "Confirmation threshold before auto-crediting expected deposits."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.blockchain_checker_confirmations_required >= 1
+    error_message = "blockchain_checker_confirmations_required must be >= 1."
+  }
+}
+
+variable "tonapi_base_url" {
+  description = "TonAPI base URL used by blockchain-checker."
+  type        = string
+  default     = "https://tonapi.io"
+}
+
+variable "tonapi_api_key" {
+  description = "Optional TonAPI API key for blockchain-checker."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "tonapi_timeout_seconds" {
+  description = "TonAPI request timeout in seconds."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.tonapi_timeout_seconds >= 1
+    error_message = "tonapi_timeout_seconds must be >= 1."
+  }
+}
+
+variable "tonapi_page_limit" {
+  description = "TonAPI page size for jetton transfer history polling."
+  type        = number
+  default     = 100
+
+  validation {
+    condition     = var.tonapi_page_limit >= 1 && var.tonapi_page_limit <= 1000
+    error_message = "tonapi_page_limit must be in range 1..1000."
+  }
+}
+
+variable "tonapi_max_pages_per_shard" {
+  description = "Max TonAPI pages read per shard in one checker run."
+  type        = number
+  default     = 20
+
+  validation {
+    condition     = var.tonapi_max_pages_per_shard >= 1
+    error_message = "tonapi_max_pages_per_shard must be >= 1."
+  }
+}
+
+variable "tonapi_unauth_min_interval_seconds" {
+  description = "Min interval between TonAPI calls without API key."
+  type        = number
+  default     = 4.0
+
+  validation {
+    condition     = var.tonapi_unauth_min_interval_seconds >= 0
+    error_message = "tonapi_unauth_min_interval_seconds must be >= 0."
+  }
+}
+
+variable "tonapi_usdt_jetton_master" {
+  description = "USDT jetton master address used by blockchain-checker."
+  type        = string
+  default     = "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"
+}
+
+variable "blockchain_checker_cron_expression" {
+  description = "Cron expression for blockchain-checker timer trigger."
+  type        = string
+  default     = "*/5 * ? * * *"
+}

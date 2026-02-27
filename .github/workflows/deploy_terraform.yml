@@ -23,6 +23,7 @@ jobs:
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
       TOKEN_YC_JSON_LOGGER: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
       TF_VAR_cf_token_cipher_key: ${{ secrets.TOKEN_CIPHER_KEY }}
+      TF_VAR_tonapi_api_key: ${{ secrets.TONAPI_API_KEY }}
       TF_VAR_folder_id: ${{ vars.YC_FOLDER_ID }}
     steps:
       - name: Checkout
