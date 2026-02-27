@@ -208,6 +208,23 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - 5-minute timer trigger.
 - `services/worker/main.py` no longer owns reservation expiry processing.
 
+### 3.14 Phase 7 delivery target (locked)
+
+- Phase 7 is the MVP go-live phase and must deliver a full usable product slice in live Telegram.
+- End-of-phase user experience target:
+  - seller and buyer can complete the core journey through button-driven Telegram UX,
+  - admin can process deposits/withdrawals in Telegram,
+  - both CF runtimes (`daily-report-scrapper`, `order-tracker`) operate on live data.
+- Scope decision:
+  - Phase 7 includes observability/runbook baseline for operations,
+  - hardening + formal UAT/sign-off are tracked in Phase 8.
+- Bot runtime target for Phase 7:
+  - production PTB webhook application on bot VM,
+  - command processors remain as internal/testing adapters, but user-facing interaction is button-first.
+- Finance/admin target for Phase 7:
+  - manual deposit credit with immutable audit records,
+  - withdrawal queue approve/reject/send operations with idempotent transactional semantics and payout tx tracking.
+
 ## 4. Functional Workflow Summary
 
 Seller flow:
@@ -579,3 +596,11 @@ Required controls even in MVP:
   - CI workflow exports `TF_VAR_cf_token_cipher_key` from GitHub secret `TOKEN_CIPHER_KEY` and fails fast when missing,
   - GitHub repo secret `TOKEN_CIPHER_KEY` configured and daily-report CF redeployed with aligned key,
   - live invoke confirms recovery (`shops_failed=0`, shop processed successfully).
+- 2026-02-27: Phase 7 planning scope locked for full live MVP experience:
+  - `PLAN.md` Phase 7 expanded into detailed execution streams for Telegram button UX, admin finance controls, deployment, observability, hardening, and UAT,
+  - prior planned launch-critical scope from Phases 8-9 merged into Phase 7 acceptance criteria,
+  - `AGENTS.md` updated to reflect Phase 7 as the go-live phase target.
+- 2026-02-27: Phase plan refined per launch sequencing update:
+  - DB backup/restore drill removed from Phase 7 stream scope,
+  - Phase 7 keeps execution streams 1-8 (functional go-live + observability/runbooks),
+  - prior Phase 7 streams 9-10 (hardening + UAT/sign-off) moved to Phase 8.

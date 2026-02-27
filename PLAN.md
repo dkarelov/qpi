@@ -652,65 +652,168 @@ Status:
 - TODO (post-MVP):
   - define and implement correction-operation semantics in order tracking (`Коррекция продаж`, `Коррекция возвратов`).
 
-## Phase 7: Finance and Admin Controls
+## Phase 7: Full Product Go-Live (Telegram UX + Finance/Admin + Ops)
 
-Deliverables:
+Goal:
 
-1. Telegram admin queue with approve/reject actions.
-2. Manual deposit credit flow (`tx_hash`, amount, target account).
-3. Withdrawal request + admin approval + send flow.
-4. Full finance audit trail.
+- Deliver a fully usable production slice where seller and buyer can interact in live Telegram via buttons (not only text commands), while both cloud functions (`daily-report-scrapper`, `order-tracker`) run in production and finance/admin operations are executable end-to-end.
+
+Scope lock:
+
+1. Phase 7 delivers full live product operations for seller/buyer/admin plus observability baseline required to run the system safely day-to-day.
+2. End-of-phase expectation is "real experience" with two real Telegram accounts (seller + buyer) and one admin account.
+3. Command-style processors remain as internal/testing adapters; user-facing UX is button-first.
+
+Execution streams:
+
+1. Telegram transport runtime (real PTB webhook app)
+   - Add a real `python-telegram-bot` application runtime for `services/bot_api`.
+   - Keep existing domain services and command processors reusable, but add Telegram update adapters (messages, callbacks, deep links).
+   - Implement webhook bootstrap with idempotent registration (`setWebhook`) and startup health checks.
+   - Introduce callback-data versioning (`v1:<flow>:<action>:<id>`) to keep button payloads stable and testable.
+2. Role router and button-first UX shell
+   - Add unified role-aware root menu (`seller`, `buyer`, `admin`) with Russian copy only.
+   - Implement inline keyboards and stateful input prompts for each role.
+   - Preserve deep-link entry (`/start shop_<slug>`) for buyer shop onboarding.
+   - Ensure sensitive inputs (WB token, payout address, payload blobs) are deleted after parsing with explicit user notice.
+3. Seller live UX completion
+   - Convert seller lifecycle to guided button flow:
+     - shop create/list/delete,
+     - token set/replace with ping validation,
+     - listing create/list/activate/pause/unpause/delete.
+   - Keep existing soft-delete warnings and transfer split semantics in UI confirmations.
+   - Add seller balance view (`seller_available`, `seller_collateral`) and listing collateral status visibility.
+4. Buyer live UX completion
+   - Convert buyer lifecycle to guided button flow:
+     - open shop,
+     - browse active listings,
+     - reserve slot,
+     - submit base64 payload,
+     - track assignment statuses.
+   - Add withdraw request UX:
+     - select/enter amount,
+     - enter payout address,
+     - create `withdraw_pending_admin` request with idempotency guard.
+   - Add buyer balance and withdrawal-history views.
+5. Admin finance control plane (MVP manual ops)
+   - Add admin access guard (`ADMIN_TELEGRAM_IDS` allowlist).
+   - Implement admin queue screens:
+     - pending withdrawals list/details,
+     - approve,
+     - reject with reason,
+     - mark sent with `tx_hash`.
+   - Implement manual deposit credit flow:
+     - target account/user selection,
+     - amount,
+     - source reference (`tx_hash` or external note),
+     - immutable audit event.
+   - Send buyer notifications on withdraw state changes (approved/rejected/sent).
+6. Finance domain and schema closure for live admin ops
+   - Extend `libs/domain/ledger.py` with missing admin primitives:
+     - manual deposit credit transaction (idempotent),
+     - pending-withdrawal query API,
+     - request detail query API for admin screens.
+   - Add explicit DB contract for deposits (new table via `schema/schema.sql`), including:
+     - `tx_hash`/external reference,
+     - amount,
+     - target account/user,
+     - admin actor,
+     - idempotency key,
+     - timestamps.
+   - Keep strict double-entry invariants and no direct balance writes outside transactional primitives.
+7. Bot VM runtime deployment and CI/CD
+   - Deploy real bot runtime on bot VM as managed service (systemd or container) with restart policy.
+   - Add Terraform-managed runtime prerequisites on VM (service unit, env file path, health endpoint exposure).
+   - Add CI workflow for bot rollout on `main`:
+     - lint/tests gate,
+     - artifact/package build,
+     - rollout + health verification,
+     - rollback hook.
+   - Keep CF deployments Terraform-managed as currently implemented.
+8. Launch observability and runbooks (mandatory in Phase 7)
+   - Add correlation fields across bot + CF logs:
+     - `telegram_update_id`,
+     - `shop_id` / `listing_id` / `assignment_id`,
+     - `withdrawal_request_id`,
+     - `ledger_entry_id`.
+   - Define logging queries/dashboard for:
+     - webhook errors,
+     - WB API failures,
+     - pending-withdrawal backlog,
+     - payout failure events.
+   - Publish runbooks:
+     - bot webhook outage,
+     - CF failure/retry storms,
+     - payout operation incident.
 
 Exit criteria:
 
-1. Deposit/withdraw operations are auditable and idempotent.
-2. Approved payout writes immutable ledger + tx records.
+1. Live Telegram UX is button-driven for seller, buyer, and admin without requiring raw command syntax.
+2. End-to-end business path works in production runtime:
+   - seller flow -> buyer flow -> CF lifecycle -> withdrawal request -> admin completion.
+3. Deposit and withdrawal operations are idempotent, fully auditable, and persisted with immutable ledger records.
+4. Bot VM runtime has automated deployment, restart safety, and webhook health checks.
+5. Phase 5/6 cloud functions remain healthy and integrated with live bot/DB state.
+6. Observability/runbooks for bot/CF/finance operations are completed and validated.
+
+Status:
+
+- Pending (execution plan locked; implementation not started).
+
+## Phase 8: Launch Hardening and UAT
+
+Goal:
+
+- Complete pre-launch hardening and formal UAT/sign-off after Phase 7 functional go-live scope is finished.
+
+Execution streams:
+
+1. Launch hardening and readiness gate
+   - Tighten SSH ingress from `0.0.0.0/0` to operator CIDRs before launch.
+   - Enforce admin-only finance actions through allowlist + audit trail.
+   - Verify secret alignment/rotation for:
+     - `TOKEN_CIPHER_KEY`,
+     - Telegram bot token,
+     - webhook secret.
+   - Freeze go-live rollback plan (bot rollback + DB rollback + CF rollback actions).
+2. Verification, UAT, and launch sign-off
+   - Expand automated tests:
+     - admin deposit flow,
+     - withdrawal approve/reject/send matrix,
+     - idempotency/replay tests for admin actions,
+     - Telegram callback contract tests,
+     - end-to-end happy path from listing activation to `withdraw_sent`.
+   - Execute UAT on live Telegram with real button flow:
+     - seller creates and activates listing,
+     - buyer reserves/submits payload,
+     - CFs move assignment to `eligible_for_withdrawal`,
+     - buyer submits withdrawal request,
+     - admin approves and marks payout sent.
+   - Capture evidence in run log (timestamps, IDs, screenshots, tx hash placeholders).
+
+Exit criteria:
+
+1. Launch hardening controls are applied and validated.
+2. UAT sign-off is completed with real Telegram interaction evidence.
+3. Launch approval checklist is completed.
 
 Status:
 
 - Pending.
 
-## Phase 8: Observability and Reliability
-
-Deliverables:
-
-1. Structured logs with correlation IDs.
-2. Logging queries/dashboard for key errors.
-3. Alerts/runbooks for CF orchestrators, WB integration, payout failures.
-4. DB backup/restore runbook.
-
-Exit criteria:
-
-1. Critical flows observable and diagnosable.
-2. Restore procedure tested at least once.
+## Phase 9: Reserved
 
 Status:
 
-- Pending.
-
-## Phase 9: Hardening and Launch
-
-Deliverables:
-
-1. Integration and smoke tests for core lifecycle.
-2. Security tightening before launch (SSH CIDRs, secret rotation).
-3. Go-live checklist + rollback plan.
-
-Exit criteria:
-
-1. UAT passed.
-2. Operational checklist complete.
-3. Launch approval.
-
-Status:
-
-- Pending.
+- Reserved for post-launch refinements.
 
 ## 4. Recommended Execution Order
 
 1. Finish remaining artifacts of Phase 0 (formal schema/state docs).
-2. Implement Phase 7 finance/admin controls for production money operations.
-3. Complete Phases 8 and 9 before production launch.
+2. Execute Phase 7 stream 1-4 (Telegram runtime + seller/buyer button UX).
+3. Execute Phase 7 stream 5-6 (admin finance flows + schema/domain closure).
+4. Execute Phase 7 stream 7-8 (deployment automation + observability/runbooks).
+5. Execute Phase 8 stream 1-2 (hardening + UAT + launch sign-off).
 
 ## 5. Tracking Policy
 
