@@ -1882,10 +1882,11 @@ class TelegramWebhookRuntime:
         amount_usdt: Decimal,
         external_reference: str,
     ) -> None:
+        normalized_account_kind = self._normalize_manual_deposit_account_kind(account_kind)
         try:
             target_user_id, target_account_id = await self._resolve_manual_deposit_target(
                 target_telegram_id=target_telegram_id,
-                account_kind=account_kind,
+                account_kind=normalized_account_kind,
             )
             tx_hash = (
                 external_reference[3:].strip()
@@ -1900,7 +1901,7 @@ class TelegramWebhookRuntime:
                 external_reference=external_reference,
                 idempotency_key=(
                     f"tg-manual-deposit:{admin_user_id}:{target_telegram_id}:"
-                    f"{account_kind}:{amount_usdt}:{external_reference}"
+                    f"{normalized_account_kind}:{amount_usdt}:{external_reference}"
                 ),
                 tx_hash=tx_hash,
             )
@@ -1961,7 +1962,10 @@ class TelegramWebhookRuntime:
         }
         required_role = required_role_by_account_kind.get(account_kind)
         if required_role is None:
-            raise ValueError("account_kind must be seller_available or buyer_available")
+            raise ValueError(
+                "account_kind must be seller|buyer "
+                "(or seller_available|buyer_available)",
+            )
 
         async with self._db_pool.connection() as conn:
             async with conn.transaction():
@@ -2022,6 +2026,23 @@ class TelegramWebhookRuntime:
                     )
                     row = await cur.fetchone()
                     return row["id"]
+
+    @staticmethod
+    def _normalize_manual_deposit_account_kind(account_kind: str) -> str:
+        normalized = account_kind.strip().lower()
+        aliases = {
+            "seller": "seller_available",
+            "buyer": "buyer_available",
+            "seller_available": "seller_available",
+            "buyer_available": "buyer_available",
+        }
+        mapped = aliases.get(normalized)
+        if mapped is None:
+            raise ValueError(
+                "account_kind must be seller|buyer "
+                "(or seller_available|buyer_available)",
+            )
+        return mapped
 
     async def _notify_buyer_withdraw_status(
         self,
@@ -2176,9 +2197,12 @@ class TelegramWebhookRuntime:
                 query_message,
                 (
                     "Введите депозит: <telegram_id> <account_kind> "
-                    "<amount_usdt> <external_reference>\n"
-                    "account_kind: seller_available | buyer_available\n"
-                    "Пример: 10002 buyer_available 5.000000 tx:0xabc123"
+                    "<amount_usdt> <reference_or_comment>\n"
+                    "account_kind: seller | buyer "
+                    "(также поддерживается seller_available | buyer_available)\n"
+                    "Примеры:\n"
+                    "10002 buyer 1.0 welcome_bonus\n"
+                    "10002 buyer 5.000000 tx:0xabc123"
                 ),
                 self._admin_menu_markup(),
             )
@@ -2516,7 +2540,7 @@ class TelegramWebhookRuntime:
             if len(tokens) != 4:
                 await message.reply_text(
                     "Формат: <telegram_id> <account_kind> "
-                    "<amount_usdt> <external_reference>"
+                    "<amount_usdt> <reference_or_comment>"
                 )
                 return
             telegram_id_raw, account_kind, amount_raw, external_reference = tokens
