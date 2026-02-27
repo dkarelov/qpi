@@ -25,20 +25,21 @@ In scope:
 - One Telegram bot (python-telegram-bot) with role-based flows for seller, buyer, admin.
 - No Telegram Mini App.
 - Russian-only UX.
-- Manual admin operations for deposits and withdrawal approvals (MVP).
+- Seller collateral top-up auto-confirmation via scheduled blockchain checker CF (planned in Phase 8).
+- Manual admin operations remain for non-collateral credits and exception handling.
 - Yandex Cloud-based infrastructure.
 
 Out of scope (MVP):
 
 - Disputes.
 - Advanced wallet custody/security.
-- Automatic deposit reconciliation from chain.
+- Full generalized on-chain reconciliation for all inbound/outbound flows and auto-sweeping.
 
 ## 2.3 Core Actors
 
 - Seller: creates shop/listings, provides WB token, funds collateral.
 - Buyer: accepts listing slot, submits base64 plugin confirmation payload, gets unlockable reward.
-- Admin: credits deposits manually, approves withdrawals, monitors logs.
+- Admin: handles exceptions/manual credits, approves withdrawals, monitors logs.
 
 ## 2.4 Functional Requirements
 
@@ -91,11 +92,12 @@ Out of scope (MVP):
 
 ### Admin/finance requirements
 
-1. Manual deposit credit by admin with tx hash/amount records.
-2. Withdrawal requests require admin approve/reject.
-3. Payouts are sent from hot wallet.
-4. All admin and balance-changing actions are auditable.
-5. Minimal admin control UI is acceptable (Telegram admin flow).
+1. Seller collateral funding must support expected incoming transaction tracking with automatic confirmation.
+2. Manual deposit credit by admin remains available for bonuses/corrections/exception handling.
+3. Withdrawal requests require admin approve/reject.
+4. Payouts are sent from hot wallet.
+5. All admin and balance-changing actions are auditable.
+6. Minimal admin control UI is acceptable (Telegram admin flow).
 
 ## 2.5 Money and Pricing Rules
 
@@ -164,7 +166,8 @@ Cancel/error states:
    - initial token validation via `GET https://statistics-api.wildberries.ru/ping`,
    - report ingestion (`reportDetailByPeriod`) for pickup/return signals and token invalidation events.
 4. TON/USDT transfer path for withdrawals.
-5. Yandex Cloud primitives: Compute, VPC, Logging, Cloud Functions.
+5. TON blockchain indexer API for incoming USDT transaction monitoring (Phase 8 target).
+6. Yandex Cloud primitives: Compute, VPC, Logging, Cloud Functions.
 
 ## 2.10 Backend Persistence Baseline (Phase 2 Decision)
 
@@ -770,13 +773,143 @@ Status:
   - bot service healthy on VM (`qpi-bot.service`, `/healthz`),
   - webhook served on `https://158.160.187.114:8443/telegram/webhook` with uploaded custom certificate (`has_custom_certificate=true`),
   - DB schema applied on production DB with Phase 7 additions (`manual_deposits`, status/index updates).
-- Next operational milestone: execute Phase 8 hardening + live Telegram UAT sign-off.
+- Next operational milestone: execute Phase 8 blockchain checker plan/implementation, then Phase 9 hardening + live Telegram UAT sign-off.
 
-## Phase 8: Launch Hardening and UAT
+## Phase 8: Automated Collateral Deposit Confirmation (Blockchain Checker CF)
 
 Goal:
 
-- Complete pre-launch hardening and formal UAT/sign-off after Phase 7 functional go-live scope is finished.
+- Remove manual seller collateral confirmation by introducing a scheduled Cloud Function (`blockchain-checker`, every 5 minutes) that monitors incoming USDT transfers and confirms expected deposits automatically.
+
+Design baseline for planning:
+
+1. Use shard deposit addresses managed by the service (pool model).
+2. MVP starts with one shard address only; all seller top-up invoices route to this address.
+3. Identify expected seller payments by amount suffix on top of rounded base amount:
+   - `base_amount = ceil(required_amount_usdt * 10) / 10` (round up to 1 decimal),
+   - `expected_amount = base_amount + suffix/10000`,
+   - `suffix` is integer `001..999` (3-digit suffix space).
+4. Invoice capacity is `999 * number_of_active_shards`; with one shard in MVP this is 999 active invoices.
+5. Invoice TTL is fixed at 24 hours; suffix is released after credit/expiry/manual-cancel.
+6. Keep manual admin fallback for ambiguity/failures.
+7. Keep withdrawal flow unchanged in this phase.
+
+Execution streams:
+
+1. Expected-deposit contract and matching policy
+   - Define `deposit_intent` lifecycle for seller collateral top-ups:
+     - `pending` -> `matched` -> `credited` (success),
+     - `pending` -> `expired`,
+     - `pending`/`matched` -> `manual_review`.
+   - On seller top-up request, generate expected amount using rounding + suffix:
+     - compute base amount by rounding required amount up to 1 decimal,
+     - allocate free suffix in `001..999` on shard,
+     - compute `expected_amount = base_amount + suffix/10000`.
+   - Enforce one active invoice per `(shard_id, suffix)` and TTL (`expires_at = created_at + 24h`).
+   - Match rule for incoming tx:
+     - suffix must point to an active invoice on that shard,
+     - received amount must be `>= expected_amount`,
+     - if received amount is above expected, credit full received amount and close invoice,
+     - amount below expected does not close invoice.
+   - Define idempotency rules for one intent -> one credit.
+2. Seller bot UX for auto-confirmed top-up
+   - Add seller action from balance/activation insufficiency path: "Пополнить".
+   - Bot creates a `deposit_intent` and shows:
+     - shard USDT address,
+     - exact amount with suffix,
+     - expiry time,
+     - intent/reference ID.
+   - Add "Проверить поступление" button for on-demand check trigger (optional fast path in addition to 5-minute CF).
+   - Notify seller when credit is confirmed or intent expires/fails.
+3. Schema and domain model
+   - Add immutable expected-deposit table (for example `deposit_intents`) with:
+     - seller/target account context,
+     - shard context (`shard_id`, `deposit_address`),
+     - expected amount,
+     - suffix code (`001..999`) and rounded base amount,
+     - status,
+     - expiry,
+     - matched tx linkage,
+     - credited ledger linkage,
+     - idempotency key and timestamps.
+   - Add shard registry table (for example `deposit_shards`) to manage active/inactive shard addresses.
+   - Add raw chain ingestion table (for example `chain_incoming_txs`) with:
+     - chain/network token identifiers,
+     - `tx_hash`,
+     - `from_address`, `to_address`,
+     - amount,
+     - block/log cursor fields,
+     - finality metadata,
+     - raw payload,
+     - processing status.
+   - Extend finance domain with idempotent `confirm_expected_deposit(...)` primitive that posts into existing ledger/accounts (`seller_available`) and stores an immutable audit trail.
+4. Blockchain integration client
+   - Add `libs/integrations/<provider>.py` reader for incoming USDT transfers to shard addresses.
+   - Use cursor-based incremental polling (`last_seen_cursor`) to avoid rescanning full history.
+   - Normalize provider response into project transaction contract before DB insert.
+   - Handle provider retry/backoff and rate limits.
+5. New CF service: `blockchain-checker` (every 5 minutes)
+   - Add service entrypoint `services/blockchain_checker/main.py`.
+   - Add orchestration domain `libs/domain/blockchain_checker.py`:
+     - advisory lock guard,
+     - ingest new chain txs,
+     - match txs to pending intents deterministically,
+     - execute idempotent ledger credit on match,
+     - mark intent/tx states,
+     - emit structured counters/logs.
+   - Add Terraform-managed function + timer trigger in `infra/serverless.tf` (cron `*/5 * ? * * *`).
+6. Admin exception and recovery flow
+   - Add admin queue for:
+     - unmatched incoming txs,
+     - expired intents,
+     - ambiguous matches.
+   - Provide admin actions:
+     - attach tx to intent and credit,
+     - cancel intent,
+     - perform manual credit with explicit reason.
+   - Preserve immutable audit records for every override.
+7. Observability and operational controls
+   - Add correlation IDs: `deposit_intent_id`, `chain_tx_id`, `tx_hash`, `ledger_entry_id`.
+   - Add dashboards/queries:
+     - pending intents older than SLA,
+     - unmatched tx count,
+     - CF scan lag,
+     - provider API error rates.
+   - Add runbooks for:
+     - provider outage,
+     - cursor desync/replay,
+     - duplicate/ambiguous tx handling.
+8. Verification and rollout
+   - Add integration tests for:
+     - happy-path auto credit,
+     - duplicate invoke idempotency,
+     - suffix pool exhaustion (all `001..999` busy on shard),
+     - same-base collision handling via different suffixes,
+     - expired intent handling,
+     - admin override path.
+   - Execute live UAT:
+     - seller creates intent,
+     - seller sends exact amount,
+     - CF confirms and credits seller balance,
+     - listing activation succeeds without manual admin deposit.
+
+Exit criteria:
+
+1. Seller collateral top-up can be auto-confirmed without manual blockchain checks by admin.
+2. Every confirmed credit has linked records: `deposit_intent_id`, `suffix`, `tx_hash`, and `ledger_entry_id`.
+3. Duplicate CF runs do not create duplicate credits.
+4. Exception paths (unmatched/ambiguous/expired) are operable through admin flow with full audit.
+5. Terraform-managed CF deployment and trigger are live and stable.
+
+Status:
+
+- Planned (clarification inputs pending before implementation lock).
+
+## Phase 9: Launch Hardening and UAT
+
+Goal:
+
+- Complete pre-launch hardening and formal UAT/sign-off after Phase 8 automation scope is finished.
 
 Execution streams:
 
@@ -786,17 +919,19 @@ Execution streams:
    - Verify secret alignment/rotation for:
      - `TOKEN_CIPHER_KEY`,
      - Telegram bot token,
-     - webhook secret.
+     - webhook secret,
+     - blockchain provider credentials.
    - Freeze go-live rollback plan (bot rollback + DB rollback + CF rollback actions).
 2. Verification, UAT, and launch sign-off
    - Expand automated tests:
      - admin deposit flow,
      - withdrawal approve/reject/send matrix,
-     - idempotency/replay tests for admin actions,
+     - blockchain checker intent/match/recovery matrix,
+     - idempotency/replay tests for admin/system actions,
      - Telegram callback contract tests,
      - end-to-end happy path from listing activation to `withdraw_sent`.
    - Execute UAT on live Telegram with real button flow:
-     - seller creates and activates listing,
+     - seller creates and activates listing using auto-confirmed top-up,
      - buyer reserves/submits payload,
      - CFs move assignment to `eligible_for_withdrawal`,
      - buyer submits withdrawal request,
@@ -813,7 +948,7 @@ Status:
 
 - Pending.
 
-## Phase 9: Reserved
+## Phase 10: Reserved
 
 Status:
 
@@ -823,7 +958,8 @@ Status:
 
 1. Finish remaining artifacts of Phase 0 (formal schema/state docs).
 2. Phase 7 is implemented in repository (streams 1-8 complete).
-3. Execute Phase 8 stream 1-2 (hardening + UAT + launch sign-off).
+3. Execute Phase 8 stream 1-8 (blockchain checker CF + auto-confirmed collateral top-ups).
+4. Execute Phase 9 stream 1-2 (hardening + UAT + launch sign-off).
 
 ## 5. Tracking Policy
 

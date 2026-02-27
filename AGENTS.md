@@ -26,12 +26,13 @@ In-scope:
 - Russian-only UX.
 - No Telegram Mini App (anonymity requirement).
 - WB integration for token validity and order/pickup/return checks.
-- USDT ledger and payouts (TON ecosystem), with manual ops for MVP.
+- USDT ledger and payouts (TON ecosystem), with manual withdrawals and manual-exception finance ops.
+- Planned in next phase: automated seller collateral top-up confirmation via blockchain checker CF.
 
 Out-of-scope (MVP):
 
 - Dispute handling.
-- Automated on-chain deposit reconciliation.
+- Full generalized on-chain reconciliation for all wallet flows.
 - Advanced wallet security (multisig/HSM).
 
 Detailed baseline requirements and phase-by-phase execution plan are tracked in `PLAN.md`.
@@ -86,7 +87,8 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 
 ### 3.5 Finance flow (MVP)
 
-- Deposits: manual credit by admin.
+- Current live state (Phase 7): deposits are credited manually by admin.
+- Phase 8 target: seller collateral deposits are auto-confirmed from chain by expected-transaction matching; manual admin override remains.
 - Withdrawals: buyer requests -> admin approval required -> payout.
 - If fee policy changes, user should be notified.
 
@@ -217,7 +219,7 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - both CF runtimes (`daily-report-scrapper`, `order-tracker`) operate on live data.
 - Scope decision:
   - Phase 7 includes observability/runbook baseline for operations,
-  - hardening + formal UAT/sign-off are tracked in Phase 8.
+  - hardening + formal UAT/sign-off are tracked in Phase 9.
 - Bot runtime target for Phase 7:
   - production PTB webhook application on bot VM,
   - command processors remain as internal/testing adapters, but user-facing interaction is button-first.
@@ -272,6 +274,34 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
     - artifact rollout to VM,
     - health verification,
     - rollback-on-error hook.
+
+### 3.16 Phase 8 planning baseline (new): blockchain checker for collateral top-ups
+
+- Objective:
+  - remove manual admin blockchain checks for seller collateral funding.
+- Planned runtime component:
+  - new Cloud Function `blockchain-checker` scheduled every 5 minutes.
+- Planned matching baseline:
+  - monitor inbound USDT transfers to service shard deposit addresses,
+  - create expected deposit intents from seller bot flow with amount-suffix contract:
+    - `base_amount = ceil(required_amount_usdt * 10) / 10` (round up to 1 decimal),
+    - `expected_amount = base_amount + suffix/10000`,
+    - `suffix` in `001..999`,
+  - enforce one active invoice per `(shard_id, suffix)` with `TTL=24h`,
+  - incoming tx is valid when suffix resolves to active intent and `received_amount >= expected_amount`,
+  - overpayment above expected is credited in full and closes the matched intent,
+  - MVP shard configuration: one active shard address (global active invoice cap = 999),
+  - credit seller balance automatically on deterministic match,
+  - route unmatched/ambiguous cases to admin manual review queue.
+- Planned data contracts:
+  - expected-deposit intent table (intent lifecycle, expiry, linked seller/account, linked tx/ledger entry),
+  - shard registry table (small pool of deposit addresses),
+  - raw incoming chain transaction table (tx hash, from/to, amount, cursor/finality metadata, processing state).
+- Planned operational constraints:
+  - idempotent crediting (one tx -> one ledger credit),
+  - immutable audit links (`deposit_intent_id`, `suffix`, `tx_hash`, `ledger_entry_id`),
+  - Terraform-managed CF deployment and timer trigger.
+- Launch hardening and formal UAT/sign-off have been shifted to Phase 9.
 
 ## 4. Functional Workflow Summary
 
@@ -587,6 +617,10 @@ Required controls even in MVP:
 ## 12. Open Items / Pending Inputs
 
 - Production handling policy for secrets (wallet key/token lifecycle, rotation cadence).
+- Blockchain checker Phase 8 lock inputs:
+  - TON/USDT provider choice for read path (toncenter/tonapi/other) and SLA limits,
+  - exact matching tolerance policy (`exact` vs bounded delta),
+  - confirmation/finality threshold before credit.
 - Final payout integration details and transaction broadcast implementation.
 - Tightening SSH ingress from `0.0.0.0/0` to operator CIDRs before production launch.
 - Optional migration from current self-signed IP TLS webhook to domain-managed trusted TLS.
@@ -701,3 +735,12 @@ Required controls even in MVP:
   - webhook runtime switched to direct TLS with self-signed IP certificate (`/etc/qpi/webhook.crt`, `/etc/qpi/webhook.key`),
   - Telegram webhook registered with uploaded custom certificate (`has_custom_certificate=true`) at `https://158.160.187.114:8443/telegram/webhook`,
   - live DB schema applied via `schema_cli` including `manual_deposits` and Phase 7 state/index updates.
+- 2026-02-27: Phase roadmap updated for automated collateral top-up confirmation:
+  - new Phase 8 added for `blockchain-checker` CF planning/implementation (every 5 minutes),
+  - prior Phase 8 hardening/UAT moved to Phase 9 and prior reserved Phase 9 shifted to Phase 10,
+  - finance scope clarified: manual admin deposits remain for exceptions, while seller collateral top-ups move to expected-transaction auto-confirmation target.
+- 2026-02-27: Phase 8 top-up matching contract locked:
+  - chosen model is amount suffix on shard address pool (not per-intent addresses),
+  - suffix space is `001..999` with 24h TTL invoices and one active suffix per `(shard_id, suffix)`,
+  - amount formula is `ceil(required*10)/10 + suffix/10000`,
+  - MVP starts with one shard address (`999` concurrent invoices cap).
