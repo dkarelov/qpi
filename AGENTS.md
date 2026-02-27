@@ -753,3 +753,7 @@ Required controls even in MVP:
   - push pipeline now runs Terraform plan only,
   - Terraform apply is available only via `workflow_dispatch` with explicit `apply=true`,
   - workflow now fails fast for manual apply attempts when shared backend state is not configured in CI.
+- 2026-02-27: Bot deploy CI hardening completed:
+  - rollout artifact packaging switched to `git archive` to avoid transient `tar: file changed as we read it` failures,
+  - SSH key prep in workflow now supports multiline, escaped `\\n`, and base64-encoded secret forms with validation before `scp/ssh`,
+  - repository secret `BOT_VM_SSH_PRIVATE_KEY` rotated to base64 form for stable GitHub Actions parsing.
