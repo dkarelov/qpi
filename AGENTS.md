@@ -464,16 +464,12 @@ Common commands:
 terraform -chdir=infra init
 terraform -chdir=infra fmt
 terraform -chdir=infra validate
-# private dependency in requirements.txt uses ${TOKEN_YC_JSON_LOGGER}; render it in workspace before apply
-TOKEN_YC_JSON_LOGGER="<github-pat>" python - <<'PY'
-from pathlib import Path
-import os
-p = Path("requirements.txt")
-p.write_text(p.read_text(encoding="utf-8").replace("${TOKEN_YC_JSON_LOGGER}", os.environ["TOKEN_YC_JSON_LOGGER"]), encoding="utf-8")
-PY
-TF_VAR_cf_token_cipher_key="<cipher-key>" YC_TOKEN="$(yc config get token)" terraform -chdir=infra plan
-TF_VAR_cf_token_cipher_key="<cipher-key>" YC_TOKEN="$(yc config get token)" terraform -chdir=infra apply
-git checkout -- requirements.txt  # restore placeholder after local apply
+# wrapper renders TOKEN_YC_JSON_LOGGER in-memory for the command and auto-restores requirements.txt
+# TOKEN_YC_JSON_LOGGER can be explicit, or omitted when `gh auth token` is configured locally
+TF_VAR_cf_token_cipher_key="<cipher-key>" YC_TOKEN="$(yc config get token)" \
+  infra/scripts/with_private_requirements.sh -- terraform -chdir=infra plan
+TF_VAR_cf_token_cipher_key="<cipher-key>" YC_TOKEN="$(yc config get token)" \
+  infra/scripts/with_private_requirements.sh -- terraform -chdir=infra apply
 terraform -chdir=infra output
 ```
 
@@ -748,3 +744,8 @@ Required controls even in MVP:
   - implemented seller top-up invoice flow and admin exception actions in Telegram runtime,
   - implemented TonAPI integration client and `blockchain-checker` orchestration service/entrypoint,
   - wired Terraform-managed `qpi-blockchain-checker` function and 5-minute trigger with configurable shard/TonAPI runtime env.
+- 2026-02-27: Private dependency deploy path hardened:
+  - added `infra/scripts/with_private_requirements.sh` wrapper to render `TOKEN_YC_JSON_LOGGER` only for command scope and always restore `requirements.txt`,
+  - Terraform CI workflow now uses the wrapper for `plan/apply` instead of inline ad-hoc token replacement logic,
+  - bot rollout now passes `TOKEN_YC_JSON_LOGGER` only to rollout-time `pip install` on VM (release artifact keeps placeholder form),
+  - `infra/scripts/remote_rollout_bot.sh` now fails fast when private dependency placeholder is present but token is missing.

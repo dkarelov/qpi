@@ -35,7 +35,20 @@ sudo chown -R ubuntu:ubuntu "${release_dir}"
 
 python3 -m venv "${release_dir}/.venv"
 "${release_dir}/.venv/bin/pip" install --upgrade pip
-"${release_dir}/.venv/bin/pip" install -r "${release_dir}/requirements.txt"
+
+if grep -q '\${TOKEN_YC_JSON_LOGGER}' "${release_dir}/requirements.txt"; then
+  if [[ -z "${TOKEN_YC_JSON_LOGGER:-}" ]]; then
+    echo "TOKEN_YC_JSON_LOGGER is required for private dependencies" >&2
+    exit 1
+  fi
+fi
+
+if [[ -n "${TOKEN_YC_JSON_LOGGER:-}" ]]; then
+  TOKEN_YC_JSON_LOGGER="${TOKEN_YC_JSON_LOGGER}" \
+    "${release_dir}/.venv/bin/pip" install -r "${release_dir}/requirements.txt"
+else
+  "${release_dir}/.venv/bin/pip" install -r "${release_dir}/requirements.txt"
+fi
 
 sudo ln -sfn "${release_dir}" "${current_link}"
 sudo chown -h ubuntu:ubuntu "${current_link}"

@@ -35,25 +35,6 @@ jobs:
           test -n "${TOKEN_YC_JSON_LOGGER}" || { echo "TOKEN_YC_JSON_LOGGER is required"; exit 1; }
           test -n "${TF_VAR_cf_token_cipher_key}" || { echo "TOKEN_CIPHER_KEY is required"; exit 1; }
 
-      - name: Inject private dependency token into requirements (CI workspace only)
-        run: |
-          python - <<'PY'
-          import os
-          from pathlib import Path
-
-          token = os.environ.get("TOKEN_YC_JSON_LOGGER", "").strip()
-          if not token:
-              raise SystemExit("TOKEN_YC_JSON_LOGGER is required")
-
-          path = Path("requirements.txt")
-          source = path.read_text(encoding="utf-8")
-          placeholder = "${TOKEN_YC_JSON_LOGGER}"
-          if placeholder not in source:
-              raise SystemExit(f"Missing placeholder in {path}")
-
-          path.write_text(source.replace(placeholder, token), encoding="utf-8")
-          PY
-
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
@@ -64,7 +45,11 @@ jobs:
         run: terraform -chdir=infra validate
 
       - name: Terraform Plan
-        run: terraform -chdir=infra plan -input=false -no-color
+        run: |
+          infra/scripts/with_private_requirements.sh -- \
+            terraform -chdir=infra plan -input=false -no-color
 
       - name: Terraform Apply
-        run: terraform -chdir=infra apply -input=false -auto-approve -no-color
+        run: |
+          infra/scripts/with_private_requirements.sh -- \
+            terraform -chdir=infra apply -input=false -auto-approve -no-color

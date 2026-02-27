@@ -60,25 +60,6 @@ jobs:
       - name: Test
         run: python -m pytest -q -m "not migration_smoke"
 
-      - name: Inject private dependency token into requirements
-        run: |
-          python - <<'PY'
-          import os
-          from pathlib import Path
-
-          token = os.environ.get("TOKEN_YC_JSON_LOGGER", "").strip()
-          if not token:
-              raise SystemExit("TOKEN_YC_JSON_LOGGER is required")
-
-          path = Path("requirements.txt")
-          source = path.read_text(encoding="utf-8")
-          placeholder = "${TOKEN_YC_JSON_LOGGER}"
-          if placeholder not in source:
-              raise SystemExit(f"Missing placeholder in {path}")
-
-          path.write_text(source.replace(placeholder, token), encoding="utf-8")
-          PY
-
       - name: Build rollout artifact
         id: build
         run: |
@@ -141,6 +122,7 @@ jobs:
             -i ~/.ssh/bot_vm_key \
             "${BOT_VM_SSH_USER:-ubuntu}@${BOT_VM_HOST}" \
             "chmod +x /tmp/remote_rollout_bot.sh && \
+             TOKEN_YC_JSON_LOGGER='${TOKEN_YC_JSON_LOGGER}' \
              /tmp/remote_rollout_bot.sh \
                '${{ steps.build.outputs.release_id }}' \
                '/tmp/${{ steps.build.outputs.archive_name }}' \

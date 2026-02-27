@@ -575,7 +575,7 @@ Status:
   - `services/daily_report_scrapper/main.py`: cloud function handler + local `--once` runtime.
   - `infra/serverless.tf`: function runtime packaging from service-scoped archive, env wiring, 1-hour trigger, log options.
   - CF runtime memory target applied as `128 MB`.
-  - `.github/workflows/deploy_terraform.yml`: CI deployment injects `TOKEN_YC_JSON_LOGGER` into `requirements.txt` in workspace before Terraform apply.
+  - `.github/workflows/deploy_terraform.yml`: CI deployment uses `infra/scripts/with_private_requirements.sh` to render `TOKEN_YC_JSON_LOGGER` only for `plan/apply` command scope with automatic restore.
   - `infra/main.tf` + `infra/cloud-init/db.yaml.tftpl`: DB access wiring for CF source CIDR (`198.18.0.0/15`).
   - legacy GH deploy workflow removed; CF runtime delivery is Terraform-only.
   - expanded integration coverage in `tests/test_daily_report_phase5.py`.
