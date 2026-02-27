@@ -221,31 +221,35 @@ resource "yandex_function" "blockchain_checker" {
     network_id = data.yandex_vpc_network.main.id
   }
 
-  environment = {
-    APP_ENV                             = var.cf_app_env
-    LOG_LEVEL                           = var.cf_log_level
-    DATABASE_URL                        = local.cf_database_url
-    DB_POOL_MIN_SIZE                    = tostring(var.cf_db_pool_min_size)
-    DB_POOL_MAX_SIZE                    = tostring(var.cf_db_pool_max_size)
-    DB_STATEMENT_TIMEOUT_MS             = tostring(var.cf_db_statement_timeout_ms)
-    SELLER_COLLATERAL_SHARD_KEY         = var.seller_collateral_shard_key
-    SELLER_COLLATERAL_SHARD_ADDRESS     = var.seller_collateral_shard_address
-    SELLER_COLLATERAL_SHARD_CHAIN       = var.seller_collateral_shard_chain
-    SELLER_COLLATERAL_SHARD_ASSET       = var.seller_collateral_shard_asset
-    SELLER_COLLATERAL_INVOICE_TTL_HOURS = tostring(var.seller_collateral_invoice_ttl_hours)
-    BLOCKCHAIN_CHECKER_ADVISORY_LOCK_ID = tostring(var.blockchain_checker_advisory_lock_id)
-    BLOCKCHAIN_CHECKER_MATCH_BATCH_SIZE = tostring(var.blockchain_checker_match_batch_size)
-    BLOCKCHAIN_CHECKER_CONFIRMATIONS_REQUIRED = tostring(
-      var.blockchain_checker_confirmations_required
-    )
-    TONAPI_BASE_URL                    = var.tonapi_base_url
-    TONAPI_API_KEY                     = var.tonapi_api_key
-    TONAPI_TIMEOUT_SECONDS             = tostring(var.tonapi_timeout_seconds)
-    TONAPI_PAGE_LIMIT                  = tostring(var.tonapi_page_limit)
-    TONAPI_MAX_PAGES_PER_SHARD         = tostring(var.tonapi_max_pages_per_shard)
-    TONAPI_UNAUTH_MIN_INTERVAL_SECONDS = tostring(var.tonapi_unauth_min_interval_seconds)
-    TONAPI_USDT_JETTON_MASTER          = var.tonapi_usdt_jetton_master
-  }
+  environment = merge(
+    {
+      APP_ENV                             = var.cf_app_env
+      LOG_LEVEL                           = var.cf_log_level
+      DATABASE_URL                        = local.cf_database_url
+      DB_POOL_MIN_SIZE                    = tostring(var.cf_db_pool_min_size)
+      DB_POOL_MAX_SIZE                    = tostring(var.cf_db_pool_max_size)
+      DB_STATEMENT_TIMEOUT_MS             = tostring(var.cf_db_statement_timeout_ms)
+      SELLER_COLLATERAL_SHARD_KEY         = var.seller_collateral_shard_key
+      SELLER_COLLATERAL_SHARD_ADDRESS     = var.seller_collateral_shard_address
+      SELLER_COLLATERAL_SHARD_CHAIN       = var.seller_collateral_shard_chain
+      SELLER_COLLATERAL_SHARD_ASSET       = var.seller_collateral_shard_asset
+      SELLER_COLLATERAL_INVOICE_TTL_HOURS = tostring(var.seller_collateral_invoice_ttl_hours)
+      BLOCKCHAIN_CHECKER_ADVISORY_LOCK_ID = tostring(var.blockchain_checker_advisory_lock_id)
+      BLOCKCHAIN_CHECKER_MATCH_BATCH_SIZE = tostring(var.blockchain_checker_match_batch_size)
+      BLOCKCHAIN_CHECKER_CONFIRMATIONS_REQUIRED = tostring(
+        var.blockchain_checker_confirmations_required
+      )
+      TONAPI_BASE_URL                    = var.tonapi_base_url
+      TONAPI_TIMEOUT_SECONDS             = tostring(var.tonapi_timeout_seconds)
+      TONAPI_PAGE_LIMIT                  = tostring(var.tonapi_page_limit)
+      TONAPI_MAX_PAGES_PER_SHARD         = tostring(var.tonapi_max_pages_per_shard)
+      TONAPI_UNAUTH_MIN_INTERVAL_SECONDS = tostring(var.tonapi_unauth_min_interval_seconds)
+      TONAPI_USDT_JETTON_MASTER          = var.tonapi_usdt_jetton_master
+    },
+    trimspace(var.tonapi_api_key) == "" ? {} : {
+      TONAPI_API_KEY = var.tonapi_api_key
+    },
+  )
 
   log_options {
     disabled     = false
