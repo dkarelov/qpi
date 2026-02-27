@@ -92,6 +92,59 @@ variable "bot_disk_gb" {
   default     = 20
 }
 
+variable "bot_webhook_port" {
+  description = "Public webhook listen port for Telegram bot runtime."
+  type        = number
+  default     = 8443
+
+  validation {
+    condition     = var.bot_webhook_port >= 1 && var.bot_webhook_port <= 65535
+    error_message = "bot_webhook_port must be in range 1..65535."
+  }
+}
+
+variable "bot_health_port" {
+  description = "Health endpoint port exposed by bot runtime."
+  type        = number
+  default     = 18080
+
+  validation {
+    condition     = var.bot_health_port >= 1 && var.bot_health_port <= 65535
+    error_message = "bot_health_port must be in range 1..65535."
+  }
+}
+
+variable "bot_app_env" {
+  description = "APP_ENV passed to bot runtime env file."
+  type        = string
+  default     = "prod"
+}
+
+variable "bot_log_level" {
+  description = "LOG_LEVEL passed to bot runtime env file."
+  type        = string
+  default     = "INFO"
+}
+
+variable "telegram_bot_username" {
+  description = "Telegram bot username used by runtime."
+  type        = string
+  default     = "qpi_marketplace_bot"
+}
+
+variable "bot_webhook_secret_token" {
+  description = "Webhook secret token written to bot runtime env file."
+  type        = string
+  default     = "change-me-webhook-secret"
+  sensitive   = true
+}
+
+variable "bot_admin_telegram_ids" {
+  description = "Admin Telegram IDs allowlist written to bot runtime env file."
+  type        = list(number)
+  default     = []
+}
+
 variable "db_platform_id" {
   description = "Hardware platform for DB VM."
   type        = string

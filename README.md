@@ -1,6 +1,6 @@
-# QPI Phase 6 Order Tracker Baseline
+# QPI Phase 7 Live Telegram Baseline
 
-This repository includes Phase 2 foundation, Phase 3 seller features, Phase 4 buyer features, Phase 5 daily report scrapper, and Phase 6 order tracker:
+This repository includes Phase 2 foundation through Phase 7 live Telegram go-live scope:
 
 - async Python services (`services/bot_api`, `services/worker`, `services/daily_report_scrapper`, `services/order_tracker`),
 - shared libs (`libs/config`, `libs/db`, `libs/domain`, `libs/logging`, `libs/integrations`),
@@ -8,9 +8,11 @@ This repository includes Phase 2 foundation, Phase 3 seller features, Phase 4 bu
 - plain SQL transactional domain logic via `psycopg3`,
 - seller domain + bot handlers (`libs/domain/seller.py`, `services/bot_api/seller_handlers.py`),
 - buyer domain + bot handlers (`libs/domain/buyer.py`, `services/bot_api/buyer_handlers.py`),
+- webhook PTB runtime with button-first seller/buyer/admin UX (`services/bot_api/telegram_runtime.py`),
 - reservation timeout + order lifecycle processor in order-tracker (`reserved` -> `expired_2h`, pickup/return/unlock flow),
 - daily report scrapper for WB `reportDetailByPeriod` ingestion (`services/daily_report_scrapper`),
 - WB integrations (`libs/integrations/wb.py`, `libs/integrations/wb_reports.py`),
+- finance/admin flows including pending withdrawal queue and manual deposits (`libs/domain/ledger.py`),
 - integration tests for schema lifecycle, finance invariants, seller flow, buyer flow, and phase 5 report ingestion.
 
 ## Local Setup

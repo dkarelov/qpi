@@ -92,11 +92,24 @@ async def run_service(
         if run_once:
             return
 
-        while True:
-            await asyncio.sleep(60)
+        raise ValueError(
+            "webhook mode is not available in async command runner; "
+            "run CLI without --once/--seller-command/--buyer-command."
+        )
     finally:
         await db_pool.close()
         logger.info("bot_api_stopped")
+
+
+def run_webhook_runtime() -> None:
+    settings = get_bot_api_settings()
+    configure_logging("bot_api", settings.log_level)
+    logger = get_logger(__name__)
+    logger.info("bot_api_webhook_mode_selected")
+    from services.bot_api.telegram_runtime import TelegramWebhookRuntime
+
+    runtime = TelegramWebhookRuntime(settings=settings, logger=logger)
+    runtime.run()
 
 
 def cli() -> None:
@@ -126,15 +139,18 @@ def cli() -> None:
     args = parser.parse_args()
 
     try:
-        asyncio.run(
-            run_service(
-                run_once=args.once,
-                seller_command=args.seller_command,
-                buyer_command=args.buyer_command,
-                telegram_id=args.telegram_id,
-                telegram_username=args.telegram_username,
+        if args.once or args.seller_command or args.buyer_command:
+            asyncio.run(
+                run_service(
+                    run_once=args.once,
+                    seller_command=args.seller_command,
+                    buyer_command=args.buyer_command,
+                    telegram_id=args.telegram_id,
+                    telegram_username=args.telegram_username,
+                )
             )
-        )
+        else:
+            run_webhook_runtime()
     except KeyboardInterrupt:
         pass
 

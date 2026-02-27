@@ -225,6 +225,49 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - manual deposit credit with immutable audit records,
   - withdrawal queue approve/reject/send operations with idempotent transactional semantics and payout tx tracking.
 
+### 3.15 Phase 7 implementation baseline
+
+- Bot transport/runtime:
+  - `services/bot_api/main.py` defaults to real webhook runtime (command processors remain for internal smoke/testing).
+  - `services/bot_api/telegram_runtime.py` now provides:
+    - PTB webhook runtime with idempotent `setWebhook`,
+    - callback contract parsing (`v1:<flow>:<action>:<id>`),
+    - role-aware button shell (`seller`/`buyer`/`admin`),
+    - stateful input prompts with sensitive message deletion notices,
+    - built-in health endpoint (`/healthz`) on `BOT_HEALTH_PORT`.
+- Seller live UX (buttons):
+  - shop create/list/delete with warning/confirm previews and transfer split semantics,
+  - WB token set/replace prompt with ping validation,
+  - listing create/list/activate/pause/unpause/delete with warning/confirm previews,
+  - balance and listing collateral visibility (`seller_available`, `seller_collateral`, locked/required collateral).
+- Buyer live UX (buttons):
+  - shop open/deep-link browse,
+  - slot reserve from listing buttons,
+  - payload submit prompt per assignment,
+  - assignment status list,
+  - withdrawal flow (full/custom amount -> payout address -> `withdraw_pending_admin` request),
+  - buyer balance and withdrawal history views.
+- Admin live UX (buttons):
+  - pending withdrawal queue and per-request detail screen,
+  - approve/reject(reason)/mark-sent(tx_hash) actions,
+  - manual deposit command prompt (`telegram_id`, `account_kind`, `amount`, `external_reference`),
+  - buyer Telegram notifications on withdrawal state changes.
+- Finance/schema closure:
+  - `schema/schema.sql` now includes `manual_deposits` immutable contract table.
+  - `libs/domain/ledger.py` now includes:
+    - `manual_deposit_credit` (idempotent + ledger/audit-backed),
+    - `list_pending_withdrawals`,
+    - `get_withdrawal_request_detail`,
+    - `get_buyer_balance_snapshot`,
+    - `list_buyer_withdrawal_history`.
+- Bot deployment automation:
+  - `infra/cloud-init/bot.yaml.tftpl` provisions `/etc/qpi/bot.env` and `qpi-bot.service`.
+  - `.github/workflows/deploy_bot.yml` provides bot rollout pipeline:
+    - lint/tests gate,
+    - artifact rollout to VM,
+    - health verification,
+    - rollback-on-error hook.
+
 ## 4. Functional Workflow Summary
 
 Seller flow:
@@ -476,6 +519,43 @@ TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test_scratc
 pytest -q -m migration_smoke
 ```
 
+Phase 7 observability queries and runbooks:
+
+- Core correlation fields in logs:
+  - `telegram_update_id`
+  - `shop_id`
+  - `listing_id`
+  - `assignment_id`
+  - `withdrawal_request_id`
+  - `ledger_entry_id`
+- Logging query templates (Yandex Logging):
+  - webhook errors:
+    - service=`bot_api` and (`telegram_update_handler_failed` or HTTP webhook 4xx/5xx runtime errors),
+    - group by `telegram_update_id` and error type.
+  - WB API failures:
+    - service in (`daily_report_scrapper`, `order_tracker`) and message contains `wb_api` or `daily_report_shop_failed_wb_api`.
+  - pending-withdrawal backlog:
+    - service=`bot_api` and admin queue events with `withdrawal_request_id`,
+    - correlate with DB count of `withdraw_pending_admin`.
+  - payout failure events:
+    - service=`bot_api` and (`admin_withdraw_rejected`, `admin_withdraw_sent`, send failures),
+    - include `withdrawal_request_id` and `tx_hash`.
+- Runbook: bot webhook outage
+  1. Check service state: `sudo systemctl status qpi-bot.service`.
+  2. Check health endpoint locally: `curl -fsS http://127.0.0.1:18080/healthz`.
+  3. Validate webhook registration via bot API (`getWebhookInfo`) and ensure URL matches runtime env.
+  4. Rollback to previous release symlink in `/opt/qpi/releases` if latest rollout is broken.
+- Runbook: CF failure/retry storm
+  1. Inspect function logs for `daily_report_scrapper`/`order_tracker` by `request_id`.
+  2. Confirm DB connectivity and token/key alignment (`TOKEN_CIPHER_KEY`) from env.
+  3. Check timer triggers and recent invocation statuses.
+  4. If failures are code-induced, deploy fixed revision via Terraform-managed pipeline.
+- Runbook: payout operation incident
+  1. Pull request detail by `withdrawal_request_id` (status, note, `tx_hash`, admin actor).
+  2. Verify ledger postings and `manual_deposits`/`withdrawal_requests` audit trails.
+  3. Notify affected buyer in Telegram and annotate reason in rejection note if needed.
+  4. If funds state is inconsistent, pause further payout actions and escalate with DB snapshot evidence.
+
 Rules:
 
 - Never apply manual DDL directly in PostgreSQL.
@@ -604,3 +684,10 @@ Required controls even in MVP:
   - DB backup/restore drill removed from Phase 7 stream scope,
   - Phase 7 keeps execution streams 1-8 (functional go-live + observability/runbooks),
   - prior Phase 7 streams 9-10 (hardening + UAT/sign-off) moved to Phase 8.
+- 2026-02-27: Phase 7 implementation completed in repository:
+  - bot runtime migrated to real PTB webhook app with callback contract, role menus, stateful prompts, and sensitive-input cleanup,
+  - seller/buyer/admin button flows implemented end-to-end (including admin withdrawal queue actions and buyer notifications),
+  - finance domain/schema extended with `manual_deposits`, admin withdrawal query APIs, and idempotent manual deposit credit,
+  - bot runtime now exposes `/healthz` and logs correlation fields (`telegram_update_id`, `shop_id`, `listing_id`, `assignment_id`, `withdrawal_request_id`, `ledger_entry_id` where applicable),
+  - Terraform bot cloud-init now provisions `/etc/qpi/bot.env` + `qpi-bot.service`,
+  - GitHub workflow `deploy_bot.yml` added for bot rollout with lint/tests gate, health verification, and rollback hook.

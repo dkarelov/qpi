@@ -1,4 +1,5 @@
 psycopg[binary]>=3.2,<4.0
 psycopg-pool>=3.2,<4.0
 pydantic-settings>=2.7,<3.0
+python-telegram-bot[webhooks]>=21.10,<22.0
 git+https://x-access-token:${TOKEN_YC_JSON_LOGGER}@github.com/e-comet/yc_json_logger.git

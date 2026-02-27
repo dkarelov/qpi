@@ -13,6 +13,24 @@ output "bot_public_ip" {
   value       = yandex_vpc_address.bot_public_ip.external_ipv4_address[0].address
 }
 
+output "bot_webhook_base_url" {
+  description = "Webhook base URL configured for bot runtime."
+  value = format(
+    "https://%s:%d",
+    yandex_vpc_address.bot_public_ip.external_ipv4_address[0].address,
+    var.bot_webhook_port,
+  )
+}
+
+output "bot_health_endpoint" {
+  description = "Bot runtime health endpoint URL (restricted by SG admin CIDRs)."
+  value = format(
+    "http://%s:%d/healthz",
+    yandex_vpc_address.bot_public_ip.external_ipv4_address[0].address,
+    var.bot_health_port,
+  )
+}
+
 output "db_private_ip" {
   description = "Private IP of the DB VM."
   value       = yandex_compute_instance.db.network_interface[0].ip_address

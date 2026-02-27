@@ -49,7 +49,7 @@ resource "yandex_vpc_security_group" "bot" {
   ingress {
     protocol       = "TCP"
     description    = "Telegram webhook HTTPS"
-    port           = 443
+    port           = var.bot_webhook_port
     v4_cidr_blocks = ["0.0.0.0/0"]
   }
 
@@ -59,6 +59,16 @@ resource "yandex_vpc_security_group" "bot" {
       protocol       = "TCP"
       description    = "OS Login SSH"
       port           = 22
+      v4_cidr_blocks = [ingress.value]
+    }
+  }
+
+  dynamic "ingress" {
+    for_each = toset(var.admin_ipv4_cidrs)
+    content {
+      protocol       = "TCP"
+      description    = "Bot health endpoint"
+      port           = var.bot_health_port
       v4_cidr_blocks = [ingress.value]
     }
   }
@@ -144,8 +154,31 @@ resource "yandex_vpc_subnet" "private" {
 
 locals {
   bot_cloud_init = templatefile("${path.module}/cloud-init/bot.yaml.tftpl", {
-    folder_id    = var.folder_id
-    log_group_id = yandex_logging_group.main.id
+    folder_id     = var.folder_id
+    log_group_id  = yandex_logging_group.main.id
+    bot_app_env   = var.bot_app_env
+    bot_log_level = var.bot_log_level
+    bot_database_url = format(
+      "postgresql://%s:%s@%s:5432/%s",
+      var.db_user,
+      random_password.db_password.result,
+      yandex_compute_instance.db.network_interface[0].ip_address,
+      var.db_name,
+    )
+    bot_webhook_base_url = format(
+      "https://%s:%d",
+      yandex_vpc_address.bot_public_ip.external_ipv4_address[0].address,
+      var.bot_webhook_port,
+    )
+    bot_webhook_port         = var.bot_webhook_port
+    bot_webhook_secret_token = var.bot_webhook_secret_token
+    bot_health_port          = var.bot_health_port
+    telegram_bot_username    = var.telegram_bot_username
+    token_cipher_key         = var.cf_token_cipher_key
+    bot_admin_telegram_ids_csv = join(
+      ",",
+      [for id in var.bot_admin_telegram_ids : tostring(id)]
+    )
   })
 
   bot_ssh_keys_metadata = join("\n", [

@@ -7,6 +7,7 @@ packages:
   - gnupg
   - lsb-release
   - jq
+  - python3-venv
 write_files:
   - path: /etc/qpi/bootstrap.env
     owner: root:root
@@ -14,6 +15,55 @@ write_files:
     content: |
       YC_FOLDER_ID=${folder_id}
       YC_LOG_GROUP_ID=${log_group_id}
+  - path: /etc/qpi/bot.env
+    owner: root:ubuntu
+    permissions: "0640"
+    content: |
+      APP_ENV=${bot_app_env}
+      LOG_LEVEL=${bot_log_level}
+      DATABASE_URL=${bot_database_url}
+      DB_POOL_MIN_SIZE=1
+      DB_POOL_MAX_SIZE=10
+      DB_STATEMENT_TIMEOUT_MS=5000
+      WEBHOOK_BASE_URL=${bot_webhook_base_url}
+      WEBHOOK_LISTEN_HOST=0.0.0.0
+      WEBHOOK_LISTEN_PORT=${bot_webhook_port}
+      WEBHOOK_PATH=telegram/webhook
+      WEBHOOK_SECRET_TOKEN=${bot_webhook_secret_token}
+      WEBHOOK_SET_ENABLED=true
+      BOT_HEALTH_HOST=0.0.0.0
+      BOT_HEALTH_PORT=${bot_health_port}
+      TELEGRAM_BOT_TOKEN=
+      TELEGRAM_BOT_USERNAME=${telegram_bot_username}
+      TOKEN_CIPHER_KEY=${token_cipher_key}
+      ADMIN_TELEGRAM_IDS=${bot_admin_telegram_ids_csv}
+      WB_PING_TIMEOUT_SECONDS=10
+      WB_PING_RATE_LIMIT_COUNT=3
+      WB_PING_RATE_LIMIT_WINDOW_SECONDS=30
+  - path: /etc/systemd/system/qpi-bot.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=QPI Telegram Bot Webhook Runtime
+      After=network-online.target
+      Wants=network-online.target
+      ConditionPathExists=/opt/qpi/current/.venv/bin/python
+
+      [Service]
+      Type=simple
+      User=ubuntu
+      Group=ubuntu
+      WorkingDirectory=/opt/qpi/current
+      EnvironmentFile=/etc/qpi/bot.env
+      ExecStart=/opt/qpi/current/.venv/bin/python -m services.bot_api.main
+      Restart=always
+      RestartSec=5
+      KillSignal=SIGINT
+      TimeoutStopSec=30
+
+      [Install]
+      WantedBy=multi-user.target
 runcmd:
   - |
     set -euxo pipefail
@@ -28,3 +78,8 @@ runcmd:
       docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     systemctl enable --now docker
     install -m 0755 -d /opt/qpi
+    install -m 0755 -d /opt/qpi/releases
+    install -m 0755 -d /opt/qpi/current
+    chown -R ubuntu:ubuntu /opt/qpi
+    systemctl daemon-reload
+    systemctl enable qpi-bot.service

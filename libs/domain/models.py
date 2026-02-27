@@ -26,6 +26,13 @@ class WithdrawalRequestResult:
 
 
 @dataclass(frozen=True)
+class ManualDepositResult:
+    manual_deposit_id: int
+    ledger_entry_id: int
+    created: bool
+
+
+@dataclass(frozen=True)
 class StatusChangeResult:
     changed: bool
 
@@ -54,6 +61,26 @@ class ListingResult:
     reward_usdt: Decimal
     slot_count: int
     available_slots: int
+    deleted_at: datetime | None
+
+
+@dataclass(frozen=True)
+class SellerBalanceSnapshot:
+    seller_available_usdt: Decimal
+    seller_collateral_usdt: Decimal
+
+
+@dataclass(frozen=True)
+class SellerListingCollateralView:
+    listing_id: int
+    shop_id: int
+    status: str
+    reward_usdt: Decimal
+    slot_count: int
+    available_slots: int
+    collateral_required_usdt: Decimal
+    collateral_locked_usdt: Decimal
+    reserved_slot_usdt: Decimal
     deleted_at: datetime | None
 
 
@@ -126,6 +153,54 @@ class BuyerAssignmentView:
     reservation_expires_at: datetime
     order_id: str | None
     ordered_at: datetime | None
+
+
+@dataclass(frozen=True)
+class BuyerBalanceSnapshot:
+    buyer_available_usdt: Decimal
+    buyer_withdraw_pending_usdt: Decimal
+
+
+@dataclass(frozen=True)
+class BuyerWithdrawalHistoryItem:
+    withdrawal_request_id: int
+    amount_usdt: Decimal
+    status: str
+    payout_address: str
+    requested_at: datetime
+    processed_at: datetime | None
+    sent_at: datetime | None
+    note: str | None
+    tx_hash: str | None
+
+
+@dataclass(frozen=True)
+class PendingWithdrawalView:
+    withdrawal_request_id: int
+    buyer_user_id: int
+    buyer_telegram_id: int
+    buyer_username: str | None
+    amount_usdt: Decimal
+    payout_address: str
+    requested_at: datetime
+
+
+@dataclass(frozen=True)
+class WithdrawalRequestDetail:
+    withdrawal_request_id: int
+    buyer_user_id: int
+    buyer_telegram_id: int
+    buyer_username: str | None
+    from_account_id: int
+    to_account_id: int
+    amount_usdt: Decimal
+    status: str
+    payout_address: str
+    requested_at: datetime
+    processed_at: datetime | None
+    sent_at: datetime | None
+    note: str | None
+    tx_hash: str | None
 
 
 @dataclass(frozen=True)

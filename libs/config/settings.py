@@ -52,6 +52,17 @@ class BotApiSettings(BaseAppSettings):
     telegram_bot_username: str = Field(default="qpi_marketplace_bot", alias="TELEGRAM_BOT_USERNAME")
     token_cipher_key: str = Field(default="dev-insecure-key", alias="TOKEN_CIPHER_KEY")
     webhook_base_url: str | None = Field(default=None, alias="WEBHOOK_BASE_URL")
+    webhook_listen_host: str = Field(default="0.0.0.0", alias="WEBHOOK_LISTEN_HOST")
+    webhook_listen_port: int = Field(default=8443, alias="WEBHOOK_LISTEN_PORT")
+    webhook_path: str = Field(default="telegram/webhook", alias="WEBHOOK_PATH")
+    webhook_secret_token: str = Field(
+        default="change-me-webhook-secret",
+        alias="WEBHOOK_SECRET_TOKEN",
+    )
+    webhook_set_enabled: bool = Field(default=True, alias="WEBHOOK_SET_ENABLED")
+    bot_health_host: str = Field(default="0.0.0.0", alias="BOT_HEALTH_HOST")
+    bot_health_port: int = Field(default=18080, alias="BOT_HEALTH_PORT")
+    admin_telegram_ids: list[int] = Field(default_factory=list, alias="ADMIN_TELEGRAM_IDS")
     wb_ping_timeout_seconds: int = Field(default=10, alias="WB_PING_TIMEOUT_SECONDS")
     wb_ping_rate_limit_count: int = Field(default=3, alias="WB_PING_RATE_LIMIT_COUNT")
     wb_ping_rate_limit_window_seconds: int = Field(
@@ -65,6 +76,62 @@ class BotApiSettings(BaseAppSettings):
         if not value.strip():
             raise ValueError("TOKEN_CIPHER_KEY must not be empty")
         return value
+
+    @field_validator("webhook_listen_host")
+    @classmethod
+    def validate_webhook_listen_host(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("WEBHOOK_LISTEN_HOST must not be empty")
+        return value
+
+    @field_validator("webhook_listen_port")
+    @classmethod
+    def validate_webhook_listen_port(cls, value: int) -> int:
+        if value < 1 or value > 65535:
+            raise ValueError("WEBHOOK_LISTEN_PORT must be in range 1..65535")
+        return value
+
+    @field_validator("webhook_path")
+    @classmethod
+    def validate_webhook_path(cls, value: str) -> str:
+        normalized = value.strip().strip("/")
+        if not normalized:
+            raise ValueError("WEBHOOK_PATH must not be empty")
+        return normalized
+
+    @field_validator("webhook_secret_token")
+    @classmethod
+    def validate_webhook_secret_token(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("WEBHOOK_SECRET_TOKEN must not be empty")
+        return value
+
+    @field_validator("bot_health_host")
+    @classmethod
+    def validate_bot_health_host(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("BOT_HEALTH_HOST must not be empty")
+        return value
+
+    @field_validator("bot_health_port")
+    @classmethod
+    def validate_bot_health_port(cls, value: int) -> int:
+        if value < 1 or value > 65535:
+            raise ValueError("BOT_HEALTH_PORT must be in range 1..65535")
+        return value
+
+    @field_validator("admin_telegram_ids", mode="before")
+    @classmethod
+    def parse_admin_telegram_ids(cls, value):
+        if value in (None, "", []):
+            return []
+        if isinstance(value, str):
+            raw_items = [item.strip() for item in value.split(",")]
+            items = [item for item in raw_items if item]
+            return [int(item) for item in items]
+        if isinstance(value, list):
+            return [int(item) for item in value]
+        raise ValueError("ADMIN_TELEGRAM_IDS must be comma-separated integers")
 
     @field_validator("wb_ping_timeout_seconds")
     @classmethod

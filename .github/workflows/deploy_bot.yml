@@ -1,0 +1,147 @@
+name: Deploy Bot Runtime
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "services/bot_api/**"
+      - "libs/**"
+      - "schema/**"
+      - "requirements.txt"
+      - "pyproject.toml"
+      - "infra/scripts/remote_rollout_bot.sh"
+      - "infra/scripts/merge_bot_env.py"
+      - ".github/workflows/deploy_bot.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy_bot:
+    runs-on: ubuntu-latest
+    env:
+      BOT_VM_HOST: ${{ vars.BOT_VM_HOST }}
+      BOT_VM_SSH_USER: ${{ vars.BOT_VM_SSH_USER }}
+      BOT_VM_SSH_PORT: ${{ vars.BOT_VM_SSH_PORT }}
+      BOT_HEALTH_PORT: ${{ vars.BOT_HEALTH_PORT }}
+      ADMIN_TELEGRAM_IDS: ${{ vars.ADMIN_TELEGRAM_IDS }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TOKEN_CIPHER_KEY: ${{ secrets.TOKEN_CIPHER_KEY }}
+      BOT_WEBHOOK_SECRET_TOKEN: ${{ secrets.BOT_WEBHOOK_SECRET_TOKEN }}
+      BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
+      TOKEN_YC_JSON_LOGGER: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required deployment secrets
+        run: |
+          test -n "${BOT_VM_HOST}" || { echo "BOT_VM_HOST variable is required"; exit 1; }
+          test -n "${BOT_VM_SSH_PRIVATE_KEY}" || { echo "BOT_VM_SSH_PRIVATE_KEY is required"; exit 1; }
+          test -n "${TELEGRAM_BOT_TOKEN}" || { echo "TELEGRAM_BOT_TOKEN is required"; exit 1; }
+          test -n "${TOKEN_CIPHER_KEY}" || { echo "TOKEN_CIPHER_KEY is required"; exit 1; }
+          test -n "${BOT_WEBHOOK_SECRET_TOKEN}" || { echo "BOT_WEBHOOK_SECRET_TOKEN is required"; exit 1; }
+          test -n "${TOKEN_YC_JSON_LOGGER}" || { echo "TOKEN_YC_JSON_LOGGER is required"; exit 1; }
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        run: python -m pytest -q -m "not migration_smoke"
+
+      - name: Inject private dependency token into requirements
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          token = os.environ.get("TOKEN_YC_JSON_LOGGER", "").strip()
+          if not token:
+              raise SystemExit("TOKEN_YC_JSON_LOGGER is required")
+
+          path = Path("requirements.txt")
+          source = path.read_text(encoding="utf-8")
+          placeholder = "${TOKEN_YC_JSON_LOGGER}"
+          if placeholder not in source:
+              raise SystemExit(f"Missing placeholder in {path}")
+
+          path.write_text(source.replace(placeholder, token), encoding="utf-8")
+          PY
+
+      - name: Build rollout artifact
+        id: build
+        run: |
+          release_id="${GITHUB_SHA::12}"
+          archive_name="qpi-bot-${release_id}.tar.gz"
+          tar \
+            --exclude='.git' \
+            --exclude='.pytest_cache' \
+            --exclude='.ruff_cache' \
+            --exclude='infra/.terraform' \
+            --exclude='infra/terraform.tfstate' \
+            --exclude='infra/terraform.tfstate.backup' \
+            -czf "${archive_name}" .
+          echo "release_id=${release_id}" >> "${GITHUB_OUTPUT}"
+          echo "archive_name=${archive_name}" >> "${GITHUB_OUTPUT}"
+
+      - name: Prepare SSH client
+        run: |
+          install -m 0700 -d ~/.ssh
+          install -m 0600 /dev/null ~/.ssh/bot_vm_key
+          printf '%s' "${BOT_VM_SSH_PRIVATE_KEY}" > ~/.ssh/bot_vm_key
+          ssh-keyscan -p "${BOT_VM_SSH_PORT:-22}" "${BOT_VM_HOST}" >> ~/.ssh/known_hosts
+
+      - name: Upload artifact and rollout script
+        run: |
+          scp -P "${BOT_VM_SSH_PORT:-22}" \
+            -i ~/.ssh/bot_vm_key \
+            "${{ steps.build.outputs.archive_name }}" \
+            "infra/scripts/remote_rollout_bot.sh" \
+            "infra/scripts/merge_bot_env.py" \
+            "${BOT_VM_SSH_USER:-ubuntu}@${BOT_VM_HOST}:/tmp/"
+
+      - name: Upload runtime env overrides
+        run: |
+          cat > /tmp/qpi-bot-overrides.env <<EOF
+          TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+          TOKEN_CIPHER_KEY=${TOKEN_CIPHER_KEY}
+          WEBHOOK_SECRET_TOKEN=${BOT_WEBHOOK_SECRET_TOKEN}
+          ADMIN_TELEGRAM_IDS=${ADMIN_TELEGRAM_IDS}
+          EOF
+          scp -P "${BOT_VM_SSH_PORT:-22}" \
+            -i ~/.ssh/bot_vm_key \
+            /tmp/qpi-bot-overrides.env \
+            "${BOT_VM_SSH_USER:-ubuntu}@${BOT_VM_HOST}:/tmp/qpi-bot-overrides.env"
+
+      - name: Merge env overrides on VM
+        run: |
+          ssh -p "${BOT_VM_SSH_PORT:-22}" \
+            -i ~/.ssh/bot_vm_key \
+            "${BOT_VM_SSH_USER:-ubuntu}@${BOT_VM_HOST}" \
+            "sudo python3 /tmp/merge_bot_env.py \
+              --base /etc/qpi/bot.env \
+              --overrides /tmp/qpi-bot-overrides.env && \
+          sudo chown root:ubuntu /etc/qpi/bot.env
+          sudo chmod 0640 /etc/qpi/bot.env"
+
+      - name: Rollout and verify health
+        run: |
+          ssh -p "${BOT_VM_SSH_PORT:-22}" \
+            -i ~/.ssh/bot_vm_key \
+            "${BOT_VM_SSH_USER:-ubuntu}@${BOT_VM_HOST}" \
+            "chmod +x /tmp/remote_rollout_bot.sh && \
+             /tmp/remote_rollout_bot.sh \
+               '${{ steps.build.outputs.release_id }}' \
+               '/tmp/${{ steps.build.outputs.archive_name }}' \
+               '${BOT_HEALTH_PORT:-18080}'"

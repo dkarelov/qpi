@@ -19,7 +19,9 @@ from libs.domain.models import (
     DeleteExecutionResult,
     DeletePreview,
     ListingResult,
+    SellerBalanceSnapshot,
     SellerBootstrapResult,
+    SellerListingCollateralView,
     ShopResult,
     StatusChangeResult,
     TokenInvalidationResult,
@@ -424,6 +426,130 @@ class SellerService:
                         reward_usdt=row["reward_usdt"],
                         slot_count=row["slot_count"],
                         available_slots=row["available_slots"],
+                        deleted_at=row["deleted_at"],
+                    )
+                    for row in rows
+                ]
+
+        return await run_in_transaction(self._pool, operation, read_only=True)
+
+    async def get_seller_balance_snapshot(
+        self,
+        *,
+        seller_user_id: int,
+    ) -> SellerBalanceSnapshot:
+        async def operation(conn: AsyncConnection) -> SellerBalanceSnapshot:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await self._ensure_seller_user(cur, seller_user_id)
+                available_account_id = await self._ensure_owner_account(
+                    cur,
+                    owner_user_id=seller_user_id,
+                    account_kind="seller_available",
+                )
+                collateral_account_id = await self._ensure_owner_account(
+                    cur,
+                    owner_user_id=seller_user_id,
+                    account_kind="seller_collateral",
+                )
+                await cur.execute(
+                    """
+                    SELECT
+                        id,
+                        current_balance_usdt
+                    FROM accounts
+                    WHERE id = ANY(%s)
+                    """,
+                    ([available_account_id, collateral_account_id],),
+                )
+                rows = await cur.fetchall()
+                by_id = {row["id"]: row["current_balance_usdt"] for row in rows}
+                return SellerBalanceSnapshot(
+                    seller_available_usdt=_normalize_amount(
+                        by_id.get(available_account_id, Decimal("0.000000"))
+                    ),
+                    seller_collateral_usdt=_normalize_amount(
+                        by_id.get(collateral_account_id, Decimal("0.000000"))
+                    ),
+                )
+
+        return await run_in_transaction(self._pool, operation)
+
+    async def list_listing_collateral_views(
+        self,
+        *,
+        seller_user_id: int,
+        shop_id: int | None = None,
+        include_deleted: bool = False,
+    ) -> list[SellerListingCollateralView]:
+        async def operation(conn: AsyncConnection) -> list[SellerListingCollateralView]:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                params: list[Any] = [seller_user_id]
+                query = """
+                    SELECT
+                        l.id,
+                        l.shop_id,
+                        l.status,
+                        l.reward_usdt,
+                        l.slot_count,
+                        l.available_slots,
+                        l.collateral_required_usdt,
+                        l.deleted_at,
+                        COALESCE(
+                            SUM(
+                                CASE
+                                    WHEN h.hold_type = 'collateral' AND h.status = 'active'
+                                    THEN h.amount_usdt
+                                    ELSE 0
+                                END
+                            ),
+                            0
+                        ) AS collateral_locked_usdt,
+                        COALESCE(
+                            SUM(
+                                CASE
+                                    WHEN h.hold_type = 'slot_reserve' AND h.status = 'active'
+                                    THEN h.amount_usdt
+                                    ELSE 0
+                                END
+                            ),
+                            0
+                        ) AS reserved_slot_usdt
+                    FROM listings l
+                    LEFT JOIN balance_holds h ON h.listing_id = l.id
+                    WHERE l.seller_user_id = %s
+                """
+                if shop_id is not None:
+                    query += " AND l.shop_id = %s"
+                    params.append(shop_id)
+                if not include_deleted:
+                    query += " AND l.deleted_at IS NULL"
+                query += """
+                    GROUP BY
+                        l.id,
+                        l.shop_id,
+                        l.status,
+                        l.reward_usdt,
+                        l.slot_count,
+                        l.available_slots,
+                        l.collateral_required_usdt,
+                        l.deleted_at,
+                        l.created_at
+                    ORDER BY l.created_at ASC, l.id ASC
+                """
+
+                await cur.execute(query, tuple(params))
+                rows = await cur.fetchall()
+                return [
+                    SellerListingCollateralView(
+                        listing_id=row["id"],
+                        shop_id=row["shop_id"],
+                        status=row["status"],
+                        reward_usdt=row["reward_usdt"],
+                        slot_count=row["slot_count"],
+                        available_slots=row["available_slots"],
+                        collateral_required_usdt=row["collateral_required_usdt"],
+                        collateral_locked_usdt=_normalize_amount(row["collateral_locked_usdt"]),
+                        reserved_slot_usdt=_normalize_amount(row["reserved_slot_usdt"]),
                         deleted_at=row["deleted_at"],
                     )
                     for row in rows

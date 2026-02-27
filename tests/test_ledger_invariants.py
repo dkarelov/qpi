@@ -197,3 +197,203 @@ async def test_ledger_flows_keep_global_balance_and_double_entry_invariant(db_po
             )
             withdrawal_row = await cur.fetchone()
             assert withdrawal_row["status"] == "withdraw_sent"
+
+
+@pytest.mark.asyncio
+async def test_buyer_balance_and_withdraw_history_queries(db_pool) -> None:
+    service = FinanceService(db_pool)
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            buyer_id = await create_user(conn, telegram_id=3901, role="buyer", username="buyer_q")
+            await create_user(conn, telegram_id=3902, role="admin", username="admin_q")
+
+            buyer_available_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_available",
+                account_kind="buyer_available",
+                balance=Decimal("12.500000"),
+            )
+            buyer_pending_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_withdraw_pending",
+                account_kind="buyer_withdraw_pending",
+                balance=Decimal("0.000000"),
+            )
+
+    request = await service.create_withdrawal_request(
+        buyer_user_id=buyer_id,
+        from_account_id=buyer_available_account_id,
+        pending_account_id=buyer_pending_account_id,
+        amount_usdt=Decimal("2.500000"),
+        payout_address="UQ_BALANCE_TEST",
+        idempotency_key="withdraw-history-1",
+    )
+
+    snapshot = await service.get_buyer_balance_snapshot(buyer_user_id=buyer_id)
+    assert snapshot.buyer_available_usdt == Decimal("10.000000")
+    assert snapshot.buyer_withdraw_pending_usdt == Decimal("2.500000")
+
+    history = await service.list_buyer_withdrawal_history(buyer_user_id=buyer_id)
+    assert len(history) == 1
+    assert history[0].withdrawal_request_id == request.withdrawal_request_id
+    assert history[0].amount_usdt == Decimal("2.500000")
+    assert history[0].status == "withdraw_pending_admin"
+
+    pending = await service.list_pending_withdrawals()
+    assert len(pending) == 1
+    assert pending[0].withdrawal_request_id == request.withdrawal_request_id
+    assert pending[0].buyer_user_id == buyer_id
+
+    detail = await service.get_withdrawal_request_detail(request_id=request.withdrawal_request_id)
+    assert detail.withdrawal_request_id == request.withdrawal_request_id
+    assert detail.buyer_user_id == buyer_id
+    assert detail.from_account_id == buyer_available_account_id
+    assert detail.to_account_id == buyer_pending_account_id
+
+
+@pytest.mark.asyncio
+async def test_reject_withdrawal_persists_reason_note(db_pool) -> None:
+    service = FinanceService(db_pool)
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            buyer_id = await create_user(
+                conn,
+                telegram_id=3911,
+                role="buyer",
+                username="buyer_note",
+            )
+            admin_id = await create_user(
+                conn,
+                telegram_id=3912,
+                role="admin",
+                username="admin_note",
+            )
+            buyer_available_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_available",
+                account_kind="buyer_available",
+                balance=Decimal("5.000000"),
+            )
+            buyer_pending_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_withdraw_pending",
+                account_kind="buyer_withdraw_pending",
+                balance=Decimal("0.000000"),
+            )
+
+    request = await service.create_withdrawal_request(
+        buyer_user_id=buyer_id,
+        from_account_id=buyer_available_account_id,
+        pending_account_id=buyer_pending_account_id,
+        amount_usdt=Decimal("1.000000"),
+        payout_address="UQ_NOTE_TEST",
+        idempotency_key="withdraw-note-1",
+    )
+
+    result = await service.reject_withdrawal_request(
+        request_id=request.withdrawal_request_id,
+        admin_user_id=admin_id,
+        pending_account_id=buyer_pending_account_id,
+        buyer_available_account_id=buyer_available_account_id,
+        reason="invalid payout address",
+        idempotency_key="withdraw-note-reject-1",
+    )
+    assert result.changed is True
+
+    detail = await service.get_withdrawal_request_detail(request_id=request.withdrawal_request_id)
+    assert detail.status == "rejected"
+    assert detail.note == "invalid payout address"
+
+
+@pytest.mark.asyncio
+async def test_manual_deposit_credit_is_idempotent_and_audited(db_pool) -> None:
+    service = FinanceService(db_pool)
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            target_user_id = await create_user(
+                conn,
+                telegram_id=3921,
+                role="seller",
+                username="seller_deposit",
+            )
+            admin_user_id = await create_user(
+                conn,
+                telegram_id=3922,
+                role="admin",
+                username="admin_deposit",
+            )
+            target_account_id = await create_account(
+                conn,
+                owner_user_id=target_user_id,
+                account_code=f"user:{target_user_id}:seller_available",
+                account_kind="seller_available",
+                balance=Decimal("0.000000"),
+            )
+            await create_account(
+                conn,
+                owner_user_id=None,
+                account_code="system:system_payout",
+                account_kind="system_payout",
+                balance=Decimal("20.000000"),
+            )
+
+    first = await service.manual_deposit_credit(
+        admin_user_id=admin_user_id,
+        target_user_id=target_user_id,
+        target_account_id=target_account_id,
+        amount_usdt=Decimal("4.000000"),
+        external_reference="deposit-tx-1",
+        idempotency_key="manual-deposit-1",
+        tx_hash="0xdeposit1",
+    )
+    second = await service.manual_deposit_credit(
+        admin_user_id=admin_user_id,
+        target_user_id=target_user_id,
+        target_account_id=target_account_id,
+        amount_usdt=Decimal("4.000000"),
+        external_reference="deposit-tx-1",
+        idempotency_key="manual-deposit-1",
+        tx_hash="0xdeposit1",
+    )
+
+    assert first.created is True
+    assert second.created is False
+    assert first.manual_deposit_id == second.manual_deposit_id
+    assert first.ledger_entry_id == second.ledger_entry_id
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT current_balance_usdt FROM accounts WHERE id = %s",
+                (target_account_id,),
+            )
+            target_balance = await cur.fetchone()
+            assert target_balance["current_balance_usdt"] == Decimal("4.000000")
+
+            await cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM manual_deposits
+                WHERE id = %s
+                """,
+                (first.manual_deposit_id,),
+            )
+            deposits_count = await cur.fetchone()
+            assert deposits_count["count"] == 1
+
+            await cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM admin_audit_actions
+                WHERE action = 'manual_deposit_credit'
+                """,
+            )
+            audit_count = await cur.fetchone()
+            assert audit_count["count"] == 1

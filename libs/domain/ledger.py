@@ -17,8 +17,13 @@ from libs.domain.errors import (
 )
 from libs.domain.models import (
     AssignmentReservationResult,
+    BuyerBalanceSnapshot,
+    BuyerWithdrawalHistoryItem,
+    ManualDepositResult,
+    PendingWithdrawalView,
     StatusChangeResult,
     TransferResult,
+    WithdrawalRequestDetail,
     WithdrawalRequestResult,
 )
 
@@ -501,8 +506,11 @@ class FinanceService:
         admin_user_id: int,
         pending_account_id: int,
         buyer_available_account_id: int,
+        reason: str | None = None,
         idempotency_key: str,
     ) -> StatusChangeResult:
+        normalized_reason = reason.strip() if reason is not None else ""
+
         async def operation(conn: AsyncConnection) -> StatusChangeResult:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -531,10 +539,11 @@ class FinanceService:
                     UPDATE withdrawal_requests
                     SET status = 'rejected',
                         admin_user_id = %s,
-                        processed_at = timezone('utc', now())
+                        processed_at = timezone('utc', now()),
+                        note = CASE WHEN %s <> '' THEN %s ELSE note END
                     WHERE id = %s
                     """,
-                    (admin_user_id, request_id),
+                    (admin_user_id, normalized_reason, normalized_reason, request_id),
                 )
 
                 await self._transfer_locked(
@@ -567,7 +576,7 @@ class FinanceService:
                     action="withdraw_rejected",
                     target_type="withdrawal_request",
                     target_id=str(request_id),
-                    payload={"request_id": request_id},
+                    payload={"request_id": request_id, "reason": normalized_reason or None},
                     idempotency_key=idempotency_key,
                 )
 
@@ -672,6 +681,323 @@ class FinanceService:
                 return StatusChangeResult(changed=True)
 
         return await run_in_transaction(self._pool, operation)
+
+    async def manual_deposit_credit(
+        self,
+        *,
+        admin_user_id: int,
+        target_user_id: int,
+        target_account_id: int,
+        amount_usdt: Decimal,
+        external_reference: str,
+        idempotency_key: str,
+        tx_hash: str | None = None,
+        note: str | None = None,
+    ) -> ManualDepositResult:
+        normalized_reference = external_reference.strip()
+        if not normalized_reference:
+            raise ValueError("external_reference must not be empty")
+        normalized_tx_hash = tx_hash.strip() if tx_hash is not None else None
+        normalized_note = note.strip() if note is not None else None
+        amount = _normalize_amount(amount_usdt)
+
+        async def operation(conn: AsyncConnection) -> ManualDepositResult:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT id, ledger_entry_id
+                    FROM manual_deposits
+                    WHERE idempotency_key = %s
+                    """,
+                    (idempotency_key,),
+                )
+                existing = await cur.fetchone()
+                if existing is not None:
+                    return ManualDepositResult(
+                        manual_deposit_id=existing["id"],
+                        ledger_entry_id=existing["ledger_entry_id"],
+                        created=False,
+                    )
+
+                await cur.execute(
+                    """
+                    SELECT id, owner_user_id
+                    FROM accounts
+                    WHERE id = %s
+                    FOR UPDATE
+                    """,
+                    (target_account_id,),
+                )
+                target_account = await cur.fetchone()
+                if target_account is None:
+                    raise NotFoundError(f"target account {target_account_id} not found")
+                if target_account["owner_user_id"] != target_user_id:
+                    raise InvalidStateError("target account does not belong to target user")
+
+                system_payout_account_id = await self._ensure_system_account(
+                    cur,
+                    account_kind="system_payout",
+                )
+
+                transfer_result = await self._transfer_locked(
+                    cur,
+                    from_account_id=system_payout_account_id,
+                    to_account_id=target_account_id,
+                    amount_usdt=amount,
+                    event_type="manual_deposit_credit",
+                    idempotency_key=_ledger_key(idempotency_key),
+                    entity_type="manual_deposit",
+                    entity_id=None,
+                    metadata={
+                        "target_user_id": target_user_id,
+                        "target_account_id": target_account_id,
+                        "external_reference": normalized_reference,
+                        "tx_hash": normalized_tx_hash,
+                        "note": normalized_note,
+                    },
+                )
+
+                await cur.execute(
+                    """
+                    INSERT INTO manual_deposits (
+                        target_user_id,
+                        target_account_id,
+                        admin_user_id,
+                        amount_usdt,
+                        external_reference,
+                        tx_hash,
+                        note,
+                        ledger_entry_id,
+                        idempotency_key
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        target_user_id,
+                        target_account_id,
+                        admin_user_id,
+                        amount,
+                        normalized_reference,
+                        normalized_tx_hash,
+                        normalized_note,
+                        transfer_result.entry_id,
+                        idempotency_key,
+                    ),
+                )
+                created = await cur.fetchone()
+
+                await self._insert_admin_audit(
+                    cur,
+                    admin_user_id=admin_user_id,
+                    action="manual_deposit_credit",
+                    target_type="user_account",
+                    target_id=str(target_account_id),
+                    payload={
+                        "manual_deposit_id": created["id"],
+                        "target_user_id": target_user_id,
+                        "target_account_id": target_account_id,
+                        "amount_usdt": str(amount),
+                        "external_reference": normalized_reference,
+                        "tx_hash": normalized_tx_hash,
+                        "note": normalized_note,
+                    },
+                    idempotency_key=f"{idempotency_key}:audit",
+                )
+
+                return ManualDepositResult(
+                    manual_deposit_id=created["id"],
+                    ledger_entry_id=transfer_result.entry_id,
+                    created=True,
+                )
+
+        return await run_in_transaction(self._pool, operation)
+
+    async def get_buyer_balance_snapshot(
+        self,
+        *,
+        buyer_user_id: int,
+    ) -> BuyerBalanceSnapshot:
+        async def operation(conn: AsyncConnection) -> BuyerBalanceSnapshot:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT
+                        COALESCE(
+                            MAX(
+                                CASE
+                                    WHEN account_kind = 'buyer_available'
+                                    THEN current_balance_usdt
+                                END
+                            ),
+                            0
+                        ) AS buyer_available_usdt,
+                        COALESCE(
+                            MAX(
+                                CASE
+                                    WHEN account_kind = 'buyer_withdraw_pending'
+                                    THEN current_balance_usdt
+                                END
+                            ),
+                            0
+                        ) AS buyer_withdraw_pending_usdt
+                    FROM accounts
+                    WHERE owner_user_id = %s
+                      AND account_kind IN ('buyer_available', 'buyer_withdraw_pending')
+                    """,
+                    (buyer_user_id,),
+                )
+                row = await cur.fetchone()
+                return BuyerBalanceSnapshot(
+                    buyer_available_usdt=_normalize_amount(row["buyer_available_usdt"]),
+                    buyer_withdraw_pending_usdt=_normalize_amount(
+                        row["buyer_withdraw_pending_usdt"]
+                    ),
+                )
+
+        return await run_in_transaction(self._pool, operation, read_only=True)
+
+    async def list_buyer_withdrawal_history(
+        self,
+        *,
+        buyer_user_id: int,
+        limit: int = 20,
+    ) -> list[BuyerWithdrawalHistoryItem]:
+        if limit < 1:
+            raise ValueError("limit must be >= 1")
+
+        async def operation(conn: AsyncConnection) -> list[BuyerWithdrawalHistoryItem]:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT
+                        wr.id,
+                        wr.amount_usdt,
+                        wr.status,
+                        wr.payout_address,
+                        wr.requested_at,
+                        wr.processed_at,
+                        wr.sent_at,
+                        wr.note,
+                        p.tx_hash
+                    FROM withdrawal_requests wr
+                    LEFT JOIN payouts p ON p.withdrawal_request_id = wr.id
+                    WHERE wr.buyer_user_id = %s
+                    ORDER BY wr.requested_at DESC, wr.id DESC
+                    LIMIT %s
+                    """,
+                    (buyer_user_id, limit),
+                )
+                rows = await cur.fetchall()
+                return [
+                    BuyerWithdrawalHistoryItem(
+                        withdrawal_request_id=row["id"],
+                        amount_usdt=row["amount_usdt"],
+                        status=row["status"],
+                        payout_address=row["payout_address"],
+                        requested_at=row["requested_at"],
+                        processed_at=row["processed_at"],
+                        sent_at=row["sent_at"],
+                        note=row["note"],
+                        tx_hash=row["tx_hash"],
+                    )
+                    for row in rows
+                ]
+
+        return await run_in_transaction(self._pool, operation, read_only=True)
+
+    async def list_pending_withdrawals(
+        self,
+        *,
+        limit: int = 50,
+    ) -> list[PendingWithdrawalView]:
+        if limit < 1:
+            raise ValueError("limit must be >= 1")
+
+        async def operation(conn: AsyncConnection) -> list[PendingWithdrawalView]:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT
+                        wr.id,
+                        wr.buyer_user_id,
+                        u.telegram_id,
+                        u.username,
+                        wr.amount_usdt,
+                        wr.payout_address,
+                        wr.requested_at
+                    FROM withdrawal_requests wr
+                    JOIN users u ON u.id = wr.buyer_user_id
+                    WHERE wr.status = 'withdraw_pending_admin'
+                    ORDER BY wr.requested_at ASC, wr.id ASC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                rows = await cur.fetchall()
+                return [
+                    PendingWithdrawalView(
+                        withdrawal_request_id=row["id"],
+                        buyer_user_id=row["buyer_user_id"],
+                        buyer_telegram_id=row["telegram_id"],
+                        buyer_username=row["username"],
+                        amount_usdt=row["amount_usdt"],
+                        payout_address=row["payout_address"],
+                        requested_at=row["requested_at"],
+                    )
+                    for row in rows
+                ]
+
+        return await run_in_transaction(self._pool, operation, read_only=True)
+
+    async def get_withdrawal_request_detail(self, *, request_id: int) -> WithdrawalRequestDetail:
+        async def operation(conn: AsyncConnection) -> WithdrawalRequestDetail:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT
+                        wr.id,
+                        wr.buyer_user_id,
+                        u.telegram_id,
+                        u.username,
+                        wr.from_account_id,
+                        wr.to_account_id,
+                        wr.amount_usdt,
+                        wr.status,
+                        wr.payout_address,
+                        wr.requested_at,
+                        wr.processed_at,
+                        wr.sent_at,
+                        wr.note,
+                        p.tx_hash
+                    FROM withdrawal_requests wr
+                    JOIN users u ON u.id = wr.buyer_user_id
+                    LEFT JOIN payouts p ON p.withdrawal_request_id = wr.id
+                    WHERE wr.id = %s
+                    """,
+                    (request_id,),
+                )
+                row = await cur.fetchone()
+                if row is None:
+                    raise NotFoundError(f"withdrawal request {request_id} not found")
+                return WithdrawalRequestDetail(
+                    withdrawal_request_id=row["id"],
+                    buyer_user_id=row["buyer_user_id"],
+                    buyer_telegram_id=row["telegram_id"],
+                    buyer_username=row["username"],
+                    from_account_id=row["from_account_id"],
+                    to_account_id=row["to_account_id"],
+                    amount_usdt=row["amount_usdt"],
+                    status=row["status"],
+                    payout_address=row["payout_address"],
+                    requested_at=row["requested_at"],
+                    processed_at=row["processed_at"],
+                    sent_at=row["sent_at"],
+                    note=row["note"],
+                    tx_hash=row["tx_hash"],
+                )
+
+        return await run_in_transaction(self._pool, operation, read_only=True)
 
     async def _transfer_locked(
         self,

@@ -249,6 +249,37 @@ ALTER TABLE "public"."payouts" ADD CONSTRAINT "payouts_tx_hash_key" UNIQUE (tx_h
 
 ALTER TABLE "public"."payouts" ADD CONSTRAINT "payouts_withdrawal_request_id_key" UNIQUE (withdrawal_request_id);
 
+CREATE TABLE "public"."manual_deposits" (
+    "id" bigserial NOT NULL,
+    "target_user_id" bigint NOT NULL,
+    "target_account_id" bigint NOT NULL,
+    "admin_user_id" bigint NOT NULL,
+    "amount_usdt" numeric(20,6) NOT NULL CONSTRAINT manual_deposits_amount_usdt_check CHECK (amount_usdt > 0::numeric),
+    "external_reference" text NOT NULL,
+    "tx_hash" text,
+    "note" text,
+    "ledger_entry_id" bigint NOT NULL,
+    "idempotency_key" text NOT NULL,
+    "created_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    CONSTRAINT manual_deposits_pkey PRIMARY KEY ("id")
+);
+
+CREATE INDEX idx_manual_deposits_target_user_id ON public.manual_deposits USING btree (target_user_id);
+
+CREATE INDEX idx_manual_deposits_admin_user_id ON public.manual_deposits USING btree (admin_user_id);
+
+ALTER TABLE ONLY "public"."manual_deposits" ADD CONSTRAINT "manual_deposits_target_user_id_fkey" FOREIGN KEY ("target_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE ONLY "public"."manual_deposits" ADD CONSTRAINT "manual_deposits_target_account_id_fkey" FOREIGN KEY ("target_account_id") REFERENCES "public"."accounts" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE ONLY "public"."manual_deposits" ADD CONSTRAINT "manual_deposits_admin_user_id_fkey" FOREIGN KEY ("admin_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE ONLY "public"."manual_deposits" ADD CONSTRAINT "manual_deposits_ledger_entry_id_fkey" FOREIGN KEY ("ledger_entry_id") REFERENCES "public"."ledger_entries" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE "public"."manual_deposits" ADD CONSTRAINT "manual_deposits_idempotency_key_key" UNIQUE (idempotency_key);
+
+ALTER TABLE "public"."manual_deposits" ADD CONSTRAINT "manual_deposits_ledger_entry_id_key" UNIQUE (ledger_entry_id);
+
 CREATE TABLE "public"."shops" (
     "id" bigserial NOT NULL,
     "seller_user_id" bigint NOT NULL,

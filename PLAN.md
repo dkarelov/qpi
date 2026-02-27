@@ -758,7 +758,14 @@ Exit criteria:
 
 Status:
 
-- Pending (execution plan locked; implementation not started).
+- Completed in repository on 2026-02-27:
+  - real PTB webhook runtime with callback contract and role router,
+  - seller/buyer/admin button-first flows with stateful prompts and sensitive-input cleanup,
+  - admin withdrawal control plane + manual deposit execution + notifications,
+  - finance schema/domain closure for deposits and withdrawal query APIs,
+  - bot VM runtime prerequisites + bot rollout CI with health check/rollback,
+  - observability correlation fields and operational runbooks.
+- Next operational milestone: execute Phase 8 hardening + live Telegram UAT sign-off.
 
 ## Phase 8: Launch Hardening and UAT
 
@@ -810,10 +817,8 @@ Status:
 ## 4. Recommended Execution Order
 
 1. Finish remaining artifacts of Phase 0 (formal schema/state docs).
-2. Execute Phase 7 stream 1-4 (Telegram runtime + seller/buyer button UX).
-3. Execute Phase 7 stream 5-6 (admin finance flows + schema/domain closure).
-4. Execute Phase 7 stream 7-8 (deployment automation + observability/runbooks).
-5. Execute Phase 8 stream 1-2 (hardening + UAT + launch sign-off).
+2. Phase 7 is implemented in repository (streams 1-8 complete).
+3. Execute Phase 8 stream 1-2 (hardening + UAT + launch sign-off).
 
 ## 5. Tracking Policy
 

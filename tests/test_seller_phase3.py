@@ -491,3 +491,44 @@ async def test_shop_delete_warning_via_command_processor(db_pool) -> None:
         text=f"/shop_delete {shop.shop_id} confirm",
     )
     assert "Магазин удален" in confirmed.text
+
+
+@pytest.mark.asyncio
+async def test_seller_balance_and_collateral_views(db_pool) -> None:
+    service = SellerService(db_pool)
+    seller = await service.bootstrap_seller(telegram_id=7008, username="seller_h")
+    shop = await service.create_shop(seller_user_id=seller.user_id, title="Balance Shop")
+    await service.save_validated_shop_token(
+        seller_user_id=seller.user_id,
+        shop_id=shop.shop_id,
+        token_ciphertext=encrypt_token("valid-token", "test-key"),
+    )
+    listing = await service.create_listing_draft(
+        seller_user_id=seller.user_id,
+        shop_id=shop.shop_id,
+        wb_product_id=50001,
+        discount_percent=20,
+        reward_usdt=Decimal("3.000000"),
+        slot_count=2,
+    )
+
+    await _set_account_balance(
+        db_pool,
+        account_id=seller.seller_available_account_id,
+        balance=Decimal("6.000000"),
+    )
+    await service.activate_listing(
+        seller_user_id=seller.user_id,
+        listing_id=listing.listing_id,
+        idempotency_key="activate-balance-case",
+    )
+
+    snapshot = await service.get_seller_balance_snapshot(seller_user_id=seller.user_id)
+    assert snapshot.seller_available_usdt == Decimal("0.000000")
+    assert snapshot.seller_collateral_usdt == Decimal("6.000000")
+
+    views = await service.list_listing_collateral_views(seller_user_id=seller.user_id)
+    assert len(views) == 1
+    assert views[0].listing_id == listing.listing_id
+    assert views[0].collateral_required_usdt == Decimal("6.000000")
+    assert views[0].collateral_locked_usdt == Decimal("6.000000")

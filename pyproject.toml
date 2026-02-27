@@ -12,6 +12,7 @@ dependencies = [
   "psycopg-pool>=3.2,<4.0",
   "pydantic-settings>=2.7,<3.0",
   "structlog>=25.1,<26.0",
+  "python-telegram-bot[webhooks]>=21.10,<22.0",
 ]
 
 [project.optional-dependencies]
