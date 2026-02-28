@@ -86,7 +86,10 @@ class SellerCommandProcessor:
                 )
                 deep_link = f"https://t.me/{self._bot_username}?start=shop_{shop.slug}"
                 return SellerCommandResponse(
-                    text=f"Магазин создан: id={shop.shop_id}, slug={shop.slug}\nСсылка: {deep_link}"
+                    text=(
+                        f"Магазин «{shop.title}» создан.\n"
+                        f"Ссылка для покупателей:\n{deep_link}"
+                    )
                 )
 
             if command == "/shop_list":
@@ -167,9 +170,8 @@ class SellerCommandProcessor:
                 )
                 return SellerCommandResponse(
                     text=(
-                        "Токен валиден и сохранен.\n"
-                        "Сообщение с токеном удалите из чата "
-                        "(бот также пытается удалить его автоматически)."
+                        "Токен валиден и сохранен. "
+                        "Сообщение с токеном удалено в целях безопасности."
                     ),
                     delete_source_message=True,
                 )
@@ -199,7 +201,7 @@ class SellerCommandProcessor:
                 return SellerCommandResponse(
                     text=(
                         f"Листинг создан: id={listing.listing_id}, status={listing.status}, "
-                        f"reward={listing.reward_usdt} USDT, slots={listing.slot_count}"
+                        f"кэшбэк={listing.reward_usdt} USDT, slots={listing.slot_count}"
                     )
                 )
 
@@ -214,7 +216,7 @@ class SellerCommandProcessor:
                 lines = [
                     (
                         f"{item.listing_id} | shop={item.shop_id} | status={item.status} | "
-                        "reward="
+                        "кэшбэк="
                         f"{item.reward_usdt} | "
                         f"slots={item.available_slots}/{item.slot_count}"
                     )

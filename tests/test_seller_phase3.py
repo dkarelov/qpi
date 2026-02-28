@@ -125,7 +125,7 @@ async def test_shop_slug_uniqueness_and_multi_listing_crud(db_pool) -> None:
     seller = await service.bootstrap_seller(telegram_id=7002, username="seller_b")
 
     shop_one = await service.create_shop(seller_user_id=seller.user_id, title="My Test Shop")
-    shop_two = await service.create_shop(seller_user_id=seller.user_id, title="My Test Shop")
+    shop_two = await service.create_shop(seller_user_id=seller.user_id, title="Second Test Shop")
     assert shop_one.slug != shop_two.slug
 
     await service.save_validated_shop_token(
@@ -171,6 +171,52 @@ async def test_shop_slug_uniqueness_and_multi_listing_crud(db_pool) -> None:
     assert [row.shop_id for row in remaining_shops] == [shop_two.shop_id]
     remaining_listings = await service.list_listings(seller_user_id=seller.user_id)
     assert [row.listing_id for row in remaining_listings] == [listing_two.listing_id]
+
+
+@pytest.mark.asyncio
+async def test_shop_title_must_be_unique_for_seller(db_pool) -> None:
+    service = SellerService(db_pool)
+    seller = await service.bootstrap_seller(telegram_id=7990, username="seller_unique")
+
+    await service.create_shop(seller_user_id=seller.user_id, title="Unique Shop")
+    with pytest.raises(InvalidStateError, match="shop title already exists"):
+        await service.create_shop(seller_user_id=seller.user_id, title="unique shop")
+
+
+@pytest.mark.asyncio
+async def test_shop_slug_transliterates_cyrillic_title(db_pool) -> None:
+    service = SellerService(db_pool)
+    seller = await service.bootstrap_seller(telegram_id=7991, username="seller_slug")
+
+    shop = await service.create_shop(
+        seller_user_id=seller.user_id,
+        title="тушенка для всех",
+    )
+
+    assert shop.slug == "tushenka_dlya_vseh"
+
+
+@pytest.mark.asyncio
+async def test_shop_rename_regenerates_slug_and_enforces_unique_title(db_pool) -> None:
+    service = SellerService(db_pool)
+    seller = await service.bootstrap_seller(telegram_id=7992, username="seller_rename")
+    first = await service.create_shop(seller_user_id=seller.user_id, title="Alpha Shop")
+    await service.create_shop(seller_user_id=seller.user_id, title="Beta Shop")
+
+    renamed = await service.rename_shop(
+        seller_user_id=seller.user_id,
+        shop_id=first.shop_id,
+        title="Gamma Shop",
+    )
+    assert renamed.title == "Gamma Shop"
+    assert renamed.slug == "gamma_shop"
+
+    with pytest.raises(InvalidStateError, match="shop title already exists"):
+        await service.rename_shop(
+            seller_user_id=seller.user_id,
+            shop_id=first.shop_id,
+            title="beta shop",
+        )
 
 
 @pytest.mark.asyncio
@@ -521,6 +567,28 @@ async def test_shop_delete_warning_via_command_processor(db_pool) -> None:
         text=f"/shop_delete {shop.shop_id} confirm",
     )
     assert "Магазин удален" in confirmed.text
+
+
+@pytest.mark.asyncio
+async def test_shop_create_response_hides_internal_slug_and_id(db_pool) -> None:
+    seller_service = SellerService(db_pool)
+    processor = SellerCommandProcessor(
+        seller_service=seller_service,
+        wb_ping_client=StubWbPingClient(valid=True),
+        token_cipher_key="test-key",
+        bot_username="qpi_bot",
+    )
+
+    response = await processor.handle(
+        telegram_id=7097,
+        username="seller_create_msg",
+        text="/shop_create тушенка для всех",
+    )
+
+    assert "Магазин «тушенка для всех» создан." in response.text
+    assert "Ссылка для покупателей" in response.text
+    assert "id=" not in response.text
+    assert "slug=" not in response.text
 
 
 @pytest.mark.asyncio

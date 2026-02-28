@@ -112,6 +112,36 @@ async def test_deposit_intent_rounding_suffix_and_idempotency(db_pool) -> None:
 
 
 @pytest.mark.asyncio
+async def test_admin_can_create_seller_deposit_intent_for_0_01_amount(db_pool) -> None:
+    service = DepositIntentService(db_pool)
+    shard = await service.ensure_default_shard(
+        shard_key="mvp-1",
+        deposit_address="UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH",
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            admin_id = await create_user(
+                conn,
+                telegram_id=930010,
+                role="admin",
+                username="admin930010",
+            )
+
+    intent = await service.create_seller_deposit_intent(
+        seller_user_id=admin_id,
+        request_amount_usdt=Decimal("0.01"),
+        shard_id=shard.shard_id,
+        idempotency_key="intent:admin:0.01",
+    )
+
+    assert intent.created is True
+    assert intent.base_amount_usdt == Decimal("0.100000")
+    assert intent.expected_amount_usdt == Decimal("0.100100")
+    assert intent.suffix_code == 1
+
+
+@pytest.mark.asyncio
 async def test_deposit_intent_suffix_pool_exhaustion(db_pool) -> None:
     service = DepositIntentService(db_pool)
     shard = await service.ensure_default_shard(

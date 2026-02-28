@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from functools import lru_cache
 
 from pydantic import Field, field_validator, model_validator
@@ -87,6 +88,14 @@ class BotApiSettings(BaseAppSettings):
     seller_collateral_invoice_ttl_hours: int = Field(
         default=24,
         alias="SELLER_COLLATERAL_INVOICE_TTL_HOURS",
+    )
+    display_rub_per_usdt: Decimal = Field(default=Decimal("90"), alias="DISPLAY_RUB_PER_USDT")
+    fx_rate_ttl_seconds: int = Field(default=900, alias="FX_RATE_TTL_SECONDS")
+    fx_rate_timeout_seconds: int = Field(default=5, alias="FX_RATE_TIMEOUT_SECONDS")
+    fx_rate_refresh_lock_id: int = Field(default=85001, alias="FX_RATE_REFRESH_LOCK_ID")
+    fx_rate_provider_url: str = Field(
+        default="https://api.coingecko.com/api/v3/simple/price",
+        alias="FX_RATE_PROVIDER_URL",
     )
 
     @field_validator("token_cipher_key")
@@ -215,6 +224,42 @@ class BotApiSettings(BaseAppSettings):
         if value < 1:
             raise ValueError("SELLER_COLLATERAL_INVOICE_TTL_HOURS must be >= 1")
         return value
+
+    @field_validator("display_rub_per_usdt")
+    @classmethod
+    def validate_display_rub_per_usdt(cls, value: Decimal) -> Decimal:
+        if value <= Decimal("0"):
+            raise ValueError("DISPLAY_RUB_PER_USDT must be > 0")
+        return value
+
+    @field_validator("fx_rate_ttl_seconds")
+    @classmethod
+    def validate_fx_rate_ttl_seconds(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("FX_RATE_TTL_SECONDS must be >= 1")
+        return value
+
+    @field_validator("fx_rate_timeout_seconds")
+    @classmethod
+    def validate_fx_rate_timeout_seconds(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("FX_RATE_TIMEOUT_SECONDS must be >= 1")
+        return value
+
+    @field_validator("fx_rate_refresh_lock_id")
+    @classmethod
+    def validate_fx_rate_refresh_lock_id(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("FX_RATE_REFRESH_LOCK_ID must be >= 1")
+        return value
+
+    @field_validator("fx_rate_provider_url")
+    @classmethod
+    def validate_fx_rate_provider_url(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("FX_RATE_PROVIDER_URL must not be empty")
+        return normalized
 
 
 class WorkerSettings(BaseAppSettings):

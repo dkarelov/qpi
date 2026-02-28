@@ -101,6 +101,16 @@ ALTER TABLE ONLY "public"."buyer_orders" ADD CONSTRAINT "buyer_orders_buyer_user
 
 ALTER TABLE ONLY "public"."buyer_orders" ADD CONSTRAINT "buyer_orders_listing_id_fkey" FOREIGN KEY ("listing_id") REFERENCES "public"."listings" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 
+CREATE TABLE "public"."fx_rates" (
+    "pair_code" text NOT NULL,
+    "rate" numeric(20,6) NOT NULL CONSTRAINT fx_rates_rate_check CHECK (rate > 0::numeric),
+    "source" text NOT NULL,
+    "fetched_at" timestamp with time zone NOT NULL,
+    "created_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    "updated_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    CONSTRAINT fx_rates_pkey PRIMARY KEY ("pair_code")
+);
+
 CREATE TABLE "public"."wb_report_rows" (
     "realizationreport_id" bigint,
     "create_dt" timestamp with time zone,
@@ -413,6 +423,8 @@ ALTER TABLE ONLY "public"."shops" ADD CONSTRAINT "shops_seller_user_id_fkey" FOR
 ALTER TABLE ONLY "public"."shops" ADD CONSTRAINT "shops_deleted_by_user_id_fkey" FOREIGN KEY ("deleted_by_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 
 CREATE UNIQUE INDEX uq_shops_slug_active ON public.shops USING btree (slug) WHERE (deleted_at IS NULL);
+
+CREATE UNIQUE INDEX uq_shops_seller_title_active_ci ON public.shops USING btree (seller_user_id, lower(title)) WHERE (deleted_at IS NULL);
 
 CREATE TABLE "public"."users" (
     "id" bigserial NOT NULL,

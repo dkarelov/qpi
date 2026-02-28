@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-02-27 UTC
+Last updated: 2026-02-28 UTC
 
 ## 1. Purpose and Maintenance Rules
 
@@ -49,7 +49,9 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 - Seller creates listings for full WB products (not samples).
 - Seller can own multiple shops.
 - Each shop can contain multiple listings.
-- Seller bot flow must support create and delete for both shops and listings.
+- Seller bot flow must support create, rename, and delete for shops, and create/delete for listings.
+- Active shop names must be unique per seller (case-insensitive).
+- Shop rename regenerates slug/deep link; old link becomes invalid and seller must be warned before entering new name.
 - Delete is soft delete only (no physical DB delete).
 - Deletion is never blocked by active listings/open assignments.
 - If active listings/open assignments exist, bot must show warning before delete confirmation.
@@ -97,6 +99,11 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 
 - Money display format: `~350 руб. (4.55 USDT)`.
 - Primary ledger currency: USDT.
+- Approximate helper FX (`USDT` -> `RUB`) is lazily refreshed by bot runtime via PostgreSQL cache table `fx_rates`:
+  - cache TTL is 15 minutes by default,
+  - stale cache triggers on-demand refresh from CoinGecko simple-price API,
+  - refresh concurrency is guarded by PostgreSQL advisory lock,
+  - no dedicated Cloud Function is used for FX refresh in MVP.
 
 ### 3.7 Operations and moderation
 
@@ -298,7 +305,7 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - `chain_incoming_txs`,
   - `chain_scan_cursors`.
 - Telegram UX additions (button-first):
-  - seller: `Пополнить`, `Мои пополнения / Проверить`,
+  - seller: `Пополнить`, `Транзакции`,
   - admin: `Исключения депозитов`, `Привязать tx -> intent`, `Отменить intent`.
 - Terraform serverless wiring added:
   - function `qpi-blockchain-checker`,
@@ -321,6 +328,10 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 - Implemented in `services/bot_api/telegram_runtime.py`:
   - seller/buyer/admin first-screen dashboards with section navigation below,
   - tree-structured seller flow (`Магазины` -> `Создать магазин`, `Листинги` -> `Создать листинг`, `Баланс` -> `Пополнить`/`Мои пополнения`),
+  - nested seller shop actions (`Магазины` list -> shop detail -> `Токен WB API` / `Переименовать` / `Удалить`),
+  - seller shop UX references shops by name (without exposing `shop_id`/`slug` in regular action labels and create confirmations),
+  - seller shop rename prompt warns that old deep link stops working,
+  - seller token prompt includes inline instruction text for purpose/path/safety,
   - admin section routing (`Выводы`, `Депозиты`, `Исключения`) with dashboard summary,
   - callback guard for missing Telegram message context to prevent silent button no-op.
 
@@ -807,3 +818,22 @@ Required controls even in MVP:
 - 2026-02-27: Admin role-switch regression fix:
   - seller/buyer bootstrap paths now accept existing `admin` role users (in addition to native role) and keep stored role unchanged,
   - admin operators can switch into seller/buyer menus again without `non-seller/non-buyer role` errors.
+- 2026-02-28: Seller UX shop-flow refinement:
+  - shops menu is now hierarchical (`список магазинов` -> `карточка магазина` -> `token/rename/delete`) instead of flat per-shop action rows,
+  - added shop rename flow with explicit deep-link invalidation warning and slug regeneration on rename,
+  - active shop name uniqueness is enforced per seller (case-insensitive) in domain logic + schema index,
+  - seller-facing shop create/action screens no longer expose technical `id/slug` in regular UX labels,
+  - token prompt now uses full inline instruction and suppresses duplicate generic sensitive-message notice in token flow.
+- 2026-02-28: UX iteration for token-first shop creation and dashboard readability:
+  - seller `Создать магазин` flow is now token-first: WB token is mandatory, validated before title input, and saved immediately after shop creation,
+  - shop detail token button now reflects current token health (`✅` valid token, `❌` missing/invalid token),
+  - seller shop deep links are rendered from a new line after label to avoid line-wrap splitting in Telegram clients,
+  - Telegram menu button is explicitly configured via bot API (`/start` command + default commands menu button),
+  - seller/buyer/admin dashboards removed static `Дашборд ...` titles and switched to compact metric-first format,
+  - money summary formatting in dashboards uses `$USDT` + approximate `~RUB` helper (`DISPLAY_RUB_PER_USDT`, rounded to 1 decimal for USDT and 0 for RUB),
+  - seller/buyer UX terminology normalized: `Обеспечение` instead of `Коллатераль`, `Кэшбэк` instead of `Награда/Вознаграждение`.
+- 2026-02-28: Dynamic FX helper rate implemented without extra CF:
+  - added PostgreSQL table `fx_rates` for cached pair rates (`USDT_RUB`),
+  - bot runtime now lazily refreshes helper FX from CoinGecko simple-price endpoint when cache is older than TTL (`FX_RATE_TTL_SECONDS`, default 900),
+  - refresh path is protected by PostgreSQL advisory lock (`FX_RATE_REFRESH_LOCK_ID`) to avoid concurrent thundering-herd fetches,
+  - if provider call fails, runtime falls back to latest cached rate, then to configured static fallback `DISPLAY_RUB_PER_USDT`.

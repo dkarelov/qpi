@@ -4,7 +4,7 @@ import json
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -24,10 +24,13 @@ from libs.domain.errors import (
     NotFoundError,
     PayloadValidationError,
 )
+from libs.domain.fx_rates import FxRateService
 from libs.domain.ledger import FinanceService
 from libs.domain.seller import SellerService
+from libs.integrations.fx_rates import CoinGeckoUsdtRubClient
 from libs.integrations.wb import WbPingClient
 from libs.logging.setup import EventLogger, get_logger
+from libs.security.token_cipher import encrypt_token
 from services.bot_api.buyer_handlers import BuyerCommandProcessor
 from services.bot_api.callback_data import (
     CALLBACK_VERSION,
@@ -38,7 +41,14 @@ from services.bot_api.callback_data import (
 from services.bot_api.seller_handlers import SellerCommandProcessor
 
 try:
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
+    from telegram import (
+        BotCommand,
+        InlineKeyboardButton,
+        InlineKeyboardMarkup,
+        MenuButtonCommands,
+        Message,
+        Update,
+    )
     from telegram.ext import (
         Application,
         CallbackContext,
@@ -62,6 +72,9 @@ _ROLE_ADMIN = "admin"
 _ACTIVE_ROLE_KEY = "active_role"
 _LAST_BUYER_SHOP_SLUG_KEY = "last_buyer_shop_slug"
 _PROMPT_STATE_KEY = "prompt_state"
+_USDT_SUMMARY_QUANT = Decimal("0.1")
+_USDT_EXACT_QUANT = Decimal("0.000001")
+_RUB_QUANT = Decimal("1")
 
 _SELLER_COMMAND_PREFIXES = (
     "/shop_",
@@ -159,8 +172,11 @@ class TelegramWebhookRuntime:
         self._buyer_service: BuyerService | None = None
         self._finance_service: FinanceService | None = None
         self._deposit_service: DepositIntentService | None = None
+        self._fx_rate_service: FxRateService | None = None
         self._seller_processor: SellerCommandProcessor | None = None
         self._buyer_processor: BuyerCommandProcessor | None = None
+        self._wb_ping_client: WbPingClient | None = None
+        self._display_rub_per_usdt = settings.display_rub_per_usdt
 
     def run(self) -> None:
         webhook_url = self._build_webhook_url()
@@ -234,6 +250,14 @@ class TelegramWebhookRuntime:
             self._db_pool.pool,
             invoice_ttl_hours=self._settings.seller_collateral_invoice_ttl_hours,
         )
+        self._fx_rate_service = FxRateService(
+            self._db_pool.pool,
+            provider=CoinGeckoUsdtRubClient(
+                endpoint=self._settings.fx_rate_provider_url,
+                timeout_seconds=self._settings.fx_rate_timeout_seconds,
+            ),
+            refresh_lock_id=self._settings.fx_rate_refresh_lock_id,
+        )
         await self._deposit_service.ensure_default_shard(
             shard_key=self._settings.seller_collateral_shard_key,
             deposit_address=self._settings.seller_collateral_shard_address,
@@ -245,6 +269,7 @@ class TelegramWebhookRuntime:
             max_requests=self._settings.wb_ping_rate_limit_count,
             window_seconds=self._settings.wb_ping_rate_limit_window_seconds,
         )
+        self._wb_ping_client = wb_ping_client
         self._seller_processor = SellerCommandProcessor(
             seller_service=self._seller_service,
             wb_ping_client=wb_ping_client,
@@ -262,6 +287,18 @@ class TelegramWebhookRuntime:
             telegram_bot_id=bot_profile.id,
             telegram_bot_username=bot_profile.username,
         )
+        try:
+            await application.bot.set_my_commands(
+                [BotCommand(command="start", description="Открыть меню")],
+            )
+            await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+            self._logger.info("telegram_menu_button_configured")
+        except Exception as exc:
+            self._logger.warning(
+                "telegram_menu_button_config_failed",
+                error_type=type(exc).__name__,
+                error_message=str(exc)[:300],
+            )
         if self._settings.webhook_set_enabled:
             await self._ensure_webhook_registration(application=application)
         self._ready = True
@@ -337,7 +374,7 @@ class TelegramWebhookRuntime:
                 context.user_data[_LAST_BUYER_SHOP_SLUG_KEY] = shop_slug
                 await self._send_buyer_shop_catalog(update.message, slug=shop_slug)
                 await update.message.reply_text(
-                    "📊 Дашборд покупателя:",
+                    "Выберите действие:",
                     reply_markup=self._buyer_menu_markup(),
                 )
                 return
@@ -375,7 +412,12 @@ class TelegramWebhookRuntime:
             return
 
         if response.delete_source_message:
-            await self._delete_sensitive_message(update.message)
+            command = raw_text.split(" ", 1)[0].lower()
+            suppress_delete_notice = command == "/token_set"
+            await self._delete_sensitive_message(
+                update.message,
+                notify=not suppress_delete_notice,
+            )
 
         await update.message.reply_text(response.text)
 
@@ -605,18 +647,21 @@ class TelegramWebhookRuntime:
                 self._root_menu_markup(identity=identity),
             )
             return
-        if action == "prompt_shop_title":
+        if action in {"shop_create_token_prompt", "prompt_shop_title"}:
             self._set_prompt(
                 context,
                 role=_ROLE_SELLER,
-                prompt_type="seller_shop_title",
-                sensitive=False,
-                extra={"seller_user_id": seller.user_id},
+                prompt_type="seller_shop_create_token",
+                sensitive=True,
+                extra={"seller_user_id": seller.user_id, "notify_sensitive_delete": False},
             )
             await self._replace_message(
                 query_message,
-                "Введите название магазина (следующим сообщением).",
-                self._seller_menu_markup(),
+                (
+                    "Шаг 1/2: отправьте токен WB API.\n\n"
+                    "Сначала проверим токен и только потом попросим название магазина."
+                ),
+                self._seller_shops_menu_markup(has_shops=True),
             )
             return
         if action == "shops":
@@ -625,12 +670,26 @@ class TelegramWebhookRuntime:
                 seller_user_id=seller.user_id,
             )
             return
+        if action == "shop_open":
+            if not payload.entity_id:
+                await self._replace_message(
+                    query_message,
+                    "Не передан магазин.",
+                    self._seller_shops_menu_markup(has_shops=True),
+                )
+                return
+            await self._render_seller_shop_details(
+                query_message=query_message,
+                seller_user_id=seller.user_id,
+                shop_id=int(payload.entity_id),
+            )
+            return
         if action == "shop_delete_preview":
             if not payload.entity_id:
                 await self._replace_message(
                     query_message,
-                    "Не передан shop_id для удаления.",
-                    self._seller_menu_markup(),
+                    "Не передан магазин для удаления.",
+                    self._seller_shops_menu_markup(has_shops=True),
                 )
                 return
             await self._render_shop_delete_preview(
@@ -643,8 +702,8 @@ class TelegramWebhookRuntime:
             if not payload.entity_id:
                 await self._replace_message(
                     query_message,
-                    "Не передан shop_id для удаления.",
-                    self._seller_menu_markup(),
+                    "Не передан магазин для удаления.",
+                    self._seller_shops_menu_markup(has_shops=True),
                 )
                 return
             await self._execute_shop_delete(
@@ -653,26 +712,91 @@ class TelegramWebhookRuntime:
                 shop_id=int(payload.entity_id),
             )
             return
+        if action == "shop_rename_prompt":
+            if not payload.entity_id:
+                await self._replace_message(
+                    query_message,
+                    "Не передан магазин для переименования.",
+                    self._seller_shops_menu_markup(has_shops=True),
+                )
+                return
+            shop_id = int(payload.entity_id)
+            try:
+                shop = await self._seller_service.get_shop(
+                    seller_user_id=seller.user_id,
+                    shop_id=shop_id,
+                )
+            except NotFoundError:
+                await self._replace_message(
+                    query_message,
+                    "Магазин не найден.",
+                    self._seller_shops_menu_markup(has_shops=True),
+                )
+                return
+            self._set_prompt(
+                context,
+                role=_ROLE_SELLER,
+                prompt_type="seller_shop_rename",
+                sensitive=False,
+                extra={
+                    "shop_id": shop_id,
+                    "seller_user_id": seller.user_id,
+                    "token_is_valid": self._is_valid_shop_token(shop.wb_token_status),
+                },
+            )
+            await self._replace_message(
+                query_message,
+                (
+                    f"Переименование магазина «{shop.title}».\n\n"
+                    "⚠️ Важно: при переименовании ссылка магазина изменится. "
+                    "Старая ссылка перестанет работать для покупателей.\n\n"
+                    "Введите новое название магазина следующим сообщением."
+                ),
+                self._seller_shop_detail_markup(
+                    shop_id=shop_id,
+                    token_is_valid=self._is_valid_shop_token(shop.wb_token_status),
+                ),
+            )
+            return
         if action == "shop_token_prompt":
             if not payload.entity_id:
                 await self._replace_message(
                     query_message,
-                    "Не передан shop_id для токена.",
-                    self._seller_menu_markup(),
+                    "Не передан магазин для токена.",
+                    self._seller_shops_menu_markup(has_shops=True),
                 )
                 return
             shop_id = int(payload.entity_id)
+            try:
+                shop = await self._seller_service.get_shop(
+                    seller_user_id=seller.user_id,
+                    shop_id=shop_id,
+                )
+            except NotFoundError:
+                await self._replace_message(
+                    query_message,
+                    "Магазин не найден.",
+                    self._seller_shops_menu_markup(has_shops=True),
+                )
+                return
             self._set_prompt(
                 context,
                 role=_ROLE_SELLER,
                 prompt_type="seller_shop_token",
                 sensitive=True,
-                extra={"shop_id": shop_id},
+                extra={
+                    "shop_id": shop_id,
+                    "seller_user_id": seller.user_id,
+                    "notify_sensitive_delete": False,
+                },
             )
             await self._replace_message(
                 query_message,
-                f"Отправьте WB токен для магазина #{shop_id}.",
-                self._seller_menu_markup(),
+                self._shop_token_instruction_text(shop_title=shop.title),
+                self._seller_shop_detail_markup(
+                    shop_id=shop_id,
+                    token_is_valid=self._is_valid_shop_token(shop.wb_token_status),
+                ),
             )
             return
         if action == "listings":
@@ -691,25 +815,50 @@ class TelegramWebhookRuntime:
             if not payload.entity_id:
                 await self._replace_message(
                     query_message,
-                    "Не передан shop_id для листинга.",
-                    self._seller_menu_markup(),
+                    "Не передан магазин для листинга.",
+                    self._seller_shops_menu_markup(has_shops=True),
                 )
                 return
             shop_id = int(payload.entity_id)
+            try:
+                shop = await self._seller_service.get_shop(
+                    seller_user_id=seller.user_id,
+                    shop_id=shop_id,
+                )
+            except NotFoundError:
+                await self._render_seller_shops(
+                    query_message=query_message,
+                    seller_user_id=seller.user_id,
+                    notice="Магазин не найден или уже удален.",
+                )
+                return
             self._set_prompt(
                 context,
                 role=_ROLE_SELLER,
                 prompt_type="seller_listing_create",
                 sensitive=False,
-                extra={"shop_id": shop_id, "seller_user_id": seller.user_id},
+                extra={
+                    "shop_id": shop_id,
+                    "shop_title": shop.title,
+                    "seller_user_id": seller.user_id,
+                },
             )
             await self._replace_message(
                 query_message,
                 (
-                    f"Введите параметры листинга для магазина #{shop_id}:\n"
+                    f"Введите параметры листинга для магазина «{shop.title}»:\n"
                     "<wb_product_id> <discount%> <reward_usdt> <slots>"
                 ),
-                self._seller_menu_markup(),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к листингам",
+                                callback_data=build_callback(flow=_ROLE_SELLER, action="listings"),
+                            )
+                        ]
+                    ]
+                ),
             )
             return
         if action == "listing_activate":
@@ -798,7 +947,11 @@ class TelegramWebhookRuntime:
             )
             await self._replace_message(
                 query_message,
-                "Введите сумму пополнения в USDT (например, 1.23).",
+                (
+                    "Введите сумму пополнения в USDT (например, 1.2).\n"
+                    "Сервис округляет базу до 0.1 вверх и добавляет 3-значный суффикс "
+                    "для авто-сопоставления перевода."
+                ),
                 self._seller_balance_menu_markup(),
             )
             return
@@ -821,6 +974,7 @@ class TelegramWebhookRuntime:
         query_message: Message | None,
         seller_user_id: int,
     ) -> None:
+        await self._refresh_display_rub_per_usdt()
         shops = await self._seller_service.list_shops(seller_user_id=seller_user_id)
         listings = await self._seller_service.list_listing_collateral_views(
             seller_user_id=seller_user_id
@@ -833,19 +987,26 @@ class TelegramWebhookRuntime:
         listings_active = sum(1 for item in listings if item.status == "active")
         listings_total = len(listings)
         shops_total = len(shops)
+        shops_active = sum(1 for item in shops if self._is_valid_shop_token(item.wb_token_status))
+        balance_free = balance.seller_available_usdt
         balance_total = balance.seller_available_usdt + balance.seller_collateral_usdt
 
         text = (
-            "📊 Дашборд продавца\n"
-            f"🏬 Магазинов всего: {shops_total}\n"
-            f"📦 Листинги: {listings_active}/{listings_total} (активные/всего)\n"
-            "🧾 Заказы: "
-            f"{orders['in_progress']}/{orders['completed']}/{orders['picked_up']} "
-            "(в процессе/совершенные/выкупленные)\n"
-            f"💰 Баланс: {balance.seller_available_usdt}/{balance_total} USDT "
-            "(свободный/общий)"
+            f"**Магазинов:** {shops_total} · {shops_active} активных\n"
+            f"**Листинги:** {listings_total} · {listings_active} активных\n"
+            "**Заказы:** "
+            f"{orders['in_progress']} в процессе · "
+            f"{orders['completed']} оформленных · "
+            f"{orders['picked_up']} выкупленных\n"
+            f"**Баланс:** {self._format_usdt_with_rub(balance_total)} · "
+            f"{self._format_usdt_with_rub(balance_free)} свободно"
         )
-        await self._replace_message(query_message, text, self._seller_menu_markup())
+        await self._replace_message(
+            query_message,
+            text,
+            self._seller_menu_markup(),
+            parse_mode="Markdown",
+        )
 
     async def _load_seller_order_counters(self, *, seller_user_id: int) -> dict[str, int]:
         async with self._db_pool.connection() as conn:
@@ -894,81 +1055,158 @@ class TelegramWebhookRuntime:
         *,
         query_message: Message | None,
         seller_user_id: int,
+        notice: str | None = None,
     ) -> None:
         shops = await self._seller_service.list_shops(seller_user_id=seller_user_id)
         if not shops:
+            text = "🏬 Магазинов пока нет. Нажмите «➕ Создать магазин»."
+            if notice:
+                text = f"{notice}\n\n{text}"
             await self._replace_message(
                 query_message,
-                "🏬 Магазинов пока нет. Нажмите «➕ Создать магазин».",
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="➕ Создать магазин",
-                                callback_data=build_callback(
-                                    flow=_ROLE_SELLER,
-                                    action="prompt_shop_title",
-                                ),
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text="🧭 Дашборд продавца",
-                                callback_data=build_callback(flow=_ROLE_SELLER, action="menu"),
-                            )
-                        ],
-                    ]
-                ),
+                text,
+                self._seller_shops_menu_markup(has_shops=False),
             )
             return
 
-        lines = ["🏬 Ваши магазины:"]
-        keyboard_rows: list[list[InlineKeyboardButton]] = []
-        for shop in shops:
-            lines.append(f"#{shop.shop_id} · {shop.title} · slug={shop.slug}")
-            keyboard_rows.append(
+        lines = ["🏬 Ваши магазины. Выберите магазин:"]
+        if notice:
+            lines.insert(0, notice)
+        keyboard_rows: list[list[InlineKeyboardButton]] = [
+            [
+                InlineKeyboardButton(
+                    text=f"🏬 {shop.title}",
+                    callback_data=build_callback(
+                        flow=_ROLE_SELLER,
+                        action="shop_open",
+                        entity_id=str(shop.shop_id),
+                    ),
+                )
+            ]
+            for shop in shops
+        ]
+        keyboard_rows.extend(self._seller_shops_menu_markup(has_shops=True).inline_keyboard)
+        await self._replace_message(
+            query_message,
+            "\n\n".join(lines),
+            InlineKeyboardMarkup(keyboard_rows),
+        )
+
+    async def _render_seller_shop_details(
+        self,
+        *,
+        query_message: Message | None,
+        seller_user_id: int,
+        shop_id: int,
+        notice: str | None = None,
+    ) -> None:
+        try:
+            shop = await self._seller_service.get_shop(
+                seller_user_id=seller_user_id,
+                shop_id=shop_id,
+            )
+        except NotFoundError:
+            await self._render_seller_shops(
+                query_message=query_message,
+                seller_user_id=seller_user_id,
+                notice="Магазин не найден или уже удален.",
+            )
+            return
+
+        deep_link = f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"
+        lines = [f"🏬 Магазин «{shop.title}»", f"🔗 Ссылка для покупателей:\n{deep_link}"]
+        if notice:
+            lines.insert(0, notice)
+        await self._replace_message(
+            query_message,
+            "\n\n".join(lines),
+            self._seller_shop_detail_markup(
+                shop_id=shop_id,
+                token_is_valid=self._is_valid_shop_token(shop.wb_token_status),
+            ),
+        )
+
+    def _seller_shops_menu_markup(self, *, has_shops: bool) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
                 [
                     InlineKeyboardButton(
-                        text=f"🔐 Токен #{shop.shop_id}",
+                        text="➕ Создать магазин",
+                        callback_data=build_callback(
+                            flow=_ROLE_SELLER,
+                            action="shop_create_token_prompt",
+                        ),
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="🧭 Дашборд продавца" if has_shops else "🧭 Назад",
+                        callback_data=build_callback(flow=_ROLE_SELLER, action="menu"),
+                    )
+                ],
+            ]
+        )
+
+    def _seller_shop_detail_markup(
+        self,
+        *,
+        shop_id: int,
+        token_is_valid: bool = False,
+    ) -> InlineKeyboardMarkup:
+        token_label = "✅ Токен WB API" if token_is_valid else "❌ Токен WB API"
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        text=token_label,
                         callback_data=build_callback(
                             flow=_ROLE_SELLER,
                             action="shop_token_prompt",
-                            entity_id=str(shop.shop_id),
+                            entity_id=str(shop_id),
+                        ),
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="✏️ Переименовать",
+                        callback_data=build_callback(
+                            flow=_ROLE_SELLER,
+                            action="shop_rename_prompt",
+                            entity_id=str(shop_id),
                         ),
                     ),
                     InlineKeyboardButton(
-                        text=f"🗑 Удалить #{shop.shop_id}",
+                        text="🗑 Удалить",
                         callback_data=build_callback(
                             flow=_ROLE_SELLER,
                             action="shop_delete_preview",
-                            entity_id=str(shop.shop_id),
+                            entity_id=str(shop_id),
                         ),
                     ),
-                ]
-            )
-        keyboard_rows.append(
-            [
-                InlineKeyboardButton(
-                    text="➕ Создать магазин",
-                    callback_data=build_callback(
-                        flow=_ROLE_SELLER,
-                        action="prompt_shop_title",
-                    ),
-                )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="↩️ К списку магазинов",
+                        callback_data=build_callback(flow=_ROLE_SELLER, action="shops"),
+                    )
+                ],
             ]
         )
-        keyboard_rows.append(
-            [
-                InlineKeyboardButton(
-                    text="🧭 Дашборд продавца",
-                    callback_data=build_callback(flow=_ROLE_SELLER, action="menu"),
-                )
-            ]
-        )
-        await self._replace_message(
-            query_message,
-            "\n".join(lines),
-            InlineKeyboardMarkup(keyboard_rows),
+
+    def _shop_token_instruction_text(self, *, shop_title: str) -> str:
+        return (
+            f"🔐 Магазин «{shop_title}»\n"
+            "Отправьте сообщением токен WB API.\n\n"
+            "Зачем нужен токен?\n"
+            "Чтобы бот мог отслеживать статус заказов покупателей, фиксировать момент "
+            "выкупа, и контролировать срок, после которого можно разблокировать кэшбэк "
+            "покупателю.\n\n"
+            "Где найти токен?\n"
+            "Войдите в ЛК ВБ > Интеграции по API > Создать токен > Для интеграции вручную "
+            "> Базовый токен > Статистика > Только чтение\n\n"
+            "Безопасно ли это?\n"
+            "Да, токен получает доступ только в режиме чтения и только к категории "
+            "\"Статистика\"."
         )
 
     async def _render_shop_delete_preview(
@@ -979,20 +1217,24 @@ class TelegramWebhookRuntime:
         shop_id: int,
     ) -> None:
         try:
+            shop = await self._seller_service.get_shop(
+                seller_user_id=seller_user_id,
+                shop_id=shop_id,
+            )
             preview = await self._seller_service.get_shop_delete_preview(
                 seller_user_id=seller_user_id,
                 shop_id=shop_id,
             )
-        except NotFoundError as exc:
-            await self._replace_message(
-                query_message,
-                f"Магазин не найден: {exc}",
-                self._seller_menu_markup(),
+        except NotFoundError:
+            await self._render_seller_shops(
+                query_message=query_message,
+                seller_user_id=seller_user_id,
+                notice="Магазин не найден или уже удален.",
             )
             return
 
         text = (
-            "⚠️ ВНИМАНИЕ: удаление магазина необратимо.\n"
+            f"⚠️ ВНИМАНИЕ: удаление магазина «{shop.title}» необратимо.\n"
             f"Активных листингов: {preview.active_listings_count}\n"
             f"Открытых назначений: {preview.open_assignments_count}\n"
             "После подтверждения:\n"
@@ -1006,7 +1248,7 @@ class TelegramWebhookRuntime:
                 [
                     [
                         InlineKeyboardButton(
-                            text=f"✅ Подтвердить удаление #{shop_id}",
+                            text="✅ Подтвердить удаление",
                             callback_data=build_callback(
                                 flow=_ROLE_SELLER,
                                 action="shop_delete_confirm",
@@ -1017,7 +1259,11 @@ class TelegramWebhookRuntime:
                     [
                         InlineKeyboardButton(
                             text="↩️ Отмена",
-                            callback_data=build_callback(flow=_ROLE_SELLER, action="shops"),
+                            callback_data=build_callback(
+                                flow=_ROLE_SELLER,
+                                action="shop_open",
+                                entity_id=str(shop_id),
+                            ),
                         )
                     ],
                 ]
@@ -1039,10 +1285,10 @@ class TelegramWebhookRuntime:
                 idempotency_key=f"tg-shop-delete:{seller_user_id}:{shop_id}",
             )
         except NotFoundError as exc:
-            await self._replace_message(
-                query_message,
-                f"Магазин не найден: {exc}",
-                self._seller_menu_markup(),
+            await self._render_seller_shops(
+                query_message=query_message,
+                seller_user_id=seller_user_id,
+                notice=f"Магазин не найден: {exc}",
             )
             return
 
@@ -1060,21 +1306,29 @@ class TelegramWebhookRuntime:
             assignment_transferred_usdt=str(result.assignment_transferred_usdt),
             unassigned_collateral_returned_usdt=str(result.unassigned_collateral_returned_usdt),
         )
-        await self._replace_message(query_message, message, self._seller_menu_markup())
+        await self._render_seller_shops(
+            query_message=query_message,
+            seller_user_id=seller_user_id,
+            notice=message,
+        )
 
     async def _render_seller_listings(
         self,
         *,
         query_message: Message | None,
         seller_user_id: int,
+        notice: str | None = None,
     ) -> None:
         listings = await self._seller_service.list_listing_collateral_views(
             seller_user_id=seller_user_id
         )
         if not listings:
+            text = "📦 Листинги не найдены. Нажмите «➕ Создать листинг»."
+            if notice:
+                text = f"{notice}\n\n{text}"
             await self._replace_message(
                 query_message,
-                "📦 Листинги не найдены. Нажмите «➕ Создать листинг».",
+                text,
                 InlineKeyboardMarkup(
                     [
                         [
@@ -1097,7 +1351,11 @@ class TelegramWebhookRuntime:
             )
             return
 
+        shops = await self._seller_service.list_shops(seller_user_id=seller_user_id)
+        shop_titles = {shop.shop_id: shop.title for shop in shops}
         lines = ["📦 Ваши листинги:"]
+        if notice:
+            lines.insert(0, notice)
         keyboard_rows: list[list[InlineKeyboardButton]] = [
             [
                 InlineKeyboardButton(
@@ -1110,15 +1368,14 @@ class TelegramWebhookRuntime:
             ]
         ]
         for listing in listings:
+            shop_title = shop_titles.get(listing.shop_id, "Неизвестный магазин")
             lines.append(
-                
-                    f"#{listing.listing_id} · shop={listing.shop_id} · status={listing.status}\n"
-                    f"reward={listing.reward_usdt} USDT · slots={listing.available_slots}/"
-                    f"{listing.slot_count}\n"
-                    f"collateral locked={listing.collateral_locked_usdt}/"
-                    f"{listing.collateral_required_usdt} USDT · "
-                    f"reserved={listing.reserved_slot_usdt} USDT"
-                
+                f"#{listing.listing_id} · магазин: {shop_title} · статус: {listing.status}\n"
+                f"Кэшбэк: {listing.reward_usdt} USDT · слоты: {listing.available_slots}/"
+                f"{listing.slot_count}\n"
+                f"Обеспечение: {listing.collateral_locked_usdt}/"
+                f"{listing.collateral_required_usdt} USDT · "
+                f"резерв: {listing.reserved_slot_usdt} USDT"
             )
             action_button: InlineKeyboardButton
             if listing.status == "draft":
@@ -1186,14 +1443,14 @@ class TelegramWebhookRuntime:
             await self._replace_message(
                 query_message,
                 "Нет доступных магазинов. Сначала создайте магазин.",
-                self._seller_menu_markup(),
+                self._seller_shops_menu_markup(has_shops=False),
             )
             return
 
         keyboard_rows = [
             [
                 InlineKeyboardButton(
-                    text=f"🏬 Магазин #{shop.shop_id}: {shop.title}",
+                    text=f"🏬 {shop.title}",
                     callback_data=build_callback(
                         flow=_ROLE_SELLER,
                         action="listing_create_prompt",
@@ -1248,7 +1505,11 @@ class TelegramWebhookRuntime:
         else:
             message = f"Листинг #{listing_id} уже активен."
         self._logger.info("seller_listing_activated", listing_id=listing_id, changed=result.changed)
-        await self._replace_message(query_message, message, self._seller_menu_markup())
+        await self._render_seller_listings(
+            query_message=query_message,
+            seller_user_id=seller_user_id,
+            notice=message,
+        )
 
     async def _execute_listing_pause(
         self,
@@ -1272,7 +1533,11 @@ class TelegramWebhookRuntime:
         else:
             message = f"Листинг #{listing_id} уже на паузе."
         self._logger.info("seller_listing_paused", listing_id=listing_id, changed=result.changed)
-        await self._replace_message(query_message, message, self._seller_menu_markup())
+        await self._render_seller_listings(
+            query_message=query_message,
+            seller_user_id=seller_user_id,
+            notice=message,
+        )
 
     async def _execute_listing_unpause(
         self,
@@ -1295,7 +1560,11 @@ class TelegramWebhookRuntime:
         else:
             message = f"Листинг #{listing_id} уже активен."
         self._logger.info("seller_listing_unpaused", listing_id=listing_id, changed=result.changed)
-        await self._replace_message(query_message, message, self._seller_menu_markup())
+        await self._render_seller_listings(
+            query_message=query_message,
+            seller_user_id=seller_user_id,
+            notice=message,
+        )
 
     async def _render_listing_delete_preview(
         self,
@@ -1376,7 +1645,11 @@ class TelegramWebhookRuntime:
             assignment_transferred_usdt=str(result.assignment_transferred_usdt),
             unassigned_collateral_returned_usdt=str(result.unassigned_collateral_returned_usdt),
         )
-        await self._replace_message(query_message, message, self._seller_menu_markup())
+        await self._render_seller_listings(
+            query_message=query_message,
+            seller_user_id=seller_user_id,
+            notice=message,
+        )
 
     async def _render_seller_balance(
         self,
@@ -1384,6 +1657,7 @@ class TelegramWebhookRuntime:
         query_message: Message | None,
         seller_user_id: int,
     ) -> None:
+        await self._refresh_display_rub_per_usdt()
         snapshot = await self._seller_service.get_seller_balance_snapshot(
             seller_user_id=seller_user_id
         )
@@ -1395,12 +1669,12 @@ class TelegramWebhookRuntime:
         total_balance = snapshot.seller_available_usdt + snapshot.seller_collateral_usdt
         text = (
             "💰 Баланс продавца\n"
-            f"Свободный: {snapshot.seller_available_usdt} USDT\n"
-            f"Коллатераль: {snapshot.seller_collateral_usdt} USDT\n"
-            f"Общий: {total_balance} USDT\n\n"
-            "📌 Коллатераль по листингам\n"
-            f"Заблокировано: {locked_total} USDT\n"
-            f"Требуется: {required_total} USDT"
+            f"Свободно: {self._format_usdt_with_rub(snapshot.seller_available_usdt)}\n"
+            f"Обеспечение: {self._format_usdt_with_rub(snapshot.seller_collateral_usdt)}\n"
+            f"Итого: {self._format_usdt_with_rub(total_balance)}\n\n"
+            "📌 Обеспечение по листингам\n"
+            f"Заблокировано: {self._format_usdt_with_rub(locked_total)}\n"
+            f"Требуется: {self._format_usdt_with_rub(required_total)}"
         )
         await self._replace_message(query_message, text, self._seller_balance_menu_markup())
 
@@ -1489,7 +1763,7 @@ class TelegramWebhookRuntime:
             context.user_data[_LAST_BUYER_SHOP_SLUG_KEY] = slug
             await self._send_buyer_shop_catalog(query_message, slug=slug)
             await query_message.reply_text(
-                "📊 Дашборд покупателя:",
+                "Выберите действие:",
                 reply_markup=self._buyer_menu_markup(),
             )
             return
@@ -1598,6 +1872,7 @@ class TelegramWebhookRuntime:
         query_message: Message | None,
         buyer_user_id: int,
     ) -> None:
+        await self._refresh_display_rub_per_usdt()
         assignments = await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
         snapshot = await self._finance_service.get_buyer_balance_snapshot(
             buyer_user_id=buyer_user_id
@@ -1617,13 +1892,17 @@ class TelegramWebhookRuntime:
         total_balance = snapshot.buyer_available_usdt + snapshot.buyer_withdraw_pending_usdt
 
         text = (
-            "📊 Дашборд покупателя\n"
-            f"📋 Задания: {in_progress}/{ready}/{paid}/{len(assignments)} "
-            "(в процессе/к выводу/выплачено/всего)\n"
-            f"💳 Баланс: {snapshot.buyer_available_usdt}/{total_balance} USDT "
-            "(доступно/общий)"
+            f"**Задания:** {in_progress} в процессе · {ready} к выводу · "
+            f"{paid} выплачено · {len(assignments)} всего\n"
+            f"**Баланс:** {self._format_usdt_with_rub(total_balance)} · "
+            f"{self._format_usdt_with_rub(snapshot.buyer_available_usdt)} доступно"
         )
-        await self._replace_message(query_message, text, self._buyer_menu_markup())
+        await self._replace_message(
+            query_message,
+            text,
+            self._buyer_menu_markup(),
+            parse_mode="Markdown",
+        )
 
     async def _render_buyer_shops_section(
         self,
@@ -1736,7 +2015,7 @@ class TelegramWebhookRuntime:
             lines.append(
                 
                     f"#{item.assignment_id} · listing={item.listing_id} · shop={item.shop_slug}\n"
-                    f"status={item.status} · reward={item.reward_usdt} USDT · "
+                    f"status={item.status} · кэшбэк={item.reward_usdt} USDT · "
                     f"order_id={item.order_id or '-'}"
                 
             )
@@ -1773,13 +2052,14 @@ class TelegramWebhookRuntime:
         query_message: Message | None,
         buyer_user_id: int,
     ) -> None:
+        await self._refresh_display_rub_per_usdt()
         snapshot = await self._finance_service.get_buyer_balance_snapshot(
             buyer_user_id=buyer_user_id
         )
         text = (
             "💳 Баланс покупателя\n"
-            f"Доступно: {snapshot.buyer_available_usdt} USDT\n"
-            f"В ожидании вывода: {snapshot.buyer_withdraw_pending_usdt} USDT"
+            f"Доступно: {self._format_usdt_with_rub(snapshot.buyer_available_usdt)}\n"
+            f"В ожидании вывода: {self._format_usdt_with_rub(snapshot.buyer_withdraw_pending_usdt)}"
         )
         await self._replace_message(
             query_message,
@@ -1936,12 +2216,16 @@ class TelegramWebhookRuntime:
         expired_intents = await self._deposit_service.list_admin_expired_intents(limit=1000)
 
         text = (
-            "📊 Дашборд администратора\n"
-            f"💸 Выводы в очереди: {len(pending_withdrawals)}\n"
-            f"⚠️ Tx на ручной разбор: {len(review_txs)}\n"
-            f"⏰ Просроченные intents: {len(expired_intents)}"
+            f"**Выводы в очереди:** {len(pending_withdrawals)}\n"
+            f"**Tx на ручной разбор:** {len(review_txs)}\n"
+            f"**Просроченные intents:** {len(expired_intents)}"
         )
-        await self._replace_message(query_message, text, self._admin_menu_markup())
+        await self._replace_message(
+            query_message,
+            text,
+            self._admin_menu_markup(),
+            parse_mode="Markdown",
+        )
 
     async def _render_admin_withdrawals_section(self, *, query_message: Message | None) -> None:
         await self._replace_message(
@@ -2837,35 +3121,114 @@ class TelegramWebhookRuntime:
 
         prompt_type = str(prompt_state.get("type", ""))
         if prompt_state.get("sensitive"):
-            await self._delete_sensitive_message(message)
+            await self._delete_sensitive_message(
+                message,
+                notify=bool(prompt_state.get("notify_sensitive_delete", True)),
+            )
 
-        if prompt_type == "seller_shop_title":
-            try:
-                seller = await self._seller_service.bootstrap_seller(
-                    telegram_id=identity.telegram_id,
-                    username=identity.username,
+        if prompt_type == "seller_shop_create_token":
+            seller_user_id = int(prompt_state.get("seller_user_id", 0))
+            wb_token = text.strip()
+            if seller_user_id < 1:
+                self._clear_prompt(context)
+                await message.reply_text(
+                    "Ошибка контекста создания магазина. Откройте раздел заново."
                 )
+                return
+            if not wb_token:
+                await message.reply_text(
+                    "Токен не может быть пустым. Повторите ввод.",
+                    reply_markup=self._seller_shops_menu_markup(has_shops=True),
+                )
+                return
+            if self._wb_ping_client is None:
+                self._clear_prompt(context)
+                await message.reply_text("Проверка токена временно недоступна. Попробуйте позже.")
+                return
+
+            ping_result = await self._wb_ping_client.validate_token(wb_token)
+            if not ping_result.valid:
+                details = ping_result.message or "неизвестная ошибка"
+                await message.reply_text(
+                    (
+                        "Токен не принят.\n"
+                        f"Проверка ping завершилась ошибкой: {details}\n"
+                        "Токен не сохранен. Отправьте корректный токен."
+                    ),
+                    reply_markup=self._seller_shops_menu_markup(has_shops=True),
+                )
+                return
+
+            token_ciphertext = encrypt_token(wb_token, self._settings.token_cipher_key)
+            self._set_prompt(
+                context,
+                role=_ROLE_SELLER,
+                prompt_type="seller_shop_title_after_token",
+                sensitive=False,
+                extra={
+                    "seller_user_id": seller_user_id,
+                    "validated_token_ciphertext": token_ciphertext,
+                },
+            )
+            await message.reply_text(
+                (
+                    "Токен валиден. Сообщение с токеном удалено в целях безопасности.\n\n"
+                    "Шаг 2/2: введите название магазина следующим сообщением."
+                ),
+                reply_markup=self._seller_shops_menu_markup(has_shops=True),
+            )
+            return
+
+        if prompt_type == "seller_shop_title_after_token":
+            seller_user_id = int(prompt_state.get("seller_user_id", 0))
+            token_ciphertext = str(prompt_state.get("validated_token_ciphertext", "")).strip()
+            if seller_user_id < 1 or not token_ciphertext:
+                self._clear_prompt(context)
+                await message.reply_text(
+                    "Ошибка контекста создания магазина. Начните создание заново.",
+                    reply_markup=self._seller_shops_menu_markup(has_shops=True),
+                )
+                return
+            try:
                 shop = await self._seller_service.create_shop(
-                    seller_user_id=seller.user_id,
+                    seller_user_id=seller_user_id,
                     title=text,
+                )
+                await self._seller_service.save_validated_shop_token(
+                    seller_user_id=seller_user_id,
+                    shop_id=shop.shop_id,
+                    token_ciphertext=token_ciphertext,
                 )
             except ValueError:
                 await message.reply_text(
                     "Название магазина не может быть пустым. Повторите ввод.",
-                    reply_markup=self._seller_menu_markup(),
+                    reply_markup=self._seller_shops_menu_markup(has_shops=True),
+                )
+                return
+            except InvalidStateError as exc:
+                await message.reply_text(
+                    f"Создание магазина отклонено: {exc}",
+                    reply_markup=self._seller_shops_menu_markup(has_shops=True),
                 )
                 return
 
             deep_link = f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"
             self._clear_prompt(context)
             await message.reply_text(
-                f"Магазин создан: id={shop.shop_id}, slug={shop.slug}\nСсылка: {deep_link}",
-                reply_markup=self._seller_menu_markup(),
+                (
+                    f"Магазин «{shop.title}» создан.\n"
+                    f"Ссылка для покупателей:\n{deep_link}"
+                ),
+                reply_markup=self._seller_shop_detail_markup(
+                    shop_id=shop.shop_id,
+                    token_is_valid=True,
+                ),
             )
             return
 
         if prompt_type == "seller_shop_token":
             shop_id = int(prompt_state.get("shop_id", 0))
+            seller_user_id = int(prompt_state.get("seller_user_id", 0))
             if shop_id < 1:
                 self._clear_prompt(context)
                 await message.reply_text("Ошибка контекста токена. Откройте меню продавца заново.")
@@ -2876,9 +3239,63 @@ class TelegramWebhookRuntime:
                 text=f"/token_set {shop_id} {text}",
             )
             self._clear_prompt(context)
+            if seller_user_id > 0:
+                await self._render_seller_shop_details(
+                    query_message=message,
+                    seller_user_id=seller_user_id,
+                    shop_id=shop_id,
+                    notice=response.text,
+                )
+            else:
+                await message.reply_text(response.text)
+            return
+
+        if prompt_type == "seller_shop_rename":
+            seller_user_id = int(prompt_state.get("seller_user_id", 0))
+            shop_id = int(prompt_state.get("shop_id", 0))
+            token_is_valid = bool(prompt_state.get("token_is_valid", False))
+            if seller_user_id < 1 or shop_id < 1:
+                self._clear_prompt(context)
+                await message.reply_text(
+                    "Ошибка контекста переименования. Откройте магазины заново.",
+                    reply_markup=self._seller_shops_menu_markup(has_shops=True),
+                )
+                return
+            try:
+                shop = await self._seller_service.rename_shop(
+                    seller_user_id=seller_user_id,
+                    shop_id=shop_id,
+                    title=text,
+                )
+            except ValueError:
+                await message.reply_text(
+                    "Название магазина не может быть пустым. Повторите ввод.",
+                    reply_markup=self._seller_shop_detail_markup(
+                        shop_id=shop_id,
+                        token_is_valid=token_is_valid,
+                    ),
+                )
+                return
+            except (NotFoundError, InvalidStateError) as exc:
+                await message.reply_text(
+                    f"Переименование отклонено: {exc}",
+                    reply_markup=self._seller_shop_detail_markup(
+                        shop_id=shop_id,
+                        token_is_valid=token_is_valid,
+                    ),
+                )
+                return
+            self._clear_prompt(context)
+            deep_link = f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"
             await message.reply_text(
-                response.text,
-                reply_markup=self._seller_menu_markup(),
+                (
+                    f"Магазин переименован: «{shop.title}».\n"
+                    f"Новая ссылка для покупателей:\n{deep_link}"
+                ),
+                reply_markup=self._seller_shop_detail_markup(
+                    shop_id=shop_id,
+                    token_is_valid=self._is_valid_shop_token(shop.wb_token_status),
+                ),
             )
             return
 
@@ -2889,7 +3306,19 @@ class TelegramWebhookRuntime:
             if len(tokens) != 4:
                 await message.reply_text(
                     "Формат: <wb_product_id> <discount%> <reward_usdt> <slots>",
-                    reply_markup=self._seller_menu_markup(),
+                    reply_markup=InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text="↩️ Назад к листингам",
+                                    callback_data=build_callback(
+                                        flow=_ROLE_SELLER,
+                                        action="listings",
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
                 )
                 return
             try:
@@ -2908,13 +3337,37 @@ class TelegramWebhookRuntime:
             except (ValueError, InvalidOperation):
                 await message.reply_text(
                     "Неверный формат числовых полей. Повторите ввод.",
-                    reply_markup=self._seller_menu_markup(),
+                    reply_markup=InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text="↩️ Назад к листингам",
+                                    callback_data=build_callback(
+                                        flow=_ROLE_SELLER,
+                                        action="listings",
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
                 )
                 return
             except (NotFoundError, InvalidStateError, InsufficientFundsError) as exc:
                 await message.reply_text(
                     f"Создание листинга отклонено: {exc}",
-                    reply_markup=self._seller_menu_markup(),
+                    reply_markup=InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text="↩️ Назад к листингам",
+                                    callback_data=build_callback(
+                                        flow=_ROLE_SELLER,
+                                        action="listings",
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
                 )
                 return
 
@@ -2922,10 +3375,22 @@ class TelegramWebhookRuntime:
             await message.reply_text(
                 (
                     f"Листинг создан: id={listing.listing_id}, status={listing.status}, "
-                    f"reward={listing.reward_usdt} USDT, "
+                    f"кэшбэк={listing.reward_usdt} USDT, "
                     f"slots={listing.available_slots}/{listing.slot_count}"
                 ),
-                reply_markup=self._seller_menu_markup(),
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="📦 К листингам",
+                                callback_data=build_callback(
+                                    flow=_ROLE_SELLER,
+                                    action="listings",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
             )
             return
 
@@ -2968,12 +3433,36 @@ class TelegramWebhookRuntime:
                 ),
                 shards[0],
             )
-            intent = await self._deposit_service.create_seller_deposit_intent(
-                seller_user_id=seller_user_id,
-                request_amount_usdt=amount,
-                shard_id=target_shard.shard_id,
-                idempotency_key=f"tg-seller-topup:{seller_user_id}:{update.update_id}",
-            )
+            try:
+                intent = await self._deposit_service.create_seller_deposit_intent(
+                    seller_user_id=seller_user_id,
+                    request_amount_usdt=amount,
+                    shard_id=target_shard.shard_id,
+                    idempotency_key=f"tg-seller-topup:{seller_user_id}:{update.update_id}",
+                )
+            except (NotFoundError, InvalidStateError, ValueError) as exc:
+                details = str(exc).strip()
+                if "all 999 suffixes" in details:
+                    details = (
+                        "сейчас заняты все 999 активных инвойсов. "
+                        "Попробуйте позже."
+                    )
+                await message.reply_text(
+                    f"Не удалось создать инвойс на пополнение: {details}",
+                    reply_markup=self._seller_balance_menu_markup(),
+                )
+                return
+            except Exception:
+                self._logger.exception(
+                    "seller_topup_intent_create_failed",
+                    seller_user_id=seller_user_id,
+                    telegram_update_id=update.update_id,
+                )
+                await message.reply_text(
+                    "Техническая ошибка при создании инвойса. Попробуйте еще раз.",
+                    reply_markup=self._seller_balance_menu_markup(),
+                )
+                return
             self._clear_prompt(context)
             suffix_text = f"{intent.suffix_code:03d}"
             await message.reply_text(
@@ -2984,7 +3473,7 @@ class TelegramWebhookRuntime:
                     f"Сумма к переводу: {intent.expected_amount_usdt} USDT\n"
                     f"(base={intent.base_amount_usdt}, suffix={suffix_text})\n"
                     f"TTL: до {intent.expires_at:%Y-%m-%d %H:%M UTC}\n"
-                    "После перевода нажмите «🧾 Мои пополнения / Проверить»."
+                    "После перевода нажмите «🧾 Транзакции»."
                 ),
                 reply_markup=self._seller_balance_menu_markup(),
             )
@@ -2995,7 +3484,7 @@ class TelegramWebhookRuntime:
             context.user_data[_LAST_BUYER_SHOP_SLUG_KEY] = text
             await self._send_buyer_shop_catalog(message, slug=text)
             await message.reply_text(
-                "📊 Дашборд покупателя:",
+                "Выберите действие:",
                 reply_markup=self._buyer_menu_markup(),
             )
             return
@@ -3312,7 +3801,7 @@ class TelegramWebhookRuntime:
             lines.append(
                 f"#{listing.listing_id} · wb={listing.wb_product_id} · "
                 f"скидка={listing.discount_percent}% · "
-                f"reward={listing.reward_usdt} USDT · "
+                f"кэшбэк={listing.reward_usdt} USDT · "
                 f"slots={listing.available_slots}/{listing.slot_count}"
             )
             keyboard_rows.append(
@@ -3354,7 +3843,7 @@ class TelegramWebhookRuntime:
             )
         return None
 
-    async def _delete_sensitive_message(self, message: Message) -> None:
+    async def _delete_sensitive_message(self, message: Message, *, notify: bool = True) -> None:
         deleted = False
         try:
             await message.delete()
@@ -3365,11 +3854,53 @@ class TelegramWebhookRuntime:
                 error_type=type(exc).__name__,
                 error_message=str(exc)[:300],
             )
-        await message.chat.send_message(
-            "Чувствительные данные обработаны. "
-            f"Сообщение {'удалено' if deleted else 'не удалено автоматически'}, "
-            "проверьте историю чата."
-        )
+        if notify:
+            await message.chat.send_message(
+                "Чувствительные данные обработаны. "
+                f"Сообщение {'удалено' if deleted else 'не удалено автоматически'}, "
+                "проверьте историю чата."
+            )
+
+    @staticmethod
+    def _is_valid_shop_token(status: str | None) -> bool:
+        return (status or "").strip().lower() == "valid"
+
+    @staticmethod
+    def _format_decimal(amount: Decimal, *, quant: Decimal) -> str:
+        normalized = amount.quantize(quant, rounding=ROUND_HALF_UP)
+        text = format(normalized, "f")
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        return text
+
+    def _format_usdt(self, amount: Decimal, *, precise: bool = False) -> str:
+        quant = _USDT_EXACT_QUANT if precise else _USDT_SUMMARY_QUANT
+        return f"${self._format_decimal(amount, quant=quant)}"
+
+    def _format_rub_approx(self, amount: Decimal) -> str:
+        rub = amount * self._display_rub_per_usdt
+        return f"~{self._format_decimal(rub, quant=_RUB_QUANT)} ₽"
+
+    def _format_usdt_with_rub(self, amount: Decimal, *, precise: bool = False) -> str:
+        return f"{self._format_usdt(amount, precise=precise)} ({self._format_rub_approx(amount)})"
+
+    async def _refresh_display_rub_per_usdt(self) -> None:
+        service = self._fx_rate_service
+        if service is None:
+            return
+        try:
+            rate = await service.get_usdt_rub_rate(
+                max_age_seconds=self._settings.fx_rate_ttl_seconds,
+                fallback_rate=self._settings.display_rub_per_usdt,
+            )
+        except Exception as exc:
+            self._logger.warning(
+                "fx_rate_refresh_failed",
+                error_type=type(exc).__name__,
+                error_message=str(exc)[:300],
+            )
+            return
+        self._display_rub_per_usdt = rate
 
     def _set_prompt(
         self,
@@ -3397,13 +3928,14 @@ class TelegramWebhookRuntime:
         message: Message | None,
         text: str,
         markup: InlineKeyboardMarkup | None = None,
+        parse_mode: str | None = None,
     ) -> None:
         if message is None:
             return
         try:
-            await message.edit_text(text, reply_markup=markup)
+            await message.edit_text(text, reply_markup=markup, parse_mode=parse_mode)
         except Exception:
-            await message.reply_text(text, reply_markup=markup)
+            await message.reply_text(text, reply_markup=markup, parse_mode=parse_mode)
 
     def _root_menu_markup(self, *, identity: TelegramIdentity | None) -> InlineKeyboardMarkup:
         keyboard = [
@@ -3479,7 +4011,7 @@ class TelegramWebhookRuntime:
                         callback_data=build_callback(flow=_ROLE_SELLER, action="topup_prompt"),
                     ),
                     InlineKeyboardButton(
-                        text="🧾 Мои пополнения / Проверить",
+                        text="🧾 Транзакции",
                         callback_data=build_callback(flow=_ROLE_SELLER, action="topup_history"),
                     ),
                 ],

@@ -12,6 +12,7 @@ from libs.domain.errors import (
     NotFoundError,
     PayloadValidationError,
 )
+from libs.domain.fx_rates import FxRateService
 from libs.domain.ledger import FinanceService
 from libs.domain.seller import SellerService
 
@@ -22,6 +23,7 @@ __all__ = [
     "DailyReportScrapperService",
     "DepositIntentService",
     "BlockchainCheckerService",
+    "FxRateService",
     "InsufficientFundsError",
     "InvalidStateError",
     "NoSlotsAvailableError",

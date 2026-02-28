@@ -983,7 +983,7 @@ class DepositIntentService:
             SELECT id
             FROM users
             WHERE id = %s
-              AND role = 'seller'
+              AND role IN ('seller', 'admin')
             """,
             (seller_user_id,),
         )

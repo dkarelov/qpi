@@ -1,6 +1,6 @@
 # QPI PLAN
 
-Last updated: 2026-02-27 UTC
+Last updated: 2026-02-28 UTC
 
 ## 1. Purpose
 
@@ -112,6 +112,10 @@ Out of scope (MVP):
    - orders in progress/completed/picked up,
    - balance free/total.
 7. Admin accounts from `ADMIN_TELEGRAM_IDS` must be able to open seller/buyer modes in the same chat for operations/testing, without being blocked by strict single-role bootstrap checks.
+8. In seller UX, shop actions must be two-level: `Магазины -> <название магазина> -> действия`; action buttons must not be rendered as a flat per-shop matrix on the list screen.
+9. Shop rename must be available in seller UX. Rename must regenerate slug/deep link and must explicitly warn that old link stops working.
+10. Seller-facing shop references must use shop names in UX; avoid exposing internal IDs/slugs in regular flow screens and action labels.
+11. Active shop names must be unique per seller (case-insensitive) so name-based navigation remains unambiguous.
 
 ## 2.5 Money and Pricing Rules
 
@@ -119,6 +123,7 @@ Out of scope (MVP):
 2. UI money format: `~350 руб. (4.55 USDT)`.
 3. Listing stores fixed `reward_usdt`; discount is listing metadata.
 4. Full listing collateral is locked from seller balance; per-slot reserve occurs on buyer accept.
+5. Helper FX for `USDT` -> `RUB` is cache-driven: read from PostgreSQL first; if stale (>15 minutes), refresh on-demand from external API and persist back to PostgreSQL.
 
 ## 2.6 Assignment State Rules
 
@@ -951,7 +956,7 @@ Execution streams:
    - Move actions into section screens:
      - `Магазины` screen: shops list + `Создать магазин` action,
      - `Листинги` screen: listings list + `Создать листинг` action,
-     - `Баланс` screen: summary + `Пополнить` + `Мои пополнения / Проверить`.
+     - `Баланс` screen: summary + `Пополнить` + `Транзакции`.
    - Ensure empty states always respond (for example "магазинов пока нет").
 3. Buyer IA refactor to tree menu
    - Buyer root screen becomes dashboard with key counters.
@@ -1001,11 +1006,32 @@ Status:
   - buyer/admin roles now open from dashboard summaries with section-first navigation,
   - admin role-switch regression fixed: admin users can open seller/buyer modes without `non-seller/non-buyer role` bootstrap errors,
   - all inline button labels updated to emoji/icon-prefixed format.
+- Additional UX refinement implemented on 2026-02-28:
+  - seller shops screen changed to nested IA (`магазины список -> карточка магазина -> token/rename/delete`),
+  - added shop rename flow with explicit warning about deep-link regeneration and old-link invalidation,
+  - seller shop UX removed visible technical identifiers (`shop_id` / `slug`) from create/screen/action labels,
+  - seller token prompt now shows full inline WB token instruction,
+  - token sensitive-message cleanup no longer emits a duplicate generic deletion notice in token flow; success message is single and explicit,
+  - post-action seller listing/shop paths now return to their current section view with notice instead of jumping back to root dashboard.
+- Additional UX refinement implemented on 2026-02-28 (iteration 2):
+  - seller `Создать магазин` flow switched to mandatory token-first sequence (validate token -> then request shop title),
+  - newly created shops now persist the already validated token in the same UX flow (no extra post-create token step),
+  - shop details now show token state in button label (`✅ Токен WB API` for valid, `❌ Токен WB API` otherwise),
+  - shop deep-link messages render URL from a new line after `Ссылка для покупателей:` for Telegram width resilience,
+  - dashboards for seller/buyer/admin no longer include static `Дашборд ...` title lines and now use compact metric rows,
+  - dashboard money formatting standardized to `$USDT` with approximate helper `~RUB` (`DISPLAY_RUB_PER_USDT`, summary rounding),
+  - seller/buyer terminology unified in UX text: `Обеспечение` and `Кэшбэк`.
+- FX helper-rate upgrade implemented on 2026-02-28:
+  - introduced PostgreSQL cache table `fx_rates` and bot-side `FxRateService`,
+  - bot dashboards/balance screens now lazy-refresh `USDT_RUB` from CoinGecko only when cached value is older than TTL (`FX_RATE_TTL_SECONDS`, default 900),
+  - concurrency for refresh is guarded by PostgreSQL advisory lock (`FX_RATE_REFRESH_LOCK_ID`),
+  - failure mode uses latest cached rate; if cache is empty, falls back to `DISPLAY_RUB_PER_USDT`.
 - Verification:
   - `ruff check services/bot_api/telegram_runtime.py tests/test_telegram_runtime_ux_phase9.py` passed.
   - `python -m py_compile services/bot_api/telegram_runtime.py tests/test_telegram_runtime_ux_phase9.py` passed.
   - Added menu-structure/emoji contract tests in `tests/test_telegram_runtime_ux_phase9.py`.
-  - `PYTHONPATH=. /home/darker/venv/bin/pytest -q tests/test_telegram_runtime_ux_phase9.py tests/test_bot_callback_contract.py` passed (`11 passed`).
+  - `PYTHONPATH=. uv run pytest -q tests/test_telegram_runtime_ux_phase9.py tests/test_bot_callback_contract.py` passed (`16 passed`).
+  - `TEST_DATABASE_URL=... PYTHONPATH=. uv run pytest -q tests/test_fx_rates.py` passed.
 - Live rollout verified on production bot VM (2026-02-27 UTC):
   - deployed release: `/opt/qpi/releases/20260227232627-phase9ux`,
   - bot service active and healthy (`/healthz` returns `ready=true`),

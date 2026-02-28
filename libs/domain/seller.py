@@ -5,6 +5,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from psycopg import AsyncConnection
+from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
@@ -39,6 +40,41 @@ _OPEN_ASSIGNMENT_STATES = (
 _MANUAL_SOURCE = "manual"
 _SCRAPPER_WITHDRAWN_SOURCE = "scrapper_401_withdrawn"
 _SCRAPPER_EXPIRED_SOURCE = "scrapper_401_token_expired"
+_CYRILLIC_TO_LATIN = {
+    "а": "a",
+    "б": "b",
+    "в": "v",
+    "г": "g",
+    "д": "d",
+    "е": "e",
+    "ё": "e",
+    "ж": "zh",
+    "з": "z",
+    "и": "i",
+    "й": "i",
+    "к": "k",
+    "л": "l",
+    "м": "m",
+    "н": "n",
+    "о": "o",
+    "п": "p",
+    "р": "r",
+    "с": "s",
+    "т": "t",
+    "у": "u",
+    "ф": "f",
+    "х": "h",
+    "ц": "ts",
+    "ч": "ch",
+    "ш": "sh",
+    "щ": "shch",
+    "ъ": "",
+    "ы": "y",
+    "ь": "",
+    "э": "e",
+    "ю": "yu",
+    "я": "ya",
+}
 
 
 class SellerService:
@@ -127,33 +163,136 @@ class SellerService:
         async def operation(conn: AsyncConnection) -> ShopResult:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await self._ensure_seller_user(cur, seller_user_id)
+                await self._ensure_shop_title_unique(
+                    cur,
+                    seller_user_id=seller_user_id,
+                    title=normalized_title,
+                )
                 base_slug = _slugify(slug_hint or normalized_title)
 
                 for attempt in range(1, 100):
                     slug = base_slug if attempt == 1 else f"{base_slug}-{attempt}"
-                    await cur.execute(
-                        """
-                        INSERT INTO shops (
-                            seller_user_id,
-                            slug,
-                            title,
-                            wb_token_status,
-                            wb_token_status_source
+                    try:
+                        await cur.execute(
+                            """
+                            INSERT INTO shops (
+                                seller_user_id,
+                                slug,
+                                title,
+                                wb_token_status,
+                                wb_token_status_source
+                            )
+                            VALUES (%s, %s, %s, 'unknown', %s)
+                            RETURNING id, slug, title, deleted_at, wb_token_status
+                            """,
+                            (seller_user_id, slug, normalized_title, _MANUAL_SOURCE),
                         )
-                        VALUES (%s, %s, %s, 'unknown', %s)
-                        ON CONFLICT DO NOTHING
-                        RETURNING id, slug, title, deleted_at
-                        """,
-                        (seller_user_id, slug, normalized_title, _MANUAL_SOURCE),
-                    )
+                    except UniqueViolation as exc:
+                        constraint = exc.diag.constraint_name if exc.diag is not None else None
+                        if constraint == "uq_shops_seller_title_active_ci":
+                            raise InvalidStateError("shop title already exists") from exc
+                        if constraint == "uq_shops_slug_active":
+                            continue
+                        raise
+
                     created = await cur.fetchone()
-                    if created is not None:
-                        return ShopResult(
-                            shop_id=created["id"],
-                            slug=created["slug"],
-                            title=created["title"],
-                            deleted_at=created["deleted_at"],
+                    return ShopResult(
+                        shop_id=created["id"],
+                        slug=created["slug"],
+                        title=created["title"],
+                        deleted_at=created["deleted_at"],
+                        wb_token_status=created["wb_token_status"],
+                    )
+
+                raise InvalidStateError("unable to allocate unique shop slug after 99 attempts")
+
+        return await run_in_transaction(self._pool, operation)
+
+    async def get_shop(self, *, seller_user_id: int, shop_id: int) -> ShopResult:
+        async def operation(conn: AsyncConnection) -> ShopResult:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                shop = await self._fetch_shop_owned(
+                    cur,
+                    seller_user_id=seller_user_id,
+                    shop_id=shop_id,
+                    for_update=False,
+                )
+                return ShopResult(
+                    shop_id=shop["id"],
+                    slug=shop["slug"],
+                    title=shop["title"],
+                    deleted_at=shop["deleted_at"],
+                    wb_token_status=shop["wb_token_status"],
+                )
+
+        return await run_in_transaction(self._pool, operation, read_only=True)
+
+    async def rename_shop(
+        self,
+        *,
+        seller_user_id: int,
+        shop_id: int,
+        title: str,
+    ) -> ShopResult:
+        normalized_title = title.strip()
+        if not normalized_title:
+            raise ValueError("title must not be empty")
+
+        async def operation(conn: AsyncConnection) -> ShopResult:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                shop = await self._fetch_shop_owned(
+                    cur,
+                    seller_user_id=seller_user_id,
+                    shop_id=shop_id,
+                    for_update=True,
+                )
+                if shop["title"].strip() == normalized_title:
+                    return ShopResult(
+                        shop_id=shop["id"],
+                        slug=shop["slug"],
+                        title=shop["title"],
+                        deleted_at=shop["deleted_at"],
+                        wb_token_status=shop["wb_token_status"],
+                    )
+
+                await self._ensure_shop_title_unique(
+                    cur,
+                    seller_user_id=seller_user_id,
+                    title=normalized_title,
+                    exclude_shop_id=shop_id,
+                )
+
+                base_slug = _slugify(normalized_title)
+                for attempt in range(1, 100):
+                    slug = base_slug if attempt == 1 else f"{base_slug}-{attempt}"
+                    try:
+                        await cur.execute(
+                            """
+                            UPDATE shops
+                            SET title = %s,
+                                slug = %s,
+                                updated_at = timezone('utc', now())
+                            WHERE id = %s
+                            RETURNING id, slug, title, deleted_at, wb_token_status
+                            """,
+                            (normalized_title, slug, shop_id),
                         )
+                    except UniqueViolation as exc:
+                        constraint = exc.diag.constraint_name if exc.diag is not None else None
+                        if constraint == "uq_shops_seller_title_active_ci":
+                            raise InvalidStateError("shop title already exists") from exc
+                        if constraint == "uq_shops_slug_active":
+                            continue
+                        raise
+
+                    renamed = await cur.fetchone()
+                    return ShopResult(
+                        shop_id=renamed["id"],
+                        slug=renamed["slug"],
+                        title=renamed["title"],
+                        deleted_at=renamed["deleted_at"],
+                        wb_token_status=renamed["wb_token_status"],
+                    )
 
                 raise InvalidStateError("unable to allocate unique shop slug after 99 attempts")
 
@@ -170,7 +309,7 @@ class SellerService:
                 if include_deleted:
                     await cur.execute(
                         """
-                        SELECT id, slug, title, deleted_at
+                        SELECT id, slug, title, deleted_at, wb_token_status
                         FROM shops
                         WHERE seller_user_id = %s
                         ORDER BY created_at ASC
@@ -180,7 +319,7 @@ class SellerService:
                 else:
                     await cur.execute(
                         """
-                        SELECT id, slug, title, deleted_at
+                        SELECT id, slug, title, deleted_at, wb_token_status
                         FROM shops
                         WHERE seller_user_id = %s
                           AND deleted_at IS NULL
@@ -195,6 +334,7 @@ class SellerService:
                         slug=row["slug"],
                         title=row["title"],
                         deleted_at=row["deleted_at"],
+                        wb_token_status=row["wb_token_status"],
                     )
                     for row in rows
                 ]
@@ -1165,19 +1305,60 @@ class SellerService:
             raise NotFoundError(f"seller user {user_id} not found")
 
     async def _ensure_shop_owned(self, cur, *, seller_user_id: int, shop_id: int) -> None:
-        await cur.execute(
-            """
-            SELECT id
+        await self._fetch_shop_owned(
+            cur,
+            seller_user_id=seller_user_id,
+            shop_id=shop_id,
+            for_update=False,
+        )
+
+    async def _fetch_shop_owned(
+        self,
+        cur,
+        *,
+        seller_user_id: int,
+        shop_id: int,
+        for_update: bool,
+    ) -> dict[str, Any]:
+        query = """
+            SELECT id, slug, title, deleted_at, wb_token_status
             FROM shops
             WHERE id = %s
               AND seller_user_id = %s
               AND deleted_at IS NULL
-            """,
-            (shop_id, seller_user_id),
-        )
+        """
+        if for_update:
+            query += " FOR UPDATE"
+        await cur.execute(query, (shop_id, seller_user_id))
         row = await cur.fetchone()
         if row is None:
             raise NotFoundError(f"shop {shop_id} not found")
+        return row
+
+    async def _ensure_shop_title_unique(
+        self,
+        cur,
+        *,
+        seller_user_id: int,
+        title: str,
+        exclude_shop_id: int | None = None,
+    ) -> None:
+        params: list[Any] = [seller_user_id, title]
+        query = """
+            SELECT id
+            FROM shops
+            WHERE seller_user_id = %s
+              AND deleted_at IS NULL
+              AND lower(title) = lower(%s)
+        """
+        if exclude_shop_id is not None:
+            query += " AND id <> %s"
+            params.append(exclude_shop_id)
+        query += " LIMIT 1"
+        await cur.execute(query, tuple(params))
+        existing = await cur.fetchone()
+        if existing is not None:
+            raise InvalidStateError("shop title already exists")
 
     async def _ensure_listing_owned(self, cur, *, seller_user_id: int, listing_id: int) -> None:
         await cur.execute(
@@ -1404,8 +1585,9 @@ class SellerService:
 
 def _slugify(raw: str) -> str:
     value = raw.strip().lower()
-    value = re.sub(r"[^a-z0-9]+", "-", value)
-    value = value.strip("-")
+    value = "".join(_CYRILLIC_TO_LATIN.get(char, char) for char in value)
+    value = re.sub(r"[^a-z0-9]+", "_", value)
+    value = value.strip("_")
     return value or "shop"
 
 

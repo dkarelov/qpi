@@ -51,6 +51,7 @@ class ShopResult:
     slug: str
     title: str
     deleted_at: datetime | None
+    wb_token_status: str
 
 
 @dataclass(frozen=True)

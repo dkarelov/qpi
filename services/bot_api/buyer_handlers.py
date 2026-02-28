@@ -141,7 +141,7 @@ class BuyerCommandProcessor:
                         f"{assignment.assignment_id} | shop={assignment.shop_slug} | "
                         f"listing={assignment.listing_id} | "
                         f"wb_product_id={assignment.wb_product_id} | "
-                        f"status={assignment.status} | reward={assignment.reward_usdt} USDT | "
+                        f"status={assignment.status} | кэшбэк={assignment.reward_usdt} USDT | "
                         f"order_id={assignment.order_id or '-'}"
                     )
                 return BuyerCommandResponse(text="Мои назначения:\n" + "\n".join(lines))
@@ -183,7 +183,7 @@ class BuyerCommandProcessor:
         lines = [
             (
                 f"{item.listing_id} | wb_product_id={item.wb_product_id} | "
-                f"скидка={item.discount_percent}% | reward={item.reward_usdt} USDT | "
+                f"скидка={item.discount_percent}% | кэшбэк={item.reward_usdt} USDT | "
                 f"slots={item.available_slots}/{item.slot_count}"
             )
             for item in listings
