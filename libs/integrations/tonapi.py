@@ -142,7 +142,7 @@ class TonapiClient:
             amount_raw = str(row.get("amount", "")).strip()
             query_id = str(row.get("query_id", "")).strip()
             trace_id = str(row.get("trace_id", "")).strip()
-            if not tx_hash or not amount_raw or lt_value < 1 or not query_id or not trace_id:
+            if not tx_hash or not amount_raw or lt_value < 1 or not trace_id:
                 continue
 
             source_address = _account_address_value(row.get("source"))
