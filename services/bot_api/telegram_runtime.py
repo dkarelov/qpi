@@ -993,20 +993,20 @@ class TelegramWebhookRuntime:
         balance_total = balance.seller_available_usdt + balance.seller_collateral_usdt
 
         text = (
-            f"**Магазинов:** {shops_total} · {shops_active} активных\n"
-            f"**Листинги:** {listings_total} · {listings_active} активных\n"
-            "**Заказы:** "
+            f"<b>Магазинов:</b> {shops_total} · {shops_active} активных\n"
+            f"<b>Листинги:</b> {listings_total} · {listings_active} активных\n"
+            "<b>Заказы:</b> "
             f"{orders['in_progress']} в процессе · "
             f"{orders['completed']} оформленных · "
             f"{orders['picked_up']} выкупленных\n"
-            f"**Баланс:** {self._format_usdt_with_rub(balance_total)} · "
+            f"<b>Баланс:</b> {self._format_usdt_with_rub(balance_total)} · "
             f"{self._format_usdt_with_rub(balance_free)} свободно"
         )
         await self._replace_message(
             query_message,
             text,
             self._seller_menu_markup(),
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
 
     async def _load_seller_order_counters(self, *, seller_user_id: int) -> dict[str, int]:
@@ -1909,16 +1909,16 @@ class TelegramWebhookRuntime:
         total_balance = snapshot.buyer_available_usdt + snapshot.buyer_withdraw_pending_usdt
 
         text = (
-            f"**Задания:** {in_progress} в процессе · {ready} к выводу · "
+            f"<b>Задания:</b> {in_progress} в процессе · {ready} к выводу · "
             f"{paid} выплачено · {len(assignments)} всего\n"
-            f"**Баланс:** {self._format_usdt_with_rub(total_balance)} · "
+            f"<b>Баланс:</b> {self._format_usdt_with_rub(total_balance)} · "
             f"{self._format_usdt_with_rub(snapshot.buyer_available_usdt)} доступно"
         )
         await self._replace_message(
             query_message,
             text,
             self._buyer_menu_markup(),
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
 
     async def _render_buyer_shops_section(
@@ -2244,15 +2244,15 @@ class TelegramWebhookRuntime:
         expired_intents = await self._deposit_service.list_admin_expired_intents(limit=1000)
 
         text = (
-            f"**Выводы в очереди:** {len(pending_withdrawals)}\n"
-            f"**Платежи на ручной разбор:** {len(review_txs)}\n"
-            f"**Просроченные счета:** {len(expired_intents)}"
+            f"<b>Выводы в очереди:</b> {len(pending_withdrawals)}\n"
+            f"<b>Платежи на ручной разбор:</b> {len(review_txs)}\n"
+            f"<b>Просроченные счета:</b> {len(expired_intents)}"
         )
         await self._replace_message(
             query_message,
             text,
             self._admin_menu_markup(),
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
 
     async def _render_admin_withdrawals_section(self, *, query_message: Message | None) -> None:
