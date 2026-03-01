@@ -150,28 +150,47 @@ class BuyerService:
 
         return await run_in_transaction(self._pool, operation, read_only=True)
 
-    async def list_active_listings_by_shop_slug(self, *, slug: str) -> list[BuyerListingResult]:
+    async def list_active_listings_by_shop_slug(
+        self,
+        *,
+        slug: str,
+        buyer_user_id: int | None = None,
+    ) -> list[BuyerListingResult]:
         shop = await self.resolve_shop_by_slug(slug=slug)
 
         async def operation(conn: AsyncConnection) -> list[BuyerListingResult]:
             async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(
+                params: list[Any] = [shop.shop_id]
+                purchased_filter = ""
+                if buyer_user_id is not None:
+                    purchased_filter = """
+                      AND NOT EXISTS (
+                            SELECT 1
+                            FROM buyer_orders bo
+                            WHERE bo.buyer_user_id = %s
+                              AND bo.wb_product_id = l.wb_product_id
+                      )
                     """
+                    params.append(buyer_user_id)
+
+                await cur.execute(
+                    f"""
                     SELECT
-                        id,
-                        shop_id,
-                        wb_product_id,
-                        search_phrase,
-                        reward_usdt,
-                        slot_count,
-                        available_slots
-                    FROM listings
-                    WHERE shop_id = %s
-                      AND deleted_at IS NULL
-                      AND status = 'active'
-                    ORDER BY created_at ASC
+                        l.id,
+                        l.shop_id,
+                        l.wb_product_id,
+                        l.search_phrase,
+                        l.reward_usdt,
+                        l.slot_count,
+                        l.available_slots
+                    FROM listings l
+                    WHERE l.shop_id = %s
+                      AND l.deleted_at IS NULL
+                      AND l.status = 'active'
+                      {purchased_filter}
+                    ORDER BY l.created_at ASC
                     """,
-                    (shop.shop_id,),
+                    tuple(params),
                 )
                 rows = await cur.fetchall()
                 return [
@@ -199,7 +218,8 @@ class BuyerService:
     ) -> AssignmentReservationResult:
         await self._ensure_buyer_user_exists(user_id=buyer_user_id)
         seller_collateral_account_id = await self._get_seller_collateral_account_for_listing(
-            listing_id=listing_id
+            listing_id=listing_id,
+            buyer_user_id=buyer_user_id,
         )
         reward_reserved_account_id = await self._ensure_system_account_id(
             account_kind="reward_reserved"
@@ -503,7 +523,12 @@ class BuyerService:
             expired_count=expired_count,
         )
 
-    async def _get_seller_collateral_account_for_listing(self, *, listing_id: int) -> int:
+    async def _get_seller_collateral_account_for_listing(
+        self,
+        *,
+        listing_id: int,
+        buyer_user_id: int | None = None,
+    ) -> int:
         async def operation(conn: AsyncConnection) -> int:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -511,6 +536,7 @@ class BuyerService:
                     SELECT
                         l.id,
                         l.seller_user_id,
+                        l.wb_product_id,
                         l.status,
                         l.deleted_at,
                         s.deleted_at AS shop_deleted_at
@@ -527,6 +553,19 @@ class BuyerService:
                     raise InvalidStateError("listing is deleted")
                 if listing["status"] != "active":
                     raise InvalidStateError("listing must be active for reservation")
+                if buyer_user_id is not None:
+                    await cur.execute(
+                        """
+                        SELECT 1
+                        FROM buyer_orders
+                        WHERE buyer_user_id = %s
+                          AND wb_product_id = %s
+                        LIMIT 1
+                        """,
+                        (buyer_user_id, listing["wb_product_id"]),
+                    )
+                    if await cur.fetchone() is not None:
+                        raise InvalidStateError("buyer already purchased this item")
 
                 return await self._ensure_owner_account(
                     cur,

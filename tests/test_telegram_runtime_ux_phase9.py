@@ -85,6 +85,18 @@ def test_root_and_role_menus_use_emoji_labels() -> None:
         assert _starts_with_emoji(label), label
 
 
+def test_role_menus_do_not_have_switch_role_button() -> None:
+    runtime = _build_runtime()
+
+    seller_labels = _flatten_labels(runtime._seller_menu_markup())
+    buyer_labels = _flatten_labels(runtime._buyer_menu_markup())
+    admin_labels = _flatten_labels(runtime._admin_menu_markup())
+
+    assert "🔄 Сменить роль" not in set(seller_labels)
+    assert "🔄 Сменить роль" not in set(buyer_labels)
+    assert "🔄 Сменить роль" not in set(admin_labels)
+
+
 def test_seller_shop_detail_menu_is_structured() -> None:
     runtime = _build_runtime()
 
@@ -125,6 +137,7 @@ def test_seller_balance_menu_uses_transactions_label() -> None:
     labels_set = set(labels)
 
     assert "🧾 Транзакции" in labels_set
+    assert "↩️ Назад" in labels_set
     assert "🧾 Мои пополнения / Проверить" not in labels_set
 
 

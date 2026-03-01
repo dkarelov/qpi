@@ -372,12 +372,23 @@ class TelegramWebhookRuntime:
         if start_args.startswith("shop_"):
             shop_slug = start_args[len("shop_") :].strip()
             if shop_slug:
+                try:
+                    buyer = await self._buyer_service.bootstrap_buyer(
+                        telegram_id=identity.telegram_id,
+                        username=identity.username,
+                    )
+                except InvalidStateError as exc:
+                    await update.message.reply_text(
+                        f"Режим покупателя недоступен: {exc}",
+                        reply_markup=self._root_menu_markup(identity=identity),
+                    )
+                    return
                 context.user_data[_ACTIVE_ROLE_KEY] = _ROLE_BUYER
                 context.user_data[_LAST_BUYER_SHOP_SLUG_KEY] = shop_slug
-                await self._send_buyer_shop_catalog(update.message, slug=shop_slug)
-                await update.message.reply_text(
-                    "Выберите действие:",
-                    reply_markup=self._buyer_menu_markup(),
+                await self._send_buyer_shop_catalog(
+                    update.message,
+                    slug=shop_slug,
+                    buyer_user_id=buyer.user_id,
                 )
                 return
 
@@ -1139,7 +1150,7 @@ class TelegramWebhookRuntime:
                 ],
                 [
                     InlineKeyboardButton(
-                        text="🧭 Дашборд продавца" if has_shops else "🧭 Назад",
+                        text="↩️ Назад",
                         callback_data=build_callback(flow=_ROLE_SELLER, action="menu"),
                     )
                 ],
@@ -1388,7 +1399,7 @@ class TelegramWebhookRuntime:
                         ],
                         [
                             InlineKeyboardButton(
-                                text="🧭 Дашборд продавца",
+                                text="↩️ Назад",
                                 callback_data=build_callback(flow=_ROLE_SELLER, action="menu"),
                             )
                         ],
@@ -1472,7 +1483,7 @@ class TelegramWebhookRuntime:
         keyboard_rows.append(
             [
                 InlineKeyboardButton(
-                    text="🧭 Дашборд продавца",
+                    text="↩️ Назад",
                     callback_data=build_callback(flow=_ROLE_SELLER, action="menu"),
                 )
             ]
@@ -1819,14 +1830,27 @@ class TelegramWebhookRuntime:
                 await self._replace_message(
                     query_message,
                     "Нет сохраненного магазина. Нажмите «🔎 Открыть магазин по коду».",
-                    self._buyer_menu_markup(),
+                    InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text="↩️ Назад к магазинам",
+                                    callback_data=build_callback(
+                                        flow=_ROLE_BUYER,
+                                        action="shops",
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
                 )
                 return
             context.user_data[_LAST_BUYER_SHOP_SLUG_KEY] = slug
-            await self._send_buyer_shop_catalog(query_message, slug=slug)
-            await query_message.reply_text(
-                "Выберите действие:",
-                reply_markup=self._buyer_menu_markup(),
+            await self._send_buyer_shop_catalog(
+                query_message,
+                slug=slug,
+                buyer_user_id=buyer.user_id,
+                prefer_edit=True,
             )
             return
         if action == "prompt_shop_slug":
@@ -1842,7 +1866,19 @@ class TelegramWebhookRuntime:
                     "Введите код магазина из ссылки.\n"
                     "Это часть после shop_ в ссылке."
                 ),
-                self._buyer_menu_markup(),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к магазинам",
+                                callback_data=build_callback(
+                                    flow=_ROLE_BUYER,
+                                    action="shops",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
             )
             return
         if action == "reserve":
@@ -1850,7 +1886,19 @@ class TelegramWebhookRuntime:
                 await self._replace_message(
                     query_message,
                     "Не удалось открыть выбранный товар. Попробуйте снова.",
-                    self._buyer_menu_markup(),
+                    InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text="↩️ Назад к магазинам",
+                                    callback_data=build_callback(
+                                        flow=_ROLE_BUYER,
+                                        action="shops",
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
                 )
                 return
             await self._execute_buyer_reserve(
@@ -1871,7 +1919,19 @@ class TelegramWebhookRuntime:
                 await self._replace_message(
                     query_message,
                     "Не удалось открыть задание. Попробуйте снова.",
-                    self._buyer_menu_markup(),
+                    InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text="↩️ Назад к заданиям",
+                                    callback_data=build_callback(
+                                        flow=_ROLE_BUYER,
+                                        action="assignments",
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
                 )
                 return
             assignment_id = int(payload.entity_id)
@@ -1887,7 +1947,19 @@ class TelegramWebhookRuntime:
                 (
                     "Отправьте код подтверждения покупки (base64) следующим сообщением."
                 ),
-                self._buyer_menu_markup(),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к заданиям",
+                                callback_data=build_callback(
+                                    flow=_ROLE_BUYER,
+                                    action="assignments",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
             )
             return
         if action == "balance":
@@ -1914,7 +1986,19 @@ class TelegramWebhookRuntime:
             await self._replace_message(
                 query_message,
                 "Введите сумму вывода в USDT (например, 4.5).",
-                self._buyer_menu_markup(),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к балансу",
+                                callback_data=build_callback(
+                                    flow=_ROLE_BUYER,
+                                    action="balance",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
             )
             return
         if action == "withdraw_history":
@@ -2005,7 +2089,7 @@ class TelegramWebhookRuntime:
         keyboard_rows.append(
             [
                 InlineKeyboardButton(
-                    text="🧭 Дашборд покупателя",
+                    text="↩️ Назад",
                     callback_data=build_callback(flow=_ROLE_BUYER, action="menu"),
                 )
             ]
@@ -2031,18 +2115,71 @@ class TelegramWebhookRuntime:
                 idempotency_key=f"tg-reserve:{buyer_user_id}:{listing_id}:{callback_query_id}",
             )
         except NotFoundError:
-            await self._replace_message(query_message, "Товар больше недоступен.")
+            await self._replace_message(
+                query_message,
+                "Товар больше недоступен.",
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к магазинам",
+                                callback_data=build_callback(flow=_ROLE_BUYER, action="shops"),
+                            )
+                        ]
+                    ]
+                ),
+            )
             return
         except NoSlotsAvailableError:
             await self._replace_message(
                 query_message,
                 "Свободных мест нет. Попробуйте выбрать другой товар.",
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к магазинам",
+                                callback_data=build_callback(flow=_ROLE_BUYER, action="shops"),
+                            )
+                        ]
+                    ]
+                ),
             )
             return
-        except InvalidStateError:
+        except InvalidStateError as exc:
+            details = str(exc).strip().lower()
+            if "already purchased" in details:
+                await self._replace_message(
+                    query_message,
+                    "Этот товар уже был куплен с вашего аккаунта. Повторно забронировать нельзя.",
+                    InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text="↩️ Назад к магазинам",
+                                    callback_data=build_callback(
+                                        flow=_ROLE_BUYER,
+                                        action="shops",
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
+                )
+                return
             await self._replace_message(
                 query_message,
                 "Не удалось забронировать место. Попробуйте снова.",
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к магазинам",
+                                callback_data=build_callback(flow=_ROLE_BUYER, action="shops"),
+                            )
+                        ]
+                    ]
+                ),
             )
             return
 
@@ -2062,9 +2199,34 @@ class TelegramWebhookRuntime:
             "buyer_slot_reserved",
             listing_id=listing_id,
             assignment_id=reservation.assignment_id,
-            created=reservation.created,
+            reservation_created=reservation.created,
         )
-        await self._replace_message(query_message, text, self._buyer_menu_markup())
+        await self._replace_message(
+            query_message,
+            text,
+            InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            text="📋 Мои задания",
+                            callback_data=build_callback(
+                                flow=_ROLE_BUYER,
+                                action="assignments",
+                            ),
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="↩️ Назад к магазинам",
+                            callback_data=build_callback(
+                                flow=_ROLE_BUYER,
+                                action="shops",
+                            ),
+                        )
+                    ],
+                ]
+            ),
+        )
 
     async def _render_buyer_assignments(
         self,
@@ -2077,7 +2239,19 @@ class TelegramWebhookRuntime:
             await self._replace_message(
                 query_message,
                 "📋 У вас пока нет заданий.",
-                self._buyer_menu_markup(),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад",
+                                callback_data=build_callback(
+                                    flow=_ROLE_BUYER,
+                                    action="menu",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
             )
             return
 
@@ -2107,7 +2281,7 @@ class TelegramWebhookRuntime:
         keyboard_rows.append(
             [
                 InlineKeyboardButton(
-                    text="🧭 Дашборд покупателя",
+                    text="↩️ Назад",
                     callback_data=build_callback(flow=_ROLE_BUYER, action="menu"),
                 )
             ]
@@ -2167,7 +2341,7 @@ class TelegramWebhookRuntime:
                     ],
                     [
                         InlineKeyboardButton(
-                            text="🧭 Дашборд покупателя",
+                            text="↩️ Назад",
                             callback_data=build_callback(flow=_ROLE_BUYER, action="menu"),
                         )
                     ],
@@ -2190,7 +2364,19 @@ class TelegramWebhookRuntime:
             await self._replace_message(
                 query_message,
                 "Нет доступного баланса для вывода.",
-                self._buyer_menu_markup(),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к балансу",
+                                callback_data=build_callback(
+                                    flow=_ROLE_BUYER,
+                                    action="balance",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
             )
             return
 
@@ -2210,7 +2396,16 @@ class TelegramWebhookRuntime:
                 "Введите адрес кошелька для вывода "
                 f"{self._format_usdt_value(amount, precise=True)} USDT."
             ),
-            self._buyer_menu_markup(),
+            InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            text="↩️ Назад к балансу",
+                            callback_data=build_callback(flow=_ROLE_BUYER, action="balance"),
+                        )
+                    ]
+                ]
+            ),
         )
 
     async def _render_buyer_withdraw_history(
@@ -2226,7 +2421,19 @@ class TelegramWebhookRuntime:
             await self._replace_message(
                 query_message,
                 "🧾 История выводов пока пустая.",
-                self._buyer_menu_markup(),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к балансу",
+                                callback_data=build_callback(
+                                    flow=_ROLE_BUYER,
+                                    action="balance",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
             )
             return
 
@@ -2243,7 +2450,16 @@ class TelegramWebhookRuntime:
         await self._replace_message(
             query_message,
             "\n\n".join(lines),
-            self._buyer_menu_markup(),
+            InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            text="↩️ Назад к балансу",
+                            callback_data=build_callback(flow=_ROLE_BUYER, action="balance"),
+                        )
+                    ]
+                ]
+            ),
         )
 
     async def _ensure_admin_user(self, *, telegram_id: int, username: str | None) -> int:
@@ -2328,7 +2544,7 @@ class TelegramWebhookRuntime:
                     ],
                     [
                         InlineKeyboardButton(
-                            text="🧭 Дашборд админа",
+                            text="↩️ Назад",
                             callback_data=build_callback(flow=_ROLE_ADMIN, action="menu"),
                         )
                     ],
@@ -2362,7 +2578,7 @@ class TelegramWebhookRuntime:
                     ],
                     [
                         InlineKeyboardButton(
-                            text="🧭 Дашборд админа",
+                            text="↩️ Назад",
                             callback_data=build_callback(flow=_ROLE_ADMIN, action="menu"),
                         )
                     ],
@@ -2389,8 +2605,11 @@ class TelegramWebhookRuntime:
                         ],
                         [
                             InlineKeyboardButton(
-                                text="🧭 Дашборд админа",
-                                callback_data=build_callback(flow=_ROLE_ADMIN, action="menu"),
+                                text="↩️ Назад",
+                                callback_data=build_callback(
+                                    flow=_ROLE_ADMIN,
+                                    action="withdrawals_section",
+                                ),
                             )
                         ],
                     ]
@@ -2433,8 +2652,8 @@ class TelegramWebhookRuntime:
         keyboard_rows.append(
             [
                 InlineKeyboardButton(
-                    text="🧭 Дашборд админа",
-                    callback_data=build_callback(flow=_ROLE_ADMIN, action="menu"),
+                    text="↩️ Назад",
+                    callback_data=build_callback(flow=_ROLE_ADMIN, action="withdrawals_section"),
                 )
             ]
         )
@@ -2753,7 +2972,7 @@ class TelegramWebhookRuntime:
             ledger_entry_id=result.ledger_entry_id,
             target_account_id=target_account_id,
             amount_usdt=str(amount_usdt),
-            created=result.created,
+            deposit_created=result.created,
         )
 
     async def _render_admin_deposit_exceptions(
@@ -2819,8 +3038,8 @@ class TelegramWebhookRuntime:
                 ],
                 [
                     InlineKeyboardButton(
-                        text="🧭 Дашборд админа",
-                        callback_data=build_callback(flow=_ROLE_ADMIN, action="menu"),
+                        text="↩️ Назад",
+                        callback_data=build_callback(flow=_ROLE_ADMIN, action="deposits_section"),
                     )
                 ],
             ]
@@ -3111,7 +3330,19 @@ class TelegramWebhookRuntime:
             await self._replace_message(
                 query_message,
                 f"Введите причину отклонения для заявки #{request_id}.",
-                self._admin_menu_markup(),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к выводам",
+                                callback_data=build_callback(
+                                    flow=_ROLE_ADMIN,
+                                    action="withdrawals_section",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
             )
             return
         if action == "withdrawal_sent_prompt":
@@ -3133,7 +3364,19 @@ class TelegramWebhookRuntime:
             await self._replace_message(
                 query_message,
                 f"Введите хэш перевода для заявки #{request_id}.",
-                self._admin_menu_markup(),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к выводам",
+                                callback_data=build_callback(
+                                    flow=_ROLE_ADMIN,
+                                    action="withdrawals_section",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
             )
             return
         if action == "prompt_request_id":
@@ -3147,7 +3390,19 @@ class TelegramWebhookRuntime:
             await self._replace_message(
                 query_message,
                 "Введите номер заявки на вывод следующим сообщением.",
-                self._admin_menu_markup(),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к выводам",
+                                callback_data=build_callback(
+                                    flow=_ROLE_ADMIN,
+                                    action="withdrawals_section",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
             )
             return
         if action == "manual_deposit_prompt":
@@ -3168,7 +3423,19 @@ class TelegramWebhookRuntime:
                     "10002 buyer 1.0 welcome_bonus\n"
                     "10002 buyer 5.000000 tx:0xabc123"
                 ),
-                self._admin_menu_markup(),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к пополнениям",
+                                callback_data=build_callback(
+                                    flow=_ROLE_ADMIN,
+                                    action="deposits_section",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
             )
             return
         if action == "deposit_exceptions":
@@ -3185,7 +3452,19 @@ class TelegramWebhookRuntime:
             await self._replace_message(
                 query_message,
                 "Введите: <id_транзакции> <id_счета>.",
-                self._admin_menu_markup(),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к исключениям",
+                                callback_data=build_callback(
+                                    flow=_ROLE_ADMIN,
+                                    action="exceptions_section",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
             )
             return
         if action == "deposit_cancel_prompt":
@@ -3199,7 +3478,19 @@ class TelegramWebhookRuntime:
             await self._replace_message(
                 query_message,
                 "Введите: <id_счета> <причина>.",
-                self._admin_menu_markup(),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к исключениям",
+                                callback_data=build_callback(
+                                    flow=_ROLE_ADMIN,
+                                    action="exceptions_section",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
             )
             return
 
@@ -3655,10 +3946,14 @@ class TelegramWebhookRuntime:
         if prompt_type == "buyer_shop_slug":
             self._clear_prompt(context)
             context.user_data[_LAST_BUYER_SHOP_SLUG_KEY] = text
-            await self._send_buyer_shop_catalog(message, slug=text)
-            await message.reply_text(
-                "Выберите действие:",
-                reply_markup=self._buyer_menu_markup(),
+            buyer = await self._buyer_service.bootstrap_buyer(
+                telegram_id=identity.telegram_id,
+                username=identity.username,
+            )
+            await self._send_buyer_shop_catalog(
+                message,
+                slug=text,
+                buyer_user_id=buyer.user_id,
             )
             return
 
@@ -3747,7 +4042,19 @@ class TelegramWebhookRuntime:
                     "Введите адрес кошелька для вывода "
                     f"{self._format_usdt_value(amount, precise=True)} USDT."
                 ),
-                reply_markup=self._buyer_menu_markup(),
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к балансу",
+                                callback_data=build_callback(
+                                    flow=_ROLE_BUYER,
+                                    action="balance",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
             )
             return
 
@@ -3961,17 +4268,60 @@ class TelegramWebhookRuntime:
         self._clear_prompt(context)
         await message.reply_text("Неизвестный тип ввода. Отправьте /start.")
 
-    async def _send_buyer_shop_catalog(self, message: Message, *, slug: str) -> None:
+    async def _send_buyer_shop_catalog(
+        self,
+        message: Message | None,
+        *,
+        slug: str,
+        buyer_user_id: int | None = None,
+        prefer_edit: bool = False,
+    ) -> None:
         try:
             shop = await self._buyer_service.resolve_shop_by_slug(slug=slug)
-            listings = await self._buyer_service.list_active_listings_by_shop_slug(slug=slug)
+            listings = await self._buyer_service.list_active_listings_by_shop_slug(
+                slug=slug,
+                buyer_user_id=buyer_user_id,
+            )
         except (NotFoundError, InvalidStateError):
-            await message.reply_text("Магазин недоступен. Проверьте ссылку и попробуйте снова.")
+            if prefer_edit:
+                await self._replace_message(
+                    message,
+                    "Магазин недоступен. Проверьте ссылку и попробуйте снова.",
+                    InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text="↩️ Назад к магазинам",
+                                    callback_data=build_callback(
+                                        flow=_ROLE_BUYER,
+                                        action="shops",
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
+                )
+            elif message is not None:
+                await message.reply_text("Магазин недоступен. Проверьте ссылку и попробуйте снова.")
             return
 
         header = f"Магазин: {shop.title}"
         if not listings:
-            await message.reply_text(f"🏪 {header}\n📦 Активных листингов пока нет.")
+            text = f"🏪 {header}\n📦 Активных листингов пока нет."
+            markup = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            text="↩️ Назад к магазинам",
+                            callback_data=build_callback(flow=_ROLE_BUYER, action="shops"),
+                        )
+                    ]
+                ]
+            )
+            if prefer_edit:
+                await self._replace_message(message, text, markup)
+            elif message is not None:
+                await message.reply_text(text, reply_markup=markup)
             return
 
         lines = [f"🏪 {header}", "📦 Активные листинги:"]
@@ -3996,7 +4346,20 @@ class TelegramWebhookRuntime:
                     )
                 ]
             )
-        await message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard_rows))
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    text="↩️ Назад к магазинам",
+                    callback_data=build_callback(flow=_ROLE_BUYER, action="shops"),
+                )
+            ]
+        )
+        text = "\n".join(lines)
+        markup = InlineKeyboardMarkup(keyboard_rows)
+        if prefer_edit:
+            await self._replace_message(message, text, markup)
+        elif message is not None:
+            await message.reply_text(text, reply_markup=markup)
 
     async def _dispatch_legacy_command(
         self,
@@ -4225,12 +4588,6 @@ class TelegramWebhookRuntime:
                         callback_data=build_callback(flow=_ROLE_SELLER, action="balance"),
                     ),
                 ],
-                [
-                    InlineKeyboardButton(
-                        text="🔄 Сменить роль",
-                        callback_data=build_callback(flow=_ROLE_SELLER, action="back"),
-                    ),
-                ],
             ]
         )
 
@@ -4249,7 +4606,7 @@ class TelegramWebhookRuntime:
                 ],
                 [
                     InlineKeyboardButton(
-                        text="🧭 Дашборд продавца",
+                        text="↩️ Назад",
                         callback_data=build_callback(flow=_ROLE_SELLER, action="menu"),
                     )
                 ],
@@ -4277,12 +4634,6 @@ class TelegramWebhookRuntime:
                         text="💳 Баланс и вывод",
                         callback_data=build_callback(flow=_ROLE_BUYER, action="balance"),
                     ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="🔄 Сменить роль",
-                        callback_data=build_callback(flow=_ROLE_BUYER, action="back"),
-                    )
                 ],
             ]
         )
@@ -4314,12 +4665,6 @@ class TelegramWebhookRuntime:
                             action="exceptions_section",
                         ),
                     ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="🔄 Сменить роль",
-                        callback_data=build_callback(flow=_ROLE_ADMIN, action="back"),
-                    )
                 ],
             ]
         )

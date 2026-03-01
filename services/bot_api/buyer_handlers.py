@@ -52,7 +52,10 @@ class BuyerCommandProcessor:
                 if args.startswith("shop_"):
                     slug = args[len("shop_") :].strip()
                     if slug:
-                        return await self._render_shop_catalog(slug=slug)
+                        return await self._render_shop_catalog(
+                            slug=slug,
+                            buyer_user_id=buyer_user_id,
+                        )
                 return BuyerCommandResponse(
                     text=(
                         "Роль: покупатель.\n"
@@ -67,7 +70,7 @@ class BuyerCommandProcessor:
             if command == "/shop":
                 if not args:
                     return BuyerCommandResponse(text="Использование: /shop <slug>")
-                return await self._render_shop_catalog(slug=args)
+                return await self._render_shop_catalog(slug=args, buyer_user_id=buyer_user_id)
 
             if command == "/reserve":
                 tokens = args.split()
@@ -168,9 +171,17 @@ class BuyerCommandProcessor:
         except DomainError as exc:
             return BuyerCommandResponse(text=f"Ошибка доменной логики: {exc}")
 
-    async def _render_shop_catalog(self, *, slug: str) -> BuyerCommandResponse:
+    async def _render_shop_catalog(
+        self,
+        *,
+        slug: str,
+        buyer_user_id: int,
+    ) -> BuyerCommandResponse:
         shop = await self._buyer_service.resolve_shop_by_slug(slug=slug)
-        listings = await self._buyer_service.list_active_listings_by_shop_slug(slug=slug)
+        listings = await self._buyer_service.list_active_listings_by_shop_slug(
+            slug=slug,
+            buyer_user_id=buyer_user_id,
+        )
         deep_link = f"https://t.me/{self._bot_username}?start=shop_{shop.slug}"
         if not listings:
             return BuyerCommandResponse(

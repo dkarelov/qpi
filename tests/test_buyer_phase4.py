@@ -9,7 +9,7 @@ import pytest
 from psycopg.rows import dict_row
 
 from libs.domain.buyer import BuyerService
-from libs.domain.errors import DuplicateOrderError, PayloadValidationError
+from libs.domain.errors import DuplicateOrderError, InvalidStateError, PayloadValidationError
 from services.bot_api.buyer_handlers import BuyerCommandProcessor
 from tests.helpers import create_account, create_listing, create_shop, create_user
 
@@ -167,6 +167,96 @@ async def test_shop_deeplink_resolution_and_listing_visibility(db_pool) -> None:
     listings = await buyer_service.list_active_listings_by_shop_slug(slug="catalog-shop")
     assert [item.listing_id for item in listings] == [active_listing_id]
     assert listings[0].available_slots == 3
+
+
+@pytest.mark.asyncio
+async def test_catalog_hides_products_already_purchased_by_buyer(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="repeat-filter-shop",
+        wb_product_id=7001,
+        reward_usdt=Decimal("3.000000"),
+        slot_count=2,
+        available_slots=2,
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            second_listing_id = await create_listing(
+                conn,
+                shop_id=fixture["shop_id"],
+                seller_user_id=fixture["seller_user_id"],
+                wb_product_id=7002,
+                reward_usdt=Decimal("2.000000"),
+                slot_count=1,
+                available_slots=1,
+                status="active",
+            )
+
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870001, username="buyer_repeat_filter")
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:buyer:870001:7001",
+    )
+    await buyer_service.submit_purchase_payload(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        payload_base64=_encode_payload(order_id="repeat-filter-order", wb_product_id=7001),
+    )
+
+    listings = await buyer_service.list_active_listings_by_shop_slug(
+        slug="repeat-filter-shop",
+        buyer_user_id=buyer.user_id,
+    )
+    assert [item.listing_id for item in listings] == [second_listing_id]
+    assert [item.wb_product_id for item in listings] == [7002]
+
+
+@pytest.mark.asyncio
+async def test_reserve_rejects_product_already_purchased_by_buyer(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="repeat-reserve-shop",
+        wb_product_id=7101,
+        reward_usdt=Decimal("4.000000"),
+        slot_count=2,
+        available_slots=2,
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            duplicate_listing_id = await create_listing(
+                conn,
+                shop_id=fixture["shop_id"],
+                seller_user_id=fixture["seller_user_id"],
+                wb_product_id=7101,
+                reward_usdt=Decimal("4.000000"),
+                slot_count=1,
+                available_slots=1,
+                status="active",
+            )
+
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870002, username="buyer_repeat_reserve")
+    first_reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:buyer:870002:7101:first",
+    )
+    await buyer_service.submit_purchase_payload(
+        buyer_user_id=buyer.user_id,
+        assignment_id=first_reservation.assignment_id,
+        payload_base64=_encode_payload(order_id="repeat-reserve-order", wb_product_id=7101),
+    )
+
+    with pytest.raises(InvalidStateError, match="already purchased"):
+        await buyer_service.reserve_listing_slot(
+            buyer_user_id=buyer.user_id,
+            listing_id=duplicate_listing_id,
+            idempotency_key="reserve:buyer:870002:7101:second",
+        )
 
 
 @pytest.mark.asyncio
