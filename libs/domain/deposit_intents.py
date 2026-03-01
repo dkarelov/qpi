@@ -4,6 +4,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
 
 from libs.db.tx import run_in_transaction
@@ -443,7 +444,7 @@ class DepositIntentService:
                         normalized_amount,
                         occurred_at,
                         suffix_code,
-                        raw_payload_json,
+                        Json(raw_payload_json),
                     ),
                 )
                 row = await cur.fetchone()
@@ -748,6 +749,11 @@ class DepositIntentService:
                 system_payout_account_id = await self._finance._ensure_system_account(
                     cur,
                     account_kind="system_payout",
+                )
+                await self._finance._provision_system_balance_locked(
+                    cur,
+                    account_id=system_payout_account_id,
+                    amount_usdt=amount,
                 )
                 transfer = await self._finance._transfer_locked(
                     cur,

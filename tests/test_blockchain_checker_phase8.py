@@ -142,6 +142,50 @@ async def test_admin_can_create_seller_deposit_intent_for_0_01_amount(db_pool) -
 
 
 @pytest.mark.asyncio
+async def test_chain_tx_upsert_accepts_json_payload_dict(db_pool) -> None:
+    service = DepositIntentService(db_pool)
+    shard = await service.ensure_default_shard(
+        shard_key="mvp-1",
+        deposit_address="UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH",
+    )
+
+    now = datetime.now(UTC)
+    payload = {"source": "tonapi", "query_id": ""}
+    result = await service.upsert_chain_incoming_tx(
+        shard_id=shard.shard_id,
+        provider="tonapi",
+        chain="ton_mainnet",
+        asset="USDT",
+        tx_hash="tx-json-payload-1",
+        tx_lt=9001,
+        query_id="",
+        trace_id="trace-json-payload-1",
+        operation_type="transfer",
+        source_address="0:source",
+        destination_address="0:shard",
+        amount_raw="1000200",
+        amount_usdt=Decimal("1.000200"),
+        occurred_at=now,
+        raw_payload_json=payload,
+    )
+    assert result.created is True
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT raw_payload_json
+                FROM chain_incoming_txs
+                WHERE id = %s
+                """,
+                (result.chain_tx_id,),
+            )
+            row = await cur.fetchone()
+            assert row is not None
+            assert row["raw_payload_json"] == payload
+
+
+@pytest.mark.asyncio
 async def test_deposit_intent_suffix_pool_exhaustion(db_pool) -> None:
     service = DepositIntentService(db_pool)
     shard = await service.ensure_default_shard(

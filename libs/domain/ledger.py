@@ -738,6 +738,11 @@ class FinanceService:
                     cur,
                     account_kind="system_payout",
                 )
+                await self._provision_system_balance_locked(
+                    cur,
+                    account_id=system_payout_account_id,
+                    amount_usdt=amount,
+                )
 
                 transfer_result = await self._transfer_locked(
                     cur,
@@ -1110,6 +1115,43 @@ class FinanceService:
         )
 
         return TransferResult(entry_id=entry["id"], created=True)
+
+    async def _ensure_system_account(self, cur, *, account_kind: str) -> int:
+        account_code = f"system:{account_kind}"
+        await cur.execute(
+            """
+            INSERT INTO accounts (
+                owner_user_id,
+                account_code,
+                account_kind
+            )
+            VALUES (NULL, %s, %s)
+            ON CONFLICT (account_code)
+            DO UPDATE SET
+                updated_at = timezone('utc', now())
+            RETURNING id
+            """,
+            (account_code, account_kind),
+        )
+        row = await cur.fetchone()
+        return row["id"]
+
+    async def _provision_system_balance_locked(
+        self,
+        cur,
+        *,
+        account_id: int,
+        amount_usdt: Decimal,
+    ) -> None:
+        await cur.execute(
+            """
+            UPDATE accounts
+            SET current_balance_usdt = current_balance_usdt + %s,
+                updated_at = timezone('utc', now())
+            WHERE id = %s
+            """,
+            (amount_usdt, account_id),
+        )
 
     async def _upsert_hold(
         self,
