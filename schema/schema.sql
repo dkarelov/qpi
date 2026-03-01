@@ -212,7 +212,7 @@ CREATE TABLE "public"."listings" (
     "shop_id" bigint NOT NULL,
     "seller_user_id" bigint NOT NULL,
     "wb_product_id" bigint NOT NULL,
-    "discount_percent" smallint NOT NULL CONSTRAINT listings_discount_percent_check CHECK (discount_percent >= 10 AND discount_percent <= 100),
+    "search_phrase" text NOT NULL DEFAULT 'legacy_search_phrase'::text CONSTRAINT listings_search_phrase_check CHECK (length(btrim(search_phrase)) > 0),
     "reward_usdt" numeric(20,6) NOT NULL CONSTRAINT listings_reward_usdt_check CHECK (reward_usdt > 0::numeric),
     "slot_count" integer NOT NULL CONSTRAINT listings_slot_count_check CHECK (slot_count > 0),
     "available_slots" integer NOT NULL CONSTRAINT listings_available_slots_check CHECK (available_slots >= 0),

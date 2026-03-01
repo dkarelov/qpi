@@ -68,7 +68,7 @@ class SellerCommandProcessor:
                         "/shop_delete <shop_id> [confirm]\n"
                         "/token_set <shop_id> <wb_token>\n"
                         "/listing_create <shop_id> <wb_product_id> "
-                        "<discount%> <reward_usdt> <slots>\n"
+                        "<reward_usdt> <slots> <search_phrase>\n"
                         "/listing_list [shop_id]\n"
                         "/listing_activate <listing_id> [idempotency_key]\n"
                         "/listing_pause <listing_id> [reason]\n"
@@ -177,30 +177,31 @@ class SellerCommandProcessor:
                 )
 
             if command == "/listing_create":
-                tokens = args.split()
+                tokens = args.split(maxsplit=4)
                 if len(tokens) != 5:
                     return SellerCommandResponse(
                         text=(
                             "Использование: /listing_create <shop_id> <wb_product_id> "
-                            "<discount%> <reward_usdt> <slots>"
+                            "<reward_usdt> <slots> <search_phrase>"
                         )
                     )
                 shop_id = int(tokens[0])
                 wb_product_id = int(tokens[1])
-                discount_percent = int(tokens[2])
-                reward_usdt = Decimal(tokens[3])
-                slot_count = int(tokens[4])
+                reward_usdt = Decimal(tokens[2])
+                slot_count = int(tokens[3])
+                search_phrase = tokens[4].strip()
                 listing = await self._seller_service.create_listing_draft(
                     seller_user_id=seller_user_id,
                     shop_id=shop_id,
                     wb_product_id=wb_product_id,
-                    discount_percent=discount_percent,
+                    search_phrase=search_phrase,
                     reward_usdt=reward_usdt,
                     slot_count=slot_count,
                 )
                 return SellerCommandResponse(
                     text=(
                         f"Листинг создан: id={listing.listing_id}, status={listing.status}, "
+                        f"артикул={listing.wb_product_id}, поиск=\"{listing.search_phrase}\", "
                         f"кэшбэк={listing.reward_usdt} USDT, slots={listing.slot_count}"
                     )
                 )
@@ -215,7 +216,8 @@ class SellerCommandProcessor:
                     return SellerCommandResponse(text="Листинги не найдены.")
                 lines = [
                     (
-                        f"{item.listing_id} | shop={item.shop_id} | status={item.status} | "
+                        f"{item.listing_id} | shop={item.shop_id} | wb={item.wb_product_id} | "
+                        f"search=\"{item.search_phrase}\" | status={item.status} | "
                         "кэшбэк="
                         f"{item.reward_usdt} | "
                         f"slots={item.available_slots}/{item.slot_count}"

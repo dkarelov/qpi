@@ -161,7 +161,7 @@ class BuyerService:
                         id,
                         shop_id,
                         wb_product_id,
-                        discount_percent,
+                        search_phrase,
                         reward_usdt,
                         slot_count,
                         available_slots
@@ -179,7 +179,7 @@ class BuyerService:
                         listing_id=row["id"],
                         shop_id=row["shop_id"],
                         wb_product_id=row["wb_product_id"],
-                        discount_percent=row["discount_percent"],
+                        search_phrase=row["search_phrase"],
                         reward_usdt=row["reward_usdt"],
                         slot_count=row["slot_count"],
                         available_slots=row["available_slots"],

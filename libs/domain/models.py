@@ -58,10 +58,13 @@ class ShopResult:
 class ListingResult:
     listing_id: int
     shop_id: int
+    wb_product_id: int
+    search_phrase: str
     status: str
     reward_usdt: Decimal
     slot_count: int
     available_slots: int
+    collateral_required_usdt: Decimal
     deleted_at: datetime | None
 
 
@@ -75,6 +78,8 @@ class SellerBalanceSnapshot:
 class SellerListingCollateralView:
     listing_id: int
     shop_id: int
+    wb_product_id: int
+    search_phrase: str
     status: str
     reward_usdt: Decimal
     slot_count: int
@@ -127,7 +132,7 @@ class BuyerListingResult:
     listing_id: int
     shop_id: int
     wb_product_id: int
-    discount_percent: int
+    search_phrase: str
     reward_usdt: Decimal
     slot_count: int
     available_slots: int

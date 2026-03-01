@@ -40,6 +40,7 @@ _OPEN_ASSIGNMENT_STATES = (
 _MANUAL_SOURCE = "manual"
 _SCRAPPER_WITHDRAWN_SOURCE = "scrapper_401_withdrawn"
 _SCRAPPER_EXPIRED_SOURCE = "scrapper_401_token_expired"
+_COLLATERAL_FEE_MULTIPLIER = Decimal("1.01")
 _CYRILLIC_TO_LATIN = {
     "а": "a",
     "б": "b",
@@ -472,17 +473,22 @@ class SellerService:
         seller_user_id: int,
         shop_id: int,
         wb_product_id: int,
-        discount_percent: int,
+        search_phrase: str,
         reward_usdt: Decimal,
         slot_count: int,
     ) -> ListingResult:
         amount = _normalize_amount(reward_usdt)
+        normalized_phrase = search_phrase.strip()
+        if not normalized_phrase:
+            raise ValueError("search_phrase must not be empty")
         if amount <= Decimal("0.000000"):
             raise ValueError("reward_usdt must be > 0")
         if slot_count < 1:
             raise ValueError("slot_count must be >= 1")
 
-        collateral_required = _normalize_amount(amount * Decimal(slot_count))
+        collateral_required = _normalize_amount(
+            amount * Decimal(slot_count) * _COLLATERAL_FEE_MULTIPLIER
+        )
 
         async def operation(conn: AsyncConnection) -> ListingResult:
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -493,7 +499,7 @@ class SellerService:
                         shop_id,
                         seller_user_id,
                         wb_product_id,
-                        discount_percent,
+                        search_phrase,
                         reward_usdt,
                         slot_count,
                         available_slots,
@@ -504,17 +510,20 @@ class SellerService:
                     RETURNING
                         id,
                         shop_id,
+                        wb_product_id,
+                        search_phrase,
                         status,
                         reward_usdt,
                         slot_count,
                         available_slots,
+                        collateral_required_usdt,
                         deleted_at
                     """,
                     (
                         shop_id,
                         seller_user_id,
                         wb_product_id,
-                        discount_percent,
+                        normalized_phrase,
                         amount,
                         slot_count,
                         slot_count,
@@ -525,10 +534,13 @@ class SellerService:
                 return ListingResult(
                     listing_id=row["id"],
                     shop_id=row["shop_id"],
+                    wb_product_id=row["wb_product_id"],
+                    search_phrase=row["search_phrase"],
                     status=row["status"],
                     reward_usdt=row["reward_usdt"],
                     slot_count=row["slot_count"],
                     available_slots=row["available_slots"],
+                    collateral_required_usdt=row["collateral_required_usdt"],
                     deleted_at=row["deleted_at"],
                 )
 
@@ -545,7 +557,17 @@ class SellerService:
             async with conn.cursor(row_factory=dict_row) as cur:
                 params: list[Any] = [seller_user_id]
                 query = """
-                    SELECT id, shop_id, status, reward_usdt, slot_count, available_slots, deleted_at
+                    SELECT
+                        id,
+                        shop_id,
+                        wb_product_id,
+                        search_phrase,
+                        status,
+                        reward_usdt,
+                        slot_count,
+                        available_slots,
+                        collateral_required_usdt,
+                        deleted_at
                     FROM listings
                     WHERE seller_user_id = %s
                 """
@@ -562,10 +584,13 @@ class SellerService:
                     ListingResult(
                         listing_id=row["id"],
                         shop_id=row["shop_id"],
+                        wb_product_id=row["wb_product_id"],
+                        search_phrase=row["search_phrase"],
                         status=row["status"],
                         reward_usdt=row["reward_usdt"],
                         slot_count=row["slot_count"],
                         available_slots=row["available_slots"],
+                        collateral_required_usdt=row["collateral_required_usdt"],
                         deleted_at=row["deleted_at"],
                     )
                     for row in rows
@@ -628,6 +653,8 @@ class SellerService:
                     SELECT
                         l.id,
                         l.shop_id,
+                        l.wb_product_id,
+                        l.search_phrase,
                         l.status,
                         l.reward_usdt,
                         l.slot_count,
@@ -667,6 +694,8 @@ class SellerService:
                     GROUP BY
                         l.id,
                         l.shop_id,
+                        l.wb_product_id,
+                        l.search_phrase,
                         l.status,
                         l.reward_usdt,
                         l.slot_count,
@@ -683,6 +712,8 @@ class SellerService:
                     SellerListingCollateralView(
                         listing_id=row["id"],
                         shop_id=row["shop_id"],
+                        wb_product_id=row["wb_product_id"],
+                        search_phrase=row["search_phrase"],
                         status=row["status"],
                         reward_usdt=row["reward_usdt"],
                         slot_count=row["slot_count"],

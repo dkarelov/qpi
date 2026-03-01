@@ -84,6 +84,7 @@ async def create_listing(
     shop_id: int,
     seller_user_id: int,
     wb_product_id: int,
+    search_phrase: str = "тестовый запрос",
     reward_usdt: Decimal,
     slot_count: int,
     available_slots: int,
@@ -96,24 +97,25 @@ async def create_listing(
                 shop_id,
                 seller_user_id,
                 wb_product_id,
-                discount_percent,
+                search_phrase,
                 reward_usdt,
                 slot_count,
                 available_slots,
                 collateral_required_usdt,
                 status
             )
-            VALUES (%s, %s, %s, 10, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
                 shop_id,
                 seller_user_id,
                 wb_product_id,
+                search_phrase,
                 reward_usdt,
                 slot_count,
                 available_slots,
-                reward_usdt * slot_count,
+                reward_usdt * slot_count * Decimal("1.01"),
                 status,
             ),
         )

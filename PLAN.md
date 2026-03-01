@@ -1,6 +1,6 @@
 # QPI PLAN
 
-Last updated: 2026-02-28 UTC
+Last updated: 2026-03-01 UTC
 
 ## 1. Purpose
 
@@ -51,8 +51,8 @@ Out of scope (MVP):
 4. WB read-only token submission/validation.
 5. Listing creation with:
    - `wb_product_id`
-   - discount percent (`10..100`)
-   - reward amount in USDT
+   - search phrase (seller scenario phrase in WB search)
+   - cashback amount entered in RUB and converted to fixed USDT at creation
    - slot count `N`
 6. Each shop can contain multiple listings.
 7. Seller can delete listings (soft delete only).
@@ -121,9 +121,10 @@ Out of scope (MVP):
 
 1. Ledger source of truth is USDT with fixed precision.
 2. UI money format: `~350 руб. (4.55 USDT)`.
-3. Listing stores fixed `reward_usdt`; discount is listing metadata.
+3. Listing stores fixed `reward_usdt`; seller input amount for cashback is RUB and conversion happens at listing creation time.
 4. Full listing collateral is locked from seller balance; per-slot reserve occurs on buyer accept.
-5. Helper FX for `USDT` -> `RUB` is cache-driven: read from PostgreSQL first; if stale (>15 minutes), refresh on-demand from external API and persist back to PostgreSQL.
+5. Listing collateral includes +1% buffer for transfer fees (`reward_usdt * slot_count * 1.01`).
+6. Helper FX for `USDT` -> `RUB` is cache-driven: read from PostgreSQL first; if stale (>15 minutes), refresh on-demand from external API and persist back to PostgreSQL.
 
 ## 2.6 Assignment State Rules
 
@@ -1026,6 +1027,11 @@ Status:
   - bot dashboards/balance screens now lazy-refresh `USDT_RUB` from CoinGecko only when cached value is older than TTL (`FX_RATE_TTL_SECONDS`, default 900),
   - concurrency for refresh is guarded by PostgreSQL advisory lock (`FX_RATE_REFRESH_LOCK_ID`),
   - failure mode uses latest cached rate; if cache is empty, falls back to `DISPLAY_RUB_PER_USDT`.
+- Listing contract update implemented on 2026-03-01:
+  - removed `discount_percent` from listing schema/domain and replaced with `search_phrase`,
+  - seller listing input switched to one-line format with RUB cashback and quoted search phrase,
+  - RUB cashback is converted to fixed `reward_usdt` at creation using current FX helper rate,
+  - collateral requirement changed to `reward_usdt * slots * 1.01` (+1% fee buffer).
 - Verification:
   - `ruff check services/bot_api/telegram_runtime.py tests/test_telegram_runtime_ux_phase9.py` passed.
   - `python -m py_compile services/bot_api/telegram_runtime.py tests/test_telegram_runtime_ux_phase9.py` passed.

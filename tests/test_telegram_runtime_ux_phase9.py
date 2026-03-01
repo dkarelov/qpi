@@ -136,3 +136,13 @@ def test_token_instruction_contains_required_sections() -> None:
     assert "Зачем нужен токен?" in text
     assert "Где найти токен?" in text
     assert "Безопасно ли это?" in text
+
+
+def test_listing_create_instruction_contains_new_fields_and_fx_reference() -> None:
+    runtime = _build_runtime()
+
+    text = runtime._listing_create_instruction_text(shop_title="Тушенка")
+    assert "Создание листинга для магазина «Тушенка»." in text
+    assert "<артикул ВБ> <кэшбэк руб> <макс заказов> <поисковая фраза>" in text
+    assert "Пример: 12345678 100 5 \"женские джинсы\"" in text
+    assert "по текущему курсу (~100)" in text

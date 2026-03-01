@@ -143,7 +143,7 @@ async def test_shop_slug_uniqueness_and_multi_listing_crud(db_pool) -> None:
         seller_user_id=seller.user_id,
         shop_id=shop_one.shop_id,
         wb_product_id=10001,
-        discount_percent=10,
+        search_phrase="поиск one",
         reward_usdt=Decimal("3.000000"),
         slot_count=2,
     )
@@ -151,7 +151,7 @@ async def test_shop_slug_uniqueness_and_multi_listing_crud(db_pool) -> None:
         seller_user_id=seller.user_id,
         shop_id=shop_two.shop_id,
         wb_product_id=10002,
-        discount_percent=15,
+        search_phrase="поиск two",
         reward_usdt=Decimal("4.000000"),
         slot_count=3,
     )
@@ -282,7 +282,7 @@ async def test_listing_activation_requires_token_and_is_idempotent(db_pool) -> N
         seller_user_id=seller.user_id,
         shop_id=shop.shop_id,
         wb_product_id=20001,
-        discount_percent=20,
+        search_phrase="активация",
         reward_usdt=Decimal("5.000000"),
         slot_count=2,
     )
@@ -290,7 +290,7 @@ async def test_listing_activation_requires_token_and_is_idempotent(db_pool) -> N
     await _set_account_balance(
         db_pool,
         account_id=seller.seller_available_account_id,
-        balance=Decimal("10.000000"),
+        balance=Decimal("10.100000"),
     )
 
     with pytest.raises(InvalidStateError):
@@ -327,7 +327,7 @@ async def test_listing_activation_requires_token_and_is_idempotent(db_pool) -> N
                 (seller.seller_collateral_account_id,),
             )
             collateral_row = await cur.fetchone()
-            assert collateral_row["current_balance_usdt"] == Decimal("10.000000")
+            assert collateral_row["current_balance_usdt"] == Decimal("10.100000")
 
             await cur.execute(
                 """
@@ -359,7 +359,7 @@ async def test_listing_delete_warning_and_transfer_split(db_pool) -> None:
         seller_user_id=seller.user_id,
         shop_id=shop.shop_id,
         wb_product_id=30001,
-        discount_percent=30,
+        search_phrase="удаление",
         reward_usdt=Decimal("10.000000"),
         slot_count=2,
     )
@@ -367,7 +367,7 @@ async def test_listing_delete_warning_and_transfer_split(db_pool) -> None:
     await _set_account_balance(
         db_pool,
         account_id=seller.seller_available_account_id,
-        balance=Decimal("20.000000"),
+        balance=Decimal("20.200000"),
     )
     await seller_service.activate_listing(
         seller_user_id=seller.user_id,
@@ -399,7 +399,7 @@ async def test_listing_delete_warning_and_transfer_split(db_pool) -> None:
     )
     assert preview.open_assignments_count == 1
     assert preview.assignment_linked_reserved_usdt == Decimal("10.000000")
-    assert preview.unassigned_collateral_usdt == Decimal("10.000000")
+    assert preview.unassigned_collateral_usdt == Decimal("10.200000")
 
     processor = SellerCommandProcessor(
         seller_service=seller_service,
@@ -424,7 +424,7 @@ async def test_listing_delete_warning_and_transfer_split(db_pool) -> None:
     assert deleted.changed is True
     assert deleted.assignment_transfers_count == 1
     assert deleted.assignment_transferred_usdt == Decimal("10.000000")
-    assert deleted.unassigned_collateral_returned_usdt == Decimal("10.000000")
+    assert deleted.unassigned_collateral_returned_usdt == Decimal("10.200000")
 
     async with db_pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -444,7 +444,7 @@ async def test_listing_delete_warning_and_transfer_split(db_pool) -> None:
                 (seller.seller_available_account_id,),
             )
             seller_available = await cur.fetchone()
-            assert seller_available["current_balance_usdt"] == Decimal("10.000000")
+            assert seller_available["current_balance_usdt"] == Decimal("10.200000")
 
             await cur.execute(
                 "SELECT current_balance_usdt FROM accounts WHERE id = %s",
@@ -491,14 +491,14 @@ async def test_token_invalidation_pauses_active_listings(db_pool) -> None:
         seller_user_id=seller.user_id,
         shop_id=shop.shop_id,
         wb_product_id=40001,
-        discount_percent=15,
+        search_phrase="инвалидация",
         reward_usdt=Decimal("2.000000"),
         slot_count=1,
     )
     await _set_account_balance(
         db_pool,
         account_id=seller.seller_available_account_id,
-        balance=Decimal("2.000000"),
+        balance=Decimal("2.020000"),
     )
     await service.activate_listing(
         seller_user_id=seller.user_id,
@@ -605,7 +605,7 @@ async def test_seller_balance_and_collateral_views(db_pool) -> None:
         seller_user_id=seller.user_id,
         shop_id=shop.shop_id,
         wb_product_id=50001,
-        discount_percent=20,
+        search_phrase="баланс",
         reward_usdt=Decimal("3.000000"),
         slot_count=2,
     )
@@ -613,7 +613,7 @@ async def test_seller_balance_and_collateral_views(db_pool) -> None:
     await _set_account_balance(
         db_pool,
         account_id=seller.seller_available_account_id,
-        balance=Decimal("6.000000"),
+        balance=Decimal("6.060000"),
     )
     await service.activate_listing(
         seller_user_id=seller.user_id,
@@ -623,10 +623,10 @@ async def test_seller_balance_and_collateral_views(db_pool) -> None:
 
     snapshot = await service.get_seller_balance_snapshot(seller_user_id=seller.user_id)
     assert snapshot.seller_available_usdt == Decimal("0.000000")
-    assert snapshot.seller_collateral_usdt == Decimal("6.000000")
+    assert snapshot.seller_collateral_usdt == Decimal("6.060000")
 
     views = await service.list_listing_collateral_views(seller_user_id=seller.user_id)
     assert len(views) == 1
     assert views[0].listing_id == listing.listing_id
-    assert views[0].collateral_required_usdt == Decimal("6.000000")
-    assert views[0].collateral_locked_usdt == Decimal("6.000000")
+    assert views[0].collateral_required_usdt == Decimal("6.060000")
+    assert views[0].collateral_locked_usdt == Decimal("6.060000")

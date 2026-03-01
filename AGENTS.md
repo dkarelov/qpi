@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-02-28 UTC
+Last updated: 2026-03-01 UTC
 
 ## 1. Purpose and Maintenance Rules
 
@@ -58,7 +58,9 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 - On confirmed delete:
   - assignment-linked reserved funds transfer to buyers immediately and irreversibly,
   - unassigned collateral is returned to seller.
-- Seller sets discount from 10% to 100%.
+- Seller sets cashback amount in RUB and provides WB search phrase for listing scenario.
+- Cashback is converted and fixed in USDT at current bot FX rate at listing creation time.
+- Listing collateral requirement includes +1% transfer-fee buffer on top of cashback total.
 - Seller must provide full collateral for all `N` slots before listing activation.
 - Rewards are reserved per buyer/slot after accept.
 
@@ -343,7 +345,7 @@ Seller flow:
 2. Create shop and submit WB read-only token.
 3. Seller token is checked live via `https://statistics-api.wildberries.ru/ping`; invalid token is rejected and not stored.
 4. Create/delete shop(s), create/delete listing(s) per shop.
-5. Create listing(s) with WB product binding, discount, reward, slots.
+5. Create listing(s) with WB product binding, search phrase, cashback, and slot count.
 6. Delete uses soft-delete semantics and shows warning when active/open entities exist.
 7. If deletion is confirmed:
    - assignment-linked reserved funds transfer to buyers immediately and irreversibly,
@@ -837,3 +839,8 @@ Required controls even in MVP:
   - bot runtime now lazily refreshes helper FX from CoinGecko simple-price endpoint when cache is older than TTL (`FX_RATE_TTL_SECONDS`, default 900),
   - refresh path is protected by PostgreSQL advisory lock (`FX_RATE_REFRESH_LOCK_ID`) to avoid concurrent thundering-herd fetches,
   - if provider call fails, runtime falls back to latest cached rate, then to configured static fallback `DISPLAY_RUB_PER_USDT`.
+- 2026-03-01: Listing input contract updated (seller UX + schema):
+  - removed listing discount field from domain/schema and UI flows,
+  - listing creation now accepts `<артикул ВБ> <кэшбэк руб> <макс заказов> <поисковая фраза>` in one line,
+  - cashback is converted and fixed in USDT at creation time using current bot FX cache value, and `search_phrase` is stored in `listings`,
+  - listing collateral requirement now includes a +1% transfer-fee buffer (`reward_usdt * slots * 1.01`).

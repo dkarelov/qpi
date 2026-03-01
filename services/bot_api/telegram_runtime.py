@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -75,6 +76,7 @@ _PROMPT_STATE_KEY = "prompt_state"
 _USDT_SUMMARY_QUANT = Decimal("0.1")
 _USDT_EXACT_QUANT = Decimal("0.000001")
 _RUB_QUANT = Decimal("1")
+_LISTING_COLLATERAL_FEE_MULTIPLIER = Decimal("1.01")
 
 _SELLER_COMMAND_PREFIXES = (
     "/shop_",
@@ -843,14 +845,10 @@ class TelegramWebhookRuntime:
                     "seller_user_id": seller.user_id,
                 },
             )
+            await self._refresh_display_rub_per_usdt()
             await self._replace_message(
                 query_message,
-                (
-                    f"Создание листинга для магазина «{shop.title}».\n\n"
-                    "Отправьте одной строкой:\n"
-                    "<артикул_WB> <скидка_%> <кэшбэк_USDT> <мест>\n\n"
-                    "Пример: 12345678 20 1.5 10"
-                ),
+                self._listing_create_instruction_text(shop_title=shop.title),
                 InlineKeyboardMarkup(
                     [
                         [
@@ -1210,6 +1208,25 @@ class TelegramWebhookRuntime:
             "\"Статистика\"."
         )
 
+    def _listing_create_instruction_text(self, *, shop_title: str) -> str:
+        fx_text = self._format_decimal(self._display_rub_per_usdt, quant=Decimal("0.01"))
+        return (
+            f"Создание листинга для магазина «{shop_title}».\n\n"
+            "Отправьте одной строкой:\n"
+            "<артикул ВБ> <кэшбэк руб> <макс заказов> <поисковая фраза>\n\n"
+            "Пример: 12345678 100 5 \"женские джинсы\"\n\n"
+            "<артикул ВБ> - целевой артикул товара на ВБ, который нужно заказать покупателю.\n"
+            "<кэшбэк руб> - сумма в рублях, которую получит покупатель через 15 дней после "
+            "выкупа заказа. Сумма будет конвертирована и зафиксирована в USDT по текущему "
+            f"курсу (~{fx_text}).\n"
+            "<макс заказов> - сколько заказов этого товара могут сделать разные покупатели. "
+            "Под каждый заказ потребуется обеспечение на вашем счете + 1% на оплату комиссий "
+            "за перевод. Например, если 10 слотов и кэшбэк 100 руб., то потребуется "
+            "обеспечение в размере 10 × 100 × 1.01 = 1010 руб.\n"
+            "<поисковая фраза> - поисковый запрос (одно или несколько слов в кавычках), по "
+            "которому требуется найти целевой товар в поисковой выдаче ВБ."
+        )
+
     async def _render_shop_delete_preview(
         self,
         *,
@@ -1372,6 +1389,8 @@ class TelegramWebhookRuntime:
             shop_title = shop_titles.get(listing.shop_id, "Неизвестный магазин")
             lines.append(
                 f"Листинг {idx} · магазин: {shop_title}\n"
+                f"Артикул ВБ: {listing.wb_product_id}\n"
+                f"Поиск: \"{listing.search_phrase}\"\n"
                 f"Статус: {self._humanize_listing_status(listing.status)}\n"
                 f"Кэшбэк: {self._format_usdt_value(listing.reward_usdt, precise=True)} USDT · "
                 f"места: {listing.available_slots}/"
@@ -3386,14 +3405,14 @@ class TelegramWebhookRuntime:
         if prompt_type == "seller_listing_create":
             seller_user_id = int(prompt_state.get("seller_user_id", 0))
             shop_id = int(prompt_state.get("shop_id", 0))
-            tokens = text.split()
+            shop_title = str(prompt_state.get("shop_title", "магазин"))
+            try:
+                tokens = shlex.split(text)
+            except ValueError:
+                tokens = []
             if len(tokens) != 4:
                 await message.reply_text(
-                    (
-                        "Введите данные одной строкой:\n"
-                        "<артикул_WB> <скидка_%> <кэшбэк_USDT> <мест>\n"
-                        "Пример: 12345678 20 1.5 10"
-                    ),
+                    self._listing_create_instruction_text(shop_title=shop_title),
                     reply_markup=InlineKeyboardMarkup(
                         [
                             [
@@ -3411,14 +3430,30 @@ class TelegramWebhookRuntime:
                 return
             try:
                 wb_product_id = int(tokens[0])
-                discount_percent = int(tokens[1])
-                reward_usdt = Decimal(tokens[2])
-                slots = int(tokens[3])
+                cashback_rub = Decimal(tokens[1])
+                slots = int(tokens[2])
+                search_phrase = tokens[3].strip()
+                if wb_product_id < 1:
+                    raise ValueError("wb_product_id must be >= 1")
+                if cashback_rub <= Decimal("0"):
+                    raise ValueError("cashback_rub must be > 0")
+                if slots < 1:
+                    raise ValueError("slots must be >= 1")
+                if not search_phrase:
+                    raise ValueError("search_phrase must not be empty")
+                await self._refresh_display_rub_per_usdt()
+                fx_rate = self._display_rub_per_usdt
+                reward_usdt = (cashback_rub / fx_rate).quantize(
+                    _USDT_EXACT_QUANT,
+                    rounding=ROUND_HALF_UP,
+                )
+                if reward_usdt <= Decimal("0"):
+                    raise ValueError("reward_usdt must be > 0")
                 listing = await self._seller_service.create_listing_draft(
                     seller_user_id=seller_user_id,
                     shop_id=shop_id,
                     wb_product_id=wb_product_id,
-                    discount_percent=discount_percent,
+                    search_phrase=search_phrase,
                     reward_usdt=reward_usdt,
                     slot_count=slots,
                 )
@@ -3466,11 +3501,25 @@ class TelegramWebhookRuntime:
                 return
 
             self._clear_prompt(context)
+            fx_text = self._format_decimal(self._display_rub_per_usdt, quant=Decimal("0.01"))
+            collateral_rub = (
+                cashback_rub
+                * Decimal(listing.slot_count)
+                * _LISTING_COLLATERAL_FEE_MULTIPLIER
+            )
             await message.reply_text(
                 (
                     "Листинг создан.\n"
-                    f"Кэшбэк: {self._format_usdt_value(listing.reward_usdt, precise=True)} USDT\n"
-                    f"Слоты: {listing.available_slots}/{listing.slot_count}"
+                    f"Артикул ВБ: {listing.wb_product_id}\n"
+                    f"Поисковая фраза: \"{listing.search_phrase}\"\n"
+                    f"Кэшбэк: {self._format_decimal(cashback_rub, quant=_RUB_QUANT)} ₽ "
+                    f"({self._format_usdt_value(listing.reward_usdt, precise=True)} USDT "
+                    f"по курсу ~{fx_text})\n"
+                    f"Макс заказов: {listing.slot_count}\n"
+                    "Требуемое обеспечение: "
+                    f"{self._format_decimal(collateral_rub, quant=_RUB_QUANT)} ₽ "
+                    f"({self._format_usdt_value(listing.collateral_required_usdt, precise=True)} "
+                    "USDT)"
                 ),
                 reply_markup=InlineKeyboardMarkup(
                     [
@@ -3904,7 +3953,7 @@ class TelegramWebhookRuntime:
             lines.append(
                 f"• Товар {idx}\n"
                 f"Артикул WB: {listing.wb_product_id}\n"
-                f"Скидка: {listing.discount_percent}%\n"
+                f"Поисковая фраза: {listing.search_phrase}\n"
                 f"Кэшбэк: {self._format_usdt_value(listing.reward_usdt, precise=True)} USDT\n"
                 f"Свободно мест: {listing.available_slots} из {listing.slot_count}"
             )

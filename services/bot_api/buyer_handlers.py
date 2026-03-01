@@ -183,7 +183,7 @@ class BuyerCommandProcessor:
         lines = [
             (
                 f"{item.listing_id} | wb_product_id={item.wb_product_id} | "
-                f"скидка={item.discount_percent}% | кэшбэк={item.reward_usdt} USDT | "
+                f"поиск=\"{item.search_phrase}\" | кэшбэк={item.reward_usdt} USDT | "
                 f"slots={item.available_slots}/{item.slot_count}"
             )
             for item in listings
