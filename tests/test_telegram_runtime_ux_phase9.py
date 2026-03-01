@@ -43,6 +43,14 @@ def test_seller_menu_is_tree_structured() -> None:
     assert "➕ Пополнить" not in labels_set
 
 
+def test_seller_menu_puts_listings_before_shops() -> None:
+    runtime = _build_runtime()
+
+    first_row = runtime._seller_menu_markup().inline_keyboard[0]
+
+    assert [button.text for button in first_row] == ["📦 Листинги", "🏬 Магазины"]
+
+
 def test_buyer_menu_is_dashboard_sections() -> None:
     runtime = _build_runtime()
 
@@ -146,3 +154,20 @@ def test_listing_create_instruction_contains_new_fields_and_fx_reference() -> No
     assert "<артикул ВБ> <кэшбэк руб> <макс заказов> <поисковая фраза>" in text
     assert "Пример: 12345678 100 5 \"женские джинсы\"" in text
     assert "по текущему курсу (~100)" in text
+
+
+def test_listing_created_prompt_activation_explains_activation_effect() -> None:
+    runtime = _build_runtime()
+
+    text = runtime._listing_created_prompt_activation_text(
+        wb_product_id=12345678,
+        search_phrase="женские джинсы",
+        cashback_rub=Decimal("100"),
+        reward_usdt=Decimal("1.000000"),
+        slot_count=5,
+        collateral_required_usdt=Decimal("5.050000"),
+    )
+
+    assert "Активировать листинг сейчас?" in text
+    assert "Деньги на обеспечение листинга будут списаны с баланса" in text
+    assert "листинг станет доступен для заказа покупателям через бот" in text

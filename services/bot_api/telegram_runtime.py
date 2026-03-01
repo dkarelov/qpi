@@ -1227,6 +1227,34 @@ class TelegramWebhookRuntime:
             "которому требуется найти целевой товар в поисковой выдаче ВБ."
         )
 
+    def _listing_created_prompt_activation_text(
+        self,
+        *,
+        wb_product_id: int,
+        search_phrase: str,
+        cashback_rub: Decimal,
+        reward_usdt: Decimal,
+        slot_count: int,
+        collateral_required_usdt: Decimal,
+    ) -> str:
+        fx_text = self._format_decimal(self._display_rub_per_usdt, quant=Decimal("0.01"))
+        collateral_rub = cashback_rub * Decimal(slot_count) * _LISTING_COLLATERAL_FEE_MULTIPLIER
+        return (
+            "Листинг создан.\n"
+            f"Артикул ВБ: {wb_product_id}\n"
+            f"Поисковая фраза: \"{search_phrase}\"\n"
+            f"Кэшбэк: {self._format_decimal(cashback_rub, quant=_RUB_QUANT)} ₽ "
+            f"({self._format_usdt_value(reward_usdt, precise=True)} USDT "
+            f"по курсу ~{fx_text})\n"
+            f"Макс заказов: {slot_count}\n"
+            "Требуемое обеспечение: "
+            f"{self._format_decimal(collateral_rub, quant=_RUB_QUANT)} ₽ "
+            f"({self._format_usdt_value(collateral_required_usdt, precise=True)} USDT)\n\n"
+            "Активировать листинг сейчас?\n"
+            "Деньги на обеспечение листинга будут списаны с баланса "
+            "(зарезервированы), и листинг станет доступен для заказа покупателям через бот."
+        )
+
     async def _render_shop_delete_preview(
         self,
         *,
@@ -3501,28 +3529,27 @@ class TelegramWebhookRuntime:
                 return
 
             self._clear_prompt(context)
-            fx_text = self._format_decimal(self._display_rub_per_usdt, quant=Decimal("0.01"))
-            collateral_rub = (
-                cashback_rub
-                * Decimal(listing.slot_count)
-                * _LISTING_COLLATERAL_FEE_MULTIPLIER
-            )
             await message.reply_text(
-                (
-                    "Листинг создан.\n"
-                    f"Артикул ВБ: {listing.wb_product_id}\n"
-                    f"Поисковая фраза: \"{listing.search_phrase}\"\n"
-                    f"Кэшбэк: {self._format_decimal(cashback_rub, quant=_RUB_QUANT)} ₽ "
-                    f"({self._format_usdt_value(listing.reward_usdt, precise=True)} USDT "
-                    f"по курсу ~{fx_text})\n"
-                    f"Макс заказов: {listing.slot_count}\n"
-                    "Требуемое обеспечение: "
-                    f"{self._format_decimal(collateral_rub, quant=_RUB_QUANT)} ₽ "
-                    f"({self._format_usdt_value(listing.collateral_required_usdt, precise=True)} "
-                    "USDT)"
+                self._listing_created_prompt_activation_text(
+                    wb_product_id=listing.wb_product_id,
+                    search_phrase=listing.search_phrase,
+                    cashback_rub=cashback_rub,
+                    reward_usdt=listing.reward_usdt,
+                    slot_count=listing.slot_count,
+                    collateral_required_usdt=listing.collateral_required_usdt,
                 ),
                 reply_markup=InlineKeyboardMarkup(
                     [
+                        [
+                            InlineKeyboardButton(
+                                text="✅ Активировать",
+                                callback_data=build_callback(
+                                    flow=_ROLE_SELLER,
+                                    action="listing_activate",
+                                    entity_id=str(listing.listing_id),
+                                ),
+                            ),
+                        ],
                         [
                             InlineKeyboardButton(
                                 text="📦 К листингам",
@@ -4184,12 +4211,12 @@ class TelegramWebhookRuntime:
             [
                 [
                     InlineKeyboardButton(
-                        text="🏬 Магазины",
-                        callback_data=build_callback(flow=_ROLE_SELLER, action="shops"),
-                    ),
-                    InlineKeyboardButton(
                         text="📦 Листинги",
                         callback_data=build_callback(flow=_ROLE_SELLER, action="listings"),
+                    ),
+                    InlineKeyboardButton(
+                        text="🏬 Магазины",
+                        callback_data=build_callback(flow=_ROLE_SELLER, action="shops"),
                     ),
                 ],
                 [
