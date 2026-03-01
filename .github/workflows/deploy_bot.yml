@@ -109,6 +109,16 @@ jobs:
             /tmp/qpi-bot-overrides.env \
             "${BOT_VM_SSH_USER:-ubuntu}@${BOT_VM_HOST}:/tmp/qpi-bot-overrides.env"
 
+      - name: Upload rollout private dependency token
+        run: |
+          cat > /tmp/qpi-rollout.env <<EOF
+          TOKEN_YC_JSON_LOGGER=${TOKEN_YC_JSON_LOGGER}
+          EOF
+          scp -P "${BOT_VM_SSH_PORT:-22}" \
+            -i ~/.ssh/bot_vm_key \
+            /tmp/qpi-rollout.env \
+            "${BOT_VM_SSH_USER:-ubuntu}@${BOT_VM_HOST}:/tmp/qpi-rollout.env"
+
       - name: Merge env overrides on VM
         run: |
           ssh -p "${BOT_VM_SSH_PORT:-22}" \
@@ -125,8 +135,8 @@ jobs:
           ssh -p "${BOT_VM_SSH_PORT:-22}" \
             -i ~/.ssh/bot_vm_key \
             "${BOT_VM_SSH_USER:-ubuntu}@${BOT_VM_HOST}" \
-            "chmod +x /tmp/remote_rollout_bot.sh && \
-             TOKEN_YC_JSON_LOGGER='${TOKEN_YC_JSON_LOGGER}' \
+            "set -a && source /tmp/qpi-rollout.env && set +a && \
+             chmod +x /tmp/remote_rollout_bot.sh && \
              /tmp/remote_rollout_bot.sh \
                '${{ steps.build.outputs.release_id }}' \
                '/tmp/${{ steps.build.outputs.archive_name }}' \
