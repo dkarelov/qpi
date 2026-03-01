@@ -170,6 +170,98 @@ async def test_shop_deeplink_resolution_and_listing_visibility(db_pool) -> None:
 
 
 @pytest.mark.asyncio
+async def test_saved_shops_are_persistent_and_ordered_by_last_opened(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=820500, username="buyer_saved_shops")
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            seller_user_id = await create_user(
+                conn,
+                telegram_id=820501,
+                role="seller",
+                username="seller_saved_shops",
+            )
+            shop_one_id = await create_shop(
+                conn,
+                seller_user_id=seller_user_id,
+                slug="saved-shop-one",
+                title="Saved Shop One",
+            )
+            shop_two_id = await create_shop(
+                conn,
+                seller_user_id=seller_user_id,
+                slug="saved-shop-two",
+                title="Saved Shop Two",
+            )
+
+    await buyer_service.touch_saved_shop(
+        buyer_user_id=buyer.user_id,
+        shop_id=shop_one_id,
+    )
+    await buyer_service.touch_saved_shop(
+        buyer_user_id=buyer.user_id,
+        shop_id=shop_two_id,
+    )
+    await buyer_service.touch_saved_shop(
+        buyer_user_id=buyer.user_id,
+        shop_id=shop_one_id,
+    )
+
+    saved_shops = await buyer_service.list_saved_shops(buyer_user_id=buyer.user_id, limit=10)
+    assert [item.shop_id for item in saved_shops] == [shop_one_id, shop_two_id]
+    assert [item.slug for item in saved_shops] == ["saved-shop-one", "saved-shop-two"]
+
+    resolved = await buyer_service.resolve_saved_shop_for_buyer(
+        buyer_user_id=buyer.user_id,
+        shop_id=shop_two_id,
+    )
+    assert resolved.slug == "saved-shop-two"
+
+
+@pytest.mark.asyncio
+async def test_saved_shops_hide_deleted_shops(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=820600, username="buyer_saved_deleted")
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            seller_user_id = await create_user(
+                conn,
+                telegram_id=820601,
+                role="seller",
+                username="seller_saved_deleted",
+            )
+            shop_id = await create_shop(
+                conn,
+                seller_user_id=seller_user_id,
+                slug="saved-shop-deleted",
+                title="Saved Shop Deleted",
+            )
+
+    await buyer_service.touch_saved_shop(
+        buyer_user_id=buyer.user_id,
+        shop_id=shop_id,
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE shops
+                    SET deleted_at = timezone('utc', now()),
+                        updated_at = timezone('utc', now())
+                    WHERE id = %s
+                    """,
+                    (shop_id,),
+                )
+
+    saved_shops = await buyer_service.list_saved_shops(buyer_user_id=buyer.user_id, limit=10)
+    assert saved_shops == []
+
+
+@pytest.mark.asyncio
 async def test_catalog_hides_products_already_purchased_by_buyer(db_pool) -> None:
     buyer_service = BuyerService(db_pool)
     fixture = await _prepare_reservable_listing(

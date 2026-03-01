@@ -1,6 +1,6 @@
 # QPI PLAN
 
-Last updated: 2026-03-01 UTC
+Last updated: 2026-03-02 UTC
 
 ## 1. Purpose
 
@@ -116,6 +116,7 @@ Out of scope (MVP):
 9. Shop rename must be available in seller UX. Rename must regenerate slug/deep link and must explicitly warn that old link stops working.
 10. Seller-facing shop references must use shop names in UX; avoid exposing internal IDs/slugs in regular flow screens and action labels.
 11. Active shop names must be unique per seller (case-insensitive) so name-based navigation remains unambiguous.
+12. Buyer shops section must persist previously opened shops in PostgreSQL, so the saved shop list survives bot redeploy/restart.
 
 ## 2.5 Money and Pricing Rules
 
@@ -1022,6 +1023,10 @@ Status:
   - dashboards for seller/buyer/admin no longer include static `Дашборд ...` title lines and now use compact metric rows,
   - dashboard money formatting standardized to `$USDT` with approximate helper `~RUB` (`DISPLAY_RUB_PER_USDT`, summary rounding),
   - seller/buyer terminology unified in UX text: `Обеспечение` and `Кэшбэк`.
+- Additional UX refinement implemented on 2026-03-02:
+  - buyer shops menu now uses PostgreSQL-backed persistence (`buyer_saved_shops`) instead of volatile in-memory-only “last shop” value,
+  - opening a shop (deep link/code/saved entry) updates persistent buyer history and survives redeploy/restart,
+  - buyer shops screen now renders persistent saved-shop buttons and keeps `open last` fallback from DB history.
 - FX helper-rate upgrade implemented on 2026-02-28:
   - introduced PostgreSQL cache table `fx_rates` and bot-side `FxRateService`,
   - bot dashboards/balance screens now lazy-refresh `USDT_RUB` from CoinGecko only when cached value is older than TTL (`FX_RATE_TTL_SECONDS`, default 900),

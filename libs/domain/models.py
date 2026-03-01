@@ -128,6 +128,14 @@ class BuyerShopResult:
 
 
 @dataclass(frozen=True)
+class BuyerSavedShopResult:
+    shop_id: int
+    slug: str
+    title: str
+    last_opened_at: datetime
+
+
+@dataclass(frozen=True)
 class BuyerListingResult:
     listing_id: int
     shop_id: int

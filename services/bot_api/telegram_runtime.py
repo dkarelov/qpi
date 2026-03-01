@@ -1818,14 +1818,20 @@ class TelegramWebhookRuntime:
             )
             return
         if action == "shops":
-            last_slug = str(context.user_data.get(_LAST_BUYER_SHOP_SLUG_KEY, "")).strip()
             await self._render_buyer_shops_section(
                 query_message=query_message,
-                last_shop_slug=last_slug or None,
+                buyer_user_id=buyer.user_id,
             )
             return
         if action == "open_last_shop":
             slug = str(context.user_data.get(_LAST_BUYER_SHOP_SLUG_KEY, "")).strip()
+            if not slug:
+                saved_shops = await self._buyer_service.list_saved_shops(
+                    buyer_user_id=buyer.user_id,
+                    limit=1,
+                )
+                if saved_shops:
+                    slug = saved_shops[0].slug
             if not slug:
                 await self._replace_message(
                     query_message,
@@ -1849,6 +1855,58 @@ class TelegramWebhookRuntime:
             await self._send_buyer_shop_catalog(
                 query_message,
                 slug=slug,
+                buyer_user_id=buyer.user_id,
+                prefer_edit=True,
+            )
+            return
+        if action == "open_saved_shop":
+            if not payload.entity_id:
+                await self._replace_message(
+                    query_message,
+                    "Не удалось открыть магазин. Попробуйте снова.",
+                    InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text="↩️ Назад к магазинам",
+                                    callback_data=build_callback(
+                                        flow=_ROLE_BUYER,
+                                        action="shops",
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
+                )
+                return
+            try:
+                saved_shop = await self._buyer_service.resolve_saved_shop_for_buyer(
+                    buyer_user_id=buyer.user_id,
+                    shop_id=int(payload.entity_id),
+                )
+            except (NotFoundError, ValueError):
+                await self._replace_message(
+                    query_message,
+                    "Этот магазин больше недоступен. Откройте магазин по коду.",
+                    InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text="↩️ Назад к магазинам",
+                                    callback_data=build_callback(
+                                        flow=_ROLE_BUYER,
+                                        action="shops",
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
+                )
+                return
+            context.user_data[_LAST_BUYER_SHOP_SLUG_KEY] = saved_shop.slug
+            await self._send_buyer_shop_catalog(
+                query_message,
+                slug=saved_shop.slug,
                 buyer_user_id=buyer.user_id,
                 prefer_edit=True,
             )
@@ -2056,9 +2114,13 @@ class TelegramWebhookRuntime:
         self,
         *,
         query_message: Message | None,
-        last_shop_slug: str | None,
+        buyer_user_id: int,
     ) -> None:
         lines = ["🏪 Раздел магазинов"]
+        saved_shops = await self._buyer_service.list_saved_shops(
+            buyer_user_id=buyer_user_id,
+            limit=12,
+        )
         keyboard_rows: list[list[InlineKeyboardButton]] = [
             [
                 InlineKeyboardButton(
@@ -2070,8 +2132,22 @@ class TelegramWebhookRuntime:
                 )
             ]
         ]
-        if last_shop_slug:
-            lines.append(f"Последний код магазина: {last_shop_slug}")
+        if saved_shops:
+            lines.append("Ваши магазины:")
+            for shop in saved_shops:
+                lines.append(f"• {shop.title}")
+                keyboard_rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text=f"🏪 {shop.title}",
+                            callback_data=build_callback(
+                                flow=_ROLE_BUYER,
+                                action="open_saved_shop",
+                                entity_id=str(shop.shop_id),
+                            ),
+                        )
+                    ]
+                )
             keyboard_rows.append(
                 [
                     InlineKeyboardButton(
@@ -2084,7 +2160,7 @@ class TelegramWebhookRuntime:
                 ]
             )
         else:
-            lines.append("Последний магазин не сохранен.")
+            lines.append("У вас пока нет сохраненных магазинов.")
 
         keyboard_rows.append(
             [
@@ -4304,6 +4380,20 @@ class TelegramWebhookRuntime:
             elif message is not None:
                 await message.reply_text("Магазин недоступен. Проверьте ссылку и попробуйте снова.")
             return
+
+        if buyer_user_id is not None:
+            try:
+                await self._buyer_service.touch_saved_shop(
+                    buyer_user_id=buyer_user_id,
+                    shop_id=shop.shop_id,
+                )
+            except DomainError:
+                self._logger.warning(
+                    "buyer_saved_shop_touch_failed",
+                    buyer_user_id=buyer_user_id,
+                    shop_id=shop.shop_id,
+                    slug=shop.slug,
+                )
 
         header = f"Магазин: {shop.title}"
         if not listings:

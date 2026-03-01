@@ -101,6 +101,24 @@ ALTER TABLE ONLY "public"."buyer_orders" ADD CONSTRAINT "buyer_orders_buyer_user
 
 ALTER TABLE ONLY "public"."buyer_orders" ADD CONSTRAINT "buyer_orders_listing_id_fkey" FOREIGN KEY ("listing_id") REFERENCES "public"."listings" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 
+CREATE TABLE "public"."buyer_saved_shops" (
+    "id" bigserial NOT NULL,
+    "buyer_user_id" bigint NOT NULL,
+    "shop_id" bigint NOT NULL,
+    "last_opened_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    "created_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    "updated_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    CONSTRAINT buyer_saved_shops_pkey PRIMARY KEY ("id")
+);
+
+CREATE INDEX idx_buyer_saved_shops_buyer_last_opened ON public.buyer_saved_shops USING btree (buyer_user_id, last_opened_at DESC);
+
+ALTER TABLE ONLY "public"."buyer_saved_shops" ADD CONSTRAINT "buyer_saved_shops_buyer_user_id_fkey" FOREIGN KEY ("buyer_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE CASCADE;
+
+ALTER TABLE ONLY "public"."buyer_saved_shops" ADD CONSTRAINT "buyer_saved_shops_shop_id_fkey" FOREIGN KEY ("shop_id") REFERENCES "public"."shops" ("id") ON UPDATE NO ACTION ON DELETE CASCADE;
+
+ALTER TABLE "public"."buyer_saved_shops" ADD CONSTRAINT "buyer_saved_shops_buyer_user_id_shop_id_key" UNIQUE (buyer_user_id, shop_id);
+
 CREATE TABLE "public"."fx_rates" (
     "pair_code" text NOT NULL,
     "rate" numeric(20,6) NOT NULL CONSTRAINT fx_rates_rate_check CHECK (rate > 0::numeric),

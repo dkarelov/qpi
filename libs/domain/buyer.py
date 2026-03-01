@@ -27,6 +27,7 @@ from libs.domain.models import (
     BuyerBootstrapResult,
     BuyerListingResult,
     BuyerOrderSubmitResult,
+    BuyerSavedShopResult,
     BuyerShopResult,
     ReservationExpiryResult,
 )
@@ -205,6 +206,118 @@ class BuyerService:
                     )
                     for row in rows
                 ]
+
+        return await run_in_transaction(self._pool, operation, read_only=True)
+
+    async def touch_saved_shop(
+        self,
+        *,
+        buyer_user_id: int,
+        shop_id: int,
+    ) -> None:
+        async def operation(conn: AsyncConnection) -> None:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT id
+                    FROM shops
+                    WHERE id = %s
+                      AND deleted_at IS NULL
+                    """,
+                    (shop_id,),
+                )
+                if await cur.fetchone() is None:
+                    raise NotFoundError(f"shop {shop_id} not found")
+
+                await cur.execute(
+                    """
+                    INSERT INTO buyer_saved_shops (
+                        buyer_user_id,
+                        shop_id
+                    )
+                    VALUES (%s, %s)
+                    ON CONFLICT (buyer_user_id, shop_id)
+                    DO UPDATE SET
+                        last_opened_at = timezone('utc', now()),
+                        updated_at = timezone('utc', now())
+                    """,
+                    (buyer_user_id, shop_id),
+                )
+
+        await run_in_transaction(self._pool, operation)
+
+    async def list_saved_shops(
+        self,
+        *,
+        buyer_user_id: int,
+        limit: int = 20,
+    ) -> list[BuyerSavedShopResult]:
+        if limit < 1:
+            raise ValueError("limit must be >= 1")
+
+        async def operation(conn: AsyncConnection) -> list[BuyerSavedShopResult]:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT
+                        s.id,
+                        s.slug,
+                        s.title,
+                        bss.last_opened_at
+                    FROM buyer_saved_shops bss
+                    JOIN shops s ON s.id = bss.shop_id
+                    WHERE bss.buyer_user_id = %s
+                      AND s.deleted_at IS NULL
+                    ORDER BY bss.last_opened_at DESC, s.id DESC
+                    LIMIT %s
+                    """,
+                    (buyer_user_id, limit),
+                )
+                rows = await cur.fetchall()
+                return [
+                    BuyerSavedShopResult(
+                        shop_id=row["id"],
+                        slug=row["slug"],
+                        title=row["title"],
+                        last_opened_at=row["last_opened_at"],
+                    )
+                    for row in rows
+                ]
+
+        return await run_in_transaction(self._pool, operation, read_only=True)
+
+    async def resolve_saved_shop_for_buyer(
+        self,
+        *,
+        buyer_user_id: int,
+        shop_id: int,
+    ) -> BuyerShopResult:
+        async def operation(conn: AsyncConnection) -> BuyerShopResult:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT
+                        s.id,
+                        s.slug,
+                        s.title
+                    FROM buyer_saved_shops bss
+                    JOIN shops s ON s.id = bss.shop_id
+                    WHERE bss.buyer_user_id = %s
+                      AND bss.shop_id = %s
+                      AND s.deleted_at IS NULL
+                    """,
+                    (buyer_user_id, shop_id),
+                )
+                row = await cur.fetchone()
+                if row is None:
+                    raise NotFoundError(
+                        f"saved shop {shop_id} not found for buyer {buyer_user_id}"
+                    )
+                return BuyerShopResult(
+                    shop_id=row["id"],
+                    slug=row["slug"],
+                    title=row["title"],
+                )
 
         return await run_in_transaction(self._pool, operation, read_only=True)
 

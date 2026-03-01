@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-03-01 UTC
+Last updated: 2026-03-02 UTC
 
 ## 1. Purpose and Maintenance Rules
 
@@ -165,6 +165,7 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 - `libs/domain/buyer.py` is the plain-SQL transactional buyer service:
   - buyer bootstrap/account guarantees,
   - shop deep-link resolution and active listing browse,
+  - persistent buyer saved-shops store (`buyer_saved_shops`) for cross-redeploy continuity,
   - slot reservation with idempotency,
   - strict base64 payload decode/validation (`v`, `order_id`, `wb_product_id`, `ordered_at` RFC3339 UTC),
   - `order_verified` transition with normalized `buyer_orders` persistence,
@@ -327,6 +328,7 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 - Each role must open to a role dashboard on first screen (before action buttons):
   - seller dashboard minimum fields: `магазинов всего`, `листинги активные / всего`, `заказы в процессе / совершенные / выкупленные`, `баланс свободный / общий`,
   - buyer and admin dashboards must provide analogous key summary counters for their role.
+- Buyer shops section must persist previously opened shops in PostgreSQL and keep them available after bot redeploy/restart.
 - Implemented in `services/bot_api/telegram_runtime.py`:
   - seller/buyer/admin first-screen dashboards with section navigation below,
   - tree-structured seller flow (`Магазины` -> `Создать магазин`, `Листинги` -> `Создать листинг`, `Баланс` -> `Пополнить`/`Мои пополнения`),
@@ -356,12 +358,13 @@ Seller flow:
 Buyer flow:
 
 1. Open shop via deep link.
-2. Accept available slot (funds reserved).
-3. Submit base64-encoded plugin confirmation payload within 2 hours.
-4. Bot decodes/validates payload and records normalized order fields (`order_id`, `wb_product_id`, `ordered_at`).
-5. Valid payload moves assignment to `order_verified`; then order tracking continues for pickup/return.
-6. After 15 days from pickup with no cancellation condition, reward becomes withdrawable.
-7. Buyer requests withdrawal; admin approves; payout sent.
+2. Shop is saved in buyer history (`buyer_saved_shops`) and remains available across bot restarts/redeploys.
+3. Accept available slot (funds reserved).
+4. Submit base64-encoded plugin confirmation payload within 2 hours.
+5. Bot decodes/validates payload and records normalized order fields (`order_id`, `wb_product_id`, `ordered_at`).
+6. Valid payload moves assignment to `order_verified`; then order tracking continues for pickup/return.
+7. After 15 days from pickup with no cancellation condition, reward becomes withdrawable.
+8. Buyer requests withdrawal; admin approves; payout sent.
 
 Automation checkpoints:
 
@@ -844,3 +847,7 @@ Required controls even in MVP:
   - listing creation now accepts `<артикул ВБ> <кэшбэк руб> <макс заказов> <поисковая фраза>` in one line,
   - cashback is converted and fixed in USDT at creation time using current bot FX cache value, and `search_phrase` is stored in `listings`,
   - listing collateral requirement now includes a +1% transfer-fee buffer (`reward_usdt * slots * 1.01`).
+- 2026-03-02: Buyer shops persistence implemented:
+  - added schema table `buyer_saved_shops` with `(buyer_user_id, shop_id)` uniqueness and `last_opened_at` ordering,
+  - buyer runtime now saves opened shops and renders persistent shop list in `🏪 Магазины`,
+  - “open last shop” now falls back to PostgreSQL history instead of volatile in-memory session state.
