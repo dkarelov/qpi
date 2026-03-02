@@ -316,7 +316,6 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - function `qpi-blockchain-checker`,
   - timer trigger every 5 minutes,
   - runtime env for shard settings and TonAPI settings.
-- Launch hardening and formal UAT/sign-off remain in Phase 10.
 
 ### 3.17 Phase 9 UX rules and implementation baseline
 
@@ -340,6 +339,26 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - seller token prompt includes inline instruction text for purpose/path/safety,
   - admin section routing (`Выводы`, `Депозиты`, `Исключения`) with dashboard summary,
   - callback guard for missing Telegram message context to prevent silent button no-op.
+
+### 3.18 Phase 10 verification baseline (Telegram-emulated E2E)
+
+- Phase 10 execution constraints locked:
+  - no SSH ingress tightening in this phase,
+  - no token rotation in this phase,
+  - no rollback-plan stream in this phase.
+- Deterministic Telegram-emulated E2E harness added:
+  - reusable transport/update harness in `tests/e2e_harness.py`,
+  - scenario suite in `tests/test_phase10_e2e_harness.py`.
+- Covered key scenarios in harness:
+  - seller: token-first shop creation, listing create/activate, top-up creation/history,
+  - buyer: deep-link catalog -> reserve -> submit token, task cancel, duplicate-purchase guard messaging,
+  - admin: withdrawal detail/approve/mark-sent flow, deposit-exception attach/cancel flow, non-admin access denial,
+  - callback edge: missing callback message context returns explicit alert.
+- CI coverage for this suite:
+  - workflow `.github/workflows/phase10_e2e.yml` runs on `push` (`main`) and `pull_request`,
+  - uploads JUnit report artifact `phase10-e2e-harness-report`.
+- Accepted limitation of this phase:
+  - harness validates bot flow/state transitions without live Telegram transport semantics (webhook/TLS/delivery ordering/flood limits).
 
 ## 4. Functional Workflow Summary
 
@@ -591,6 +610,9 @@ pytest -q -m "not migration_smoke"
 RUN_MIGRATION_SMOKE=1 \
 TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test_scratch \
 pytest -q -m migration_smoke
+
+# Phase 10 deterministic Telegram-emulated E2E suite:
+PYTHONPATH=. uv run pytest -q tests/test_phase10_e2e_harness.py
 ```
 
 Phase 7 observability queries and runbooks:
@@ -855,3 +877,8 @@ Required controls even in MVP:
   - reservation/task screens now provide setup token (`[search_phrase, wb_product_id, 2]`, base64) and explicit action button `Ввести токен-подтверждение`,
   - verification token contract switched to base64 JSON array `[order_id, ordered_at]` (non-timezone timestamp, normalized to UTC),
   - buyer can explicitly cancel pre-submit task via `Отказаться от задания` (releases reserved slot and collateral hold).
+- 2026-03-02: Phase 10 deterministic E2E verification implemented:
+  - added Telegram-emulated harness (`tests/e2e_harness.py`) for synthetic `Update`/callback/text driving of `TelegramWebhookRuntime`,
+  - added key scenario suite (`tests/test_phase10_e2e_harness.py`) covering seller, buyer, admin, and callback-fallback flows,
+  - added CI workflow `.github/workflows/phase10_e2e.yml` with JUnit artifact upload for repeatable sign-off evidence,
+  - Phase 10 scope explicitly excludes SSH ingress tightening, token rotation, and rollback-plan stream.

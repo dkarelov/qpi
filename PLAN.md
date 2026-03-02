@@ -790,7 +790,7 @@ Status:
   - bot service healthy on VM (`qpi-bot.service`, `/healthz`),
   - webhook served on `https://158.160.187.114:8443/telegram/webhook` with uploaded custom certificate (`has_custom_certificate=true`),
   - DB schema applied on production DB with Phase 7 additions (`manual_deposits`, status/index updates).
-- Next operational milestone: execute Phase 8 blockchain checker plan/implementation, then Phase 9 hardening + live Telegram UAT sign-off.
+- Next operational milestone: finalize production rollout verification for Phase 8 and continue with post-MVP hardening items.
 
 ## Phase 8: Automated Collateral Deposit Confirmation (Blockchain Checker CF)
 
@@ -1046,48 +1046,63 @@ Status:
   - deployed runtime contains Phase 9 dashboard/tree/emoji menu code paths.
   - callback processing remains functional even when Telegram rejects `answerCallbackQuery` for stale callback IDs (`telegram_callback_answer_failed` warning + handler continues).
 
-## Phase 10: Launch Hardening and UAT
+## Phase 10: Deterministic UAT Harness and Sign-Off
 
 Goal:
 
-- Complete pre-launch hardening and formal UAT/sign-off after Phase 8 automation scope is finished.
+- Complete production-safe verification/sign-off with deterministic Telegram-emulated E2E coverage for key workflows.
+
+Scope constraints (locked for this phase):
+
+1. Do not tighten SSH ingress in this phase.
+2. Do not rotate current tokens in this phase.
+3. Do not execute rollback-plan preparation stream in this phase.
+4. Do not implement live Telegram userbot automation in this phase (deferred due brittleness/complexity).
 
 Execution streams:
 
-1. Launch hardening and readiness gate
-   - Tighten SSH ingress from `0.0.0.0/0` to operator CIDRs before launch.
-   - Enforce admin-only finance actions through allowlist + audit trail.
-   - Verify secret alignment/rotation for:
-     - `TOKEN_CIPHER_KEY`,
-     - Telegram bot token,
-     - webhook secret,
-     - blockchain provider credentials.
-   - Freeze go-live rollback plan (bot rollback + DB rollback + CF rollback actions).
-2. Verification, UAT, and launch sign-off
-   - Expand automated tests:
-     - admin deposit flow,
-     - withdrawal approve/reject/send matrix,
-     - blockchain checker intent/match/recovery matrix,
-     - idempotency/replay tests for admin/system actions,
-     - Telegram callback contract tests,
-     - end-to-end happy path from listing activation to `withdraw_sent`.
-   - Execute UAT on live Telegram with real button flow:
-     - seller creates and activates listing using auto-confirmed top-up,
-     - buyer reserves/submits payload,
-     - CFs move assignment to `eligible_for_withdrawal`,
-     - buyer submits withdrawal request,
-     - admin approves and marks payout sent.
-   - Capture evidence in run log (timestamps, IDs, screenshots, tx hash placeholders).
+1. Readiness gate without infra lockdown changes
+   - validate admin-only control points in finance callbacks/flows,
+   - validate key audit and logging paths remain present for balance-changing actions.
+2. Telegram-emulated E2E harness foundation
+   - add reusable synthetic Telegram transport/update harness for `TelegramWebhookRuntime`,
+   - support deterministic `/start`, callback, and text/prompt transitions without Telegram infrastructure dependency.
+3. Key workflow scenario suite (Phase 4 scenario set, harness mode)
+   - seller scenarios:
+     - token-first shop creation,
+     - listing create -> activation,
+     - top-up invoice creation and transaction history rendering,
+   - buyer scenarios:
+     - deep-link catalog open -> reserve -> token submit,
+     - task cancel flow,
+     - duplicate purchase guard messaging,
+   - admin scenarios:
+     - withdrawal detail/approve/mark-sent path,
+     - deposit exception attach/cancel path,
+     - non-admin blocked from admin mode,
+   - callback fallback scenario:
+     - missing callback message context returns explicit alert.
+4. CI sign-off artifacts
+   - add dedicated workflow for harness execution on `push`/`pull_request`,
+   - publish JUnit report artifact as run evidence.
 
 Exit criteria:
 
-1. Launch hardening controls are applied and validated.
-2. UAT sign-off is completed with real Telegram interaction evidence.
-3. Launch approval checklist is completed.
+1. Deterministic harness suite covers all key seller/buyer/admin scenarios listed above.
+2. Harness suite is wired in CI and produces machine-readable sign-off artifact.
+3. All harness scenarios pass in repository.
 
 Status:
 
-- Pending.
+- Implemented in repository on 2026-03-02:
+  - reusable Telegram-emulated harness added (`tests/e2e_harness.py`),
+  - scenario suite added (`tests/test_phase10_e2e_harness.py`) with 10 scenarios,
+  - CI workflow added (`.github/workflows/phase10_e2e.yml`) with JUnit artifact upload.
+- Verification:
+  - `ruff check tests/e2e_harness.py tests/test_phase10_e2e_harness.py` passed,
+  - `PYTHONPATH=. uv run pytest -q tests/test_phase10_e2e_harness.py` passed (`10 passed`).
+- Known limitation (accepted):
+  - this phase does not validate live Telegram transport/infrastructure behavior (webhook TLS, delivery ordering/retries, flood limits, real-client rendering nuances).
 
 ## 4. Recommended Execution Order
 
@@ -1095,7 +1110,7 @@ Status:
 2. Phase 7 is implemented in repository (streams 1-8 complete).
 3. Execute Phase 8 stream 1-8 (blockchain checker CF + auto-confirmed collateral top-ups).
 4. Phase 9 live Telegram UX validation on production bot runtime is completed.
-5. Execute Phase 10 stream 1-2 (hardening + UAT + launch sign-off).
+5. Phase 10 deterministic harness + CI sign-off is completed.
 
 ## 5. Tracking Policy
 

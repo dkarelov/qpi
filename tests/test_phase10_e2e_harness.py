@@ -1,0 +1,620 @@
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from libs.config.settings import BotApiSettings
+from libs.domain.errors import InvalidStateError
+from libs.integrations.wb import WbPingResult
+from services.bot_api.telegram_runtime import TelegramWebhookRuntime
+from tests.e2e_harness import TelegramRuntimeHarness
+
+
+def _ns(**kwargs):
+    return SimpleNamespace(**kwargs)
+
+
+def _build_runtime(*, admin_ids: list[int] | None = None):
+    settings = BotApiSettings.model_validate(
+        {
+            "DATABASE_URL": "postgresql://user:pass@127.0.0.1:5432/qpi_test",
+            "TOKEN_CIPHER_KEY": "phase10-test-key",
+            "ADMIN_TELEGRAM_IDS": admin_ids or [9001],
+            "TELEGRAM_BOT_USERNAME": "qpilka_bot",
+            "DISPLAY_RUB_PER_USDT": "100",
+            "SELLER_COLLATERAL_SHARD_KEY": "mvp-1",
+            "SELLER_COLLATERAL_INVOICE_TTL_HOURS": 24,
+        }
+    )
+    runtime = TelegramWebhookRuntime(settings=settings)
+
+    seller_service = _ns(
+        bootstrap_seller=AsyncMock(return_value=_ns(user_id=101)),
+        list_shops=AsyncMock(return_value=[]),
+        list_listing_collateral_views=AsyncMock(return_value=[]),
+        get_seller_balance_snapshot=AsyncMock(
+            return_value=_ns(
+                seller_available_usdt=Decimal("0.000000"),
+                seller_collateral_usdt=Decimal("0.000000"),
+            )
+        ),
+        create_shop=AsyncMock(return_value=_ns(shop_id=11, title="Тушенка", slug="shop_tushenka")),
+        save_validated_shop_token=AsyncMock(return_value=None),
+        get_shop=AsyncMock(
+            return_value=_ns(
+                shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid"
+            )
+        ),
+        rename_shop=AsyncMock(
+            return_value=_ns(
+                shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid"
+            )
+        ),
+        create_listing_draft=AsyncMock(
+            return_value=_ns(
+                listing_id=21,
+                wb_product_id=552892532,
+                search_phrase="бумага а4 для принтера",
+                reward_usdt=Decimal("1.000000"),
+                slot_count=5,
+                collateral_required_usdt=Decimal("5.050000"),
+                status="draft",
+            )
+        ),
+        activate_listing=AsyncMock(return_value=_ns(changed=True)),
+        pause_listing=AsyncMock(return_value=_ns(changed=True)),
+        unpause_listing=AsyncMock(return_value=_ns(changed=True)),
+        get_listing_delete_preview=AsyncMock(
+            return_value=_ns(
+                listing_id=21,
+                active_assignments_count=0,
+                assignment_linked_reserved_usdt=Decimal("0.000000"),
+                unassigned_collateral_usdt=Decimal("0.000000"),
+            )
+        ),
+        delete_listing=AsyncMock(
+            return_value=_ns(
+                changed=True,
+                assignment_transferred_usdt=Decimal("0.000000"),
+                unassigned_collateral_returned_usdt=Decimal("0.000000"),
+            )
+        ),
+        get_shop_delete_preview=AsyncMock(
+            return_value=_ns(
+                shop_id=11,
+                active_listings_count=0,
+                open_assignments_count=0,
+                assignment_linked_reserved_usdt=Decimal("0.000000"),
+                unassigned_collateral_usdt=Decimal("0.000000"),
+            )
+        ),
+        delete_shop=AsyncMock(
+            return_value=_ns(
+                changed=True,
+                assignment_transferred_usdt=Decimal("0.000000"),
+                unassigned_collateral_returned_usdt=Decimal("0.000000"),
+            )
+        ),
+    )
+
+    buyer_service = _ns(
+        bootstrap_buyer=AsyncMock(return_value=_ns(user_id=202)),
+        resolve_shop_by_slug=AsyncMock(
+            return_value=_ns(shop_id=11, title="Тушенка", slug="shop_tushenka")
+        ),
+        list_active_listings_by_shop_slug=AsyncMock(
+            return_value=[
+                _ns(
+                    listing_id=21,
+                    search_phrase="бумага а4 для принтера",
+                    reward_usdt=Decimal("0.250000"),
+                )
+            ]
+        ),
+        touch_saved_shop=AsyncMock(return_value=None),
+        list_saved_shops=AsyncMock(return_value=[]),
+        get_saved_shop_by_id=AsyncMock(
+            return_value=_ns(shop_id=11, title="Тушенка", slug="shop_tushenka")
+        ),
+        reserve_listing_slot=AsyncMock(return_value=_ns(assignment_id=31, created=True)),
+        list_buyer_assignments=AsyncMock(
+            return_value=[
+                _ns(
+                    assignment_id=31,
+                    listing_id=21,
+                    shop_slug="shop_tushenka",
+                    status="reserved",
+                    reward_usdt=Decimal("0.250000"),
+                    order_id=None,
+                    search_phrase="бумага а4 для принтера",
+                    wb_product_id=552892532,
+                    reservation_expires_at=datetime(2026, 3, 2, 14, 0, 0),
+                )
+            ]
+        ),
+        submit_purchase_payload=AsyncMock(
+            return_value=_ns(
+                assignment_id=31,
+                changed=True,
+                order_id="ORDER-1",
+            )
+        ),
+        cancel_assignment_by_buyer=AsyncMock(return_value=_ns(changed=True)),
+    )
+
+    finance_service = _ns(
+        get_buyer_balance_snapshot=AsyncMock(
+            return_value=_ns(
+                buyer_available_usdt=Decimal("5.000000"),
+                buyer_withdraw_pending_usdt=Decimal("0.000000"),
+            )
+        ),
+        list_buyer_withdrawal_history=AsyncMock(return_value=[]),
+        create_withdrawal_request=AsyncMock(
+            return_value=_ns(withdrawal_request_id=77, amount_usdt=Decimal("5.000000"))
+        ),
+        list_pending_withdrawals=AsyncMock(
+            return_value=[
+                _ns(
+                    withdrawal_request_id=77,
+                    buyer_telegram_id=777001,
+                    buyer_username="buyer1",
+                    amount_usdt=Decimal("5.000000"),
+                    payout_address="UQ-test-wallet",
+                )
+            ]
+        ),
+        get_withdrawal_request_detail=AsyncMock(
+            return_value=_ns(
+                withdrawal_request_id=77,
+                buyer_telegram_id=777001,
+                buyer_username="buyer1",
+                amount_usdt=Decimal("5.000000"),
+                status="withdraw_pending_admin",
+                payout_address="UQ-test-wallet",
+                requested_at=datetime(2026, 3, 2, 12, 0, 0),
+                processed_at=None,
+                sent_at=None,
+                to_account_id=501,
+                from_account_id=401,
+                tx_hash=None,
+                note=None,
+            )
+        ),
+        approve_withdrawal_request=AsyncMock(return_value=_ns(changed=True)),
+        reject_withdrawal_request=AsyncMock(return_value=_ns(changed=True)),
+        mark_withdrawal_sent=AsyncMock(return_value=_ns(changed=True)),
+        manual_deposit_credit=AsyncMock(return_value=_ns(created=True)),
+    )
+
+    deposit_service = _ns(
+        list_active_shards=AsyncMock(
+            return_value=[
+                _ns(
+                    shard_id=1,
+                    shard_key="mvp-1",
+                    deposit_address="UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH",
+                )
+            ]
+        ),
+        create_seller_deposit_intent=AsyncMock(
+            return_value=_ns(
+                deposit_intent_id=91,
+                deposit_address="UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH",
+                expected_amount_usdt=Decimal("1.200100"),
+            )
+        ),
+        list_seller_deposit_intents=AsyncMock(return_value=[]),
+        list_admin_review_txs=AsyncMock(return_value=[]),
+        list_admin_expired_intents=AsyncMock(return_value=[]),
+        credit_intent_from_chain_tx=AsyncMock(return_value=_ns(changed=True, ledger_entry_id=801)),
+        cancel_deposit_intent=AsyncMock(return_value=True),
+    )
+
+    runtime._seller_service = seller_service
+    runtime._buyer_service = buyer_service
+    runtime._finance_service = finance_service
+    runtime._deposit_service = deposit_service
+    runtime._wb_ping_client = _ns(
+        validate_token=AsyncMock(
+            return_value=WbPingResult(valid=True, status_code=200, message="ok")
+        )
+    )
+    runtime._fx_rate_service = None
+    runtime._load_seller_order_counters = AsyncMock(
+        return_value={"in_progress": 0, "completed": 0, "picked_up": 0}
+    )
+    runtime._refresh_display_rub_per_usdt = AsyncMock(return_value=None)
+    runtime._ensure_admin_user = AsyncMock(return_value=90011)
+    runtime._ensure_system_payout_account_id = AsyncMock(return_value=701)
+
+    return runtime, _ns(
+        seller=seller_service,
+        buyer=buyer_service,
+        finance=finance_service,
+        deposit=deposit_service,
+    )
+
+
+def _event_texts(events) -> list[str]:
+    return [event.text or "" for event in events]
+
+
+def _markup_labels(event) -> list[str]:
+    markup = event.reply_markup
+    if markup is None:
+        return []
+    return [button.text for row in markup.inline_keyboard for button in row]
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_seller_shop_create_token_first_flow() -> None:
+    runtime, deps = _build_runtime()
+    harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
+
+    start_events = await harness.start()
+    assert any("Выберите роль:" in text for text in _event_texts(start_events))
+
+    role_events = await harness.callback(flow="root", action="role", entity_id="seller")
+    assert any("<b>Магазинов:</b>" in text for text in _event_texts(role_events))
+
+    create_prompt_events = await harness.callback(flow="seller", action="shop_create_token_prompt")
+    assert any(
+        "Шаг 1/2: отправьте токен WB API." in text for text in _event_texts(create_prompt_events)
+    )
+
+    token_events = await harness.text("wb_valid_token")
+    assert any("Токен валиден." in text for text in _event_texts(token_events))
+    assert any(event.kind == "delete" for event in token_events)
+
+    title_events = await harness.text("Тушенка для всех")
+    assert any("Магазин «Тушенка» создан." in text for text in _event_texts(title_events))
+    assert any(
+        "Ссылка для покупателей:\nhttps://t.me/qpilka_bot?start=shop_shop_tushenka" in text
+        for text in _event_texts(title_events)
+    )
+
+    deps.seller.create_shop.assert_awaited_once()
+    deps.seller.save_validated_shop_token.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_seller_listing_create_and_activate_flow() -> None:
+    runtime, deps = _build_runtime()
+    deps.seller.list_shops = AsyncMock(
+        return_value=[
+            _ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")
+        ]
+    )
+    deps.seller.list_listing_collateral_views = AsyncMock(
+        return_value=[
+            _ns(
+                listing_id=21,
+                shop_id=11,
+                wb_product_id=552892532,
+                search_phrase="бумага а4 для принтера",
+                status="active",
+                reward_usdt=Decimal("1.000000"),
+                available_slots=5,
+                slot_count=5,
+                collateral_locked_usdt=Decimal("5.050000"),
+                collateral_required_usdt=Decimal("5.050000"),
+                reserved_slot_usdt=Decimal("0.000000"),
+            )
+        ]
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
+
+    pick_events = await harness.callback(flow="seller", action="listing_create_pick_shop")
+    assert any(
+        "Выберите магазин для нового листинга:" in text for text in _event_texts(pick_events)
+    )
+
+    prompt_events = await harness.callback(
+        flow="seller", action="listing_create_prompt", entity_id="11"
+    )
+    assert any("Создание листинга для магазина" in text for text in _event_texts(prompt_events))
+
+    create_events = await harness.text('552892532 100 5 "бумага а4 для принтера"')
+    assert any("Активировать листинг сейчас?" in text for text in _event_texts(create_events))
+
+    activate_events = await harness.callback(
+        flow="seller", action="listing_activate", entity_id="21"
+    )
+    assert any("Листинг активирован." in text for text in _event_texts(activate_events))
+
+    deps.seller.create_listing_draft.assert_awaited_once()
+    deps.seller.activate_listing.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_seller_topup_and_transactions_flow() -> None:
+    runtime, deps = _build_runtime()
+    deps.deposit.list_seller_deposit_intents = AsyncMock(
+        return_value=[
+            _ns(
+                expected_amount_usdt=Decimal("1.200100"),
+                status="credited",
+                created_at=datetime(2026, 3, 2, 12, 0, 0),
+                expires_at=datetime(2026, 3, 3, 12, 0, 0),
+                credited_amount_usdt=Decimal("1.200100"),
+            ),
+            _ns(
+                expected_amount_usdt=Decimal("0.500200"),
+                status="manual_review",
+                created_at=datetime(2026, 3, 2, 11, 0, 0),
+                expires_at=datetime(2026, 3, 3, 11, 0, 0),
+                credited_amount_usdt=None,
+            ),
+        ]
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
+
+    topup_prompt_events = await harness.callback(flow="seller", action="topup_prompt")
+    assert any(
+        "Введите сумму пополнения в USDT" in text for text in _event_texts(topup_prompt_events)
+    )
+
+    topup_create_events = await harness.text("1.2")
+    assert any("Счет на пополнение создан." in text for text in _event_texts(topup_create_events))
+    assert any(
+        "Сумма (должна полностью совпадать): 1.2001 USDT" in text
+        for text in _event_texts(topup_create_events)
+    )
+
+    history_events = await harness.callback(flow="seller", action="topup_history")
+    history_text = "\n".join(_event_texts(history_events))
+    assert "🧾 Транзакции:" in history_text
+    assert "Перевод найден, но нужна проверка администратором." in history_text
+
+    deps.deposit.create_seller_deposit_intent.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_buyer_deeplink_reserve_submit_payload_flow() -> None:
+    runtime, deps = _build_runtime()
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    deeplink_events = await harness.start(start_arg="shop_shop_tushenka")
+    deeplink_text = "\n".join(_event_texts(deeplink_events))
+    assert "Магазин: Тушенка" in deeplink_text
+    assert any("✅ Забронировать место" in _markup_labels(event) for event in deeplink_events)
+
+    reserve_events = await harness.callback(
+        flow="buyer",
+        action="reserve",
+        entity_id="21",
+        query_id="reserve-1",
+    )
+    reserve_text = "\n".join(_event_texts(reserve_events))
+    assert "Задание создано." in reserve_text
+    assert any("Ввести токен-подтверждение" in _markup_labels(event) for event in reserve_events)
+
+    submit_prompt_events = await harness.callback(
+        flow="buyer",
+        action="submit_payload_prompt",
+        entity_id="31",
+    )
+    assert any(
+        "Вставьте токен-подтверждение" in text for text in _event_texts(submit_prompt_events)
+    )
+
+    payload_events = await harness.text("WyJPUkRFUi0xIiwiMjAyNi0wMy0wMlQxMjozMDowMCJd")
+    assert any("Токен-подтверждение принят." in text for text in _event_texts(payload_events))
+    assert any(event.kind == "delete" for event in payload_events)
+
+    deps.buyer.reserve_listing_slot.assert_awaited_once()
+    deps.buyer.submit_purchase_payload.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_buyer_cancel_task_flow() -> None:
+    runtime, deps = _build_runtime()
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    prompt_events = await harness.callback(
+        flow="buyer",
+        action="assignment_cancel_prompt",
+        entity_id="31",
+    )
+    assert any("Отказаться от задания?" in text for text in _event_texts(prompt_events))
+
+    confirm_events = await harness.callback(
+        flow="buyer",
+        action="assignment_cancel_confirm",
+        entity_id="31",
+        query_id="cancel-1",
+    )
+    assert any(
+        "Задание отменено. Место освобождено." in text for text in _event_texts(confirm_events)
+    )
+    deps.buyer.cancel_assignment_by_buyer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_buyer_cannot_reserve_already_purchased_item() -> None:
+    runtime, deps = _build_runtime()
+    deps.buyer.reserve_listing_slot = AsyncMock(
+        side_effect=InvalidStateError("already purchased wb_product_id")
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    events = await harness.callback(flow="buyer", action="reserve", entity_id="21")
+    assert any(
+        "Этот товар уже был куплен с вашего аккаунта." in text for text in _event_texts(events)
+    )
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_admin_withdrawal_flow() -> None:
+    runtime, deps = _build_runtime(admin_ids=[9001])
+    detail_pending = _ns(
+        withdrawal_request_id=77,
+        buyer_telegram_id=777001,
+        buyer_username="buyer1",
+        amount_usdt=Decimal("5.000000"),
+        status="withdraw_pending_admin",
+        payout_address="UQ-test-wallet",
+        requested_at=datetime(2026, 3, 2, 12, 0, 0),
+        processed_at=None,
+        sent_at=None,
+        to_account_id=501,
+        from_account_id=401,
+        tx_hash=None,
+        note=None,
+    )
+    detail_approved = _ns(
+        withdrawal_request_id=77,
+        buyer_telegram_id=777001,
+        buyer_username="buyer1",
+        amount_usdt=Decimal("5.000000"),
+        status="approved",
+        payout_address="UQ-test-wallet",
+        requested_at=datetime(2026, 3, 2, 12, 0, 0),
+        processed_at=datetime(2026, 3, 2, 12, 5, 0),
+        sent_at=None,
+        to_account_id=501,
+        from_account_id=401,
+        tx_hash=None,
+        note=None,
+    )
+    detail_sent = _ns(
+        withdrawal_request_id=77,
+        buyer_telegram_id=777001,
+        buyer_username="buyer1",
+        amount_usdt=Decimal("5.000000"),
+        status="withdraw_sent",
+        payout_address="UQ-test-wallet",
+        requested_at=datetime(2026, 3, 2, 12, 0, 0),
+        processed_at=datetime(2026, 3, 2, 12, 5, 0),
+        sent_at=datetime(2026, 3, 2, 12, 15, 0),
+        to_account_id=501,
+        from_account_id=401,
+        tx_hash="0xabc",
+        note=None,
+    )
+    detail_calls = {"count": 0}
+
+    def detail_side_effect(*, request_id: int):
+        assert request_id == 77
+        detail_calls["count"] += 1
+        if detail_calls["count"] == 1:
+            return detail_pending
+        if detail_calls["count"] >= 6:
+            return detail_sent
+        return detail_approved
+
+    deps.finance.get_withdrawal_request_detail = AsyncMock(side_effect=detail_side_effect)
+    harness = TelegramRuntimeHarness(runtime, telegram_id=9001, username="admin")
+
+    open_admin_events = await harness.callback(flow="root", action="role", entity_id="admin")
+    assert any("<b>Выводы в очереди:</b>" in text for text in _event_texts(open_admin_events))
+
+    detail_events = await harness.callback(flow="admin", action="withdrawal_detail", entity_id="77")
+    assert any("📄 Заявка #77" in text for text in _event_texts(detail_events))
+
+    approve_events = await harness.callback(
+        flow="admin", action="withdrawal_approve", entity_id="77"
+    )
+    assert any("Статус: Одобрено" in text for text in _event_texts(approve_events))
+    assert any(event.kind == "bot_send" and event.chat_id == 777001 for event in approve_events)
+
+    prompt_sent_events = await harness.callback(
+        flow="admin",
+        action="withdrawal_sent_prompt",
+        entity_id="77",
+    )
+    assert any(
+        "Введите хэш перевода для заявки #77." in text for text in _event_texts(prompt_sent_events)
+    )
+
+    sent_events = await harness.text("0xabc")
+    sent_text = "\n".join(_event_texts(sent_events))
+    assert "Хэш перевода: 0xabc" in sent_text
+
+    deps.finance.approve_withdrawal_request.assert_awaited_once()
+    deps.finance.mark_withdrawal_sent.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_admin_deposit_exceptions_flow() -> None:
+    runtime, deps = _build_runtime(admin_ids=[9001])
+    deps.deposit.list_admin_review_txs = AsyncMock(
+        return_value=[
+            _ns(
+                chain_tx_id=11,
+                tx_hash="0xtx11",
+                amount_usdt=Decimal("1.200100"),
+                from_address="addr_from",
+                to_address="addr_to",
+                review_reason="amount_mismatch",
+                suffix_code=123,
+                matched_intent_id=22,
+            )
+        ]
+    )
+    deps.deposit.list_admin_expired_intents = AsyncMock(
+        return_value=[
+            _ns(
+                deposit_intent_id=22,
+                seller_telegram_id=10001,
+                expected_amount_usdt=Decimal("1.200100"),
+                suffix_code=123,
+                expires_at=datetime(2026, 3, 1, 12, 0, 0),
+            )
+        ]
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=9001, username="admin")
+
+    section_events = await harness.callback(flow="admin", action="exceptions_section")
+    assert any("⚠️ Пополнения, требующие проверки:" in text for text in _event_texts(section_events))
+
+    attach_prompt = await harness.callback(flow="admin", action="deposit_attach_prompt")
+    assert any(
+        "Введите: <id_транзакции> <id_счета>." in text for text in _event_texts(attach_prompt)
+    )
+
+    attach_result = await harness.text("11 22")
+    assert any(
+        "Платеж привязан к счету и зачислен." in text for text in _event_texts(attach_result)
+    )
+
+    cancel_prompt = await harness.callback(flow="admin", action="deposit_cancel_prompt")
+    assert any("Введите: <id_счета> <причина>." in text for text in _event_texts(cancel_prompt))
+
+    cancel_result = await harness.text("22 late_payment")
+    assert any("Счет #22 отменен." in text for text in _event_texts(cancel_result))
+
+    deps.deposit.credit_intent_from_chain_tx.assert_awaited_once()
+    deps.deposit.cancel_deposit_intent.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_non_admin_blocked_from_admin_mode() -> None:
+    runtime, _deps = _build_runtime(admin_ids=[9001])
+    harness = TelegramRuntimeHarness(runtime, telegram_id=9002, username="user")
+
+    events = await harness.callback(flow="root", action="role", entity_id="admin")
+    assert any("Доступ запрещен: вы не администратор." in text for text in _event_texts(events))
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_callback_without_message_returns_alert() -> None:
+    runtime, _deps = _build_runtime()
+    harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
+
+    events = await harness.callback(
+        flow="seller",
+        action="menu",
+        with_message=False,
+    )
+    assert any(
+        event.kind == "callback_answer"
+        and (event.text or "").startswith("⚠️ Не удалось обновить экран.")
+        and event.show_alert is True
+        for event in events
+    )
