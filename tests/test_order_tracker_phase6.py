@@ -48,6 +48,7 @@ async def _insert_wb_report_row(
     srid: str,
     supplier_oper_name: str,
     event_at: datetime,
+    nm_id: int,
 ) -> None:
     async with db_pool.connection() as conn:
         async with conn.transaction():
@@ -57,14 +58,15 @@ async def _insert_wb_report_row(
                     INSERT INTO wb_report_rows (
                         rrd_id,
                         srid,
+                        nm_id,
                         supplier_oper_name,
                         sale_dt,
                         order_dt,
                         create_dt
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (rrd_id, srid, supplier_oper_name, event_at, event_at, event_at),
+                    (rrd_id, srid, nm_id, supplier_oper_name, event_at, event_at, event_at),
                 )
 
 
@@ -142,6 +144,7 @@ async def _prepare_order_verified_assignment(
         "buyer_user_id": buyer.user_id,
         "listing_id": listing_id,
         "assignment_id": reservation.assignment_id,
+        "wb_product_id": wb_product_id,
     }
 
 
@@ -208,6 +211,7 @@ async def _prepare_reserved_assignment(
         "buyer_user_id": buyer.user_id,
         "listing_id": listing_id,
         "assignment_id": reservation.assignment_id,
+        "wb_product_id": wb_product_id,
     }
 
 
@@ -232,6 +236,7 @@ async def test_order_tracker_sale_moves_to_pickup_and_unlocks_after_15_days(
         srid="order-sale-1",
         supplier_oper_name="Продажа",
         event_at=now - timedelta(days=16),
+        nm_id=fixture["wb_product_id"],
     )
 
     service = _build_tracker_service(db_pool, lock_conninfo=isolated_database, lock_id=500601)
@@ -300,6 +305,7 @@ async def test_order_tracker_return_cancels_order_verified_assignment(
         srid="order-return-1",
         supplier_oper_name="Возврат",
         event_at=now - timedelta(days=1),
+        nm_id=fixture["wb_product_id"],
     )
 
     service = _build_tracker_service(db_pool, lock_conninfo=isolated_database, lock_id=500602)
@@ -371,6 +377,7 @@ async def test_order_tracker_ignores_return_after_unlock_window_and_unlocks(
         srid="order-return-late-1",
         supplier_oper_name="Возврат",
         event_at=now,
+        nm_id=fixture["wb_product_id"],
     )
 
     service = _build_tracker_service(db_pool, lock_conninfo=isolated_database, lock_id=500603)
@@ -387,6 +394,46 @@ async def test_order_tracker_ignores_return_after_unlock_window_and_unlocks(
             )
             assignment = await cur.fetchone()
             assert assignment["status"] == "eligible_for_withdrawal"
+
+
+@pytest.mark.asyncio
+async def test_order_tracker_ignores_sale_when_nm_id_mismatches_listing_product(
+    db_pool,
+    isolated_database: str,
+) -> None:
+    now = datetime.now(UTC)
+    fixture = await _prepare_order_verified_assignment(
+        db_pool,
+        seller_telegram_id=910031,
+        buyer_telegram_id=920031,
+        order_id="order-sale-mismatch-1",
+        wb_product_id=670031,
+        ordered_at=now - timedelta(days=20),
+        reward_usdt=Decimal("8.000000"),
+    )
+    await _insert_wb_report_row(
+        db_pool,
+        rrd_id=810031,
+        srid="order-sale-mismatch-1",
+        supplier_oper_name="Продажа",
+        event_at=now - timedelta(days=16),
+        nm_id=670099,
+    )
+
+    service = _build_tracker_service(db_pool, lock_conninfo=isolated_database, lock_id=500631)
+    result = await service.run_once()
+
+    assert result.wb_pickup_count == 0
+    assert result.unlock_changed_count == 0
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT status FROM assignments WHERE id = %s",
+                (fixture["assignment_id"],),
+            )
+            assignment = await cur.fetchone()
+            assert assignment["status"] == "order_verified"
 
 
 @pytest.mark.asyncio
@@ -452,6 +499,7 @@ async def test_order_tracker_ignores_correction_operations_in_mvp(
         srid="order-correction-1",
         supplier_oper_name="Коррекция продаж",
         event_at=now - timedelta(days=1),
+        nm_id=fixture["wb_product_id"],
     )
 
     service = _build_tracker_service(db_pool, lock_conninfo=isolated_database, lock_id=500605)

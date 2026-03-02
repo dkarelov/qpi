@@ -38,6 +38,7 @@ CREATE TABLE "public"."assignments" (
     "id" bigserial NOT NULL,
     "listing_id" bigint NOT NULL,
     "buyer_user_id" bigint NOT NULL,
+    "wb_product_id" bigint NOT NULL,
     "status" text NOT NULL CONSTRAINT assignments_status_check CHECK (status = ANY (ARRAY['reserved'::text, 'order_submitted'::text, 'order_verified'::text, 'picked_up_wait_unlock'::text, 'eligible_for_withdrawal'::text, 'withdraw_pending_admin'::text, 'withdraw_sent'::text, 'expired_2h'::text, 'wb_invalid'::text, 'returned_within_14d'::text, 'delivery_expired'::text])),
     "reward_usdt" numeric(20,6) NOT NULL CONSTRAINT assignments_reward_usdt_check CHECK (reward_usdt > 0::numeric),
     "reservation_expires_at" timestamp with time zone NOT NULL,
@@ -57,6 +58,8 @@ CREATE INDEX idx_assignments_buyer_status ON public.assignments USING btree (buy
 
 CREATE INDEX idx_assignments_listing_status ON public.assignments USING btree (listing_id, status);
 
+CREATE INDEX idx_assignments_buyer_product_status ON public.assignments USING btree (buyer_user_id, wb_product_id, status);
+
 CREATE INDEX idx_assignments_reserved_expires_at ON public.assignments USING btree (reservation_expires_at) WHERE (status = 'reserved'::text);
 
 CREATE INDEX idx_assignments_order_tracking_order_id ON public.assignments USING btree (order_id) WHERE (status = ANY (ARRAY['order_verified'::text, 'picked_up_wait_unlock'::text]));
@@ -64,6 +67,8 @@ CREATE INDEX idx_assignments_order_tracking_order_id ON public.assignments USING
 CREATE INDEX idx_assignments_unlock_due ON public.assignments USING btree (unlock_at) WHERE (status = 'picked_up_wait_unlock'::text);
 
 CREATE UNIQUE INDEX uq_assignments_order_id ON public.assignments USING btree (order_id) WHERE (order_id IS NOT NULL);
+
+CREATE UNIQUE INDEX uq_assignments_buyer_product_active ON public.assignments USING btree (buyer_user_id, wb_product_id) WHERE (status = ANY (ARRAY['reserved'::text, 'order_submitted'::text, 'order_verified'::text, 'picked_up_wait_unlock'::text, 'eligible_for_withdrawal'::text, 'withdraw_pending_admin'::text, 'withdraw_sent'::text]));
 
 ALTER TABLE ONLY "public"."assignments" ADD CONSTRAINT "assignments_buyer_user_id_fkey" FOREIGN KEY ("buyer_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 

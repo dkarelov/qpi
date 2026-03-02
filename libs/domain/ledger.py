@@ -4,6 +4,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from psycopg import AsyncConnection
+from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
@@ -107,7 +108,7 @@ class FinanceService:
 
                 await cur.execute(
                     """
-                    SELECT id, status, reward_usdt, available_slots, deleted_at
+                    SELECT id, status, reward_usdt, wb_product_id, available_slots, deleted_at
                     FROM listings
                     WHERE id = %s
                     FOR UPDATE
@@ -139,34 +140,45 @@ class FinanceService:
 
                 reward_usdt = _normalize_amount(listing["reward_usdt"])
 
-                await cur.execute(
-                    """
-                    INSERT INTO assignments (
-                        listing_id,
-                        buyer_user_id,
-                        status,
-                        reward_usdt,
-                        reservation_expires_at,
-                        idempotency_key
+                try:
+                    await cur.execute(
+                        """
+                        INSERT INTO assignments (
+                            listing_id,
+                            buyer_user_id,
+                            wb_product_id,
+                            status,
+                            reward_usdt,
+                            reservation_expires_at,
+                            idempotency_key
+                        )
+                        VALUES (
+                            %s,
+                            %s,
+                            %s,
+                            'reserved',
+                            %s,
+                            timezone('utc', now()) + (%s * interval '1 hour'),
+                            %s
+                        )
+                        RETURNING id, reservation_expires_at
+                        """,
+                        (
+                            listing_id,
+                            buyer_user_id,
+                            listing["wb_product_id"],
+                            reward_usdt,
+                            reservation_timeout_hours,
+                            idempotency_key,
+                        ),
                     )
-                    VALUES (
-                        %s,
-                        %s,
-                        'reserved',
-                        %s,
-                        timezone('utc', now()) + (%s * interval '1 hour'),
-                        %s
-                    )
-                    RETURNING id, reservation_expires_at
-                    """,
-                    (
-                        listing_id,
-                        buyer_user_id,
-                        reward_usdt,
-                        reservation_timeout_hours,
-                        idempotency_key,
-                    ),
-                )
+                except UniqueViolation as exc:
+                    constraint_name = exc.diag.constraint_name if exc.diag is not None else None
+                    if constraint_name == "uq_assignments_buyer_product_active":
+                        raise InvalidStateError(
+                            "buyer already has assignment for this item"
+                        ) from exc
+                    raise
                 assignment = await cur.fetchone()
 
                 await self._transfer_locked(

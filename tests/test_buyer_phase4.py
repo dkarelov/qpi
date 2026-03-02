@@ -18,8 +18,11 @@ def _encode_payload(
     *,
     order_id: str,
     ordered_at: str = "2026-02-26T12:00:00",
+    wb_product_id: int | None = None,
 ) -> str:
-    payload = [order_id, ordered_at]
+    payload: list[Any] = [order_id, ordered_at]
+    if wb_product_id is not None:
+        payload.append(wb_product_id)
     return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
 
 
@@ -160,6 +163,50 @@ async def test_shop_deeplink_resolution_and_listing_visibility(db_pool) -> None:
     listings = await buyer_service.list_active_listings_by_shop_slug(slug="catalog-shop")
     assert [item.listing_id for item in listings] == [active_listing_id]
     assert listings[0].available_slots == 3
+
+
+@pytest.mark.asyncio
+async def test_shop_catalog_hides_active_listings_without_free_slots(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            seller_user_id = await create_user(
+                conn,
+                telegram_id=820011,
+                role="seller",
+                username="seller_catalog_slots",
+            )
+            shop_id = await create_shop(
+                conn,
+                seller_user_id=seller_user_id,
+                slug="catalog-slots-shop",
+                title="Catalog Slots Shop",
+            )
+            visible_listing_id = await create_listing(
+                conn,
+                shop_id=shop_id,
+                seller_user_id=seller_user_id,
+                wb_product_id=5011,
+                reward_usdt=Decimal("1.000000"),
+                slot_count=1,
+                available_slots=1,
+                status="active",
+            )
+            await create_listing(
+                conn,
+                shop_id=shop_id,
+                seller_user_id=seller_user_id,
+                wb_product_id=5012,
+                reward_usdt=Decimal("1.000000"),
+                slot_count=1,
+                available_slots=0,
+                status="active",
+            )
+
+    listings = await buyer_service.list_active_listings_by_shop_slug(slug="catalog-slots-shop")
+    assert [item.listing_id for item in listings] == [visible_listing_id]
+    assert listings[0].wb_product_id == 5011
 
 
 @pytest.mark.asyncio
@@ -712,6 +759,38 @@ async def test_submit_payload_validation_matrix_rejects_invalid_inputs(
             )
             order_count = await cur.fetchone()
             assert order_count["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_submit_payload_rejects_wb_product_mismatch(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="payload-mismatch-shop",
+        wb_product_id=5311,
+        reward_usdt=Decimal("8.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+    buyer = await buyer_service.bootstrap_buyer(
+        telegram_id=850011,
+        username="buyer_payload_mismatch",
+    )
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:buyer:850011:mismatch",
+    )
+
+    with pytest.raises(PayloadValidationError, match="wb_product_id"):
+        await buyer_service.submit_purchase_payload(
+            buyer_user_id=buyer.user_id,
+            assignment_id=reservation.assignment_id,
+            payload_base64=_encode_payload(
+                order_id="ORD-PRODUCT-MISMATCH",
+                wb_product_id=999999,
+            ),
+        )
 
 
 @pytest.mark.asyncio

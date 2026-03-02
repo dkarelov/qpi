@@ -154,6 +154,7 @@ class BlockchainCheckerService:
         skipped_not_incoming_count = 0
         max_lt_seen = last_lt
         before_lt: int | None = None
+        scan_complete = False
 
         for _ in range(self._max_pages_per_shard):
             page = await self._tonapi_client.get_jetton_account_history(
@@ -163,6 +164,7 @@ class BlockchainCheckerService:
                 before_lt=before_lt,
             )
             if not page.operations:
+                scan_complete = True
                 break
 
             reached_old_cursor = False
@@ -200,16 +202,27 @@ class BlockchainCheckerService:
                     duplicate_count += 1
 
             if reached_old_cursor:
+                scan_complete = True
                 break
             if page.next_from is None:
+                scan_complete = True
                 break
             before_lt = page.next_from
 
-        if max_lt_seen > last_lt:
+        if scan_complete and max_lt_seen > last_lt:
             await self._deposit_service.set_scan_cursor(source_key=source_key, last_lt=max_lt_seen)
             cursor_updated = True
         else:
             cursor_updated = False
+            if not scan_complete:
+                self._logger.warning(
+                    "blockchain_checker_ingest_incomplete_page_cap",
+                    shard_id=shard_id,
+                    max_pages_per_shard=self._max_pages_per_shard,
+                    last_lt=last_lt,
+                    max_lt_seen=max_lt_seen,
+                    before_lt=before_lt,
+                )
 
         self._logger.info(
             "blockchain_checker_ingest_shard",
@@ -220,6 +233,7 @@ class BlockchainCheckerService:
             duplicate_count=duplicate_count,
             skipped_not_incoming_count=skipped_not_incoming_count,
             cursor_updated=cursor_updated,
+            scan_complete=scan_complete,
         )
         return _IngestResult(
             ingested_count=ingested_count,

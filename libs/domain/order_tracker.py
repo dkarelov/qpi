@@ -324,6 +324,7 @@ class OrderTrackerService:
                             rrd_id
                         FROM wb_report_rows wr
                         WHERE wr.srid = a.order_id
+                          AND wr.nm_id = l.wb_product_id
                           AND wr.supplier_oper_name IN (%s, %s)
                         ORDER BY
                             COALESCE(wr.sale_dt, wr.order_dt, wr.create_dt) DESC NULLS LAST,

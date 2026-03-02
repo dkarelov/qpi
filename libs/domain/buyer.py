@@ -44,6 +44,7 @@ class DecodedPurchasePayload:
     payload_version: int
     order_id: str
     ordered_at: datetime
+    wb_product_id: int | None
     raw_payload_json: list[Any]
 
 
@@ -207,6 +208,7 @@ class BuyerService:
                     WHERE l.shop_id = %s
                       AND l.deleted_at IS NULL
                       AND l.status = 'active'
+                      AND l.available_slots > 0
                       {buyer_filters}
                     ORDER BY l.created_at ASC
                     """,
@@ -432,6 +434,13 @@ class BuyerService:
                     raise NotFoundError(f"assignment {assignment_id} not found for buyer")
                 if assignment["status"] not in _ASSIGNMENT_PAYLOAD_ALLOWED_STATES:
                     raise InvalidStateError("assignment cannot accept payload in current state")
+                if (
+                    decoded.wb_product_id is not None
+                    and decoded.wb_product_id != assignment["wb_product_id"]
+                ):
+                    raise PayloadValidationError(
+                        "payload field 'wb_product_id' does not match assignment listing"
+                    )
 
                 await cur.execute("SELECT now() AS current_time")
                 now_row = await cur.fetchone()
@@ -892,8 +901,10 @@ def decode_purchase_payload(payload_base64: str) -> DecodedPurchasePayload:
 
     if not isinstance(parsed, list):
         raise PayloadValidationError("payload must be a JSON array")
-    if len(parsed) != 2:
-        raise PayloadValidationError("payload must contain [order_id, ordered_at]")
+    if len(parsed) not in {2, 3}:
+        raise PayloadValidationError(
+            "payload must contain [order_id, ordered_at] or [order_id, ordered_at, wb_product_id]"
+        )
 
     order_id_raw = parsed[0]
     if not isinstance(order_id_raw, str) or not order_id_raw.strip():
@@ -905,10 +916,25 @@ def decode_purchase_payload(payload_base64: str) -> DecodedPurchasePayload:
         raise PayloadValidationError("payload field 'ordered_at' must be ISO datetime string")
     ordered_at = _parse_iso_naive_datetime(ordered_at_raw)
 
+    wb_product_id: int | None = None
+    if len(parsed) == 3:
+        wb_product_id_raw = parsed[2]
+        if isinstance(wb_product_id_raw, bool):
+            raise PayloadValidationError("payload field 'wb_product_id' must be positive integer")
+        try:
+            wb_product_id = int(wb_product_id_raw)
+        except (TypeError, ValueError) as exc:
+            raise PayloadValidationError(
+                "payload field 'wb_product_id' must be positive integer"
+            ) from exc
+        if wb_product_id < 1:
+            raise PayloadValidationError("payload field 'wb_product_id' must be positive integer")
+
     return DecodedPurchasePayload(
         payload_version=_PURCHASE_PAYLOAD_VERSION,
         order_id=order_id,
         ordered_at=ordered_at,
+        wb_product_id=wb_product_id,
         raw_payload_json=parsed,
     )
 

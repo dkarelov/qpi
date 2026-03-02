@@ -36,6 +36,33 @@ class StubTonapiClient:
         return TonapiJettonHistoryPage(operations=list(self._operations), next_from=None)
 
 
+class StubTonapiPagedClient:
+    def __init__(
+        self,
+        pages_by_before_lt: dict[int | None, TonapiJettonHistoryPage],
+        *,
+        shard_raw: str,
+    ):
+        self._pages_by_before_lt = pages_by_before_lt
+        self._shard_raw = shard_raw
+
+    async def parse_address(self, *, account_id: str) -> TonapiAddressInfo:
+        return TonapiAddressInfo(raw_form=self._shard_raw)
+
+    async def get_jetton_account_history(
+        self,
+        *,
+        account_id: str,
+        jetton_id: str,
+        limit: int,
+        before_lt: int | None = None,
+    ) -> TonapiJettonHistoryPage:
+        return self._pages_by_before_lt.get(
+            before_lt,
+            TonapiJettonHistoryPage(operations=[], next_from=None),
+        )
+
+
 def _op(
     *,
     tx_hash: str,
@@ -460,3 +487,99 @@ async def test_blockchain_checker_partial_and_late_go_to_manual_review(
             )
             tx_count = await cur.fetchone()
             assert tx_count["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_blockchain_checker_does_not_advance_cursor_on_page_cap(
+    db_pool,
+    isolated_database: str,
+) -> None:
+    deposit_service = DepositIntentService(db_pool)
+    shard = await deposit_service.ensure_default_shard(
+        shard_key="mvp-1",
+        deposit_address="UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH",
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            seller_id = await create_user(
+                conn,
+                telegram_id=930005,
+                role="seller",
+                username="seller930005",
+            )
+            await create_account(
+                conn,
+                owner_user_id=seller_id,
+                account_code=f"user:{seller_id}:seller_available",
+                account_kind="seller_available",
+                balance=Decimal("0.000000"),
+            )
+            await create_account(
+                conn,
+                owner_user_id=None,
+                account_code="system:system_payout",
+                account_kind="system_payout",
+                balance=Decimal("1000.000000"),
+            )
+
+    await deposit_service.create_seller_deposit_intent(
+        seller_user_id=seller_id,
+        request_amount_usdt=Decimal("1.23"),
+        shard_id=shard.shard_id,
+        idempotency_key="intent:page-cap",
+    )
+
+    now = datetime.now(UTC)
+    page1_op = _op(
+        tx_hash="tx-page-cap-1",
+        lt=500,
+        query_id="q-cap-1",
+        trace_id="t-cap-1",
+        amount_raw="1300100",
+        utime=now,
+        src="0:source",
+        dst="0:shard",
+    )
+    page2_op = _op(
+        tx_hash="tx-page-cap-2",
+        lt=400,
+        query_id="q-cap-2",
+        trace_id="t-cap-2",
+        amount_raw="1300200",
+        utime=now - timedelta(seconds=1),
+        src="0:source",
+        dst="0:shard",
+    )
+    paged_client = StubTonapiPagedClient(
+        {
+            None: TonapiJettonHistoryPage(operations=[page1_op], next_from=450),
+            450: TonapiJettonHistoryPage(operations=[page2_op], next_from=None),
+        },
+        shard_raw="0:shard",
+    )
+
+    checker = BlockchainCheckerService(
+        db_pool,
+        advisory_lock_conninfo=isolated_database,
+        advisory_lock_id=7008003,
+        shard_key="mvp-1",
+        shard_address=shard.deposit_address,
+        shard_chain="ton_mainnet",
+        shard_asset="USDT",
+        usdt_jetton_master="EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+        page_limit=100,
+        max_pages_per_shard=1,
+        match_batch_size=50,
+        confirmations_required=1,
+        tonapi_client=paged_client,
+        deposit_service=deposit_service,
+    )
+
+    result = await checker.run_once()
+    cursor_after = await deposit_service.get_scan_cursor(
+        source_key=f"tonapi:{shard.shard_id}:EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"
+    )
+
+    assert result.cursor_updated_count == 0
+    assert cursor_after == 0

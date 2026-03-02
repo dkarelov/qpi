@@ -5119,13 +5119,17 @@ class TelegramWebhookRuntime:
         context: CallbackContext,
     ) -> None:
         error = context.error
-        update_id = update.update_id if isinstance(update, Update) else None
+        update_id = getattr(update, "update_id", None)
         if isinstance(error, DomainError):
             self._logger.warning(
                 "telegram_domain_error",
                 update_id=update_id,
                 error_type=type(error).__name__,
                 error_message=str(error)[:500],
+            )
+            await self._notify_error_to_user(
+                update,
+                "Не удалось выполнить действие. Попробуйте еще раз или отправьте /start.",
             )
             return
         self._logger.exception(
@@ -5134,6 +5138,28 @@ class TelegramWebhookRuntime:
             error_type=type(error).__name__ if error else None,
             error_message=str(error)[:500] if error else None,
         )
+        await self._notify_error_to_user(
+            update,
+            "Произошла ошибка. Попробуйте снова или отправьте /start.",
+        )
+
+    async def _notify_error_to_user(self, update: object, text: str) -> None:
+        message = getattr(update, "effective_message", None)
+        if message is None:
+            callback_query = getattr(update, "callback_query", None)
+            message = getattr(callback_query, "message", None)
+        if message is None:
+            message = getattr(update, "message", None)
+        if message is None or not hasattr(message, "reply_text"):
+            return
+        try:
+            await message.reply_text(text)
+        except Exception as exc:
+            self._logger.warning(
+                "telegram_error_user_notify_failed",
+                error_type=type(exc).__name__,
+                error_message=str(exc)[:300],
+            )
 
     def _health_payload(self) -> dict[str, Any]:
         return {

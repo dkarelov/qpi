@@ -411,3 +411,13 @@ Mandatory controls:
 - Optional extraction of CF services into separate repositories.
 - Terraform remote backend strategy for safe CI-driven apply.
 - Replace app-level token cipher with managed secret/KMS-backed mechanism.
+
+## 11. Potential Improvements (Deliberately Deferred for MVP)
+
+- Token-at-rest cryptography hardening:
+  - replace current app-level reversible token cipher with authenticated encryption + managed KMS/HSM-backed key lifecycle.
+  - status: intentionally deferred; current implementation is accepted as an MVP tradeoff.
+
+- Runtime secret strictness hardening:
+  - remove insecure default fallbacks for sensitive settings (e.g. cipher/webhook secrets) and fail-fast on unsafe values outside local dev.
+  - status: intentionally deferred; current defaults are accepted for MVP-only environments.
