@@ -162,6 +162,7 @@ class BuyerAssignmentView:
     listing_id: int
     shop_slug: str
     wb_product_id: int
+    search_phrase: str
     status: str
     reward_usdt: Decimal
     reservation_expires_at: datetime

@@ -17,16 +17,9 @@ from tests.helpers import create_account, create_listing, create_shop, create_us
 def _encode_payload(
     *,
     order_id: str,
-    wb_product_id: int,
-    ordered_at: str = "2026-02-26T12:00:00Z",
-    version: int = 1,
+    ordered_at: str = "2026-02-26T12:00:00",
 ) -> str:
-    payload = {
-        "v": version,
-        "order_id": order_id,
-        "wb_product_id": wb_product_id,
-        "ordered_at": ordered_at,
-    }
+    payload = [order_id, ordered_at]
     return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
 
 
@@ -295,7 +288,7 @@ async def test_catalog_hides_products_already_purchased_by_buyer(db_pool) -> Non
     await buyer_service.submit_purchase_payload(
         buyer_user_id=buyer.user_id,
         assignment_id=reservation.assignment_id,
-        payload_base64=_encode_payload(order_id="repeat-filter-order", wb_product_id=7001),
+        payload_base64=_encode_payload(order_id="repeat-filter-order"),
     )
 
     listings = await buyer_service.list_active_listings_by_shop_slug(
@@ -304,6 +297,46 @@ async def test_catalog_hides_products_already_purchased_by_buyer(db_pool) -> Non
     )
     assert [item.listing_id for item in listings] == [second_listing_id]
     assert [item.wb_product_id for item in listings] == [7002]
+
+
+@pytest.mark.asyncio
+async def test_catalog_hides_products_with_active_assignment_for_buyer(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="active-filter-shop",
+        wb_product_id=7051,
+        reward_usdt=Decimal("3.000000"),
+        slot_count=2,
+        available_slots=2,
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            second_listing_id = await create_listing(
+                conn,
+                shop_id=fixture["shop_id"],
+                seller_user_id=fixture["seller_user_id"],
+                wb_product_id=7052,
+                reward_usdt=Decimal("2.000000"),
+                slot_count=1,
+                available_slots=1,
+                status="active",
+            )
+
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870011, username="buyer_active_filter")
+    await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:buyer:870011:7051",
+    )
+
+    listings = await buyer_service.list_active_listings_by_shop_slug(
+        slug="active-filter-shop",
+        buyer_user_id=buyer.user_id,
+    )
+    assert [item.listing_id for item in listings] == [second_listing_id]
+    assert [item.wb_product_id for item in listings] == [7052]
 
 
 @pytest.mark.asyncio
@@ -340,7 +373,7 @@ async def test_reserve_rejects_product_already_purchased_by_buyer(db_pool) -> No
     await buyer_service.submit_purchase_payload(
         buyer_user_id=buyer.user_id,
         assignment_id=first_reservation.assignment_id,
-        payload_base64=_encode_payload(order_id="repeat-reserve-order", wb_product_id=7101),
+        payload_base64=_encode_payload(order_id="repeat-reserve-order"),
     )
 
     with pytest.raises(InvalidStateError, match="already purchased"):
@@ -348,6 +381,46 @@ async def test_reserve_rejects_product_already_purchased_by_buyer(db_pool) -> No
             buyer_user_id=buyer.user_id,
             listing_id=duplicate_listing_id,
             idempotency_key="reserve:buyer:870002:7101:second",
+        )
+
+
+@pytest.mark.asyncio
+async def test_reserve_rejects_product_with_existing_active_assignment(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="repeat-active-reserve-shop",
+        wb_product_id=7151,
+        reward_usdt=Decimal("4.000000"),
+        slot_count=3,
+        available_slots=3,
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            duplicate_listing_id = await create_listing(
+                conn,
+                shop_id=fixture["shop_id"],
+                seller_user_id=fixture["seller_user_id"],
+                wb_product_id=7151,
+                reward_usdt=Decimal("4.000000"),
+                slot_count=1,
+                available_slots=1,
+                status="active",
+            )
+
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870012, username="buyer_repeat_active")
+    await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:buyer:870012:7151:first",
+    )
+
+    with pytest.raises(InvalidStateError, match="already has assignment"):
+        await buyer_service.reserve_listing_slot(
+            buyer_user_id=buyer.user_id,
+            listing_id=duplicate_listing_id,
+            idempotency_key="reserve:buyer:870012:7151:second",
         )
 
 
@@ -444,6 +517,69 @@ async def test_reservation_is_idempotent_and_decrements_slot_once(db_pool) -> No
 
 
 @pytest.mark.asyncio
+async def test_buyer_can_cancel_reserved_assignment_and_release_funds(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="cancel-shop",
+        wb_product_id=5151,
+        reward_usdt=Decimal("5.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=835151, username="buyer_cancel")
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:buyer:835151:5151",
+    )
+
+    first_cancel = await buyer_service.cancel_assignment_by_buyer(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        idempotency_key="cancel:buyer:835151:5151:first",
+    )
+    second_cancel = await buyer_service.cancel_assignment_by_buyer(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        idempotency_key="cancel:buyer:835151:5151:second",
+    )
+
+    assert first_cancel.changed is True
+    assert second_cancel.changed is False
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT status FROM assignments WHERE id = %s",
+                (reservation.assignment_id,),
+            )
+            assignment = await cur.fetchone()
+            assert assignment["status"] == "expired_2h"
+
+            await cur.execute(
+                "SELECT available_slots FROM listings WHERE id = %s",
+                (fixture["listing_id"],),
+            )
+            listing = await cur.fetchone()
+            assert listing["available_slots"] == 1
+
+            await cur.execute(
+                "SELECT current_balance_usdt FROM accounts WHERE id = %s",
+                (fixture["seller_collateral_account_id"],),
+            )
+            seller_collateral = await cur.fetchone()
+            assert seller_collateral["current_balance_usdt"] == Decimal("5.000000")
+
+            await cur.execute(
+                "SELECT current_balance_usdt FROM accounts WHERE id = %s",
+                (fixture["reward_reserved_account_id"],),
+            )
+            reward_reserved = await cur.fetchone()
+            assert reward_reserved["current_balance_usdt"] == Decimal("0.000000")
+
+
+@pytest.mark.asyncio
 async def test_worker_expiry_transitions_reserved_to_expired_and_releases_funds(db_pool) -> None:
     buyer_service = BuyerService(db_pool)
     fixture = await _prepare_reservable_listing(
@@ -502,33 +638,31 @@ async def test_worker_expiry_transitions_reserved_to_expired_and_releases_funds(
 @pytest.mark.parametrize(
     ("payload_builder", "error_substring"),
     [
-        (lambda wb_product_id: "%%%not-base64%%%", "base64"),
+        (lambda _wb_product_id: "%%%not-base64%%%", "base64"),
         (
-            lambda wb_product_id: base64.b64encode(b"{not-json").decode("ascii"),
+            lambda _wb_product_id: base64.b64encode(b"{not-json").decode("ascii"),
             "JSON",
         ),
         (
-            lambda wb_product_id: base64.b64encode(
-                json.dumps(
-                    {"v": 1, "order_id": "ORD-MISSING", "wb_product_id": wb_product_id}
-                ).encode("utf-8")
+            lambda _wb_product_id: base64.b64encode(
+                json.dumps({"order_id": "ORD-MISSING", "ordered_at": "2026-02-26T12:00:00"}).encode(
+                    "utf-8"
+                )
             ).decode("ascii"),
-            "missing required fields",
+            "JSON array",
         ),
         (
-            lambda wb_product_id: _encode_payload(
+            lambda _wb_product_id: base64.b64encode(
+                json.dumps(["ORD-MISSING"]).encode("utf-8")
+            ).decode("ascii"),
+            "contain [order_id, ordered_at]",
+        ),
+        (
+            lambda _wb_product_id: _encode_payload(
                 order_id="ORD-TS",
-                wb_product_id=wb_product_id,
                 ordered_at="2026-02-26T15:00:00+03:00",
             ),
-            "UTC timezone",
-        ),
-        (
-            lambda wb_product_id: _encode_payload(
-                order_id="ORD-MISMATCH",
-                wb_product_id=wb_product_id + 999,
-            ),
-            "does not match listing product",
+            "must not contain timezone",
         ),
     ],
 )
@@ -605,7 +739,7 @@ async def test_duplicate_order_id_is_rejected_for_second_assignment(db_pool) -> 
         idempotency_key="reserve:dup:2",
     )
 
-    payload = _encode_payload(order_id="ORD-DUP", wb_product_id=5401)
+    payload = _encode_payload(order_id="ORD-DUP")
     first_submit = await buyer_service.submit_purchase_payload(
         buyer_user_id=buyer_one.user_id,
         assignment_id=reservation_one.assignment_id,
@@ -647,7 +781,7 @@ async def test_valid_payload_moves_assignment_to_order_verified_and_is_idempoten
         listing_id=fixture["listing_id"],
         idempotency_key="reserve:success:1",
     )
-    payload = _encode_payload(order_id="ORD-SUCCESS", wb_product_id=5501)
+    payload = _encode_payload(order_id="ORD-SUCCESS")
 
     first = await buyer_service.submit_purchase_payload(
         buyer_user_id=buyer.user_id,
@@ -694,8 +828,8 @@ async def test_valid_payload_moves_assignment_to_order_verified_and_is_idempoten
             order = await cur.fetchone()
             assert order["order_id"] == "ORD-SUCCESS"
             assert order["wb_product_id"] == 5501
-            assert order["payload_version"] == 1
-            assert order["raw_payload_json"]["order_id"] == "ORD-SUCCESS"
+            assert order["payload_version"] == 2
+            assert order["raw_payload_json"][0] == "ORD-SUCCESS"
 
 
 @pytest.mark.asyncio
@@ -732,7 +866,7 @@ async def test_buyer_command_processor_smoke_flow(db_pool) -> None:
     assignment_fragment = reserve_response.text.split("assignment_id=")[1]
     assignment_fragment = assignment_fragment.split("\n", maxsplit=1)[0]
     assignment_id = int(assignment_fragment)
-    payload = _encode_payload(order_id="ORD-CMD", wb_product_id=5601)
+    payload = _encode_payload(order_id="ORD-CMD")
 
     submit_response = await processor.handle(
         telegram_id=880001,

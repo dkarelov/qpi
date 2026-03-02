@@ -66,12 +66,13 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
 
 ### 3.3 Buyer assignment rules
 
-- Buyer must submit a base64-encoded purchase confirmation blob from external browser plugin within 2 hours after slot reservation.
-- Bot decodes payload (pre-agreed format) and validates `wb_product_id`, `order_id`, and `ordered_at`.
-- MVP mock payload contract (subject to finalization): base64-encoded JSON with `v`, `order_id`, `wb_product_id`, `ordered_at` (RFC3339 UTC).
+- Buyer receives a per-task setup token from bot after reservation; token format is base64-encoded JSON array `[search_phrase, wb_product_id, 2]` for browser extension bootstrap.
+- Buyer must submit a base64-encoded verification token from extension within 2 hours after slot reservation.
+- Bot decodes verification token as JSON array `[order_id, ordered_at]` and validates required values and types.
+- `ordered_at` is accepted as ISO datetime without timezone and is normalized to UTC for persistence.
 - MVP uses unsigned payload parsing/validation only; tamper-protection/signature validation is post-MVP.
 - `1 order_id = 1 slot`.
-- Decoded `order_id` must belong to listing `product_id`.
+- Decoded `order_id` must be globally unique across assignments.
 - Reservation timeout: 2 hours.
 - Valid decoded payload moves assignment to `order_verified`.
 - Unlock timer starts from WB pickup timestamp.
@@ -167,8 +168,9 @@ Detailed baseline requirements and phase-by-phase execution plan are tracked in 
   - shop deep-link resolution and active listing browse,
   - persistent buyer saved-shops store (`buyer_saved_shops`) for cross-redeploy continuity,
   - slot reservation with idempotency,
-  - strict base64 payload decode/validation (`v`, `order_id`, `wb_product_id`, `ordered_at` RFC3339 UTC),
+  - strict base64 verification-token decode/validation (`[order_id, ordered_at]`, ISO non-TZ timestamp),
   - `order_verified` transition with normalized `buyer_orders` persistence,
+  - buyer-initiated assignment cancellation for pre-submit states (`reserved`/`order_submitted`),
   - reservation expiry processor (`reserved` -> `expired_2h`) using existing finance transactional primitives.
 - `services/bot_api/buyer_handlers.py` provides Russian buyer command handlers:
   - `/start` (including `shop_<slug>` deep-link payload),
@@ -360,11 +362,12 @@ Buyer flow:
 1. Open shop via deep link.
 2. Shop is saved in buyer history (`buyer_saved_shops`) and remains available across bot restarts/redeploys.
 3. Accept available slot (funds reserved).
-4. Submit base64-encoded plugin confirmation payload within 2 hours.
-5. Bot decodes/validates payload and records normalized order fields (`order_id`, `wb_product_id`, `ordered_at`).
-6. Valid payload moves assignment to `order_verified`; then order tracking continues for pickup/return.
-7. After 15 days from pickup with no cancellation condition, reward becomes withdrawable.
-8. Buyer requests withdrawal; admin approves; payout sent.
+4. Bot shows per-task setup token for browser extension (`[search_phrase, wb_product_id, 2]`, base64).
+5. Buyer submits base64-encoded verification token (`[order_id, ordered_at]`) within 2 hours.
+6. Bot decodes/validates token and records normalized order fields (`order_id`, `wb_product_id`, `ordered_at`).
+7. Valid token moves assignment to `order_verified`; then order tracking continues for pickup/return.
+8. After 15 days from pickup with no cancellation condition, reward becomes withdrawable.
+9. Buyer requests withdrawal; admin approves; payout sent.
 
 Automation checkpoints:
 
@@ -657,10 +660,6 @@ Required controls even in MVP:
 - Final payout integration details and transaction broadcast implementation.
 - Tightening SSH ingress from `0.0.0.0/0` to operator CIDRs before production launch.
 - Optional migration from current self-signed IP TLS webhook to domain-managed trusted TLS.
-- Final base64 payload contract from browser plugin:
-  - canonical fields/types,
-  - encoding details,
-  - MVP mock payload is accepted now; final schema versioning is pending.
 - Post-MVP payload integrity:
   - tamper-protection/signature mechanism.
 - Post-MVP listing ownership check:
@@ -851,3 +850,8 @@ Required controls even in MVP:
   - added schema table `buyer_saved_shops` with `(buyer_user_id, shop_id)` uniqueness and `last_opened_at` ordering,
   - buyer runtime now saves opened shops and renders persistent shop list in `🏪 Магазины`,
   - “open last shop” now falls back to PostgreSQL history instead of volatile in-memory session state.
+- 2026-03-02: Buyer task-token flow updated:
+  - buyer listing cards hide `wb_product_id` and slot counters; task bootstrap now relies on generated setup token from bot,
+  - reservation/task screens now provide setup token (`[search_phrase, wb_product_id, 2]`, base64) and explicit action button `Ввести токен-подтверждение`,
+  - verification token contract switched to base64 JSON array `[order_id, ordered_at]` (non-timezone timestamp, normalized to UTC),
+  - buyer can explicitly cancel pre-submit task via `Отказаться от задания` (releases reserved slot and collateral hold).

@@ -4,7 +4,7 @@ import base64
 import binascii
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from psycopg import AsyncConnection
@@ -30,20 +30,21 @@ from libs.domain.models import (
     BuyerSavedShopResult,
     BuyerShopResult,
     ReservationExpiryResult,
+    StatusChangeResult,
 )
 
 _ASSIGNMENT_PAYLOAD_ALLOWED_STATES = {"reserved", "order_submitted", "order_verified"}
 _RESERVATION_EXPIRED_STATUS = "expired_2h"
 _RESERVATION_TIMEOUT_IDEMPOTENCY_PREFIX = "reservation-expire"
+_PURCHASE_PAYLOAD_VERSION = 2
 
 
 @dataclass(frozen=True)
 class DecodedPurchasePayload:
     payload_version: int
     order_id: str
-    wb_product_id: int
     ordered_at: datetime
-    raw_payload_json: dict[str, Any]
+    raw_payload_json: list[Any]
 
 
 class BuyerService:
@@ -162,9 +163,27 @@ class BuyerService:
         async def operation(conn: AsyncConnection) -> list[BuyerListingResult]:
             async with conn.cursor(row_factory=dict_row) as cur:
                 params: list[Any] = [shop.shop_id]
-                purchased_filter = ""
+                buyer_filters = ""
                 if buyer_user_id is not None:
-                    purchased_filter = """
+                    buyer_filters = """
+                      AND NOT EXISTS (
+                            SELECT 1
+                            FROM assignments ax
+                            JOIN listings lx ON lx.id = ax.listing_id
+                            WHERE ax.buyer_user_id = %s
+                              AND lx.wb_product_id = l.wb_product_id
+                              AND ax.status = ANY (
+                                    ARRAY[
+                                        'reserved'::text,
+                                        'order_submitted'::text,
+                                        'order_verified'::text,
+                                        'picked_up_wait_unlock'::text,
+                                        'eligible_for_withdrawal'::text,
+                                        'withdraw_pending_admin'::text,
+                                        'withdraw_sent'::text
+                                    ]
+                              )
+                      )
                       AND NOT EXISTS (
                             SELECT 1
                             FROM buyer_orders bo
@@ -172,7 +191,7 @@ class BuyerService:
                               AND bo.wb_product_id = l.wb_product_id
                       )
                     """
-                    params.append(buyer_user_id)
+                    params.extend([buyer_user_id, buyer_user_id])
 
                 await cur.execute(
                     f"""
@@ -188,7 +207,7 @@ class BuyerService:
                     WHERE l.shop_id = %s
                       AND l.deleted_at IS NULL
                       AND l.status = 'active'
-                      {purchased_filter}
+                      {buyer_filters}
                     ORDER BY l.created_at ASC
                     """,
                     tuple(params),
@@ -329,6 +348,10 @@ class BuyerService:
         idempotency_key: str,
         reservation_timeout_hours: int = 2,
     ) -> AssignmentReservationResult:
+        existing = await self._find_reservation_by_idempotency(idempotency_key=idempotency_key)
+        if existing is not None:
+            return existing
+
         await self._ensure_buyer_user_exists(user_id=buyer_user_id)
         seller_collateral_account_id = await self._get_seller_collateral_account_for_listing(
             listing_id=listing_id,
@@ -346,6 +369,33 @@ class BuyerService:
             idempotency_key=idempotency_key,
             reservation_timeout_hours=reservation_timeout_hours,
         )
+
+    async def _find_reservation_by_idempotency(
+        self,
+        *,
+        idempotency_key: str,
+    ) -> AssignmentReservationResult | None:
+        async def operation(conn: AsyncConnection) -> AssignmentReservationResult | None:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT id, reward_usdt, reservation_expires_at
+                    FROM assignments
+                    WHERE idempotency_key = %s
+                    """,
+                    (idempotency_key,),
+                )
+                row = await cur.fetchone()
+                if row is None:
+                    return None
+                return AssignmentReservationResult(
+                    assignment_id=row["id"],
+                    created=False,
+                    reward_usdt=row["reward_usdt"],
+                    reservation_expires_at=row["reservation_expires_at"],
+                )
+
+        return await run_in_transaction(self._pool, operation, read_only=True)
 
     async def submit_purchase_payload(
         self,
@@ -392,17 +442,11 @@ class BuyerService:
                 ):
                     raise InvalidStateError("reservation window has expired")
 
-                if assignment["wb_product_id"] != decoded.wb_product_id:
-                    raise PayloadValidationError(
-                        "payload wb_product_id does not match listing product"
-                    )
-
                 await cur.execute(
                     """
                     SELECT
                         assignment_id,
                         order_id,
-                        wb_product_id,
                         ordered_at
                     FROM buyer_orders
                     WHERE assignment_id = %s
@@ -414,7 +458,6 @@ class BuyerService:
                 if existing_order is not None:
                     if (
                         existing_order["order_id"] == decoded.order_id
-                        and existing_order["wb_product_id"] == decoded.wb_product_id
                         and existing_order["ordered_at"] == decoded.ordered_at
                     ):
                         await cur.execute(
@@ -436,7 +479,7 @@ class BuyerService:
                             changed=False,
                             status="order_verified",
                             order_id=decoded.order_id,
-                            wb_product_id=decoded.wb_product_id,
+                            wb_product_id=assignment["wb_product_id"],
                             ordered_at=decoded.ordered_at,
                         )
                     raise InvalidStateError("assignment already has a different payload")
@@ -478,7 +521,7 @@ class BuyerService:
                             assignment["listing_id"],
                             buyer_user_id,
                             decoded.order_id,
-                            decoded.wb_product_id,
+                            assignment["wb_product_id"],
                             decoded.ordered_at,
                             decoded.payload_version,
                             Json(decoded.raw_payload_json),
@@ -512,7 +555,7 @@ class BuyerService:
                     changed=True,
                     status="order_verified",
                     order_id=decoded.order_id,
-                    wb_product_id=decoded.wb_product_id,
+                    wb_product_id=assignment["wb_product_id"],
                     ordered_at=decoded.ordered_at,
                 )
 
@@ -549,6 +592,7 @@ class BuyerService:
                         a.reservation_expires_at,
                         a.order_id,
                         l.wb_product_id,
+                        l.search_phrase,
                         s.slug AS shop_slug,
                         bo.ordered_at
                     FROM assignments a
@@ -567,6 +611,7 @@ class BuyerService:
                         listing_id=row["listing_id"],
                         shop_slug=row["shop_slug"],
                         wb_product_id=row["wb_product_id"],
+                        search_phrase=row["search_phrase"],
                         status=row["status"],
                         reward_usdt=row["reward_usdt"],
                         reservation_expires_at=row["reservation_expires_at"],
@@ -577,6 +622,70 @@ class BuyerService:
                 ]
 
         return await run_in_transaction(self._pool, operation, read_only=True)
+
+    async def cancel_assignment_by_buyer(
+        self,
+        *,
+        buyer_user_id: int,
+        assignment_id: int,
+        idempotency_key: str,
+    ) -> StatusChangeResult:
+        async def operation(conn: AsyncConnection) -> dict[str, Any]:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT
+                        a.id,
+                        a.status,
+                        a.buyer_user_id,
+                        l.seller_user_id
+                    FROM assignments a
+                    JOIN listings l ON l.id = a.listing_id
+                    WHERE a.id = %s
+                    FOR UPDATE OF a
+                    """,
+                    (assignment_id,),
+                )
+                assignment = await cur.fetchone()
+                if assignment is None or assignment["buyer_user_id"] != buyer_user_id:
+                    raise NotFoundError(f"assignment {assignment_id} not found for buyer")
+
+                if assignment["status"] == _RESERVATION_EXPIRED_STATUS:
+                    return {"changed": False}
+                if assignment["status"] not in {"reserved", "order_submitted"}:
+                    raise InvalidStateError("assignment cannot be cancelled in current state")
+
+                await cur.execute(
+                    """
+                    SELECT id
+                    FROM accounts
+                    WHERE account_code = %s
+                    """,
+                    (f"user:{assignment['seller_user_id']}:seller_collateral",),
+                )
+                seller_account = await cur.fetchone()
+                if seller_account is None:
+                    raise NotFoundError("seller collateral account is missing")
+
+                return {
+                    "changed": True,
+                    "seller_collateral_account_id": seller_account["id"],
+                }
+
+        cancellation = await run_in_transaction(self._pool, operation)
+        if not cancellation["changed"]:
+            return StatusChangeResult(changed=False)
+
+        reward_reserved_account_id = await self._ensure_system_account_id(
+            account_kind="reward_reserved"
+        )
+        return await self._finance_service.cancel_assignment_reservation(
+            assignment_id=assignment_id,
+            new_status=_RESERVATION_EXPIRED_STATUS,
+            seller_collateral_account_id=int(cancellation["seller_collateral_account_id"]),
+            reward_reserved_account_id=reward_reserved_account_id,
+            idempotency_key=idempotency_key,
+        )
 
     async def process_expired_reservations(
         self,
@@ -680,6 +789,31 @@ class BuyerService:
                     if await cur.fetchone() is not None:
                         raise InvalidStateError("buyer already purchased this item")
 
+                    await cur.execute(
+                        """
+                        SELECT 1
+                        FROM assignments a
+                        JOIN listings lx ON lx.id = a.listing_id
+                        WHERE a.buyer_user_id = %s
+                          AND lx.wb_product_id = %s
+                          AND a.status = ANY (
+                                ARRAY[
+                                    'reserved'::text,
+                                    'order_submitted'::text,
+                                    'order_verified'::text,
+                                    'picked_up_wait_unlock'::text,
+                                    'eligible_for_withdrawal'::text,
+                                    'withdraw_pending_admin'::text,
+                                    'withdraw_sent'::text
+                                ]
+                          )
+                        LIMIT 1
+                        """,
+                        (buyer_user_id, listing["wb_product_id"]),
+                    )
+                    if await cur.fetchone() is not None:
+                        raise InvalidStateError("buyer already has assignment for this item")
+
                 return await self._ensure_owner_account(
                     cur,
                     owner_user_id=listing["seller_user_id"],
@@ -754,65 +888,44 @@ def decode_purchase_payload(payload_base64: str) -> DecodedPurchasePayload:
     try:
         parsed = json.loads(payload_text)
     except json.JSONDecodeError as exc:
-        raise PayloadValidationError("payload must be valid JSON object") from exc
+        raise PayloadValidationError("payload must be valid JSON array") from exc
 
-    if not isinstance(parsed, dict):
-        raise PayloadValidationError("payload must be a JSON object")
+    if not isinstance(parsed, list):
+        raise PayloadValidationError("payload must be a JSON array")
+    if len(parsed) != 2:
+        raise PayloadValidationError("payload must contain [order_id, ordered_at]")
 
-    missing_fields = [
-        field_name
-        for field_name in ("v", "order_id", "wb_product_id", "ordered_at")
-        if field_name not in parsed
-    ]
-    if missing_fields:
-        missing = ", ".join(missing_fields)
-        raise PayloadValidationError(f"payload is missing required fields: {missing}")
-
-    version = parsed["v"]
-    if not isinstance(version, int) or isinstance(version, bool) or version < 1:
-        raise PayloadValidationError("payload field 'v' must be integer >= 1")
-
-    order_id_raw = parsed["order_id"]
+    order_id_raw = parsed[0]
     if not isinstance(order_id_raw, str) or not order_id_raw.strip():
         raise PayloadValidationError("payload field 'order_id' must be non-empty string")
     order_id = order_id_raw.strip()
 
-    wb_product_id = parsed["wb_product_id"]
-    if not isinstance(wb_product_id, int) or isinstance(wb_product_id, bool) or wb_product_id < 1:
-        raise PayloadValidationError("payload field 'wb_product_id' must be integer >= 1")
-
-    ordered_at_raw = parsed["ordered_at"]
+    ordered_at_raw = parsed[1]
     if not isinstance(ordered_at_raw, str):
-        raise PayloadValidationError("payload field 'ordered_at' must be RFC3339 UTC string")
-    ordered_at = _parse_rfc3339_utc(ordered_at_raw)
+        raise PayloadValidationError("payload field 'ordered_at' must be ISO datetime string")
+    ordered_at = _parse_iso_naive_datetime(ordered_at_raw)
 
     return DecodedPurchasePayload(
-        payload_version=version,
+        payload_version=_PURCHASE_PAYLOAD_VERSION,
         order_id=order_id,
-        wb_product_id=wb_product_id,
         ordered_at=ordered_at,
         raw_payload_json=parsed,
     )
 
 
-def _parse_rfc3339_utc(value: str) -> datetime:
+def _parse_iso_naive_datetime(value: str) -> datetime:
     normalized = value.strip()
     if not normalized:
         raise PayloadValidationError("payload field 'ordered_at' must not be empty")
 
-    if normalized.endswith("Z"):
-        iso_value = normalized[:-1] + "+00:00"
-    elif normalized.endswith("+00:00"):
-        iso_value = normalized
-    else:
-        raise PayloadValidationError("payload field 'ordered_at' must use UTC timezone")
-
     try:
-        parsed = datetime.fromisoformat(iso_value)
+        parsed = datetime.fromisoformat(normalized)
     except ValueError as exc:
-        raise PayloadValidationError("payload field 'ordered_at' is not valid RFC3339") from exc
+        raise PayloadValidationError(
+            "payload field 'ordered_at' is not valid ISO datetime"
+        ) from exc
 
-    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
-        raise PayloadValidationError("payload field 'ordered_at' must use UTC timezone")
+    if parsed.tzinfo is not None:
+        raise PayloadValidationError("payload field 'ordered_at' must not contain timezone")
 
-    return parsed.astimezone(UTC)
+    return parsed.replace(tzinfo=UTC)

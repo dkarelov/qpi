@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 from decimal import Decimal
 
 from libs.config.settings import BotApiSettings
@@ -147,6 +149,25 @@ def test_money_formatter_uses_usdt_with_approx_rub() -> None:
     assert runtime._format_usdt_with_rub(Decimal("1.24")) == "$1.2 (~124 ₽)"
     assert runtime._format_usdt_with_rub(Decimal("1.25")) == "$1.3 (~125 ₽)"
     assert runtime._format_usdt(Decimal("1.234567"), precise=True) == "$1.234567"
+
+
+def test_buyer_cashback_formatter_uses_floor_for_usdt() -> None:
+    runtime = _build_runtime()
+
+    assert runtime._format_buyer_listing_cashback(Decimal("1.29")) == "$1.2 (~129 ₽)"
+    assert runtime._format_buyer_listing_cashback(Decimal("1.20")) == "$1.2 (~120 ₽)"
+
+
+def test_buyer_listing_token_contains_search_phrase_product_and_companion_count() -> None:
+    runtime = _build_runtime()
+
+    token = runtime._build_buyer_listing_token(
+        search_phrase="бумага а4 для принтера 500 листов белая",
+        wb_product_id=552892532,
+    )
+    decoded = json.loads(base64.b64decode(token).decode("utf-8"))
+
+    assert decoded == ["бумага а4 для принтера 500 листов белая", 552892532, 2]
 
 
 def test_token_instruction_contains_required_sections() -> None:

@@ -38,7 +38,7 @@ Out of scope (MVP):
 ## 2.3 Core Actors
 
 - Seller: creates shop/listings, provides WB token, funds collateral.
-- Buyer: accepts listing slot, submits base64 plugin confirmation payload, gets unlockable reward.
+- Buyer: accepts listing slot, gets setup token for browser extension, submits base64 verification token, gets unlockable reward.
 - Admin: handles exceptions/manual credits, approves withdrawals, monitors logs.
 
 ## 2.4 Functional Requirements
@@ -72,23 +72,21 @@ Out of scope (MVP):
 1. Buyer enters from shop deep link.
 2. Buyer sees active listings and accepts one slot.
 3. On accept, one reward slot is reserved/locked.
-4. Buyer must submit base64-encoded purchase confirmation payload from browser plugin within 2 hours, else reservation expires.
-5. Bot must decode payload using pre-agreed format and validate:
+4. Buyer receives per-task setup token from bot (`[search_phrase, wb_product_id, 2]`, base64) and pastes it into browser extension.
+5. Buyer must submit base64-encoded verification token from extension within 2 hours, else reservation expires.
+6. Bot must decode verification token as JSON array `[order_id, ordered_at]` and validate:
    - `order_id` presence and uniqueness (`1 order_id = 1 slot`),
-   - `wb_product_id` matches listing,
-   - `ordered_at` parse/validity.
-6. MVP uses mock unsigned payload parsing/validation; tamper-protection/signature checks are post-MVP.
-7. Valid payload transitions assignment to `order_verified`.
-8. Mock payload contract for MVP (subject to change) is base64-encoded JSON:
-   - `v` (int, payload version),
-   - `order_id` (string),
-   - `wb_product_id` (int),
-   - `ordered_at` (RFC3339 UTC string).
-9. Unlock timer starts from WB pickup timestamp.
-10. Reward unlock rule: 15 days after pickup.
-11. If returned within 15 days: cancel reward.
-12. After 15 days: return cancellation not needed (policy assumption).
-13. If no pickup is detected within 60 days after `order_verified`, transition to `delivery_expired`.
+   - `ordered_at` parse/validity (ISO datetime without timezone).
+7. MVP uses mock unsigned payload parsing/validation; tamper-protection/signature checks are post-MVP.
+8. Valid token transitions assignment to `order_verified`.
+9. Verification token payload contract for MVP is base64-encoded JSON array:
+   - index `0`: `order_id` (string),
+   - index `1`: `ordered_at` (ISO datetime string without timezone).
+10. Unlock timer starts from WB pickup timestamp.
+11. Reward unlock rule: 15 days after pickup.
+12. If returned within 15 days: cancel reward.
+13. After 15 days: return cancellation not needed (policy assumption).
+14. If no pickup is detected within 60 days after `order_verified`, transition to `delivery_expired`.
 
 ### Admin/finance requirements
 
@@ -443,9 +441,9 @@ Execution steps:
    - Define buyer handler contracts (shop entry, listing browse, reserve slot, submit payload, status view).
    - Freeze payload validation contract for MVP mock payload:
      - base64 decode required,
-     - JSON required,
-     - required fields `v`, `order_id`, `wb_product_id`, `ordered_at`,
-     - strict RFC3339 UTC parse for `ordered_at`.
+     - JSON array required,
+     - required shape `[order_id, ordered_at]`,
+     - `ordered_at` must be ISO datetime without timezone (normalized to UTC on save).
    - Freeze transition contract:
      - successful validation moves assignment to `order_verified`,
      - `1 order_id = 1 slot` uniqueness remains DB-enforced.
@@ -474,8 +472,7 @@ Execution steps:
    - Keep contract compatible with Phase 6 migration to `order-tracker` CF.
 5. Payload submission validation path
    - Implement strict validation sequence:
-     - base64 decode -> JSON parse -> field/type checks -> timestamp parse,
-     - `wb_product_id` must match listing product,
+     - base64 decode -> JSON parse -> array shape/type checks -> timestamp parse,
      - reject duplicate `order_id`.
    - On success:
      - persist normalized order data in `buyer_orders`,
@@ -497,9 +494,8 @@ Execution steps:
    - Payload validation matrix tests:
      - malformed base64,
      - invalid JSON,
-     - missing/invalid fields,
+     - invalid token shape/types,
      - invalid timestamp,
-     - mismatched `wb_product_id`,
      - duplicate `order_id`.
    - Success path tests:
      - valid payload -> `order_verified`,
@@ -518,7 +514,7 @@ Exit criteria:
 1. Buyer can reserve slot only on active listings with deterministic slot accounting.
 2. Reservation timeout transitions are deterministic and rollback reserve effects correctly.
 3. Invalid payloads are rejected with no incorrect state transitions.
-4. Duplicate or mismatched decoded `order_id`/`wb_product_id` is rejected.
+4. Duplicate decoded `order_id` is rejected.
 5. Valid payload transitions assignment to `order_verified` and stores normalized order record.
 6. Buyer status view reflects assignment/order state accurately.
 7. Integration tests cover buyer success/failure paths and pass.
@@ -531,7 +527,7 @@ Status:
     - buyer bootstrap/account guarantees,
     - deep-link shop resolution and active listing browse,
     - slot reservation/idempotency,
-    - strict payload decode/validation (`v`, `order_id`, `wb_product_id`, `ordered_at` RFC3339 UTC),
+    - strict verification-token decode/validation (`[order_id, ordered_at]`, non-TZ ISO datetime),
     - normalized `buyer_orders` persistence and `order_verified` transition,
     - reservation expiry processor (`reserved` -> `expired_2h`).
   - `services/bot_api/buyer_handlers.py`: Russian buyer command handlers:

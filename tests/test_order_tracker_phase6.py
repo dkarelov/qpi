@@ -16,16 +16,9 @@ from tests.helpers import create_account, create_listing, create_shop, create_us
 def _encode_payload(
     *,
     order_id: str,
-    wb_product_id: int,
     ordered_at: datetime,
-    version: int = 1,
 ) -> str:
-    payload = {
-        "v": version,
-        "order_id": order_id,
-        "wb_product_id": wb_product_id,
-        "ordered_at": ordered_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
-    }
+    payload = [order_id, ordered_at.replace(tzinfo=None).isoformat()]
     return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
 
 
@@ -137,7 +130,6 @@ async def _prepare_order_verified_assignment(
     )
     payload_base64 = _encode_payload(
         order_id=order_id,
-        wb_product_id=wb_product_id,
         ordered_at=ordered_at,
     )
     await buyer_service.submit_purchase_payload(
