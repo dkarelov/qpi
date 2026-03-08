@@ -9,7 +9,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -1268,11 +1268,23 @@ class TelegramWebhookRuntime:
             title=f"Токен WB API для магазина «{html.escape(shop_title)}»",
             lines=[
                 "Отправьте токен следующим сообщением.",
-                "<b>Зачем:</b> бот будет читать карточки товаров и статусы заказов покупателей.",
-                "<b>Где найти:</b> ЛК ВБ -> Интеграции по API -> Создать токен -> Для интеграции вручную.",
-                "<b>Доступы:</b> «Статистика» и «Контент» *или* «Продвижение», если он покрывает карточки товаров.",
+                (
+                    "<b>Зачем:</b> бот будет читать карточки товаров "
+                    "и статусы заказов покупателей."
+                ),
+                (
+                    "<b>Где найти:</b> ЛК ВБ -> Интеграции по API -> "
+                    "Создать токен -> Для интеграции вручную."
+                ),
+                (
+                    "<b>Доступы:</b> «Статистика» и «Контент» "
+                    "*или* «Продвижение», если он покрывает карточки товаров."
+                ),
             ],
-            note="Токен используется только для чтения. Сообщение с токеном будет удалено автоматически.",
+            note=(
+                "Токен используется только для чтения. "
+                "Сообщение с токеном будет удалено автоматически."
+            ),
         )
 
     def _listing_create_instruction_text(self, *, shop_title: str) -> str:
@@ -1280,13 +1292,23 @@ class TelegramWebhookRuntime:
         return self._screen_text(
             title=f"Создание объявления для магазина «{html.escape(shop_title)}»",
             lines=[
-                "<b>Формат:</b> <code>&lt;артикул ВБ&gt; &lt;кэшбэк руб&gt; &lt;макс заказов&gt; &lt;поисковая фраза&gt;</code>",
+                (
+                    "<b>Формат:</b> "
+                    "<code>&lt;артикул ВБ&gt; &lt;кэшбэк руб&gt; "
+                    "&lt;макс заказов&gt; &lt;поисковая фраза&gt;</code>"
+                ),
                 "<b>Пример:</b> <code>12345678 100 5 \"женские джинсы\"</code>",
-                f"<b>Кэшбэк:</b> сумма для покупателя. Конвертация в $ произойдет по текущему курсу ~{fx_text}.",
+                (
+                    f"<b>Кэшбэк:</b> сумма для покупателя. "
+                    f"Конвертация в $ произойдет по текущему курсу ~{fx_text}."
+                ),
                 "<b>Макс заказов:</b> количество покупателей по этому объявлению.",
                 "<b>Поисковая фраза:</b> запрос, по которому покупатель будет искать товар.",
             ],
-            note="После этого бот подтянет карточку товара, попробует определить цену покупателя по заказам за 30 дней и попросит подтвердить данные.",
+            note=(
+                "После этого бот подтянет карточку товара, попробует определить цену "
+                "покупателя по заказам за 30 дней и попросит подтвердить данные."
+            ),
         )
 
     def _listing_title_confirmation_text(
@@ -1316,7 +1338,10 @@ class TelegramWebhookRuntime:
         ]
         if observed_buyer_price is not None and reference_price_source == "orders":
             lines.append(
-                f"<b>Источник цены:</b> заказы за 30 дней, цена продавца {self._format_price_rub(observed_buyer_price.seller_price_rub)}, SPP {observed_buyer_price.spp_percent}%."
+                "<b>Источник цены:</b> заказы за 30 дней, "
+                f"цена продавца "
+                f"{self._format_price_rub(observed_buyer_price.seller_price_rub)}, "
+                f"SPP {observed_buyer_price.spp_percent}%."
             )
         if reference_price_source == "manual":
             lines.append("<b>Источник цены:</b> введена вручную.")
@@ -1432,10 +1457,19 @@ class TelegramWebhookRuntime:
             lines=[
                 f"Активных объявлений: {preview.active_listings_count}",
                 f"Активных заданий: {preview.open_assignments_count}",
-                f"Покупателям уйдет: {self._format_usdt_with_rub(preview.assignment_linked_reserved_usdt)}",
-                f"Продавцу вернется: {self._format_usdt_with_rub(preview.unassigned_collateral_usdt)}",
+                (
+                    "Покупателям уйдет: "
+                    f"{self._format_usdt_with_rub(preview.assignment_linked_reserved_usdt)}"
+                ),
+                (
+                    "Продавцу вернется: "
+                    f"{self._format_usdt_with_rub(preview.unassigned_collateral_usdt)}"
+                ),
             ],
-            note="При удалении магазина активные задания будут считаться выполненными, а кэшбэк будет выплачен покупателям.",
+            note=(
+                "При удалении магазина активные задания будут считаться выполненными, "
+                "а кэшбэк будет выплачен покупателям."
+            ),
             warning=True,
         )
         await self._replace_message(
@@ -1495,8 +1529,10 @@ class TelegramWebhookRuntime:
         else:
             message = (
                 "Магазин удален.\n"
-                f"Покупателям ушло: {self._format_usdt_with_rub(result.assignment_transferred_usdt)}\n"
-                f"Продавцу вернулось: {self._format_usdt_with_rub(result.unassigned_collateral_returned_usdt)}"
+                "Покупателям ушло: "
+                f"{self._format_usdt_with_rub(result.assignment_transferred_usdt)}\n"
+                "Продавцу вернулось: "
+                f"{self._format_usdt_with_rub(result.unassigned_collateral_returned_usdt)}"
             )
         self._logger.info(
             "seller_shop_deleted",
@@ -1588,8 +1624,12 @@ class TelegramWebhookRuntime:
                 f"Артикул WB: {listing.wb_product_id}\n"
                 f"Статус: {html.escape(self._humanize_listing_status(listing.status))}\n"
                 f"Кэшбэк: {cashback_text}\n"
-                f"Запланировано: {listing.slot_count} · В процессе: {listing.in_progress_assignments_count} · Доступно: {listing.available_slots}\n"
-                f"Обеспечение: {self._format_usdt_with_rub(listing.collateral_locked_usdt)} / {self._format_usdt_with_rub(listing.collateral_required_usdt)}"
+                "Запланировано: "
+                f"{listing.slot_count} · В процессе: {listing.in_progress_assignments_count} "
+                f"· Доступно: {listing.available_slots}\n"
+                "Обеспечение: "
+                f"{self._format_usdt_with_rub(listing.collateral_locked_usdt)} / "
+                f"{self._format_usdt_with_rub(listing.collateral_required_usdt)}"
             )
             action_button: InlineKeyboardButton
             if listing.status == "draft":
@@ -1885,10 +1925,19 @@ class TelegramWebhookRuntime:
             title="Удаление объявления необратимо",
             lines=[
                 f"Активных заданий по объявлению: {preview.open_assignments_count}",
-                f"Покупателям уйдет: {self._format_usdt_with_rub(preview.assignment_linked_reserved_usdt)}",
-                f"Продавцу вернется: {self._format_usdt_with_rub(preview.unassigned_collateral_usdt)}",
+                (
+                    "Покупателям уйдет: "
+                    f"{self._format_usdt_with_rub(preview.assignment_linked_reserved_usdt)}"
+                ),
+                (
+                    "Продавцу вернется: "
+                    f"{self._format_usdt_with_rub(preview.unassigned_collateral_usdt)}"
+                ),
             ],
-            note="При удалении объявления все активные задания будут считаться выполненными, кэшбэк будет выплачен покупателям.",
+            note=(
+                "При удалении объявления все активные задания будут считаться выполненными, "
+                "кэшбэк будет выплачен покупателям."
+            ),
             warning=True,
         )
         await self._replace_message(
@@ -1940,8 +1989,10 @@ class TelegramWebhookRuntime:
         else:
             message = (
                 "Объявление удалено.\n"
-                f"Покупателям ушло: {self._format_usdt_with_rub(result.assignment_transferred_usdt)}\n"
-                f"Продавцу вернулось: {self._format_usdt_with_rub(result.unassigned_collateral_returned_usdt)}"
+                "Покупателям ушло: "
+                f"{self._format_usdt_with_rub(result.assignment_transferred_usdt)}\n"
+                "Продавцу вернулось: "
+                f"{self._format_usdt_with_rub(result.unassigned_collateral_returned_usdt)}"
             )
         self._logger.info(
             "seller_listing_deleted",
@@ -1974,15 +2025,23 @@ class TelegramWebhookRuntime:
         shortfall = required_total - total_balance
         lines = [
             f"<b>Всего:</b> {self._format_usdt_with_rub(total_balance)}",
-            f"<b>Свободно для новых объявлений:</b> {self._format_usdt_with_rub(snapshot.seller_available_usdt)}",
+            (
+                "<b>Свободно для новых объявлений:</b> "
+                f"{self._format_usdt_with_rub(snapshot.seller_available_usdt)}"
+            ),
             f"<b>Уже выделено под объявления:</b> {self._format_usdt_with_rub(allocated_total)}",
         ]
         if shortfall > Decimal("0.000000"):
-            lines.append(f"<b>Не хватает для активации:</b> {self._format_usdt_with_rub(shortfall)}")
+            lines.append(
+                f"<b>Не хватает для активации:</b> {self._format_usdt_with_rub(shortfall)}"
+            )
         text = self._screen_text(
             title="Баланс продавца",
             lines=lines,
-            note="Суммы показаны в $ и приблизительно в ₽. Для нулей рублевая оценка не показывается.",
+            note=(
+                "Суммы показаны в $ и приблизительно в ₽. "
+                "Для нулей рублевая оценка не показывается."
+            ),
         )
         await self._replace_message(
             query_message,
@@ -2509,7 +2568,11 @@ class TelegramWebhookRuntime:
         text = self._screen_text(
             title="Кабинет покупателя",
             lines=[
-                f"<b>Задания:</b> {in_progress} в процессе · {ready} к выводу · {paid} выплачено · {len(assignments)} всего",
+                (
+                    "<b>Задания:</b> "
+                    f"{in_progress} в процессе · {ready} к выводу · "
+                    f"{paid} выплачено · {len(assignments)} всего"
+                ),
                 f"<b>Баланс:</b> {self._format_usdt_with_rub(total_balance)}",
                 f"<b>Доступно:</b> {self._format_usdt_with_rub(snapshot.buyer_available_usdt)}",
             ],
@@ -2760,7 +2823,10 @@ class TelegramWebhookRuntime:
                 title="Задание создано",
                 lines=[
                     self._buyer_task_instruction_text(assignment),
-                    f"<b>Срок отправки:</b> до {assignment.reservation_expires_at:%d.%m.%Y %H:%M UTC}",
+                    (
+                        "<b>Срок отправки:</b> "
+                        f"до {assignment.reservation_expires_at:%d.%m.%Y %H:%M UTC}"
+                    ),
                 ],
                 note="После отправки токена-подтверждения бот продолжит проверку автоматически.",
             )
@@ -2769,7 +2835,10 @@ class TelegramWebhookRuntime:
                 title="Задание уже активно",
                 lines=[
                     self._buyer_task_instruction_text(assignment),
-                    f"<b>Срок отправки:</b> до {assignment.reservation_expires_at:%d.%m.%Y %H:%M UTC}",
+                    (
+                        "<b>Срок отправки:</b> "
+                        f"до {assignment.reservation_expires_at:%d.%m.%Y %H:%M UTC}"
+                    ),
                 ],
             )
         self._logger.info(
@@ -3007,12 +3076,15 @@ class TelegramWebhookRuntime:
                 display_title=item.display_title,
                 fallback=item.search_phrase,
             )
+            cashback_text = self._format_cashback_with_percent(
+                reward_usdt=item.reward_usdt,
+                reference_price_rub=item.reference_price_rub,
+            )
             lines.append(
                 f"<b>Задание {idx}</b> · магазин: {html.escape(item.shop_slug)}\n"
                 f"Товар: {html.escape(display_title)}\n"
                 f"Статус: {html.escape(self._humanize_assignment_status(item.status))}\n"
-                "Кэшбэк: "
-                f"{self._format_cashback_with_percent(reward_usdt=item.reward_usdt, reference_price_rub=item.reference_price_rub)}"
+                f"Кэшбэк: {cashback_text}"
             )
             if item.order_id:
                 lines.append(f"<b>Номер заказа:</b> {html.escape(item.order_id)}")
@@ -3074,9 +3146,15 @@ class TelegramWebhookRuntime:
             title="Баланс покупателя",
             lines=[
                 f"<b>Доступно:</b> {self._format_usdt_with_rub(snapshot.buyer_available_usdt)}",
-                f"<b>В ожидании вывода:</b> {self._format_usdt_with_rub(snapshot.buyer_withdraw_pending_usdt)}",
+                (
+                    "<b>В ожидании вывода:</b> "
+                    f"{self._format_usdt_with_rub(snapshot.buyer_withdraw_pending_usdt)}"
+                ),
             ],
-            note="Вывод оформляется в USDT, поэтому на следующих шагах сумма будет указана именно в USDT.",
+            note=(
+                "Вывод оформляется в USDT, поэтому на следующих шагах "
+                "сумма будет указана именно в USDT."
+            ),
         )
         await self._replace_message(
             query_message,
@@ -3415,7 +3493,8 @@ class TelegramWebhookRuntime:
         for item in pending:
             lines.append(
                 f"<b>Заявка #{item.withdrawal_request_id}</b>\n"
-                f"Покупатель: {item.buyer_telegram_id} (@{html.escape(item.buyer_username or '-')})\n"
+                f"Покупатель: {item.buyer_telegram_id} "
+                f"(@{html.escape(item.buyer_username or '-')})\n"
                 f"Сумма: {self._format_usdt_value(item.amount_usdt, precise=True)} USDT\n"
                 f"Кошелек: {html.escape(item.payout_address)}"
             )
@@ -3475,7 +3554,8 @@ class TelegramWebhookRuntime:
             return
 
         lines = [
-            f"<b>Покупатель:</b> {detail.buyer_telegram_id} (@{html.escape(detail.buyer_username or '-')})",
+            f"<b>Покупатель:</b> {detail.buyer_telegram_id} "
+            f"(@{html.escape(detail.buyer_username or '-')})",
             f"<b>Сумма:</b> {self._format_usdt_value(detail.amount_usdt, precise=True)} USDT",
             f"<b>Статус:</b> {html.escape(self._humanize_withdraw_status(detail.status))}",
             f"<b>Кошелек:</b> {html.escape(detail.payout_address)}",
@@ -4550,7 +4630,10 @@ class TelegramWebhookRuntime:
             if seller_user_id < 1 or shop_id < 1:
                 self._clear_prompt(context)
                 await message.reply_text(
-                    "Не удалось продолжить создание объявления. Откройте раздел «📦 Объявления» заново.",
+                    (
+                        "Не удалось продолжить создание объявления. "
+                        "Откройте раздел «📦 Объявления» заново."
+                    ),
                     reply_markup=back_markup,
                 )
                 return
@@ -4667,19 +4750,30 @@ class TelegramWebhookRuntime:
                     "wb_tech_sizes": snapshot.tech_sizes,
                     "wb_characteristics": snapshot.characteristics,
                     "reference_price_rub": (
-                        observed_buyer_price.buyer_price_rub if observed_buyer_price is not None else None
+                        observed_buyer_price.buyer_price_rub
+                        if observed_buyer_price is not None
+                        else None
                     ),
-                    "reference_price_source": "orders" if observed_buyer_price is not None else None,
+                    "reference_price_source": (
+                        "orders" if observed_buyer_price is not None else None
+                    ),
                     "reference_price_updated_at": (
                         observed_buyer_price.observed_at.isoformat()
-                        if observed_buyer_price is not None and observed_buyer_price.observed_at is not None
+                        if (
+                            observed_buyer_price is not None
+                            and observed_buyer_price.observed_at is not None
+                        )
                         else None
                     ),
                     "seller_price_rub": (
-                        observed_buyer_price.seller_price_rub if observed_buyer_price is not None else None
+                        observed_buyer_price.seller_price_rub
+                        if observed_buyer_price is not None
+                        else None
                     ),
                     "spp_percent": (
-                        observed_buyer_price.spp_percent if observed_buyer_price is not None else None
+                        observed_buyer_price.spp_percent
+                        if observed_buyer_price is not None
+                        else None
                     ),
                     "suggested_display_title": suggested_display_title,
                 },
@@ -4742,7 +4836,9 @@ class TelegramWebhookRuntime:
                         tech_sizes=list(prompt_state.get("wb_tech_sizes") or []),
                         characteristics=list(prompt_state.get("wb_characteristics") or []),
                     ),
-                    suggested_display_title=str(prompt_state.get("suggested_display_title", "")).strip(),
+                    suggested_display_title=str(
+                        prompt_state.get("suggested_display_title", "")
+                    ).strip(),
                     buyer_price_rub=buyer_price_rub,
                     reference_price_source="manual",
                 ),
@@ -4779,7 +4875,9 @@ class TelegramWebhookRuntime:
             wb_tech_sizes = list(prompt_state.get("wb_tech_sizes") or [])
             wb_characteristics = list(prompt_state.get("wb_characteristics") or [])
             reference_price_rub_raw = prompt_state.get("reference_price_rub")
-            reference_price_source = str(prompt_state.get("reference_price_source", "")).strip() or None
+            reference_price_source = (
+                str(prompt_state.get("reference_price_source", "")).strip() or None
+            )
             reference_price_updated_at_raw = prompt_state.get("reference_price_updated_at")
             suggested_display_title = str(prompt_state.get("suggested_display_title", "")).strip()
             back_markup = InlineKeyboardMarkup(
@@ -4809,16 +4907,26 @@ class TelegramWebhookRuntime:
             except (TypeError, ValueError, InvalidOperation):
                 self._clear_prompt(context)
                 await message.reply_text(
-                    "Не удалось продолжить создание объявления. Откройте раздел «📦 Объявления» заново.",
+                    (
+                        "Не удалось продолжить создание объявления. "
+                        "Откройте раздел «📦 Объявления» заново."
+                    ),
                     reply_markup=back_markup,
                 )
                 return
             display_title_input = text.strip()
-            display_title = suggested_display_title if display_title_input == "." else display_title_input
+            display_title = (
+                suggested_display_title
+                if display_title_input == "."
+                else display_title_input
+            )
             if seller_user_id < 1 or shop_id < 1 or wb_product_id < 1 or slot_count < 1:
                 self._clear_prompt(context)
                 await message.reply_text(
-                    "Не удалось продолжить создание объявления. Откройте раздел «📦 Объявления» заново.",
+                    (
+                        "Не удалось продолжить создание объявления. "
+                        "Откройте раздел «📦 Объявления» заново."
+                    ),
                     reply_markup=back_markup,
                 )
                 return
@@ -5415,12 +5523,15 @@ class TelegramWebhookRuntime:
                 display_title=listing.display_title,
                 fallback=listing.search_phrase,
             )
+            cashback_text = self._format_cashback_with_percent(
+                reward_usdt=listing.reward_usdt,
+                reference_price_rub=listing.reference_price_rub,
+            )
             lines.append(
                 f"<b>Объявление {idx}</b>\n"
                 f"Товар: {html.escape(display_title)}\n"
                 f"Цена: {self._format_price_optional_rub(listing.reference_price_rub)}\n"
-                "Кэшбэк: "
-                f"{self._format_cashback_with_percent(reward_usdt=listing.reward_usdt, reference_price_rub=listing.reference_price_rub)}"
+                f"Кэшбэк: {cashback_text}"
             )
             keyboard_rows.append(
                 [
@@ -5807,11 +5918,15 @@ class TelegramWebhookRuntime:
         except NotFoundError as exc:
             raise ListingValidationError("Магазин не найден или уже удален.") from exc
         except InvalidStateError as exc:
-            raise ListingValidationError("Токен магазина невалиден. Обновите токен WB API.") from exc
+            raise ListingValidationError(
+                "Токен магазина невалиден. Обновите токен WB API."
+            ) from exc
         try:
             return decrypt_token(ciphertext, self._settings.token_cipher_key)
         except Exception as exc:
-            raise ListingValidationError("Не удалось прочитать токен магазина. Сохраните его заново.") from exc
+            raise ListingValidationError(
+                "Не удалось прочитать токен магазина. Сохраните его заново."
+            ) from exc
 
     def _set_prompt(
         self,
@@ -5866,7 +5981,12 @@ class TelegramWebhookRuntime:
                 photo_url=photo_url,
             )
 
-    def _seller_listing_detail_markup(self, *, listing_id: int, status: str) -> InlineKeyboardMarkup:
+    def _seller_listing_detail_markup(
+        self,
+        *,
+        listing_id: int,
+        status: str,
+    ) -> InlineKeyboardMarkup:
         if status == "draft":
             action_button = InlineKeyboardButton(
                 text="✅ Активировать",
@@ -5932,7 +6052,13 @@ class TelegramWebhookRuntime:
             collateral_view.in_progress_assignments_count if collateral_view is not None else 0
         )
         available = (
-            collateral_view.available_slots if collateral_view is not None else listing.available_slots
+            collateral_view.available_slots
+            if collateral_view is not None
+            else listing.available_slots
+        )
+        cashback_text = self._format_cashback_with_percent(
+            reward_usdt=listing.reward_usdt,
+            reference_price_rub=listing.reference_price_rub,
         )
         lines: list[str] = []
         if notice:
@@ -5950,18 +6076,28 @@ class TelegramWebhookRuntime:
                     price_rub=listing.reference_price_rub,
                     source=listing.reference_price_source,
                 ),
-                f"<b>Кэшбэк:</b> {html.escape(self._format_cashback_with_percent(reward_usdt=listing.reward_usdt, reference_price_rub=listing.reference_price_rub))}",
+                f"<b>Кэшбэк:</b> {html.escape(cashback_text)}",
                 f"<b>Поисковая фраза:</b> &quot;{html.escape(listing.search_phrase)}&quot;",
                 f"<b>Статус:</b> {html.escape(self._humanize_listing_status(listing.status))}",
-                f"<b>План:</b> {planned} · <b>В процессе:</b> {in_progress} · <b>Доступно:</b> {available}",
+                (
+                    f"<b>План:</b> {planned} · <b>В процессе:</b> {in_progress} "
+                    f"· <b>Доступно:</b> {available}"
+                ),
             ]
         )
         if collateral_view is not None:
-            lines.append(
-                f"<b>Обеспечение:</b> {html.escape(self._format_usdt_with_rub(collateral_view.collateral_locked_usdt))} / "
-                f"{html.escape(self._format_usdt_with_rub(collateral_view.collateral_required_usdt))}"
+            locked_text = html.escape(
+                self._format_usdt_with_rub(collateral_view.collateral_locked_usdt)
             )
-        lines.append(f"<b>Размеры:</b> {html.escape(self._format_sizes_text(listing.wb_tech_sizes))}")
+            required_text = html.escape(
+                self._format_usdt_with_rub(collateral_view.collateral_required_usdt)
+            )
+            lines.append(
+                f"<b>Обеспечение:</b> {locked_text} / {required_text}"
+            )
+        lines.append(
+            f"<b>Размеры:</b> {html.escape(self._format_sizes_text(listing.wb_tech_sizes))}"
+        )
         description_block = self._format_expandable_block_html(
             title="Описание",
             body=listing.wb_description,
@@ -5981,6 +6117,10 @@ class TelegramWebhookRuntime:
         lines: list[str] = []
         if notice:
             lines.append(html.escape(notice))
+        cashback_text = self._format_cashback_with_percent(
+            reward_usdt=listing.reward_usdt,
+            reference_price_rub=listing.reference_price_rub,
+        )
         lines.extend(
             [
                 f"<b>{html.escape(display_title)}</b>",
@@ -5993,7 +6133,7 @@ class TelegramWebhookRuntime:
                     price_rub=listing.reference_price_rub,
                     source=None,
                 ),
-                f"<b>Кэшбэк:</b> {html.escape(self._format_cashback_with_percent(reward_usdt=listing.reward_usdt, reference_price_rub=listing.reference_price_rub))}",
+                f"<b>Кэшбэк:</b> {html.escape(cashback_text)}",
                 f"<b>Поисковая фраза:</b> &quot;{html.escape(listing.search_phrase)}&quot;",
                 f"<b>Размеры:</b> {html.escape(self._format_sizes_text(listing.wb_tech_sizes))}",
             ]
@@ -6023,7 +6163,10 @@ class TelegramWebhookRuntime:
             suffix = " (из заказов)"
         elif source == "manual":
             suffix = " (вручную)"
-        return f"<b>{html.escape(label)}:</b> {self._format_price_rub(price_rub)}{html.escape(suffix)}"
+        return (
+            f"<b>{html.escape(label)}:</b> "
+            f"{self._format_price_rub(price_rub)}{html.escape(suffix)}"
+        )
 
     @staticmethod
     def _format_sizes_text(sizes: list[str] | None) -> str:

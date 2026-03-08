@@ -409,7 +409,10 @@ async def test_phase10_e2e_seller_listing_create_and_activate_flow() -> None:
 
     preview_events = await harness.text('552892532 100 5 "бумага а4 для принтера"')
     assert any("<b>Проверка товара завершена</b>" in text for text in _event_texts(preview_events))
-    assert any("Название для покупателей:</b> Бумага A4 для принтера" in text for text in _event_texts(preview_events))
+    assert any(
+        "Название для покупателей:</b> Бумага A4 для принтера" in text
+        for text in _event_texts(preview_events)
+    )
 
     create_events = await harness.text(".")
     assert any("Активировать объявление сейчас?" in text for text in _event_texts(create_events))
@@ -604,7 +607,11 @@ async def test_phase10_e2e_listing_activation_is_blocked_when_product_card_is_un
     )
     harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
 
-    blocked_events = await harness.callback(flow="seller", action="listing_activate", entity_id="21")
+    blocked_events = await harness.callback(
+        flow="seller",
+        action="listing_activate",
+        entity_id="21",
+    )
     blocked_text = "\n".join(_event_texts(blocked_events))
 
     assert "недоступен на WB" in blocked_text

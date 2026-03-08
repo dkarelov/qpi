@@ -540,14 +540,18 @@ class SellerService:
             normalized_reference_price_rub = int(reference_price_rub)
             if normalized_reference_price_rub < 1:
                 raise ValueError("reference_price_rub must be >= 1")
-        normalized_reference_price_source = reference_price_source.strip() if reference_price_source else None
-        if normalized_reference_price_source is not None and normalized_reference_price_source not in {
-            "orders",
-            "manual",
-        }:
+        normalized_reference_price_source = (
+            reference_price_source.strip() if reference_price_source else None
+        )
+        if (
+            normalized_reference_price_source is not None
+            and normalized_reference_price_source not in {"orders", "manual"}
+        ):
             raise ValueError("reference_price_source must be one of: orders, manual")
         if normalized_reference_price_rub is not None and normalized_reference_price_source is None:
-            raise ValueError("reference_price_source must be provided when reference_price_rub is set")
+            raise ValueError(
+                "reference_price_source must be provided when reference_price_rub is set"
+            )
         if normalized_reference_price_rub is None:
             normalized_reference_price_source = None
             reference_price_updated_at = None

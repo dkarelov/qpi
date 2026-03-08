@@ -187,7 +187,10 @@ def test_listing_create_instruction_contains_new_fields_and_fx_reference() -> No
 
     text = runtime._listing_create_instruction_text(shop_title="Тушенка")
     assert "Создание объявления для магазина «Тушенка»" in text
-    assert "&lt;артикул ВБ&gt; &lt;кэшбэк руб&gt; &lt;макс заказов&gt; &lt;поисковая фраза&gt;" in text
+    assert (
+        "&lt;артикул ВБ&gt; &lt;кэшбэк руб&gt; "
+        "&lt;макс заказов&gt; &lt;поисковая фраза&gt;"
+    ) in text
     assert "12345678 100 5" in text
     assert "Конвертация в $" in text
     assert "~100" in text
