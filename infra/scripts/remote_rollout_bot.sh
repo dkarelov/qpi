@@ -34,7 +34,11 @@ sudo tar -xzf "${archive_path}" -C "${release_dir}"
 sudo chown -R ubuntu:ubuntu "${release_dir}"
 
 python3 -m venv "${release_dir}/.venv"
-"${release_dir}/.venv/bin/pip" install --upgrade pip
+
+ca_bundle="/etc/ssl/certs/ca-certificates.crt"
+export SSL_CERT_FILE="${SSL_CERT_FILE:-${ca_bundle}}"
+export REQUESTS_CA_BUNDLE="${REQUESTS_CA_BUNDLE:-${ca_bundle}}"
+export PIP_CERT="${PIP_CERT:-${ca_bundle}}"
 
 if grep -q '\${TOKEN_YC_JSON_LOGGER}' "${release_dir}/requirements.txt"; then
   if [[ -z "${TOKEN_YC_JSON_LOGGER:-}" ]]; then
