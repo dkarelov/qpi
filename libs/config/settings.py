@@ -72,6 +72,9 @@ class BotApiSettings(BaseAppSettings):
         default=30,
         alias="WB_PING_RATE_LIMIT_WINDOW_SECONDS",
     )
+    wb_content_timeout_seconds: int = Field(default=10, alias="WB_CONTENT_TIMEOUT_SECONDS")
+    wb_orders_timeout_seconds: int = Field(default=20, alias="WB_ORDERS_TIMEOUT_SECONDS")
+    wb_orders_lookback_days: int = Field(default=30, alias="WB_ORDERS_LOOKBACK_DAYS")
     seller_collateral_shard_key: str = Field(default="mvp-1", alias="SELLER_COLLATERAL_SHARD_KEY")
     seller_collateral_shard_address: str = Field(
         default="UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH",
@@ -200,6 +203,20 @@ class BotApiSettings(BaseAppSettings):
     def validate_wb_ping_rate_limit_window(cls, value: int) -> int:
         if value < 1:
             raise ValueError("WB_PING_RATE_LIMIT_WINDOW_SECONDS must be >= 1")
+        return value
+
+    @field_validator("wb_content_timeout_seconds", "wb_orders_timeout_seconds")
+    @classmethod
+    def validate_wb_internal_timeout_seconds(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("WB_*_TIMEOUT_SECONDS must be >= 1")
+        return value
+
+    @field_validator("wb_orders_lookback_days")
+    @classmethod
+    def validate_wb_orders_lookback_days(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("WB_ORDERS_LOOKBACK_DAYS must be >= 1")
         return value
 
     @field_validator("seller_collateral_shard_key", "seller_collateral_shard_address")

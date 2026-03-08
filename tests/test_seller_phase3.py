@@ -120,6 +120,40 @@ async def test_admin_can_bootstrap_seller_and_operate_seller_flow(db_pool) -> No
 
 
 @pytest.mark.asyncio
+async def test_buyer_can_later_bootstrap_seller_on_same_telegram_id(db_pool) -> None:
+    seller_service = SellerService(db_pool)
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            buyer_user_id = await create_user(
+                conn,
+                telegram_id=7102,
+                role="buyer",
+                username="buyer_then_seller",
+            )
+
+    result = await seller_service.bootstrap_seller(
+        telegram_id=7102,
+        username="buyer_then_seller",
+    )
+
+    assert result.user_id == buyer_user_id
+    assert result.created_user is False
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT role, is_seller, is_buyer, is_admin FROM users WHERE id = %s",
+                (buyer_user_id,),
+            )
+            row = await cur.fetchone()
+            assert row["role"] == "buyer"
+            assert row["is_seller"] is True
+            assert row["is_buyer"] is True
+            assert row["is_admin"] is False
+
+
+@pytest.mark.asyncio
 async def test_shop_slug_uniqueness_and_multi_listing_crud(db_pool) -> None:
     service = SellerService(db_pool)
     seller = await service.bootstrap_seller(telegram_id=7002, username="seller_b")
@@ -171,6 +205,37 @@ async def test_shop_slug_uniqueness_and_multi_listing_crud(db_pool) -> None:
     assert [row.shop_id for row in remaining_shops] == [shop_two.shop_id]
     remaining_listings = await service.list_listings(seller_user_id=seller.user_id)
     assert [row.listing_id for row in remaining_listings] == [listing_two.listing_id]
+
+
+@pytest.mark.asyncio
+async def test_listing_draft_persists_buyer_visible_metadata(db_pool) -> None:
+    service = SellerService(db_pool)
+    seller = await service.bootstrap_seller(telegram_id=7999, username="seller_meta")
+    shop = await service.create_shop(seller_user_id=seller.user_id, title="Metadata Shop")
+
+    listing = await service.create_listing_draft(
+        seller_user_id=seller.user_id,
+        shop_id=shop.shop_id,
+        wb_product_id=225954014,
+        display_title="Клей для ремонта",
+        wb_source_title="B7000 Клей универсальный прозрачный",
+        wb_brand_name="B7000",
+        reference_price_rub=392,
+        reference_price_source="manual",
+        search_phrase="клей b7000",
+        reward_usdt=Decimal("1.000000"),
+        slot_count=2,
+    )
+
+    loaded = await service.get_listing(
+        seller_user_id=seller.user_id,
+        listing_id=listing.listing_id,
+    )
+
+    assert loaded.display_title == "Клей для ремонта"
+    assert loaded.wb_source_title == "B7000 Клей универсальный прозрачный"
+    assert loaded.wb_brand_name == "B7000"
+    assert loaded.reference_price_rub == 392
 
 
 @pytest.mark.asyncio

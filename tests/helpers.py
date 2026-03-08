@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from psycopg.types.json import Json
 
 
 async def create_user(
@@ -13,14 +14,24 @@ async def create_user(
     role: str,
     username: str,
 ) -> int:
+    is_seller = role == "seller"
+    is_buyer = role == "buyer"
+    is_admin = role == "admin"
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
-            INSERT INTO users (telegram_id, role, username)
-            VALUES (%s, %s, %s)
+            INSERT INTO users (
+                telegram_id,
+                role,
+                username,
+                is_seller,
+                is_buyer,
+                is_admin
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
-            (telegram_id, role, username),
+            (telegram_id, role, username, is_seller, is_buyer, is_admin),
         )
         row = await cur.fetchone()
         return row["id"]
@@ -89,6 +100,17 @@ async def create_listing(
     slot_count: int,
     available_slots: int,
     status: str = "active",
+    display_title: str | None = None,
+    wb_source_title: str | None = None,
+    wb_subject_name: str | None = None,
+    wb_brand_name: str | None = None,
+    wb_vendor_code: str | None = None,
+    wb_description: str | None = None,
+    wb_photo_url: str | None = None,
+    wb_tech_sizes: list[str] | None = None,
+    wb_characteristics: list[dict[str, str]] | None = None,
+    reference_price_rub: int | None = None,
+    reference_price_source: str | None = None,
 ) -> int:
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -97,6 +119,17 @@ async def create_listing(
                 shop_id,
                 seller_user_id,
                 wb_product_id,
+                display_title,
+                wb_source_title,
+                wb_subject_name,
+                wb_brand_name,
+                wb_vendor_code,
+                wb_description,
+                wb_photo_url,
+                wb_tech_sizes_json,
+                wb_characteristics_json,
+                reference_price_rub,
+                reference_price_source,
                 search_phrase,
                 reward_usdt,
                 slot_count,
@@ -104,13 +137,24 @@ async def create_listing(
                 collateral_required_usdt,
                 status
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
                 shop_id,
                 seller_user_id,
                 wb_product_id,
+                display_title or search_phrase,
+                wb_source_title,
+                wb_subject_name,
+                wb_brand_name,
+                wb_vendor_code,
+                wb_description,
+                wb_photo_url,
+                Json(wb_tech_sizes or []),
+                Json(wb_characteristics or []),
+                reference_price_rub,
+                reference_price_source,
                 search_phrase,
                 reward_usdt,
                 slot_count,

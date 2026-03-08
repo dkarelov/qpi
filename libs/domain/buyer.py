@@ -70,7 +70,7 @@ class BuyerService:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
-                    SELECT id, role
+                    SELECT id, role, is_buyer, is_admin
                     FROM users
                     WHERE telegram_id = %s
                     FOR UPDATE
@@ -82,8 +82,15 @@ class BuyerService:
                 if existing is None:
                     await cur.execute(
                         """
-                        INSERT INTO users (telegram_id, username, role)
-                        VALUES (%s, %s, 'buyer')
+                        INSERT INTO users (
+                            telegram_id,
+                            username,
+                            role,
+                            is_seller,
+                            is_buyer,
+                            is_admin
+                        )
+                        VALUES (%s, %s, 'buyer', false, true, false)
                         RETURNING id
                         """,
                         (telegram_id, username),
@@ -92,19 +99,18 @@ class BuyerService:
                     user_id = created["id"]
                     created_user = True
                 else:
-                    if existing["role"] not in {"buyer", "admin"}:
-                        raise InvalidStateError("telegram user already exists with non-buyer role")
                     user_id = existing["id"]
-                    if username is not None:
-                        await cur.execute(
-                            """
-                            UPDATE users
-                            SET username = %s,
-                                updated_at = timezone('utc', now())
-                            WHERE id = %s
-                            """,
-                            (username, user_id),
-                        )
+                    await cur.execute(
+                        """
+                        UPDATE users
+                        SET username = COALESCE(%s, username),
+                            is_buyer = true,
+                            is_admin = is_admin OR role = 'admin',
+                            updated_at = timezone('utc', now())
+                        WHERE id = %s
+                        """,
+                        (username, user_id),
+                    )
 
                 buyer_available_account_id = await self._ensure_owner_account(
                     cur,
@@ -200,6 +206,15 @@ class BuyerService:
                         l.id,
                         l.shop_id,
                         l.wb_product_id,
+                        l.display_title,
+                        l.wb_source_title,
+                        l.reference_price_rub,
+                        l.wb_subject_name,
+                        l.wb_brand_name,
+                        l.wb_description,
+                        l.wb_photo_url,
+                        l.wb_tech_sizes_json,
+                        l.wb_characteristics_json,
                         l.search_phrase,
                         l.reward_usdt,
                         l.slot_count,
@@ -220,6 +235,15 @@ class BuyerService:
                         listing_id=row["id"],
                         shop_id=row["shop_id"],
                         wb_product_id=row["wb_product_id"],
+                        display_title=row["display_title"],
+                        wb_source_title=row["wb_source_title"],
+                        reference_price_rub=row["reference_price_rub"],
+                        wb_subject_name=row["wb_subject_name"],
+                        wb_brand_name=row["wb_brand_name"],
+                        wb_description=row["wb_description"],
+                        wb_photo_url=row["wb_photo_url"],
+                        wb_tech_sizes=list(row["wb_tech_sizes_json"] or []),
+                        wb_characteristics=list(row["wb_characteristics_json"] or []),
                         search_phrase=row["search_phrase"],
                         reward_usdt=row["reward_usdt"],
                         slot_count=row["slot_count"],
@@ -578,7 +602,11 @@ class BuyerService:
                     SELECT id
                     FROM users
                     WHERE id = %s
-                      AND role IN ('buyer', 'admin')
+                      AND (
+                            is_buyer
+                            OR is_admin
+                            OR role IN ('buyer', 'admin')
+                      )
                     """,
                     (user_id,),
                 )
@@ -601,6 +629,15 @@ class BuyerService:
                         a.reservation_expires_at,
                         a.order_id,
                         l.wb_product_id,
+                        l.display_title,
+                        l.wb_source_title,
+                        l.reference_price_rub,
+                        l.wb_subject_name,
+                        l.wb_brand_name,
+                        l.wb_description,
+                        l.wb_photo_url,
+                        l.wb_tech_sizes_json,
+                        l.wb_characteristics_json,
                         l.search_phrase,
                         s.slug AS shop_slug,
                         bo.ordered_at
@@ -620,6 +657,15 @@ class BuyerService:
                         listing_id=row["listing_id"],
                         shop_slug=row["shop_slug"],
                         wb_product_id=row["wb_product_id"],
+                        display_title=row["display_title"],
+                        wb_source_title=row["wb_source_title"],
+                        reference_price_rub=row["reference_price_rub"],
+                        wb_subject_name=row["wb_subject_name"],
+                        wb_brand_name=row["wb_brand_name"],
+                        wb_description=row["wb_description"],
+                        wb_photo_url=row["wb_photo_url"],
+                        wb_tech_sizes=list(row["wb_tech_sizes_json"] or []),
+                        wb_characteristics=list(row["wb_characteristics_json"] or []),
                         search_phrase=row["search_phrase"],
                         status=row["status"],
                         reward_usdt=row["reward_usdt"],

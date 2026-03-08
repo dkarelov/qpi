@@ -54,29 +54,54 @@ class WbPingClient:
             await asyncio.sleep(max(wait_for, 0.05))
 
     def _validate_token_sync(self, token: str) -> WbPingResult:
-        request = urllib.request.Request(
+        statistics_result = _request_ping(
             "https://statistics-api.wildberries.ru/ping",
-            method="GET",
-            headers={
-                "Authorization": token,
-                "Accept": "application/json",
-            },
+            token=token,
+            timeout_seconds=self._timeout_seconds,
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
-                payload = response.read().decode("utf-8", errors="replace")
-                status = response.getcode()
-                if 200 <= status < 300:
-                    return WbPingResult(valid=True, status_code=status, message="ok")
-                return WbPingResult(valid=False, status_code=status, message=payload[:500])
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            message = _extract_message(body) or body or exc.reason
-            return WbPingResult(valid=False, status_code=exc.code, message=message[:500])
-        except urllib.error.URLError as exc:
-            return WbPingResult(valid=False, status_code=None, message=str(exc.reason))
-        except TimeoutError:
-            return WbPingResult(valid=False, status_code=None, message="timeout")
+        if not statistics_result.valid:
+            return statistics_result
+
+        content_result = _request_ping(
+            "https://content-api.wildberries.ru/ping",
+            token=token,
+            timeout_seconds=self._timeout_seconds,
+        )
+        if not content_result.valid:
+            message = content_result.message or "content ping failed"
+            return WbPingResult(
+                valid=False,
+                status_code=content_result.status_code,
+                message=f"content access missing: {message[:450]}",
+            )
+
+        return WbPingResult(valid=True, status_code=statistics_result.status_code, message="ok")
+
+
+def _request_ping(*, url: str, token: str, timeout_seconds: int) -> WbPingResult:
+    request = urllib.request.Request(
+        url,
+        method="GET",
+        headers={
+            "Authorization": token,
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            payload = response.read().decode("utf-8", errors="replace")
+            status = response.getcode()
+            if 200 <= status < 300:
+                return WbPingResult(valid=True, status_code=status, message="ok")
+            return WbPingResult(valid=False, status_code=status, message=payload[:500])
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        message = _extract_message(body) or body or exc.reason
+        return WbPingResult(valid=False, status_code=exc.code, message=message[:500])
+    except urllib.error.URLError as exc:
+        return WbPingResult(valid=False, status_code=None, message=str(exc.reason))
+    except TimeoutError:
+        return WbPingResult(valid=False, status_code=None, message="timeout")
 
 
 def _extract_message(payload: str) -> str | None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -94,7 +95,7 @@ class SellerService:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
-                    SELECT id, role
+                    SELECT id, role, is_seller, is_admin
                     FROM users
                     WHERE telegram_id = %s
                     FOR UPDATE
@@ -106,8 +107,15 @@ class SellerService:
                 if existing is None:
                     await cur.execute(
                         """
-                        INSERT INTO users (telegram_id, username, role)
-                        VALUES (%s, %s, 'seller')
+                        INSERT INTO users (
+                            telegram_id,
+                            username,
+                            role,
+                            is_seller,
+                            is_buyer,
+                            is_admin
+                        )
+                        VALUES (%s, %s, 'seller', true, false, false)
                         RETURNING id
                         """,
                         (telegram_id, username),
@@ -116,19 +124,18 @@ class SellerService:
                     user_id = created["id"]
                     created_user = True
                 else:
-                    if existing["role"] not in {"seller", "admin"}:
-                        raise InvalidStateError("telegram user already exists with non-seller role")
                     user_id = existing["id"]
-                    if username is not None:
-                        await cur.execute(
-                            """
-                            UPDATE users
-                            SET username = %s,
-                                updated_at = timezone('utc', now())
-                            WHERE id = %s
-                            """,
-                            (username, user_id),
-                        )
+                    await cur.execute(
+                        """
+                        UPDATE users
+                        SET username = COALESCE(%s, username),
+                            is_seller = true,
+                            is_admin = is_admin OR role = 'admin',
+                            updated_at = timezone('utc', now())
+                        WHERE id = %s
+                        """,
+                        (username, user_id),
+                    )
 
                 seller_available_account_id = await self._ensure_owner_account(
                     cur,
@@ -225,6 +232,26 @@ class SellerService:
                     deleted_at=shop["deleted_at"],
                     wb_token_status=shop["wb_token_status"],
                 )
+
+        return await run_in_transaction(self._pool, operation, read_only=True)
+
+    async def get_validated_shop_token_ciphertext(
+        self,
+        *,
+        seller_user_id: int,
+        shop_id: int,
+    ) -> str:
+        async def operation(conn: AsyncConnection) -> str:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                shop = await self._fetch_shop_owned(
+                    cur,
+                    seller_user_id=seller_user_id,
+                    shop_id=shop_id,
+                    for_update=False,
+                )
+                if shop["wb_token_status"] != "valid" or not shop["wb_token_ciphertext"]:
+                    raise InvalidStateError("shop token is not valid")
+                return str(shop["wb_token_ciphertext"])
 
         return await run_in_transaction(self._pool, operation, read_only=True)
 
@@ -476,15 +503,54 @@ class SellerService:
         search_phrase: str,
         reward_usdt: Decimal,
         slot_count: int,
+        display_title: str | None = None,
+        wb_source_title: str | None = None,
+        wb_subject_name: str | None = None,
+        wb_brand_name: str | None = None,
+        wb_vendor_code: str | None = None,
+        wb_description: str | None = None,
+        wb_photo_url: str | None = None,
+        wb_tech_sizes: list[str] | None = None,
+        wb_characteristics: list[dict[str, str]] | None = None,
+        reference_price_rub: int | None = None,
+        reference_price_source: str | None = None,
+        reference_price_updated_at: datetime | None = None,
     ) -> ListingResult:
         amount = _normalize_amount(reward_usdt)
         normalized_phrase = search_phrase.strip()
+        normalized_display_title = (display_title or normalized_phrase).strip()
         if not normalized_phrase:
             raise ValueError("search_phrase must not be empty")
+        if not normalized_display_title:
+            raise ValueError("display_title must not be empty")
         if amount <= Decimal("0.000000"):
             raise ValueError("reward_usdt must be > 0")
         if slot_count < 1:
             raise ValueError("slot_count must be >= 1")
+        normalized_wb_source_title = wb_source_title.strip() if wb_source_title else None
+        normalized_wb_subject_name = wb_subject_name.strip() if wb_subject_name else None
+        normalized_wb_brand_name = wb_brand_name.strip() if wb_brand_name else None
+        normalized_wb_vendor_code = wb_vendor_code.strip() if wb_vendor_code else None
+        normalized_wb_description = wb_description.strip() if wb_description else None
+        normalized_wb_photo_url = wb_photo_url.strip() if wb_photo_url else None
+        normalized_wb_tech_sizes = _normalize_text_list(wb_tech_sizes)
+        normalized_wb_characteristics = _normalize_characteristics(wb_characteristics)
+        normalized_reference_price_rub: int | None = None
+        if reference_price_rub is not None:
+            normalized_reference_price_rub = int(reference_price_rub)
+            if normalized_reference_price_rub < 1:
+                raise ValueError("reference_price_rub must be >= 1")
+        normalized_reference_price_source = reference_price_source.strip() if reference_price_source else None
+        if normalized_reference_price_source is not None and normalized_reference_price_source not in {
+            "orders",
+            "manual",
+        }:
+            raise ValueError("reference_price_source must be one of: orders, manual")
+        if normalized_reference_price_rub is not None and normalized_reference_price_source is None:
+            raise ValueError("reference_price_source must be provided when reference_price_rub is set")
+        if normalized_reference_price_rub is None:
+            normalized_reference_price_source = None
+            reference_price_updated_at = None
 
         collateral_required = _normalize_amount(
             amount * Decimal(slot_count) * _COLLATERAL_FEE_MULTIPLIER
@@ -499,6 +565,18 @@ class SellerService:
                         shop_id,
                         seller_user_id,
                         wb_product_id,
+                        display_title,
+                        wb_source_title,
+                        wb_subject_name,
+                        wb_brand_name,
+                        wb_vendor_code,
+                        wb_description,
+                        wb_photo_url,
+                        wb_tech_sizes_json,
+                        wb_characteristics_json,
+                        reference_price_rub,
+                        reference_price_source,
+                        reference_price_updated_at,
                         search_phrase,
                         reward_usdt,
                         slot_count,
@@ -506,11 +584,27 @@ class SellerService:
                         collateral_required_usdt,
                         status
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'draft')
+                    VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        'draft'
+                    )
                     RETURNING
                         id,
                         shop_id,
                         wb_product_id,
+                        display_title,
+                        wb_source_title,
+                        wb_subject_name,
+                        wb_brand_name,
+                        wb_vendor_code,
+                        wb_description,
+                        wb_photo_url,
+                        wb_tech_sizes_json,
+                        wb_characteristics_json,
+                        reference_price_rub,
+                        reference_price_source,
+                        reference_price_updated_at,
                         search_phrase,
                         status,
                         reward_usdt,
@@ -523,6 +617,18 @@ class SellerService:
                         shop_id,
                         seller_user_id,
                         wb_product_id,
+                        normalized_display_title,
+                        normalized_wb_source_title,
+                        normalized_wb_subject_name,
+                        normalized_wb_brand_name,
+                        normalized_wb_vendor_code,
+                        normalized_wb_description,
+                        normalized_wb_photo_url,
+                        Json(normalized_wb_tech_sizes),
+                        Json(normalized_wb_characteristics),
+                        normalized_reference_price_rub,
+                        normalized_reference_price_source,
+                        reference_price_updated_at,
                         normalized_phrase,
                         amount,
                         slot_count,
@@ -535,6 +641,18 @@ class SellerService:
                     listing_id=row["id"],
                     shop_id=row["shop_id"],
                     wb_product_id=row["wb_product_id"],
+                    display_title=row["display_title"],
+                    wb_source_title=row["wb_source_title"],
+                    wb_subject_name=row["wb_subject_name"],
+                    wb_brand_name=row["wb_brand_name"],
+                    wb_vendor_code=row["wb_vendor_code"],
+                    wb_description=row["wb_description"],
+                    wb_photo_url=row["wb_photo_url"],
+                    wb_tech_sizes=list(row["wb_tech_sizes_json"] or []),
+                    wb_characteristics=list(row["wb_characteristics_json"] or []),
+                    reference_price_rub=row["reference_price_rub"],
+                    reference_price_source=row["reference_price_source"],
+                    reference_price_updated_at=row["reference_price_updated_at"],
                     search_phrase=row["search_phrase"],
                     status=row["status"],
                     reward_usdt=row["reward_usdt"],
@@ -561,6 +679,18 @@ class SellerService:
                         id,
                         shop_id,
                         wb_product_id,
+                        display_title,
+                        wb_source_title,
+                        wb_subject_name,
+                        wb_brand_name,
+                        wb_vendor_code,
+                        wb_description,
+                        wb_photo_url,
+                        wb_tech_sizes_json,
+                        wb_characteristics_json,
+                        reference_price_rub,
+                        reference_price_source,
+                        reference_price_updated_at,
                         search_phrase,
                         status,
                         reward_usdt,
@@ -585,6 +715,18 @@ class SellerService:
                         listing_id=row["id"],
                         shop_id=row["shop_id"],
                         wb_product_id=row["wb_product_id"],
+                        display_title=row["display_title"],
+                        wb_source_title=row["wb_source_title"],
+                        wb_subject_name=row["wb_subject_name"],
+                        wb_brand_name=row["wb_brand_name"],
+                        wb_vendor_code=row["wb_vendor_code"],
+                        wb_description=row["wb_description"],
+                        wb_photo_url=row["wb_photo_url"],
+                        wb_tech_sizes=list(row["wb_tech_sizes_json"] or []),
+                        wb_characteristics=list(row["wb_characteristics_json"] or []),
+                        reference_price_rub=row["reference_price_rub"],
+                        reference_price_source=row["reference_price_source"],
+                        reference_price_updated_at=row["reference_price_updated_at"],
                         search_phrase=row["search_phrase"],
                         status=row["status"],
                         reward_usdt=row["reward_usdt"],
@@ -595,6 +737,77 @@ class SellerService:
                     )
                     for row in rows
                 ]
+
+        return await run_in_transaction(self._pool, operation, read_only=True)
+
+    async def get_listing(
+        self,
+        *,
+        seller_user_id: int,
+        listing_id: int,
+        include_deleted: bool = False,
+    ) -> ListingResult:
+        async def operation(conn: AsyncConnection) -> ListingResult:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                params: list[Any] = [listing_id, seller_user_id]
+                query = """
+                    SELECT
+                        id,
+                        shop_id,
+                        wb_product_id,
+                        display_title,
+                        wb_source_title,
+                        wb_subject_name,
+                        wb_brand_name,
+                        wb_vendor_code,
+                        wb_description,
+                        wb_photo_url,
+                        wb_tech_sizes_json,
+                        wb_characteristics_json,
+                        reference_price_rub,
+                        reference_price_source,
+                        reference_price_updated_at,
+                        search_phrase,
+                        status,
+                        reward_usdt,
+                        slot_count,
+                        available_slots,
+                        collateral_required_usdt,
+                        deleted_at
+                    FROM listings
+                    WHERE id = %s
+                      AND seller_user_id = %s
+                """
+                if not include_deleted:
+                    query += " AND deleted_at IS NULL"
+                await cur.execute(query, tuple(params))
+                row = await cur.fetchone()
+                if row is None:
+                    raise NotFoundError(f"listing {listing_id} not found")
+                return ListingResult(
+                    listing_id=row["id"],
+                    shop_id=row["shop_id"],
+                    wb_product_id=row["wb_product_id"],
+                    display_title=row["display_title"],
+                    wb_source_title=row["wb_source_title"],
+                    wb_subject_name=row["wb_subject_name"],
+                    wb_brand_name=row["wb_brand_name"],
+                    wb_vendor_code=row["wb_vendor_code"],
+                    wb_description=row["wb_description"],
+                    wb_photo_url=row["wb_photo_url"],
+                    wb_tech_sizes=list(row["wb_tech_sizes_json"] or []),
+                    wb_characteristics=list(row["wb_characteristics_json"] or []),
+                    reference_price_rub=row["reference_price_rub"],
+                    reference_price_source=row["reference_price_source"],
+                    reference_price_updated_at=row["reference_price_updated_at"],
+                    search_phrase=row["search_phrase"],
+                    status=row["status"],
+                    reward_usdt=row["reward_usdt"],
+                    slot_count=row["slot_count"],
+                    available_slots=row["available_slots"],
+                    collateral_required_usdt=row["collateral_required_usdt"],
+                    deleted_at=row["deleted_at"],
+                )
 
         return await run_in_transaction(self._pool, operation, read_only=True)
 
@@ -654,6 +867,9 @@ class SellerService:
                         l.id,
                         l.shop_id,
                         l.wb_product_id,
+                        l.display_title,
+                        l.reference_price_rub,
+                        l.wb_photo_url,
                         l.search_phrase,
                         l.status,
                         l.reward_usdt,
@@ -681,6 +897,20 @@ class SellerService:
                             ),
                             0
                         ) AS reserved_slot_usdt
+                        ,
+                        (
+                            SELECT COUNT(*)
+                            FROM assignments ax
+                            WHERE ax.listing_id = l.id
+                              AND ax.status = ANY(
+                                    ARRAY[
+                                        'reserved'::text,
+                                        'order_submitted'::text,
+                                        'order_verified'::text,
+                                        'picked_up_wait_unlock'::text
+                                    ]
+                              )
+                        ) AS in_progress_assignments_count
                     FROM listings l
                     LEFT JOIN balance_holds h ON h.listing_id = l.id
                     WHERE l.seller_user_id = %s
@@ -695,6 +925,9 @@ class SellerService:
                         l.id,
                         l.shop_id,
                         l.wb_product_id,
+                        l.display_title,
+                        l.reference_price_rub,
+                        l.wb_photo_url,
                         l.search_phrase,
                         l.status,
                         l.reward_usdt,
@@ -713,6 +946,9 @@ class SellerService:
                         listing_id=row["id"],
                         shop_id=row["shop_id"],
                         wb_product_id=row["wb_product_id"],
+                        display_title=row["display_title"],
+                        reference_price_rub=row["reference_price_rub"],
+                        wb_photo_url=row["wb_photo_url"],
                         search_phrase=row["search_phrase"],
                         status=row["status"],
                         reward_usdt=row["reward_usdt"],
@@ -722,6 +958,7 @@ class SellerService:
                         collateral_locked_usdt=_normalize_amount(row["collateral_locked_usdt"]),
                         reserved_slot_usdt=_normalize_amount(row["reserved_slot_usdt"]),
                         deleted_at=row["deleted_at"],
+                        in_progress_assignments_count=int(row["in_progress_assignments_count"]),
                     )
                     for row in rows
                 ]
@@ -1327,7 +1564,11 @@ class SellerService:
             SELECT id
             FROM users
             WHERE id = %s
-              AND role IN ('seller', 'admin')
+              AND (
+                    is_seller
+                    OR is_admin
+                    OR role IN ('seller', 'admin')
+              )
             """,
             (user_id,),
         )
@@ -1352,7 +1593,7 @@ class SellerService:
         for_update: bool,
     ) -> dict[str, Any]:
         query = """
-            SELECT id, slug, title, deleted_at, wb_token_status
+            SELECT id, slug, title, deleted_at, wb_token_status, wb_token_ciphertext
             FROM shops
             WHERE id = %s
               AND seller_user_id = %s
@@ -1632,3 +1873,45 @@ def _hold_key(idempotency_key: str) -> str:
 
 def _normalize_amount(amount: Decimal) -> Decimal:
     return amount.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+
+
+def _normalize_text_list(values: list[str] | None) -> list[str]:
+    if not values:
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        item = value.strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        normalized.append(item)
+    return normalized
+
+
+def _normalize_characteristics(
+    values: list[dict[str, str]] | None,
+) -> list[dict[str, str]]:
+    if not values:
+        return []
+    normalized: list[dict[str, str]] = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        name_raw = item.get("name")
+        value_raw = item.get("value")
+        if not isinstance(name_raw, str):
+            continue
+        name = name_raw.strip()
+        if not name:
+            continue
+        if isinstance(value_raw, str):
+            value = value_raw.strip()
+        else:
+            value = str(value_raw).strip()
+        if not value:
+            continue
+        normalized.append({"name": name, "value": value})
+    return normalized

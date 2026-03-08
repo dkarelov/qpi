@@ -19,6 +19,12 @@ Documentation rules:
 - Do not keep phase-by-phase history or superseded evolution notes here.
 - Keep details that affect delivery/operations; omit minor refactors that are obvious from git history and code.
 
+Glossary for Telegram UX:
+
+- `Объявление` = seller-created buyer-facing offer for one WB product.
+- `Задание` = buyer reservation/work item tied to one announcement.
+- `Активно` = user-facing wording for active/open availability or status.
+
 ## 2. Product Scope (Current MVP)
 
 Goal:
@@ -30,6 +36,7 @@ Actors:
 - Seller: manages shops and listings, funds collateral, monitors status.
 - Buyer: takes tasks, submits verification token, withdraws unlocked cashback.
 - Admin: handles withdrawals and finance exceptions.
+- One Telegram account can hold multiple capabilities at once (`seller`, `buyer`, `admin`).
 
 In scope:
 
@@ -75,6 +82,7 @@ Persistence and schema:
 
 - Seller can create multiple shops.
 - Shop names must be unique per seller (case-insensitive).
+- Shop name is visible to buyers; seller is warned to use a neutral, understandable title.
 - Shop rename regenerates slug/deeplink; seller is warned that old link stops working.
 - Shop/listing deletion is soft-delete only.
 - Deletion is not blocked by active entities; warning is mandatory before confirmation.
@@ -86,14 +94,33 @@ Persistence and schema:
   - cashback in RUB,
   - slot count,
   - search phrase.
+- Listing draft creation fetches WB metadata live by `wb_product_id` using the seller's WB token and stores:
+  - buyer-visible `display_title`,
+  - WB source title,
+  - WB subject,
+  - WB brand,
+  - WB vendor code,
+  - WB description,
+  - WB photo URL (`c516x688`),
+  - WB tech sizes,
+  - WB characteristics,
+  - buyer price in RUB.
+- Buyer price source:
+  - primary: derived from `GET https://statistics-api.wildberries.ru/api/v1/supplier/orders` over the last 30 days,
+  - fallback: manual seller input when no historical orders exist for the product.
+- Seller confirms or edits the buyer-visible title before the draft is saved.
 - Cashback is converted once to fixed `reward_usdt` at creation.
 - Listing collateral requirement: `reward_usdt * slot_count * 1.01`.
-- Listing activation requires valid WB token + sufficient seller funds.
+- Listing activation/unpause requires:
+  - valid WB token,
+  - sufficient seller funds,
+  - successful live WB metadata read for the stored `wb_product_id`.
 
 ### 4.2 Buyer rules
 
 - Buyer enters shop by deeplink `shop_<slug>` or by saved shops menu.
 - Buyer can reserve slot only on active listings.
+- Buyer-facing listing screens show buyer-visible title, WB subject, brand, description, photo, sizes, characteristics, cashback in RUB with approximate percent, and `Цена` in RUB.
 - Buyer receives setup token (base64 JSON array):
   - `[search_phrase, wb_product_id, 2]`.
 - Buyer submits verification token (base64 JSON array):
@@ -169,8 +196,12 @@ Transitions:
 
 ### 4.6 WB token and report rules
 
-- WB token initial validation endpoint:
+- Single seller token is used for both:
+  - `statistics-api`,
+  - `content-api`.
+- WB token initial validation endpoints:
   - `GET https://statistics-api.wildberries.ru/ping`.
+  - `GET https://content-api.wildberries.ru/ping`.
 - Invalid ping result => token is not persisted.
 - Ping rate limit policy: `3 requests / 30s` per process.
 - `daily-report-scrapper` invalidates token on WB `401` where message contains:
@@ -186,8 +217,10 @@ Transitions:
 - Button labels include emoji/icon prefix.
 - Each role opens with dashboard + section navigation.
 - Seller UX:
-  - `Листинги`, `Магазины`, `Баланс` are top sections,
+  - `Объявления`, `Магазины`, `Баланс` are top sections,
   - shop actions are nested: list -> shop card -> actions.
+- Seller listing screens show buyer-visible title, WB subject, vendor code, brand, description, photo, sizes, characteristics, `Цена покупателя` in RUB, cashback in RUB with approximate percent, and counters `Запланировано`, `В процессе`, `Доступно`.
+- Seller balance screen shows `Всего`, `Свободно для новых объявлений`, and `Уже выделено под объявления`; activation shortfall is shown only when funds are insufficient.
 - Buyer UX:
   - shops/tasks/balance sections,
   - task flow contains explicit submit-token and cancel-task actions.

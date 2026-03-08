@@ -989,7 +989,11 @@ class DepositIntentService:
             SELECT id
             FROM users
             WHERE id = %s
-              AND role IN ('seller', 'admin')
+              AND (
+                    is_seller
+                    OR is_admin
+                    OR role IN ('seller', 'admin')
+              )
             """,
             (seller_user_id,),
         )

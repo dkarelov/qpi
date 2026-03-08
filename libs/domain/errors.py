@@ -27,3 +27,7 @@ class PayloadValidationError(DomainError):
 
 class DuplicateOrderError(DomainError):
     """Raised when order_id is already linked to another assignment."""
+
+
+class ListingValidationError(DomainError):
+    """Raised when seller-provided listing data fails business validation."""

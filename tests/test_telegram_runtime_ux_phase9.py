@@ -38,10 +38,10 @@ def test_seller_menu_is_tree_structured() -> None:
     labels_set = set(labels)
 
     assert "🏬 Магазины" in labels_set
-    assert "📦 Листинги" in labels_set
+    assert "📦 Объявления" in labels_set
     assert "💰 Баланс" in labels_set
     assert "➕ Создать магазин" not in labels_set
-    assert "➕ Создать листинг" not in labels_set
+    assert "➕ Создать объявление" not in labels_set
     assert "➕ Пополнить" not in labels_set
 
 
@@ -50,7 +50,7 @@ def test_seller_menu_puts_listings_before_shops() -> None:
 
     first_row = runtime._seller_menu_markup().inline_keyboard[0]
 
-    assert [button.text for button in first_row] == ["📦 Листинги", "🏬 Магазины"]
+    assert [button.text for button in first_row] == ["📦 Объявления", "🏬 Магазины"]
 
 
 def test_buyer_menu_is_dashboard_sections() -> None:
@@ -148,14 +148,16 @@ def test_money_formatter_uses_usdt_with_approx_rub() -> None:
 
     assert runtime._format_usdt_with_rub(Decimal("1.24")) == "$1.2 (~124 ₽)"
     assert runtime._format_usdt_with_rub(Decimal("1.25")) == "$1.3 (~125 ₽)"
+    assert runtime._format_usdt_with_rub(Decimal("0")) == "$0.0"
     assert runtime._format_usdt(Decimal("1.234567"), precise=True) == "$1.234567"
 
 
-def test_buyer_cashback_formatter_uses_floor_for_usdt() -> None:
+def test_buyer_cashback_formatter_uses_summary_usdt() -> None:
     runtime = _build_runtime()
 
-    assert runtime._format_buyer_listing_cashback(Decimal("1.29")) == "$1.2 (~129 ₽)"
+    assert runtime._format_buyer_listing_cashback(Decimal("1.29")) == "$1.3 (~129 ₽)"
     assert runtime._format_buyer_listing_cashback(Decimal("1.20")) == "$1.2 (~120 ₽)"
+    assert runtime._format_buyer_listing_cashback(Decimal("0")) == "$0.0"
 
 
 def test_buyer_listing_token_contains_search_phrase_product_and_companion_count() -> None:
@@ -174,27 +176,37 @@ def test_token_instruction_contains_required_sections() -> None:
     runtime = _build_runtime()
 
     text = runtime._shop_token_instruction_text(shop_title="Мой магазин")
-    assert "Отправьте сообщением токен WB API." in text
-    assert "Зачем нужен токен?" in text
-    assert "Где найти токен?" in text
-    assert "Безопасно ли это?" in text
+    assert "Токен WB API для магазина" in text
+    assert "Отправьте токен следующим сообщением." in text
+    assert "бот будет читать карточки товаров" in text
+    assert "Токен используется только для чтения." in text
 
 
 def test_listing_create_instruction_contains_new_fields_and_fx_reference() -> None:
     runtime = _build_runtime()
 
     text = runtime._listing_create_instruction_text(shop_title="Тушенка")
-    assert "Создание листинга для магазина «Тушенка»." in text
-    assert "<артикул ВБ> <кэшбэк руб> <макс заказов> <поисковая фраза>" in text
-    assert "Пример: 12345678 100 5 \"женские джинсы\"" in text
-    assert "по текущему курсу (~100)" in text
+    assert "Создание объявления для магазина «Тушенка»" in text
+    assert "&lt;артикул ВБ&gt; &lt;кэшбэк руб&gt; &lt;макс заказов&gt; &lt;поисковая фраза&gt;" in text
+    assert "12345678 100 5" in text
+    assert "Конвертация в $" in text
+    assert "~100" in text
+    assert "подтянет карточку товара" in text
+    assert "попробует определить цену покупателя" in text
 
 
 def test_listing_created_prompt_activation_explains_activation_effect() -> None:
     runtime = _build_runtime()
 
     text = runtime._listing_created_prompt_activation_text(
+        display_title="Джинсы женские прямые",
         wb_product_id=12345678,
+        wb_subject_name="Джинсы",
+        wb_vendor_code="sku-1",
+        wb_source_title="LeBrand Джинсы женские прямые",
+        wb_brand_name="LeBrand",
+        reference_price_rub=1200,
+        reference_price_source="orders",
         search_phrase="женские джинсы",
         cashback_rub=Decimal("100"),
         reward_usdt=Decimal("1.000000"),
@@ -202,6 +214,41 @@ def test_listing_created_prompt_activation_explains_activation_effect() -> None:
         collateral_required_usdt=Decimal("5.050000"),
     )
 
-    assert "Активировать листинг сейчас?" in text
-    assert "Деньги на обеспечение листинга будут списаны с баланса" in text
-    assert "листинг станет доступен для заказа покупателям через бот" in text
+    assert "Активировать объявление сейчас?" in text
+    assert "Обеспечение будет списано с баланса" in text
+    assert "объявление станет доступно покупателям" in text
+    assert "Название для покупателей:</b> Джинсы женские прямые" in text
+    assert "Источник цены:</b> рассчитана по заказам за 30 дней." in text
+    assert "Артикул продавца:</b> sku-1" in text
+    assert "Цена покупателя:</b> 1200 ₽" in text
+
+
+def test_cashback_rub_formatter_includes_percent_when_reference_price_is_known() -> None:
+    runtime = _build_runtime()
+
+    assert (
+        runtime._format_cashback_rub_with_percent(
+            reward_usdt=Decimal("1.000000"),
+            reference_price_rub=1200,
+        )
+        == "$1.0 (~100 ₽, ~8%)"
+    )
+
+
+def test_buyer_task_instruction_contains_title_and_search_phrase() -> None:
+    runtime = _build_runtime()
+
+    assignment = type(
+        "Assignment",
+        (),
+        {
+            "display_title": "Джинсы женские прямые",
+            "search_phrase": "женские джинсы",
+            "wb_product_id": 12345678,
+        },
+    )()
+    text = runtime._buyer_task_instruction_text(assignment)
+
+    assert "<b>Товар:</b> Джинсы женские прямые" in text
+    assert "Поисковая фраза:</b> &quot;женские джинсы&quot;" in text
+    assert "Отправьте токен-подтверждение сюда." in text

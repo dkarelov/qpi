@@ -10,6 +10,7 @@ import pytest
 from libs.config.settings import BotApiSettings
 from libs.domain.errors import InvalidStateError
 from libs.integrations.wb import WbPingResult
+from libs.integrations.wb_public import WbPublicApiError
 from services.bot_api.telegram_runtime import TelegramWebhookRuntime
 from tests.e2e_harness import TelegramRuntimeHarness
 
@@ -49,6 +50,7 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
                 shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid"
             )
         ),
+        get_validated_shop_token_ciphertext=AsyncMock(return_value="ciphertext"),
         rename_shop=AsyncMock(
             return_value=_ns(
                 shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid"
@@ -57,12 +59,47 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
         create_listing_draft=AsyncMock(
             return_value=_ns(
                 listing_id=21,
+                display_title="Бумага A4 для принтера",
                 wb_product_id=552892532,
+                wb_subject_name="Бумага офисная",
+                wb_vendor_code="paper-001",
+                wb_source_title="BRAUBERG Бумага A4 для принтера",
+                wb_brand_name="BRAUBERG",
+                wb_description="Белая бумага для офиса",
+                wb_photo_url="https://example.com/photo.webp",
+                wb_tech_sizes=["0"],
+                wb_characteristics=[{"name": "Плотность", "value": "80 г/м2"}],
+                reference_price_rub=400,
+                reference_price_source="orders",
                 search_phrase="бумага а4 для принтера",
                 reward_usdt=Decimal("1.000000"),
                 slot_count=5,
                 collateral_required_usdt=Decimal("5.050000"),
                 status="draft",
+            )
+        ),
+        get_listing=AsyncMock(
+            return_value=_ns(
+                listing_id=21,
+                shop_id=11,
+                display_title="Бумага A4 для принтера",
+                wb_product_id=552892532,
+                wb_subject_name="Бумага офисная",
+                wb_vendor_code="paper-001",
+                wb_source_title="BRAUBERG Бумага A4 для принтера",
+                wb_brand_name="BRAUBERG",
+                wb_description="Белая бумага для офиса",
+                wb_photo_url="https://example.com/photo.webp",
+                wb_tech_sizes=["0"],
+                wb_characteristics=[{"name": "Плотность", "value": "80 г/м2"}],
+                reference_price_rub=400,
+                reference_price_source="orders",
+                reward_usdt=Decimal("1.000000"),
+                slot_count=5,
+                available_slots=5,
+                collateral_required_usdt=Decimal("5.050000"),
+                status="active",
+                search_phrase="бумага а4 для принтера",
             )
         ),
         activate_listing=AsyncMock(return_value=_ns(changed=True)),
@@ -110,6 +147,16 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
             return_value=[
                 _ns(
                     listing_id=21,
+                    wb_product_id=552892532,
+                    display_title="Бумага A4 для принтера",
+                    wb_source_title="BRAUBERG Бумага A4 для принтера",
+                    wb_subject_name="Бумага офисная",
+                    wb_brand_name="BRAUBERG",
+                    wb_description="Белая бумага для офиса",
+                    wb_photo_url="https://example.com/photo.webp",
+                    wb_tech_sizes=["0"],
+                    wb_characteristics=[{"name": "Плотность", "value": "80 г/м2"}],
+                    reference_price_rub=400,
                     search_phrase="бумага а4 для принтера",
                     reward_usdt=Decimal("0.250000"),
                 )
@@ -128,6 +175,15 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
                     listing_id=21,
                     shop_slug="shop_tushenka",
                     status="reserved",
+                    display_title="Бумага A4 для принтера",
+                    wb_source_title="BRAUBERG Бумага A4 для принтера",
+                    wb_subject_name="Бумага офисная",
+                    wb_brand_name="BRAUBERG",
+                    wb_description="Белая бумага для офиса",
+                    wb_photo_url="https://example.com/photo.webp",
+                    wb_tech_sizes=["0"],
+                    wb_characteristics=[{"name": "Плотность", "value": "80 г/м2"}],
+                    reference_price_rub=400,
                     reward_usdt=Decimal("0.250000"),
                     order_id=None,
                     search_phrase="бумага а4 для принтера",
@@ -224,6 +280,31 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
             return_value=WbPingResult(valid=True, status_code=200, message="ok")
         )
     )
+    runtime._wb_public_client = _ns(
+        fetch_product_snapshot=AsyncMock(
+            return_value=_ns(
+                wb_product_id=552892532,
+                subject_name="Бумага офисная",
+                vendor_code="paper-001",
+                name="BRAUBERG Бумага A4 для принтера",
+                brand="BRAUBERG",
+                description="Белая бумага для офиса",
+                photo_url="https://example.com/photo.webp",
+                tech_sizes=["0"],
+                characteristics=[{"name": "Плотность", "value": "80 г/м2"}],
+            )
+        ),
+        lookup_buyer_price=AsyncMock(
+            return_value=_ns(
+                buyer_price_rub=400,
+                seller_price_rub=425,
+                spp_percent=3,
+                observed_at=datetime(2026, 3, 2, 12, 0, 0),
+                source="orders",
+            )
+        ),
+    )
+    runtime._load_shop_wb_token = AsyncMock(return_value="wb-valid")
     runtime._fx_rate_service = None
     runtime._load_seller_order_counters = AsyncMock(
         return_value={"in_progress": 0, "completed": 0, "picked_up": 0}
@@ -237,6 +318,7 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
         buyer=buyer_service,
         finance=finance_service,
         deposit=deposit_service,
+        wb_public=runtime._wb_public_client,
     )
 
 
@@ -260,7 +342,8 @@ async def test_phase10_e2e_seller_shop_create_token_first_flow() -> None:
     assert any("Выберите роль:" in text for text in _event_texts(start_events))
 
     role_events = await harness.callback(flow="root", action="role", entity_id="seller")
-    assert any("<b>Магазинов:</b>" in text for text in _event_texts(role_events))
+    assert any("<b>Магазины:</b>" in text for text in _event_texts(role_events))
+    assert any("<b>Объявления:</b>" in text for text in _event_texts(role_events))
 
     create_prompt_events = await harness.callback(flow="seller", action="shop_create_token_prompt")
     assert any(
@@ -269,6 +352,7 @@ async def test_phase10_e2e_seller_shop_create_token_first_flow() -> None:
 
     token_events = await harness.text("wb_valid_token")
     assert any("Токен валиден." in text for text in _event_texts(token_events))
+    assert any("Название увидят покупатели" in text for text in _event_texts(token_events))
     assert any(event.kind == "delete" for event in token_events)
 
     title_events = await harness.text("Тушенка для всех")
@@ -295,12 +379,15 @@ async def test_phase10_e2e_seller_listing_create_and_activate_flow() -> None:
             _ns(
                 listing_id=21,
                 shop_id=11,
+                display_title="Бумага A4 для принтера",
+                reference_price_rub=400,
                 wb_product_id=552892532,
                 search_phrase="бумага а4 для принтера",
                 status="active",
                 reward_usdt=Decimal("1.000000"),
                 available_slots=5,
                 slot_count=5,
+                in_progress_assignments_count=0,
                 collateral_locked_usdt=Decimal("5.050000"),
                 collateral_required_usdt=Decimal("5.050000"),
                 reserved_slot_usdt=Decimal("0.000000"),
@@ -311,24 +398,52 @@ async def test_phase10_e2e_seller_listing_create_and_activate_flow() -> None:
 
     pick_events = await harness.callback(flow="seller", action="listing_create_pick_shop")
     assert any(
-        "Выберите магазин для нового листинга:" in text for text in _event_texts(pick_events)
+        "Выберите магазин, для которого хотите создать объявление." in text
+        for text in _event_texts(pick_events)
     )
 
     prompt_events = await harness.callback(
         flow="seller", action="listing_create_prompt", entity_id="11"
     )
-    assert any("Создание листинга для магазина" in text for text in _event_texts(prompt_events))
+    assert any("Создание объявления для магазина" in text for text in _event_texts(prompt_events))
 
-    create_events = await harness.text('552892532 100 5 "бумага а4 для принтера"')
-    assert any("Активировать листинг сейчас?" in text for text in _event_texts(create_events))
+    preview_events = await harness.text('552892532 100 5 "бумага а4 для принтера"')
+    assert any("<b>Проверка товара завершена</b>" in text for text in _event_texts(preview_events))
+    assert any("Название для покупателей:</b> Бумага A4 для принтера" in text for text in _event_texts(preview_events))
+
+    create_events = await harness.text(".")
+    assert any("Активировать объявление сейчас?" in text for text in _event_texts(create_events))
 
     activate_events = await harness.callback(
         flow="seller", action="listing_activate", entity_id="21"
     )
-    assert any("Листинг активирован." in text for text in _event_texts(activate_events))
+    assert any("Объявление активно." in text for text in _event_texts(activate_events))
 
     deps.seller.create_listing_draft.assert_awaited_once()
     deps.seller.activate_listing.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_seller_listing_create_asks_manual_price_when_no_orders_found() -> None:
+    runtime, deps = _build_runtime()
+    runtime._wb_public_client.lookup_buyer_price = AsyncMock(return_value=None)
+    deps.seller.list_shops = AsyncMock(
+        return_value=[
+            _ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")
+        ]
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
+
+    await harness.callback(flow="seller", action="listing_create_prompt", entity_id="11")
+    manual_price_events = await harness.text('552892532 100 5 "бумага а4 для принтера"')
+    manual_price_text = "\n".join(_event_texts(manual_price_events))
+    assert "Введите текущую цену покупателя" in manual_price_text
+
+    confirm_title_events = await harness.text("392")
+    assert any("Цена покупателя:</b> 392 ₽" in text for text in _event_texts(confirm_title_events))
+
+    created_events = await harness.text(".")
+    assert any("Активировать объявление сейчас?" in text for text in _event_texts(created_events))
 
 
 @pytest.mark.asyncio
@@ -368,7 +483,7 @@ async def test_phase10_e2e_seller_topup_and_transactions_flow() -> None:
 
     history_events = await harness.callback(flow="seller", action="topup_history")
     history_text = "\n".join(_event_texts(history_events))
-    assert "🧾 Транзакции:" in history_text
+    assert "<b>Сумма:</b> 1.2001 USDT" in history_text
     assert "Перевод найден, но нужна проверка администратором." in history_text
 
     deps.deposit.create_seller_deposit_intent.assert_awaited_once()
@@ -382,6 +497,7 @@ async def test_phase10_e2e_buyer_deeplink_reserve_submit_payload_flow() -> None:
     deeplink_events = await harness.start(start_arg="shop_shop_tushenka")
     deeplink_text = "\n".join(_event_texts(deeplink_events))
     assert "Магазин: Тушенка" in deeplink_text
+    assert "Бумага A4 для принтера" in deeplink_text
     assert any("✅ Забронировать место" in _markup_labels(event) for event in deeplink_events)
 
     reserve_events = await harness.callback(
@@ -391,7 +507,7 @@ async def test_phase10_e2e_buyer_deeplink_reserve_submit_payload_flow() -> None:
         query_id="reserve-1",
     )
     reserve_text = "\n".join(_event_texts(reserve_events))
-    assert "Задание создано." in reserve_text
+    assert "<b>Задание создано</b>" in reserve_text
     assert any("Ввести токен-подтверждение" in _markup_labels(event) for event in reserve_events)
 
     submit_prompt_events = await harness.callback(
@@ -409,6 +525,90 @@ async def test_phase10_e2e_buyer_deeplink_reserve_submit_payload_flow() -> None:
 
     deps.buyer.reserve_listing_slot.assert_awaited_once()
     deps.buyer.submit_purchase_payload.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_buyer_listing_open_shows_photo_and_detail_card() -> None:
+    runtime, deps = _build_runtime()
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    await harness.start(start_arg="shop_shop_tushenka")
+    detail_events = await harness.callback(flow="buyer", action="listing_open", entity_id="21")
+
+    assert any(event.kind == "reply_photo" for event in detail_events)
+    detail_text = "\n".join(_event_texts(detail_events))
+    assert "Артикул WB:</b> 552892532" in detail_text
+    assert "Цена:</b> 400 ₽" in detail_text
+    assert "Характеристики" in detail_text
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_seller_listing_open_shows_photo_and_detail_card() -> None:
+    runtime, deps = _build_runtime()
+    deps.seller.list_shops = AsyncMock(
+        return_value=[
+            _ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")
+        ]
+    )
+    deps.seller.list_listing_collateral_views = AsyncMock(
+        return_value=[
+            _ns(
+                listing_id=21,
+                shop_id=11,
+                display_title="Бумага A4 для принтера",
+                reference_price_rub=400,
+                wb_photo_url="https://example.com/photo.webp",
+                wb_product_id=552892532,
+                search_phrase="бумага а4 для принтера",
+                status="active",
+                reward_usdt=Decimal("1.000000"),
+                available_slots=5,
+                slot_count=5,
+                in_progress_assignments_count=0,
+                collateral_locked_usdt=Decimal("5.050000"),
+                collateral_required_usdt=Decimal("5.050000"),
+                reserved_slot_usdt=Decimal("0.000000"),
+            )
+        ]
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
+
+    detail_events = await harness.callback(flow="seller", action="listing_open", entity_id="21")
+
+    assert any(event.kind == "reply_photo" for event in detail_events)
+    detail_text = "\n".join(_event_texts(detail_events))
+    assert "Цена покупателя:</b> 400 ₽" in detail_text
+    assert "Артикул продавца:</b> paper-001" in detail_text
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_same_telegram_user_can_open_seller_and_buyer_dashboards() -> None:
+    runtime, deps = _build_runtime()
+    harness = TelegramRuntimeHarness(runtime, telegram_id=55501, username="dualmode")
+
+    await harness.start()
+    seller_events = await harness.callback(flow="root", action="role", entity_id="seller")
+    buyer_events = await harness.callback(flow="root", action="role", entity_id="buyer")
+
+    assert any("<b>Магазины:</b>" in text for text in _event_texts(seller_events))
+    assert any("<b>Задания:</b>" in text for text in _event_texts(buyer_events))
+    deps.seller.bootstrap_seller.assert_awaited()
+    deps.buyer.bootstrap_buyer.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_listing_activation_is_blocked_when_product_card_is_unavailable() -> None:
+    runtime, deps = _build_runtime()
+    runtime._wb_public_client.fetch_product_snapshot = AsyncMock(
+        side_effect=WbPublicApiError(status_code=404, message="not found")
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
+
+    blocked_events = await harness.callback(flow="seller", action="listing_activate", entity_id="21")
+    blocked_text = "\n".join(_event_texts(blocked_events))
+
+    assert "недоступен на WB" in blocked_text
+    deps.seller.activate_listing.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -515,12 +715,12 @@ async def test_phase10_e2e_admin_withdrawal_flow() -> None:
     assert any("<b>Выводы в очереди:</b>" in text for text in _event_texts(open_admin_events))
 
     detail_events = await harness.callback(flow="admin", action="withdrawal_detail", entity_id="77")
-    assert any("📄 Заявка #77" in text for text in _event_texts(detail_events))
+    assert any("<b>Заявка #77</b>" in text for text in _event_texts(detail_events))
 
     approve_events = await harness.callback(
         flow="admin", action="withdrawal_approve", entity_id="77"
     )
-    assert any("Статус: Одобрено" in text for text in _event_texts(approve_events))
+    assert any("Статус:</b> Одобрено" in text for text in _event_texts(approve_events))
     assert any(event.kind == "bot_send" and event.chat_id == 777001 for event in approve_events)
 
     prompt_sent_events = await harness.callback(
@@ -534,7 +734,7 @@ async def test_phase10_e2e_admin_withdrawal_flow() -> None:
 
     sent_events = await harness.text("0xabc")
     sent_text = "\n".join(_event_texts(sent_events))
-    assert "Хэш перевода: 0xabc" in sent_text
+    assert "Хэш перевода:</b> 0xabc" in sent_text
 
     deps.finance.approve_withdrawal_request.assert_awaited_once()
     deps.finance.mark_withdrawal_sent.assert_awaited_once()

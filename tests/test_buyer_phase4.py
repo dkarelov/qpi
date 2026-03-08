@@ -121,6 +121,10 @@ async def test_shop_deeplink_resolution_and_listing_visibility(db_pool) -> None:
                 shop_id=shop_id,
                 seller_user_id=seller_user_id,
                 wb_product_id=5001,
+                display_title="Бумага для принтера",
+                wb_source_title="BRAUBERG Бумага для принтера",
+                wb_brand_name="BRAUBERG",
+                reference_price_rub=400,
                 reward_usdt=Decimal("4.000000"),
                 slot_count=3,
                 available_slots=3,
@@ -163,6 +167,8 @@ async def test_shop_deeplink_resolution_and_listing_visibility(db_pool) -> None:
     listings = await buyer_service.list_active_listings_by_shop_slug(slug="catalog-shop")
     assert [item.listing_id for item in listings] == [active_listing_id]
     assert listings[0].available_slots == 3
+    assert listings[0].display_title == "Бумага для принтера"
+    assert listings[0].reference_price_rub == 400
 
 
 @pytest.mark.asyncio
@@ -508,6 +514,40 @@ async def test_admin_can_bootstrap_buyer_and_operate_buyer_flow(db_pool) -> None
             await cur.execute("SELECT role FROM users WHERE id = %s", (admin_user_id,))
             row = await cur.fetchone()
             assert row["role"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_seller_can_later_bootstrap_buyer_on_same_telegram_id(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            seller_user_id = await create_user(
+                conn,
+                telegram_id=839901,
+                role="seller",
+                username="seller_then_buyer",
+            )
+
+    bootstrap = await buyer_service.bootstrap_buyer(
+        telegram_id=839901,
+        username="seller_then_buyer",
+    )
+
+    assert bootstrap.user_id == seller_user_id
+    assert bootstrap.created_user is False
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT role, is_seller, is_buyer, is_admin FROM users WHERE id = %s",
+                (seller_user_id,),
+            )
+            row = await cur.fetchone()
+            assert row["role"] == "seller"
+            assert row["is_seller"] is True
+            assert row["is_buyer"] is True
+            assert row["is_admin"] is False
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
@@ -66,6 +66,18 @@ class ListingResult:
     available_slots: int
     collateral_required_usdt: Decimal
     deleted_at: datetime | None
+    display_title: str | None = None
+    wb_source_title: str | None = None
+    wb_subject_name: str | None = None
+    wb_brand_name: str | None = None
+    wb_vendor_code: str | None = None
+    wb_description: str | None = None
+    wb_photo_url: str | None = None
+    wb_tech_sizes: list[str] = field(default_factory=list)
+    wb_characteristics: list[dict[str, str]] = field(default_factory=list)
+    reference_price_rub: int | None = None
+    reference_price_source: str | None = None
+    reference_price_updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +100,10 @@ class SellerListingCollateralView:
     collateral_locked_usdt: Decimal
     reserved_slot_usdt: Decimal
     deleted_at: datetime | None
+    display_title: str | None = None
+    reference_price_rub: int | None = None
+    wb_photo_url: str | None = None
+    in_progress_assignments_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -144,6 +160,15 @@ class BuyerListingResult:
     reward_usdt: Decimal
     slot_count: int
     available_slots: int
+    display_title: str | None = None
+    wb_source_title: str | None = None
+    reference_price_rub: int | None = None
+    wb_subject_name: str | None = None
+    wb_brand_name: str | None = None
+    wb_description: str | None = None
+    wb_photo_url: str | None = None
+    wb_tech_sizes: list[str] = field(default_factory=list)
+    wb_characteristics: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -168,6 +193,15 @@ class BuyerAssignmentView:
     reservation_expires_at: datetime
     order_id: str | None
     ordered_at: datetime | None
+    display_title: str | None = None
+    wb_source_title: str | None = None
+    reference_price_rub: int | None = None
+    wb_subject_name: str | None = None
+    wb_brand_name: str | None = None
+    wb_description: str | None = None
+    wb_photo_url: str | None = None
+    wb_tech_sizes: list[str] = field(default_factory=list)
+    wb_characteristics: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
