@@ -18,8 +18,55 @@ permissions:
   contents: read
 
 jobs:
+  schema_drift_regression:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: qpi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d qpi_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/qpi_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Install psqldef
+        run: |
+          go install github.com/sqldef/sqldef/cmd/psqldef@latest
+          echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+
+      - name: Run schema drift regression
+        run: python -m pytest -q tests/test_runtime_schema_compatibility.py
+
   deploy_bot:
     runs-on: ubuntu-latest
+    needs:
+      - schema_drift_regression
     env:
       BOT_VM_HOST: ${{ vars.BOT_VM_HOST }}
       BOT_VM_SSH_USER: ${{ vars.BOT_VM_SSH_USER }}
@@ -48,6 +95,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Install psqldef
+        run: |
+          go install github.com/sqldef/sqldef/cmd/psqldef@latest
+          echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
 
       - name: Install dependencies
         run: |
@@ -130,6 +187,55 @@ jobs:
           sudo chown root:ubuntu /etc/qpi/bot.env
           sudo chmod 0640 /etc/qpi/bot.env"
 
+      - name: Open production DB tunnel
+        run: |
+          ssh -fNT -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            -p "${BOT_VM_SSH_PORT:-22}" \
+            -i ~/.ssh/bot_vm_key \
+            -L 127.0.0.1:15432:10.131.0.28:5432 \
+            "${BOT_VM_SSH_USER:-ubuntu}@${BOT_VM_HOST}"
+          ss -ltn | grep ':15432'
+
+      - name: Resolve production DATABASE_URL
+        run: |
+          remote_db_url="$(
+            ssh -p "${BOT_VM_SSH_PORT:-22}" \
+              -i ~/.ssh/bot_vm_key \
+              "${BOT_VM_SSH_USER:-ubuntu}@${BOT_VM_HOST}" \
+              "sudo awk 'index(\$0, \"DATABASE_URL=\") == 1 { sub(/^DATABASE_URL=/, \"\"); print; exit }' /etc/qpi/bot.env"
+          )"
+          test -n "${remote_db_url}" || { echo "DATABASE_URL missing in /etc/qpi/bot.env"; exit 1; }
+          echo "::add-mask::${remote_db_url}"
+          tunneled_db_url="$(
+            REMOTE_DATABASE_URL="${remote_db_url}" python - <<'PY'
+            from urllib.parse import quote, urlparse, urlunparse
+            import os
+
+            raw = os.environ["REMOTE_DATABASE_URL"].strip()
+            if raw.startswith("postgres://"):
+                raw = "postgresql://" + raw[len("postgres://") :]
+            if raw.startswith("postgresql+psycopg://"):
+                raw = "postgresql://" + raw[len("postgresql+psycopg://") :]
+
+            parsed = urlparse(raw)
+            userinfo = ""
+            if parsed.username:
+                userinfo = quote(parsed.username)
+                if parsed.password:
+                    userinfo += f":{quote(parsed.password)}"
+                userinfo += "@"
+
+            print(urlunparse(parsed._replace(netloc=f"{userinfo}127.0.0.1:15432")))
+            PY
+          )"
+          echo "::add-mask::${tunneled_db_url}"
+          echo "PRODUCTION_DATABASE_URL=${tunneled_db_url}" >> "${GITHUB_ENV}"
+
+      - name: Apply production schema
+        run: |
+          DATABASE_URL="${PRODUCTION_DATABASE_URL}" \
+            python -m libs.db.schema_cli apply
+
       - name: Rollout and verify health
         run: |
           ssh -p "${BOT_VM_SSH_PORT:-22}" \
@@ -141,3 +247,19 @@ jobs:
                '${{ steps.build.outputs.release_id }}' \
                '/tmp/${{ steps.build.outputs.archive_name }}' \
                '${BOT_HEALTH_PORT:-18080}'"
+
+      - name: Post-deploy runtime smoke
+        run: |
+          ssh -p "${BOT_VM_SSH_PORT:-22}" \
+            -i ~/.ssh/bot_vm_key \
+            "${BOT_VM_SSH_USER:-ubuntu}@${BOT_VM_HOST}" \
+            "set -a && source /etc/qpi/bot.env && set +a && \
+             cd /opt/qpi/current && \
+             ./.venv/bin/python -m services.bot_api.main \
+               --seller-command '/start' \
+               --telegram-id 910001 \
+               --telegram-username deploy_smoke_seller && \
+             ./.venv/bin/python -m services.bot_api.main \
+               --buyer-command '/start' \
+               --telegram-id 910002 \
+               --telegram-username deploy_smoke_buyer"

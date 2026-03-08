@@ -335,6 +335,11 @@ python -m libs.db.schema_cli drop
 python -m libs.db.schema_cli export
 ```
 
+Rule:
+
+- Any bot release that starts reading new DB columns must apply schema before the bot process is restarted.
+- Production schema apply should be executed from an operator machine or CI runner with `psqldef` available, using the standard SSH tunnel to `127.0.0.1:15432`.
+
 ### 7.4 Runtime smoke checks
 
 ```bash
@@ -370,6 +375,7 @@ Safety guardrails:
 - Never apply manual DDL directly in PostgreSQL.
 - Validate schema changes on clean path (`apply -> drop -> apply`).
 - Destructive migration smoke must run only against disposable DB names (`scratch|tmp|disposable`).
+- Do not treat a bot deployment as successful unless schema apply and seller/buyer `/start` smoke checks both pass.
 
 ### 7.6 Logs and incidents
 
@@ -404,9 +410,12 @@ Workflows:
 
 - `.github/workflows/deploy_bot.yml`:
   - lint + tests,
+  - schema drift regression against a PostgreSQL CI service,
+  - production schema apply through SSH tunnel before rollout,
   - package bot artifact,
   - rollout to bot VM,
-  - health verification.
+  - health verification,
+  - post-deploy seller/buyer `/start` runtime smoke.
 - `.github/workflows/deploy_terraform.yml`:
   - terraform validate/plan on push,
   - apply only via explicit manual dispatch guard.

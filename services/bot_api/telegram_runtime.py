@@ -101,6 +101,27 @@ _BUYER_COMMAND_PREFIXES = (
     "/submit_order",
     "/my_orders",
 )
+_RUNTIME_REQUIRED_SCHEMA_COLUMNS = {
+    "users": {
+        "is_seller",
+        "is_buyer",
+        "is_admin",
+    },
+    "listings": {
+        "display_title",
+        "wb_source_title",
+        "wb_subject_name",
+        "wb_brand_name",
+        "wb_vendor_code",
+        "wb_description",
+        "wb_photo_url",
+        "wb_tech_sizes_json",
+        "wb_characteristics_json",
+        "reference_price_rub",
+        "reference_price_source",
+        "reference_price_updated_at",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -175,6 +196,7 @@ class TelegramWebhookRuntime:
         self._logger = logger or get_logger(__name__)
         self._admin_telegram_ids = set(settings.admin_telegram_ids)
         self._ready = False
+        self._startup_error: str | None = None
         self._health_server: _BotHealthServer | None = None
         self._db_pool = DatabasePool(
             settings.database_url,
@@ -255,74 +277,90 @@ class TelegramWebhookRuntime:
         return application
 
     async def _post_init(self, application: Application) -> None:
-        await self._db_pool.open()
-        await self._db_pool.check()
-
-        self._seller_service = SellerService(self._db_pool.pool)
-        self._buyer_service = BuyerService(self._db_pool.pool)
-        self._finance_service = FinanceService(self._db_pool.pool)
-        self._deposit_service = DepositIntentService(
-            self._db_pool.pool,
-            invoice_ttl_hours=self._settings.seller_collateral_invoice_ttl_hours,
-        )
-        self._fx_rate_service = FxRateService(
-            self._db_pool.pool,
-            provider=CoinGeckoUsdtRubClient(
-                endpoint=self._settings.fx_rate_provider_url,
-                timeout_seconds=self._settings.fx_rate_timeout_seconds,
-            ),
-            refresh_lock_id=self._settings.fx_rate_refresh_lock_id,
-        )
-        await self._deposit_service.ensure_default_shard(
-            shard_key=self._settings.seller_collateral_shard_key,
-            deposit_address=self._settings.seller_collateral_shard_address,
-            chain=self._settings.seller_collateral_shard_chain,
-            asset=self._settings.seller_collateral_shard_asset,
-        )
-        wb_ping_client = WbPingClient(
-            timeout_seconds=self._settings.wb_ping_timeout_seconds,
-            max_requests=self._settings.wb_ping_rate_limit_count,
-            window_seconds=self._settings.wb_ping_rate_limit_window_seconds,
-        )
-        self._wb_ping_client = wb_ping_client
-        self._wb_public_client = WbPublicCatalogClient(
-            content_timeout_seconds=self._settings.wb_content_timeout_seconds,
-            orders_timeout_seconds=self._settings.wb_orders_timeout_seconds,
-            orders_lookback_days=self._settings.wb_orders_lookback_days,
-        )
-        self._seller_processor = SellerCommandProcessor(
-            seller_service=self._seller_service,
-            wb_ping_client=wb_ping_client,
-            token_cipher_key=self._settings.token_cipher_key,
-            bot_username=self._settings.telegram_bot_username,
-        )
-        self._buyer_processor = BuyerCommandProcessor(
-            buyer_service=self._buyer_service,
-            bot_username=self._settings.telegram_bot_username,
-        )
-
-        bot_profile = await application.bot.get_me()
-        self._logger.info(
-            "telegram_webhook_bot_identity",
-            telegram_bot_id=bot_profile.id,
-            telegram_bot_username=bot_profile.username,
-        )
+        self._ready = False
+        self._startup_error = None
         try:
-            await application.bot.set_my_commands(
-                [BotCommand(command="start", description="Открыть меню")],
+            await self._db_pool.open()
+            await self._db_pool.check()
+            await self._assert_runtime_schema_compatibility()
+
+            self._seller_service = SellerService(self._db_pool.pool)
+            self._buyer_service = BuyerService(self._db_pool.pool)
+            self._finance_service = FinanceService(self._db_pool.pool)
+            self._deposit_service = DepositIntentService(
+                self._db_pool.pool,
+                invoice_ttl_hours=self._settings.seller_collateral_invoice_ttl_hours,
             )
-            await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
-            self._logger.info("telegram_menu_button_configured")
+            self._fx_rate_service = FxRateService(
+                self._db_pool.pool,
+                provider=CoinGeckoUsdtRubClient(
+                    endpoint=self._settings.fx_rate_provider_url,
+                    timeout_seconds=self._settings.fx_rate_timeout_seconds,
+                ),
+                refresh_lock_id=self._settings.fx_rate_refresh_lock_id,
+            )
+            await self._deposit_service.ensure_default_shard(
+                shard_key=self._settings.seller_collateral_shard_key,
+                deposit_address=self._settings.seller_collateral_shard_address,
+                chain=self._settings.seller_collateral_shard_chain,
+                asset=self._settings.seller_collateral_shard_asset,
+            )
+            wb_ping_client = WbPingClient(
+                timeout_seconds=self._settings.wb_ping_timeout_seconds,
+                max_requests=self._settings.wb_ping_rate_limit_count,
+                window_seconds=self._settings.wb_ping_rate_limit_window_seconds,
+            )
+            self._wb_ping_client = wb_ping_client
+            self._wb_public_client = WbPublicCatalogClient(
+                content_timeout_seconds=self._settings.wb_content_timeout_seconds,
+                orders_timeout_seconds=self._settings.wb_orders_timeout_seconds,
+                orders_lookback_days=self._settings.wb_orders_lookback_days,
+            )
+            self._seller_processor = SellerCommandProcessor(
+                seller_service=self._seller_service,
+                wb_ping_client=wb_ping_client,
+                token_cipher_key=self._settings.token_cipher_key,
+                bot_username=self._settings.telegram_bot_username,
+            )
+            self._buyer_processor = BuyerCommandProcessor(
+                buyer_service=self._buyer_service,
+                bot_username=self._settings.telegram_bot_username,
+            )
+
+            bot_profile = await application.bot.get_me()
+            self._logger.info(
+                "telegram_webhook_bot_identity",
+                telegram_bot_id=bot_profile.id,
+                telegram_bot_username=bot_profile.username,
+            )
+            try:
+                await application.bot.set_my_commands(
+                    [BotCommand(command="start", description="Открыть меню")],
+                )
+                await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+                self._logger.info("telegram_menu_button_configured")
+            except Exception as exc:
+                self._logger.warning(
+                    "telegram_menu_button_config_failed",
+                    error_type=type(exc).__name__,
+                    error_message=str(exc)[:300],
+                )
+            if self._settings.webhook_set_enabled:
+                await self._ensure_webhook_registration(application=application)
+            self._ready = True
+            self._logger.info("telegram_webhook_runtime_ready")
         except Exception as exc:
-            self._logger.warning(
-                "telegram_menu_button_config_failed",
+            self._startup_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+            self._logger.exception(
+                "telegram_webhook_runtime_init_failed",
                 error_type=type(exc).__name__,
-                error_message=str(exc)[:300],
+                error_message=str(exc)[:500],
             )
-        if self._settings.webhook_set_enabled:
-            await self._ensure_webhook_registration(application=application)
-        self._ready = True
-        self._logger.info("telegram_webhook_runtime_ready")
+            try:
+                await self._db_pool.close()
+            except Exception:
+                self._logger.exception("telegram_webhook_runtime_init_close_failed")
+            raise
 
     async def _post_shutdown(self, application: Application) -> None:
         self._ready = False
@@ -6386,11 +6424,54 @@ class TelegramWebhookRuntime:
             )
 
     def _health_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "service": "bot_api",
             "ready": self._ready,
             "status": "ok" if self._ready else "starting",
         }
+        if self._startup_error:
+            payload["status"] = "startup_failed"
+            payload["error"] = self._startup_error
+        return payload
+
+    async def _assert_runtime_schema_compatibility(self) -> None:
+        async with self._db_pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT table_name, column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = ANY(%s)
+                    """,
+                    (list(_RUNTIME_REQUIRED_SCHEMA_COLUMNS.keys()),),
+                )
+                rows = await cur.fetchall()
+
+        actual_columns: dict[str, set[str]] = {}
+        for row in rows:
+            actual_columns.setdefault(str(row["table_name"]), set()).add(str(row["column_name"]))
+
+        missing_columns: list[str] = []
+        for table_name, required_columns in _RUNTIME_REQUIRED_SCHEMA_COLUMNS.items():
+            available = actual_columns.get(table_name, set())
+            for column_name in sorted(required_columns - available):
+                missing_columns.append(f"{table_name}.{column_name}")
+
+        if missing_columns:
+            missing_list = ", ".join(missing_columns)
+            raise RuntimeError(
+                "runtime schema compatibility check failed; missing columns: "
+                f"{missing_list}"
+            )
+
+        self._logger.info(
+            "telegram_runtime_schema_compatibility_ok",
+            required_tables=len(_RUNTIME_REQUIRED_SCHEMA_COLUMNS),
+            required_columns=sum(
+                len(columns) for columns in _RUNTIME_REQUIRED_SCHEMA_COLUMNS.values()
+            ),
+        )
 
     def _build_webhook_url(self) -> str:
         if not self._settings.webhook_base_url:
