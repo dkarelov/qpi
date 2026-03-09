@@ -8,6 +8,7 @@ import psycopg
 from psycopg import sql
 
 from libs.db.psqldef import run_psqldef
+from libs.db.runtime_schema_compat import apply_runtime_schema_compatibility
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_FILE = PROJECT_ROOT / "schema" / "schema.sql"
@@ -70,6 +71,10 @@ def reset_public_schema(database_url: str) -> None:
 
 def run_schema_apply(database_url: str) -> None:
     run_psqldef(database_url, mode="apply", schema_file=SCHEMA_FILE)
+
+
+def run_runtime_schema_compat_apply(database_url: str) -> None:
+    apply_runtime_schema_compatibility(database_url)
 
 
 def run_schema_drop(database_url: str) -> None:

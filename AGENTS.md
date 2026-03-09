@@ -329,6 +329,7 @@ Rules:
 
 ```bash
 export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
+python -m libs.db.runtime_schema_compat apply
 python -m libs.db.schema_cli plan
 python -m libs.db.schema_cli apply
 python -m libs.db.schema_cli drop
@@ -338,6 +339,7 @@ python -m libs.db.schema_cli export
 Rule:
 
 - Any bot release that starts reading new DB columns must apply schema before the bot process is restarted.
+- For production-like legacy drift, run `python -m libs.db.runtime_schema_compat apply` before declarative `schema_cli apply`.
 - Production schema apply should be executed from an operator machine or CI runner with `psqldef` available, using the standard SSH tunnel to `127.0.0.1:15432`.
 
 ### 7.4 Runtime smoke checks
@@ -373,6 +375,7 @@ PYTHONPATH=. uv run pytest -q tests/test_phase10_e2e_harness.py
 Safety guardrails:
 
 - Never apply manual DDL directly in PostgreSQL.
+- Production deployments should use the compatibility patch + declarative apply path, not ad-hoc SQL.
 - Validate schema changes on clean path (`apply -> drop -> apply`).
 - Destructive migration smoke must run only against disposable DB names (`scratch|tmp|disposable`).
 - Do not treat a bot deployment as successful unless schema apply and seller/buyer `/start` smoke checks both pass.
@@ -411,7 +414,8 @@ Workflows:
 - `.github/workflows/deploy_bot.yml`:
   - lint + tests,
   - schema drift regression against a PostgreSQL CI service,
-  - production schema apply through SSH tunnel before rollout,
+  - additive runtime schema compatibility patch through SSH tunnel,
+  - declarative production schema apply through SSH tunnel before rollout,
   - package bot artifact,
   - rollout to bot VM,
   - health verification,

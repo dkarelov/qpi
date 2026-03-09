@@ -211,6 +211,11 @@ jobs:
           echo "::add-mask::${tunneled_db_url}"
           echo "PRODUCTION_DATABASE_URL=${tunneled_db_url}" >> "${GITHUB_ENV}"
 
+      - name: Apply production runtime schema compatibility
+        run: |
+          DATABASE_URL="${PRODUCTION_DATABASE_URL}" \
+            python -m libs.db.runtime_schema_compat apply
+
       - name: Apply production schema
         run: |
           DATABASE_URL="${PRODUCTION_DATABASE_URL}" \

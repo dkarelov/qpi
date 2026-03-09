@@ -107,9 +107,16 @@ _RUNTIME_REQUIRED_SCHEMA_COLUMNS = {
         "is_buyer",
         "is_admin",
     },
+    "assignments": {
+        "wb_product_id",
+    },
+    "buyer_orders": {
+        "wb_product_id",
+    },
     "listings": {
         "display_title",
         "wb_source_title",
+        "search_phrase",
         "wb_subject_name",
         "wb_brand_name",
         "wb_vendor_code",

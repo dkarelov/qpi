@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,7 +13,8 @@ from libs.config.settings import BotApiSettings
 from libs.domain.buyer import BuyerService
 from libs.domain.seller import SellerService
 from services.bot_api.telegram_runtime import TelegramWebhookRuntime
-from tests.utils import run_schema_apply
+from tests.helpers import create_listing, create_shop, create_user
+from tests.utils import run_runtime_schema_compat_apply, run_schema_apply
 
 
 def _build_runtime() -> TelegramWebhookRuntime:
@@ -66,6 +69,7 @@ async def test_runtime_post_init_fails_when_required_schema_columns_are_missing(
     assert runtime._ready is False
     assert runtime._startup_error is not None
     assert "users.is_seller" in runtime._startup_error
+    assert "assignments.wb_product_id" in runtime._startup_error
     assert runtime._health_payload()["status"] == "startup_failed"
 
 
@@ -118,3 +122,118 @@ async def test_schema_apply_recovers_runtime_compatibility_from_pre_capability_s
 
     assert seller.user_id > 0
     assert buyer.user_id > 0
+
+
+@pytest.mark.asyncio
+async def test_runtime_schema_compat_apply_backfills_legacy_assignment_product_ids(
+    isolated_database: str,
+) -> None:
+    async with await psycopg.AsyncConnection.connect(isolated_database) as conn:
+        seller_user_id = await create_user(
+            conn,
+            telegram_id=992001,
+            role="seller",
+            username="compat_seller",
+        )
+        buyer_user_id = await create_user(
+            conn,
+            telegram_id=992002,
+            role="buyer",
+            username="compat_buyer",
+        )
+        shop_id = await create_shop(
+            conn,
+            seller_user_id=seller_user_id,
+            slug="compat-shop",
+            title="Compat Shop",
+        )
+        listing_id = await create_listing(
+            conn,
+            shop_id=shop_id,
+            seller_user_id=seller_user_id,
+            wb_product_id=552892532,
+            search_phrase="бумага а4",
+            reward_usdt=Decimal("0.130000"),
+            slot_count=2,
+            available_slots=1,
+            status="active",
+            reference_price_rub=392,
+            reference_price_source="manual",
+        )
+
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO assignments (
+                    listing_id,
+                    buyer_user_id,
+                    wb_product_id,
+                    status,
+                    reward_usdt,
+                    reservation_expires_at,
+                    idempotency_key
+                )
+                VALUES (%s, %s, %s, 'order_verified', %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    listing_id,
+                    buyer_user_id,
+                    552892532,
+                    Decimal("0.130000"),
+                    datetime.now(UTC) + timedelta(hours=2),
+                    "compat-assignment",
+                ),
+            )
+            assignment_id = int((await cur.fetchone())[0])
+            await cur.execute(
+                """
+                INSERT INTO buyer_orders (
+                    assignment_id,
+                    listing_id,
+                    buyer_user_id,
+                    order_id,
+                    wb_product_id,
+                    ordered_at,
+                    payload_version,
+                    raw_payload_json,
+                    source
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, 1, '{}'::jsonb, 'plugin_base64')
+                """,
+                (
+                    assignment_id,
+                    listing_id,
+                    buyer_user_id,
+                    "compat-order-1",
+                    552892532,
+                    datetime.now(UTC),
+                ),
+            )
+        await conn.commit()
+
+    with psycopg.connect(isolated_database, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("ALTER TABLE public.assignments DROP COLUMN IF EXISTS wb_product_id")
+            cur.execute("ALTER TABLE public.buyer_orders DROP COLUMN IF EXISTS wb_product_id")
+
+    run_runtime_schema_compat_apply(isolated_database)
+    run_runtime_schema_compat_apply(isolated_database)
+    run_schema_apply(isolated_database)
+
+    with psycopg.connect(isolated_database, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT wb_product_id FROM public.assignments WHERE id = %s",
+                (assignment_id,),
+            )
+            assert cur.fetchone()[0] == 552892532
+            cur.execute(
+                "SELECT wb_product_id FROM public.buyer_orders WHERE assignment_id = %s",
+                (assignment_id,),
+            )
+            assert cur.fetchone()[0] == 552892532
+            cur.execute("SELECT to_regclass('public.idx_assignments_buyer_product_status')")
+            assert cur.fetchone()[0] == "idx_assignments_buyer_product_status"
+            cur.execute("SELECT to_regclass('public.uq_assignments_buyer_product_active')")
+            assert cur.fetchone()[0] == "uq_assignments_buyer_product_active"
