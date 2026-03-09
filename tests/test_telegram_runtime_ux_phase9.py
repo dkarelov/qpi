@@ -272,6 +272,27 @@ def test_buyer_task_instruction_contains_title_and_search_phrase() -> None:
     assert "Отправьте токен-подтверждение сюда." in text
 
 
+def test_wallet_link_builder_uses_ton_transfer_with_usdt_jetton_and_micro_units() -> None:
+    runtime = _build_runtime()
+
+    link = runtime._build_ton_usdt_wallet_link(
+        destination_address="UQTESTADDRESS",
+        expected_amount_usdt=Decimal("1.200100"),
+        text="QPI deposit #91",
+    )
+
+    assert link.startswith("ton://transfer/UQTESTADDRESS?")
+    assert "jetton=EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs" in link
+    assert "amount=1200100" in link
+    assert "text=QPI+deposit+%2391" in link
+
+
+def test_copyable_code_helper_wraps_value_in_html_code() -> None:
+    runtime = _build_runtime()
+
+    assert runtime._format_copyable_code("UQ_TEST") == "<code>UQ_TEST</code>"
+
+
 def test_seller_listing_detail_markup_hides_edit_button_when_activation_is_blocked() -> None:
     runtime = _build_runtime()
 

@@ -92,6 +92,10 @@ class BotApiSettings(BaseAppSettings):
         default=24,
         alias="SELLER_COLLATERAL_INVOICE_TTL_HOURS",
     )
+    tonapi_usdt_jetton_master: str = Field(
+        default="EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+        alias="TONAPI_USDT_JETTON_MASTER",
+    )
     display_rub_per_usdt: Decimal = Field(default=Decimal("90"), alias="DISPLAY_RUB_PER_USDT")
     fx_rate_ttl_seconds: int = Field(default=900, alias="FX_RATE_TTL_SECONDS")
     fx_rate_timeout_seconds: int = Field(default=5, alias="FX_RATE_TIMEOUT_SECONDS")
@@ -219,12 +223,16 @@ class BotApiSettings(BaseAppSettings):
             raise ValueError("WB_ORDERS_LOOKBACK_DAYS must be >= 1")
         return value
 
-    @field_validator("seller_collateral_shard_key", "seller_collateral_shard_address")
+    @field_validator(
+        "seller_collateral_shard_key",
+        "seller_collateral_shard_address",
+        "tonapi_usdt_jetton_master",
+    )
     @classmethod
     def validate_seller_collateral_shard_fields(cls, value: str) -> str:
         normalized = value.strip()
         if not normalized:
-            raise ValueError("SELLER_COLLATERAL_SHARD_* must not be empty")
+            raise ValueError("configured TON/seller collateral value must not be empty")
         return normalized
 
     @field_validator("seller_collateral_shard_chain", "seller_collateral_shard_asset")

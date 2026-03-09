@@ -357,6 +357,18 @@ def _markup_labels(event) -> list[str]:
     return [button.text for row in markup.inline_keyboard for button in row]
 
 
+def _markup_urls(event) -> list[str]:
+    markup = event.reply_markup
+    if markup is None:
+        return []
+    return [
+        button.url
+        for row in markup.inline_keyboard
+        for button in row
+        if getattr(button, "url", None)
+    ]
+
+
 @pytest.mark.asyncio
 async def test_phase10_e2e_seller_shop_create_token_first_flow() -> None:
     runtime, deps = _build_runtime()
@@ -530,11 +542,20 @@ async def test_phase10_e2e_seller_topup_and_transactions_flow() -> None:
     )
 
     topup_create_events = await harness.text("1.2")
-    assert any("Счет на пополнение создан." in text for text in _event_texts(topup_create_events))
+    assert any("Счет на пополнение создан" in text for text in _event_texts(topup_create_events))
     assert any(
-        "Сумма (должна полностью совпадать): 1.2001 USDT" in text
+        "Сумма (должна полностью совпадать):" in text
         for text in _event_texts(topup_create_events)
     )
+    assert any("1.2001 USDT" in text for text in _event_texts(topup_create_events))
+    assert any(
+        "<code>UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH</code>" in text
+        for text in _event_texts(topup_create_events)
+    )
+    assert any("👛 Открыть в кошельке" in _markup_labels(event) for event in topup_create_events)
+    wallet_urls = [url for event in topup_create_events for url in _markup_urls(event)]
+    assert any(url.startswith("ton://transfer/") for url in wallet_urls)
+    assert any("amount=1200100" in url for url in wallet_urls)
 
     history_events = await harness.callback(flow="seller", action="topup_history")
     history_text = "\n".join(_event_texts(history_events))
@@ -553,7 +574,7 @@ async def test_phase10_e2e_buyer_deeplink_reserve_submit_payload_flow() -> None:
     deeplink_text = "\n".join(_event_texts(deeplink_events))
     assert "Магазин: Тушенка" in deeplink_text
     assert "Бумага A4 для принтера" in deeplink_text
-    assert any("✅ Забронировать место" in _markup_labels(event) for event in deeplink_events)
+    assert any("✅ Выполнить задание" in _markup_labels(event) for event in deeplink_events)
 
     reserve_events = await harness.callback(
         flow="buyer",
@@ -776,7 +797,8 @@ async def test_phase10_e2e_buyer_cancel_task_flow() -> None:
         query_id="cancel-1",
     )
     assert any(
-        "Задание отменено. Место освобождено." in text for text in _event_texts(confirm_events)
+        "Задание отменено. Оно снова доступно для других покупателей." in text
+        for text in _event_texts(confirm_events)
     )
     deps.buyer.cancel_assignment_by_buyer.assert_awaited_once()
 

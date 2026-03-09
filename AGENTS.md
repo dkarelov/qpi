@@ -121,6 +121,7 @@ Persistence and schema:
 
 - Buyer enters shop by deeplink `shop_<slug>` or by saved shops menu.
 - Buyer can reserve slot only on active listings.
+- Buyer-facing primary CTA for an active listing is `Выполнить задание`.
 - Buyer-facing listing screens show buyer-visible title, WB subject, brand, description, photo, sizes, characteristics, cashback in RUB with approximate percent, and `Цена` in RUB.
 - Buyer receives setup token (base64 JSON array):
   - `[search_phrase, wb_product_id, 2]`.
@@ -238,6 +239,11 @@ Transitions:
   - the rest of the WB data lives inside collapsed `Параметры`, `Описание`, and `Характеристики` sections,
   - if collateral is insufficient, the note explains that balance top-up is required before activation.
 - Seller balance screen shows `Всего`, `Свободно для новых объявлений`, and `Уже выделено под объявления`; activation shortfall is shown only when funds are insufficient.
+- Seller top-up invoice screen:
+  - shows the TON USDT address in copy-friendly monospace,
+  - shows the exact `USDT` transfer amount,
+  - includes a generic TON jetton wallet deeplink button,
+  - keeps the raw address visible as fallback if the wallet deeplink does not open.
 - Transaction/history screens:
   - use representative `Транзакции ...` titles,
   - use `<` / `>` pagination when needed,
@@ -245,6 +251,7 @@ Transitions:
   - use color indicators for statuses.
 - Buyer UX:
   - shops/tasks/balance sections,
+  - active listing CTA uses `Выполнить задание`,
   - task flow contains explicit submit-token and cancel-task actions.
 - All user-facing timestamps are rendered in `MSK` (`Europe/Moscow`).
 - Admin UX:

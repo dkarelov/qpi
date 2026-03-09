@@ -6,6 +6,7 @@ import json
 import re
 import shlex
 import threading
+import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -3231,7 +3232,7 @@ class TelegramWebhookRuntime:
             await self._replace_message(
                 query_message,
                 "Отказаться от задания?\n"
-                "Бронь будет снята, а место снова станет доступно в магазине.",
+                "Бронь будет снята, а задание снова станет доступно для других покупателей.",
                 InlineKeyboardMarkup(
                     [
                         [
@@ -3527,7 +3528,7 @@ class TelegramWebhookRuntime:
 
             await self._replace_message(
                 query_message,
-                "Свободных мест нет. Попробуйте выбрать другой товар.",
+                "Свободных заданий по этому товару нет. Попробуйте выбрать другой товар.",
                 InlineKeyboardMarkup(
                     [
                         [
@@ -3592,7 +3593,7 @@ class TelegramWebhookRuntime:
                 return
             await self._replace_message(
                 query_message,
-                "Не удалось забронировать место. Попробуйте снова.",
+                "Не удалось начать задание. Попробуйте снова.",
                 InlineKeyboardMarkup(
                     [
                         [
@@ -3739,7 +3740,7 @@ class TelegramWebhookRuntime:
                 [
                     [
                         InlineKeyboardButton(
-                            text="✅ Забронировать место",
+                            text="✅ Выполнить задание",
                             callback_data=build_callback(
                                 flow=_ROLE_BUYER,
                                 action="reserve",
@@ -3814,7 +3815,7 @@ class TelegramWebhookRuntime:
             return
 
         text = (
-            "Задание отменено. Место освобождено."
+            "Задание отменено. Оно снова доступно для других покупателей."
             if result.changed
             else "Задание уже было отменено ранее."
         )
@@ -5838,16 +5839,43 @@ class TelegramWebhookRuntime:
                 return
             self._clear_prompt(context)
             await message.reply_text(
-                (
-                    "Счет на пополнение создан.\n"
-                    f"Срок действия: {self._settings.seller_collateral_invoice_ttl_hours} ч\n"
-                    "Сеть: USDT в сети TON (не ERC-20)\n"
-                    f"Адрес: {intent.deposit_address}\n"
-                    "Сумма (должна полностью совпадать): "
-                    f"{self._format_usdt_value(intent.expected_amount_usdt, precise=True)} USDT\n\n"
-                    "После перевода нажмите «🧾 Транзакции»."
+                self._screen_text(
+                    title="Счет на пополнение создан",
+                    cta="Откройте кошелек по кнопке ниже или скопируйте адрес вручную.",
+                    lines=[
+                        (
+                            "<b>Срок действия:</b> "
+                            f"{self._settings.seller_collateral_invoice_ttl_hours} ч"
+                        ),
+                        "<b>Сеть:</b> USDT в сети TON (не ERC-20)",
+                        f"<b>Адрес:</b> {self._format_copyable_code(intent.deposit_address)}",
+                        (
+                            "<b>Сумма (должна полностью совпадать):</b> "
+                            f"{self._format_usdt_value(intent.expected_amount_usdt, precise=True)} "
+                            "USDT"
+                        ),
+                    ],
+                    note=(
+                        "Если кнопка кошелька не открывается, скопируйте адрес вручную "
+                        "и после перевода проверьте раздел «🧾 Транзакции»."
+                    ),
                 ),
-                reply_markup=self._seller_balance_menu_markup(),
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="👛 Открыть в кошельке",
+                                url=self._build_ton_usdt_wallet_link(
+                                    destination_address=intent.deposit_address,
+                                    expected_amount_usdt=intent.expected_amount_usdt,
+                                    text=f"QPI deposit #{intent.deposit_intent_id}",
+                                ),
+                            )
+                        ],
+                        *self._seller_balance_menu_markup().inline_keyboard,
+                    ]
+                ),
+                parse_mode="HTML",
             )
             return
 
@@ -6274,7 +6302,7 @@ class TelegramWebhookRuntime:
             keyboard_rows.append(
                 [
                     InlineKeyboardButton(
-                        text="👁 Открыть",
+                        text="🔎 Просмотр",
                         callback_data=build_callback(
                             flow=_ROLE_BUYER,
                             action="listing_open",
@@ -6282,7 +6310,7 @@ class TelegramWebhookRuntime:
                         ),
                     ),
                     InlineKeyboardButton(
-                        text="✅ Забронировать место",
+                        text="✅ Выполнить задание",
                         callback_data=build_callback(
                             flow=_ROLE_BUYER,
                             action="reserve",
@@ -6502,6 +6530,32 @@ class TelegramWebhookRuntime:
             "blue": "🔵",
         }.get(color, "⚪")
         return f"{marker} {html.escape(label)}"
+
+    @staticmethod
+    def _format_copyable_code(value: str) -> str:
+        return f"<code>{html.escape(value.strip())}</code>"
+
+    def _build_ton_usdt_wallet_link(
+        self,
+        *,
+        destination_address: str,
+        expected_amount_usdt: Decimal,
+        text: str | None = None,
+    ) -> str:
+        normalized_address = destination_address.strip()
+        base_units = int(
+            expected_amount_usdt.quantize(_USDT_EXACT_QUANT, rounding=ROUND_HALF_UP)
+            * Decimal("1000000")
+        )
+        params = {
+            "jetton": self._settings.tonapi_usdt_jetton_master,
+            "amount": str(base_units),
+        }
+        if text:
+            params["text"] = text.strip()
+        query = urllib.parse.urlencode(params)
+        encoded_address = urllib.parse.quote(normalized_address, safe="")
+        return f"ton://transfer/{encoded_address}?{query}"
 
     def _build_buyer_listing_token(self, *, search_phrase: str, wb_product_id: int) -> str:
         payload = [search_phrase, wb_product_id, _BUYER_TASK_COMPANION_PRODUCTS]
@@ -7001,7 +7055,7 @@ class TelegramWebhookRuntime:
             title=display_title,
             cta="Проверьте товар и выберите следующее действие ниже.",
             lines=lines,
-            note="Если товар подходит, забронируйте место и выполните шаги из задания.",
+            note="Если товар подходит, нажмите «Выполнить задание» и следуйте шагам из задания.",
         )
 
     def _format_listing_price_line(
