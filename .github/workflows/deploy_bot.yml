@@ -206,26 +206,7 @@ jobs:
           test -n "${remote_db_url}" || { echo "DATABASE_URL missing in /etc/qpi/bot.env"; exit 1; }
           echo "::add-mask::${remote_db_url}"
           tunneled_db_url="$(
-            REMOTE_DATABASE_URL="${remote_db_url}" python - <<'PY'
-            from urllib.parse import quote, urlparse, urlunparse
-            import os
-
-            raw = os.environ["REMOTE_DATABASE_URL"].strip()
-            if raw.startswith("postgres://"):
-                raw = "postgresql://" + raw[len("postgres://") :]
-            if raw.startswith("postgresql+psycopg://"):
-                raw = "postgresql://" + raw[len("postgresql+psycopg://") :]
-
-            parsed = urlparse(raw)
-            userinfo = ""
-            if parsed.username:
-                userinfo = quote(parsed.username)
-                if parsed.password:
-                    userinfo += f":{quote(parsed.password)}"
-                userinfo += "@"
-
-            print(urlunparse(parsed._replace(netloc=f"{userinfo}127.0.0.1:15432")))
-            PY
+            REMOTE_DATABASE_URL="${remote_db_url}" python -c "import os; from urllib.parse import quote, urlparse, urlunparse; raw=os.environ['REMOTE_DATABASE_URL'].strip(); raw='postgresql://'+raw[len('postgres://'):] if raw.startswith('postgres://') else raw; raw='postgresql://'+raw[len('postgresql+psycopg://'):] if raw.startswith('postgresql+psycopg://') else raw; parsed=urlparse(raw); userinfo=''; userinfo=(quote(parsed.username)+((':'+quote(parsed.password)) if parsed.password else '')+'@') if parsed.username else ''; print(urlunparse(parsed._replace(netloc=f'{userinfo}127.0.0.1:15432')))"
           )"
           echo "::add-mask::${tunneled_db_url}"
           echo "PRODUCTION_DATABASE_URL=${tunneled_db_url}" >> "${GITHUB_ENV}"
