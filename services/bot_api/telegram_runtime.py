@@ -2112,7 +2112,7 @@ class TelegramWebhookRuntime:
             return
 
         shops = await self._seller_service.list_shops(seller_user_id=seller_user_id)
-        shop_titles = {shop.shop_id: shop.title for shop in shops}
+        shop_slugs = {shop.shop_id: shop.slug for shop in shops}
         resolved_page, total_pages, start_index, end_index = self._resolve_numbered_page(
             total_items=len(listings),
             requested_page=page,
@@ -2123,7 +2123,6 @@ class TelegramWebhookRuntime:
         if notice:
             lines.append(html.escape(notice))
         for number, listing in enumerate(page_items, start=start_index + 1):
-            shop_title = shop_titles.get(listing.shop_id, "Неизвестный магазин")
             display_title = self._listing_display_title(
                 display_title=listing.display_title,
                 fallback=listing.search_phrase,
@@ -2132,15 +2131,32 @@ class TelegramWebhookRuntime:
                 reward_usdt=listing.reward_usdt,
                 reference_price_rub=listing.reference_price_rub,
             )
+            shop_slug = shop_slugs.get(listing.shop_id)
+            shop_link = (
+                f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop_slug}"
+                if shop_slug
+                else "—"
+            )
             lines.append(
                 f"<b>{number}. {html.escape(display_title)}</b>\n"
-                f"Магазин: {html.escape(shop_title)}\n"
-                f"Статус: {html.escape(self._humanize_listing_status(listing.status))}\n"
-                f"Цена покупателя: {self._format_price_optional_rub(listing.reference_price_rub)}\n"
-                f"Кэшбэк: {cashback_text}\n"
-                "Запланировано: "
-                f"{listing.slot_count} · В процессе: {listing.in_progress_assignments_count} "
-                f"· Доступно: {listing.available_slots}"
+                f"<b>Артикул WB:</b> {listing.wb_product_id}\n"
+                f"<b>Кэшбэк:</b> {cashback_text}\n"
+                f"<b>Поисковая фраза:</b> &quot;{html.escape(listing.search_phrase)}&quot;\n"
+                + (
+                    f"<b>План по заказам / В процессе:</b> "
+                    f"{listing.slot_count} / {listing.in_progress_assignments_count}"
+                )
+                + "\n"
+                + f"<b>Ссылка на магазин:</b> {html.escape(shop_link)}\n"
+                + (
+                    "<b>Обеспечение:</b> "
+                    f"{self._format_listing_collateral_line(collateral_view=listing)}"
+                )
+                + "\n"
+                + (
+                    f"<b>Статус:</b> "
+                    f"{self._listing_activity_badge(is_active=listing.status == 'active')}"
+                )
             )
         title = "Объявления"
         if total_pages > 1:
@@ -2149,8 +2165,10 @@ class TelegramWebhookRuntime:
             query_message,
             self._screen_text(
                 title=title,
+                cta="Нажмите номер ниже, чтобы открыть карточку объявления.",
                 lines=lines,
-                note="Нажмите номер ниже, чтобы открыть карточку объявления.",
+                note="Если нужно новое объявление, используйте кнопку создания ниже.",
+                separate_blocks=True,
             ),
             self._numbered_page_markup(
                 flow=_ROLE_SELLER,
@@ -2872,6 +2890,7 @@ class TelegramWebhookRuntime:
                     "Если перевод завис или счет истек, создайте новый счет "
                     "или обратитесь к администратору."
                 ),
+                separate_blocks=True,
             ),
             InlineKeyboardMarkup(keyboard_rows),
             parse_mode="HTML",
@@ -4140,6 +4159,7 @@ class TelegramWebhookRuntime:
                     "Если вывод отклонен или задержан, проверьте статус "
                     "и при необходимости оформите новую заявку."
                 ),
+                separate_blocks=True,
             ),
             InlineKeyboardMarkup(keyboard_rows),
             parse_mode="HTML",
@@ -6452,6 +6472,7 @@ class TelegramWebhookRuntime:
         lines: list[str] | None = None,
         note: str | None = None,
         warning: bool = False,
+        separate_blocks: bool = False,
     ) -> str:
         parts = [f"{'⚠️ ' if warning else ''}<b>{title}</b>"]
         if cta:
@@ -6459,7 +6480,7 @@ class TelegramWebhookRuntime:
         if lines:
             filtered = [line for line in lines if line]
             if filtered:
-                parts.append("\n\n".join(filtered))
+                parts.append(("\n\n" if separate_blocks else "\n").join(filtered))
         if note:
             parts.append(f"<i>{note}</i>")
         return "\n\n".join(parts)
@@ -6919,7 +6940,7 @@ class TelegramWebhookRuntime:
             f"Размеры: {html.escape(self._format_sizes_text(listing.wb_tech_sizes))}",
         ]
         lines.append(
-            "<b>Параметры</b>\n<blockquote expandable>"
+            "\n<b>Параметры</b>\n<blockquote expandable>"
             + "\n".join(parameters_lines)
             + "</blockquote>"
         )
@@ -6928,10 +6949,10 @@ class TelegramWebhookRuntime:
             body=listing.wb_description,
         )
         if description_block:
-            lines.append(description_block)
+            lines.append(f"\n{description_block}")
         characteristics_block = self._format_characteristics_block_html(listing.wb_characteristics)
         if characteristics_block:
-            lines.append(characteristics_block)
+            lines.append(f"\n{characteristics_block}")
         return self._screen_text(
             title=title,
             cta="Проверьте объявление и выберите следующее действие ниже.",
@@ -6972,10 +6993,10 @@ class TelegramWebhookRuntime:
             body=listing.wb_description,
         )
         if description_block:
-            lines.append(description_block)
+            lines.append(f"\n{description_block}")
         characteristics_block = self._format_characteristics_block_html(listing.wb_characteristics)
         if characteristics_block:
-            lines.append(characteristics_block)
+            lines.append(f"\n{characteristics_block}")
         return self._screen_text(
             title=display_title,
             cta="Проверьте товар и выберите следующее действие ниже.",

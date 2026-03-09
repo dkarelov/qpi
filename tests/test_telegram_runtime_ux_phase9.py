@@ -210,7 +210,7 @@ def test_screen_text_places_cta_after_title_and_separates_lines() -> None:
     )
 
     assert text.startswith("<b>Экран</b>\n\n<i>Сделайте следующий шаг.</i>")
-    assert "Первый блок\n\nВторой блок" in text
+    assert "Первый блок\nВторой блок" in text
     assert text.endswith("<i>Подсказка внизу.</i>")
 
 
