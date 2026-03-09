@@ -17,6 +17,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PSQLDEF_VERSION: v3.9.8
+
 jobs:
   schema_drift_regression:
     runs-on: ubuntu-latest
@@ -45,15 +48,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.23"
-
       - name: Install psqldef
         run: |
-          go install github.com/sqldef/sqldef/cmd/psqldef@latest
-          echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
+          curl -fsSL -o /tmp/psqldef.tar.gz \
+            "https://github.com/sqldef/sqldef/releases/download/${PSQLDEF_VERSION}/psqldef_linux_amd64.tar.gz"
+          tar -xzf /tmp/psqldef.tar.gz -C /tmp
+          install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
+          psqldef --version
 
       - name: Install dependencies
         run: |
@@ -96,15 +97,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.23"
-
       - name: Install psqldef
         run: |
-          go install github.com/sqldef/sqldef/cmd/psqldef@latest
-          echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
+          curl -fsSL -o /tmp/psqldef.tar.gz \
+            "https://github.com/sqldef/sqldef/releases/download/${PSQLDEF_VERSION}/psqldef_linux_amd64.tar.gz"
+          tar -xzf /tmp/psqldef.tar.gz -C /tmp
+          install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
+          psqldef --version
 
       - name: Install dependencies
         run: |
