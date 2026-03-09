@@ -102,6 +102,30 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
                 search_phrase="бумага а4 для принтера",
             )
         ),
+        update_listing=AsyncMock(
+            return_value=_ns(
+                listing_id=21,
+                shop_id=11,
+                display_title="Бумага A4 для принтера Обновлено",
+                wb_product_id=552892532,
+                wb_subject_name="Бумага офисная",
+                wb_vendor_code="paper-001",
+                wb_source_title="BRAUBERG Бумага A4 для принтера",
+                wb_brand_name="BRAUBERG",
+                wb_description="Белая бумага для офиса",
+                wb_photo_url="https://example.com/photo.webp",
+                wb_tech_sizes=["0"],
+                wb_characteristics=[{"name": "Плотность", "value": "80 г/м2"}],
+                reference_price_rub=400,
+                reference_price_source="orders",
+                reward_usdt=Decimal("1.200000"),
+                slot_count=6,
+                available_slots=6,
+                collateral_required_usdt=Decimal("7.272000"),
+                status="active",
+                search_phrase="бумага а4 для принтера обновлено",
+            )
+        ),
         activate_listing=AsyncMock(return_value=_ns(changed=True)),
         pause_listing=AsyncMock(return_value=_ns(changed=True)),
         unpause_listing=AsyncMock(return_value=_ns(changed=True)),
@@ -347,8 +371,9 @@ async def test_phase10_e2e_seller_shop_create_token_first_flow() -> None:
 
     create_prompt_events = await harness.callback(flow="seller", action="shop_create_token_prompt")
     assert any(
-        "Шаг 1/2: отправьте токен WB API." in text for text in _event_texts(create_prompt_events)
+        "Шаг 1 из 2." in text for text in _event_texts(create_prompt_events)
     )
+    assert all("➕ Создать магазин" not in _markup_labels(event) for event in create_prompt_events)
 
     token_events = await harness.text("wb_valid_token")
     assert any("Токен валиден." in text for text in _event_texts(token_events))
@@ -408,13 +433,14 @@ async def test_phase10_e2e_seller_listing_create_and_activate_flow() -> None:
     assert any("Создание объявления для магазина" in text for text in _event_texts(prompt_events))
 
     preview_events = await harness.text('552892532 100 5 "бумага а4 для принтера"')
-    assert any("<b>Проверка товара завершена</b>" in text for text in _event_texts(preview_events))
+    assert any("<b>Проверьте объявление</b>" in text for text in _event_texts(preview_events))
     assert any(
         "Название для покупателей:</b> Бумага A4 для принтера" in text
         for text in _event_texts(preview_events)
     )
+    assert any("✅ Сохранить текущее название" in _markup_labels(event) for event in preview_events)
 
-    create_events = await harness.text(".")
+    create_events = await harness.callback(flow="seller", action="listing_title_keep")
     assert any("Активировать объявление сейчас?" in text for text in _event_texts(create_events))
 
     activate_events = await harness.callback(
@@ -445,8 +471,34 @@ async def test_phase10_e2e_seller_listing_create_asks_manual_price_when_no_order
     confirm_title_events = await harness.text("392")
     assert any("Цена покупателя:</b> 392 ₽" in text for text in _event_texts(confirm_title_events))
 
-    created_events = await harness.text(".")
+    created_events = await harness.callback(flow="seller", action="listing_title_keep")
     assert any("Активировать объявление сейчас?" in text for text in _event_texts(created_events))
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_seller_listing_create_allows_explicit_title_edit() -> None:
+    runtime, deps = _build_runtime()
+    deps.seller.list_shops = AsyncMock(
+        return_value=[
+            _ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")
+        ]
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
+
+    await harness.callback(flow="seller", action="listing_create_prompt", entity_id="11")
+    preview_events = await harness.text('552892532 100 5 "бумага а4 для принтера"')
+    assert any("✏️ Изменить название" in _markup_labels(event) for event in preview_events)
+
+    edit_prompt_events = await harness.callback(flow="seller", action="listing_title_edit_prompt")
+    assert any("Отправьте новое название" in text for text in _event_texts(edit_prompt_events))
+
+    renamed_review_events = await harness.text("Бумага для офиса")
+    renamed_review_text = "\n".join(_event_texts(renamed_review_events))
+    assert "Название для покупателей:</b> Бумага для офиса" in renamed_review_text
+
+    await harness.callback(flow="seller", action="listing_title_keep")
+    create_call = deps.seller.create_listing_draft.await_args.kwargs
+    assert create_call["display_title"] == "Бумага для офиса"
 
 
 @pytest.mark.asyncio
@@ -579,9 +631,53 @@ async def test_phase10_e2e_seller_listing_open_shows_photo_and_detail_card() -> 
     detail_events = await harness.callback(flow="seller", action="listing_open", entity_id="21")
 
     assert any(event.kind == "reply_photo" for event in detail_events)
+    assert any("✏️ Редактировать" in _markup_labels(event) for event in detail_events)
     detail_text = "\n".join(_event_texts(detail_events))
     assert "Цена покупателя:</b> 400 ₽" in detail_text
     assert "Артикул продавца:</b> paper-001" in detail_text
+    assert "Ссылка на магазин:" in detail_text
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_seller_listing_edit_flow_saves_changes() -> None:
+    runtime, deps = _build_runtime()
+    harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
+
+    edit_menu_events = await harness.callback(flow="seller", action="listing_edit", entity_id="21")
+    assert any("Редактирование объявления" in text for text in _event_texts(edit_menu_events))
+
+    title_prompt_events = await harness.callback(
+        flow="seller",
+        action="listing_edit_title",
+        entity_id="21",
+    )
+    assert any("Редактирование: Название" in text for text in _event_texts(title_prompt_events))
+
+    confirm_events = await harness.text("Бумага A4 для принтера Обновлено")
+    assert any("Подтвердите изменения" in text for text in _event_texts(confirm_events))
+    assert any("✅ Сохранить изменения" in _markup_labels(event) for event in confirm_events)
+
+    save_events = await harness.callback(
+        flow="seller",
+        action="listing_edit_confirm",
+        entity_id="21",
+    )
+    assert any("Изменения сохранены." in text for text in _event_texts(save_events))
+    deps.seller.update_listing.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_seller_activation_insufficient_funds_shows_topup_cta() -> None:
+    runtime, deps = _build_runtime()
+    deps.seller.activate_listing = AsyncMock(side_effect=Exception())  # placeholder
+    from libs.domain.errors import InsufficientFundsError  # local import for test only
+    deps.seller.activate_listing = AsyncMock(side_effect=InsufficientFundsError())
+
+    harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
+    events = await harness.callback(flow="seller", action="listing_activate", entity_id="21")
+
+    assert any("Недостаточно средств для активации" in text for text in _event_texts(events))
+    assert any("➕ Пополнить" in _markup_labels(event) for event in events)
 
 
 @pytest.mark.asyncio

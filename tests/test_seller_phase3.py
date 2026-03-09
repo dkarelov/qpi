@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 from psycopg.rows import dict_row
 
-from libs.domain.errors import InvalidStateError
+from libs.domain.errors import InsufficientFundsError, InvalidStateError
 from libs.domain.ledger import FinanceService
 from libs.domain.seller import SellerService
 from libs.integrations.wb import WbPingResult
@@ -695,3 +695,137 @@ async def test_seller_balance_and_collateral_views(db_pool) -> None:
     assert views[0].listing_id == listing.listing_id
     assert views[0].collateral_required_usdt == Decimal("6.060000")
     assert views[0].collateral_locked_usdt == Decimal("6.060000")
+
+
+@pytest.mark.asyncio
+async def test_draft_listing_update_changes_editable_fields(db_pool) -> None:
+    service = SellerService(db_pool)
+    seller = await service.bootstrap_seller(telegram_id=7010, username="seller_update_draft")
+    shop = await service.create_shop(seller_user_id=seller.user_id, title="Draft Edit Shop")
+    listing = await service.create_listing_draft(
+        seller_user_id=seller.user_id,
+        shop_id=shop.shop_id,
+        wb_product_id=60001,
+        display_title="Старое название",
+        search_phrase="старый поиск",
+        reward_usdt=Decimal("1.000000"),
+        slot_count=2,
+    )
+
+    updated = await service.update_listing(
+        seller_user_id=seller.user_id,
+        listing_id=listing.listing_id,
+        display_title="Новое название",
+        search_phrase="новый поиск",
+        reward_usdt=Decimal("2.000000"),
+        slot_count=3,
+        idempotency_key="draft-edit-1",
+    )
+
+    assert updated.display_title == "Новое название"
+    assert updated.search_phrase == "новый поиск"
+    assert updated.reward_usdt == Decimal("2.000000")
+    assert updated.slot_count == 3
+    assert updated.available_slots == 3
+    assert updated.collateral_required_usdt == Decimal("6.060000")
+
+
+@pytest.mark.asyncio
+async def test_active_listing_update_increases_collateral_and_relocks_balance(db_pool) -> None:
+    service = SellerService(db_pool)
+    seller = await service.bootstrap_seller(telegram_id=7011, username="seller_update_active")
+    shop = await service.create_shop(seller_user_id=seller.user_id, title="Active Edit Shop")
+    await service.save_validated_shop_token(
+        seller_user_id=seller.user_id,
+        shop_id=shop.shop_id,
+        token_ciphertext=encrypt_token("valid-token", "test-key"),
+    )
+    listing = await service.create_listing_draft(
+        seller_user_id=seller.user_id,
+        shop_id=shop.shop_id,
+        wb_product_id=60002,
+        search_phrase="старый поиск",
+        reward_usdt=Decimal("1.000000"),
+        slot_count=2,
+    )
+    await _set_account_balance(
+        db_pool,
+        account_id=seller.seller_available_account_id,
+        balance=Decimal("10.000000"),
+    )
+    await service.activate_listing(
+        seller_user_id=seller.user_id,
+        listing_id=listing.listing_id,
+        idempotency_key="active-edit-activate",
+    )
+
+    updated = await service.update_listing(
+        seller_user_id=seller.user_id,
+        listing_id=listing.listing_id,
+        display_title="Обновленное название",
+        search_phrase="новый поиск",
+        reward_usdt=Decimal("1.500000"),
+        slot_count=3,
+        idempotency_key="active-edit-1",
+    )
+
+    assert updated.display_title == "Обновленное название"
+    assert updated.search_phrase == "новый поиск"
+    assert updated.collateral_required_usdt == Decimal("4.545000")
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT current_balance_usdt FROM accounts WHERE id = %s",
+                (seller.seller_available_account_id,),
+            )
+            available_row = await cur.fetchone()
+            assert available_row["current_balance_usdt"] == Decimal("5.455000")
+
+            await cur.execute(
+                "SELECT current_balance_usdt FROM accounts WHERE id = %s",
+                (seller.seller_collateral_account_id,),
+            )
+            collateral_row = await cur.fetchone()
+            assert collateral_row["current_balance_usdt"] == Decimal("4.545000")
+
+
+@pytest.mark.asyncio
+async def test_active_listing_update_rejects_when_extra_collateral_is_missing(db_pool) -> None:
+    service = SellerService(db_pool)
+    seller = await service.bootstrap_seller(telegram_id=7012, username="seller_update_fail")
+    shop = await service.create_shop(seller_user_id=seller.user_id, title="Active Edit Fail Shop")
+    await service.save_validated_shop_token(
+        seller_user_id=seller.user_id,
+        shop_id=shop.shop_id,
+        token_ciphertext=encrypt_token("valid-token", "test-key"),
+    )
+    listing = await service.create_listing_draft(
+        seller_user_id=seller.user_id,
+        shop_id=shop.shop_id,
+        wb_product_id=60003,
+        search_phrase="старый поиск",
+        reward_usdt=Decimal("1.000000"),
+        slot_count=1,
+    )
+    await _set_account_balance(
+        db_pool,
+        account_id=seller.seller_available_account_id,
+        balance=Decimal("1.010000"),
+    )
+    await service.activate_listing(
+        seller_user_id=seller.user_id,
+        listing_id=listing.listing_id,
+        idempotency_key="active-edit-fail-activate",
+    )
+
+    with pytest.raises(InsufficientFundsError):
+        await service.update_listing(
+            seller_user_id=seller.user_id,
+            listing_id=listing.listing_id,
+            display_title="Новое название",
+            search_phrase="новый поиск",
+            reward_usdt=Decimal("5.000000"),
+            slot_count=2,
+            idempotency_key="active-edit-fail-1",
+        )

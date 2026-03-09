@@ -856,6 +856,163 @@ class SellerService:
 
         return await run_in_transaction(self._pool, operation)
 
+    async def update_listing(
+        self,
+        *,
+        seller_user_id: int,
+        listing_id: int,
+        display_title: str,
+        search_phrase: str,
+        reward_usdt: Decimal,
+        slot_count: int,
+        idempotency_key: str,
+    ) -> ListingResult:
+        normalized_display_title = display_title.strip()
+        normalized_search_phrase = search_phrase.strip()
+        normalized_reward_usdt = _normalize_amount(reward_usdt)
+        normalized_slot_count = int(slot_count)
+        if not normalized_display_title:
+            raise ValueError("display_title must not be empty")
+        if not normalized_search_phrase:
+            raise ValueError("search_phrase must not be empty")
+        if normalized_reward_usdt <= Decimal("0.000000"):
+            raise ValueError("reward_usdt must be > 0")
+        if normalized_slot_count < 1:
+            raise ValueError("slot_count must be >= 1")
+        if not idempotency_key.strip():
+            raise ValueError("idempotency_key must not be empty")
+
+        new_required_collateral = _normalize_amount(
+            normalized_reward_usdt * Decimal(normalized_slot_count) * _COLLATERAL_FEE_MULTIPLIER
+        )
+
+        async def operation(conn: AsyncConnection) -> ListingResult:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT
+                        id,
+                        shop_id,
+                        wb_product_id,
+                        display_title,
+                        wb_source_title,
+                        wb_subject_name,
+                        wb_brand_name,
+                        wb_vendor_code,
+                        wb_description,
+                        wb_photo_url,
+                        wb_tech_sizes_json,
+                        wb_characteristics_json,
+                        reference_price_rub,
+                        reference_price_source,
+                        reference_price_updated_at,
+                        search_phrase,
+                        status,
+                        reward_usdt,
+                        slot_count,
+                        available_slots,
+                        collateral_required_usdt,
+                        deleted_at
+                    FROM listings
+                    WHERE id = %s
+                      AND seller_user_id = %s
+                    FOR UPDATE
+                    """,
+                    (listing_id, seller_user_id),
+                )
+                listing = await cur.fetchone()
+                if listing is None:
+                    raise NotFoundError(f"listing {listing_id} not found")
+                if listing["deleted_at"] is not None:
+                    raise InvalidStateError("listing is deleted")
+
+                consumed_slots = int(listing["slot_count"]) - int(listing["available_slots"])
+                new_available_slots = normalized_slot_count - consumed_slots
+                if new_available_slots < 0:
+                    raise InvalidStateError("slot_count is below already consumed slots")
+
+                if listing["status"] in {"active", "paused"}:
+                    await self._rebalance_listing_collateral_hold(
+                        cur,
+                        seller_user_id=seller_user_id,
+                        listing_id=listing_id,
+                        target_amount_usdt=new_required_collateral,
+                        idempotency_key=idempotency_key,
+                    )
+
+                await cur.execute(
+                    """
+                    UPDATE listings
+                    SET display_title = %s,
+                        search_phrase = %s,
+                        reward_usdt = %s,
+                        slot_count = %s,
+                        available_slots = %s,
+                        collateral_required_usdt = %s,
+                        updated_at = timezone('utc', now())
+                    WHERE id = %s
+                    RETURNING
+                        id,
+                        shop_id,
+                        wb_product_id,
+                        display_title,
+                        wb_source_title,
+                        wb_subject_name,
+                        wb_brand_name,
+                        wb_vendor_code,
+                        wb_description,
+                        wb_photo_url,
+                        wb_tech_sizes_json,
+                        wb_characteristics_json,
+                        reference_price_rub,
+                        reference_price_source,
+                        reference_price_updated_at,
+                        search_phrase,
+                        status,
+                        reward_usdt,
+                        slot_count,
+                        available_slots,
+                        collateral_required_usdt,
+                        deleted_at
+                    """,
+                    (
+                        normalized_display_title,
+                        normalized_search_phrase,
+                        normalized_reward_usdt,
+                        normalized_slot_count,
+                        new_available_slots,
+                        new_required_collateral,
+                        listing_id,
+                    ),
+                )
+                row = await cur.fetchone()
+                return ListingResult(
+                    listing_id=row["id"],
+                    shop_id=row["shop_id"],
+                    wb_product_id=row["wb_product_id"],
+                    display_title=row["display_title"],
+                    wb_source_title=row["wb_source_title"],
+                    wb_subject_name=row["wb_subject_name"],
+                    wb_brand_name=row["wb_brand_name"],
+                    wb_vendor_code=row["wb_vendor_code"],
+                    wb_description=row["wb_description"],
+                    wb_photo_url=row["wb_photo_url"],
+                    wb_tech_sizes=list(row["wb_tech_sizes_json"] or []),
+                    wb_characteristics=list(row["wb_characteristics_json"] or []),
+                    reference_price_rub=row["reference_price_rub"],
+                    reference_price_source=row["reference_price_source"],
+                    reference_price_updated_at=row["reference_price_updated_at"],
+                    search_phrase=row["search_phrase"],
+                    status=row["status"],
+                    reward_usdt=row["reward_usdt"],
+                    slot_count=row["slot_count"],
+                    available_slots=row["available_slots"],
+                    collateral_required_usdt=row["collateral_required_usdt"],
+                    deleted_at=row["deleted_at"],
+                )
+
+        return await run_in_transaction(self._pool, operation)
+
     async def list_listing_collateral_views(
         self,
         *,
@@ -1650,6 +1807,97 @@ class SellerService:
         row = await cur.fetchone()
         if row is None:
             raise NotFoundError(f"listing {listing_id} not found")
+
+    async def _rebalance_listing_collateral_hold(
+        self,
+        cur,
+        *,
+        seller_user_id: int,
+        listing_id: int,
+        target_amount_usdt: Decimal,
+        idempotency_key: str,
+    ) -> None:
+        await cur.execute(
+            """
+            SELECT id, amount_usdt
+            FROM balance_holds
+            WHERE listing_id = %s
+              AND hold_type = 'collateral'
+              AND status = 'active'
+            ORDER BY id ASC
+            FOR UPDATE
+            """,
+            (listing_id,),
+        )
+        holds = await cur.fetchall()
+        if len(holds) > 1:
+            raise InvalidStateError("multiple active collateral holds for listing")
+
+        current_amount = _normalize_amount(
+            sum((_normalize_amount(row["amount_usdt"]) for row in holds), Decimal("0.000000"))
+        )
+        delta = _normalize_amount(target_amount_usdt - current_amount)
+        if delta == Decimal("0.000000"):
+            return
+
+        seller_available_account_id = await self._ensure_owner_account(
+            cur,
+            owner_user_id=seller_user_id,
+            account_kind="seller_available",
+        )
+        seller_collateral_account_id = await self._ensure_owner_account(
+            cur,
+            owner_user_id=seller_user_id,
+            account_kind="seller_collateral",
+        )
+
+        if delta > Decimal("0.000000"):
+            await self._transfer_locked(
+                cur,
+                from_account_id=seller_available_account_id,
+                to_account_id=seller_collateral_account_id,
+                amount_usdt=delta,
+                event_type="listing_update_collateral_lock",
+                idempotency_key=_ledger_key(f"{idempotency_key}:increase"),
+                entity_type="listing",
+                entity_id=listing_id,
+                metadata={"listing_id": listing_id, "delta_usdt": str(delta)},
+            )
+        else:
+            release_amount = _normalize_amount(-delta)
+            await self._transfer_locked(
+                cur,
+                from_account_id=seller_collateral_account_id,
+                to_account_id=seller_available_account_id,
+                amount_usdt=release_amount,
+                event_type="listing_update_collateral_release",
+                idempotency_key=_ledger_key(f"{idempotency_key}:decrease"),
+                entity_type="listing",
+                entity_id=listing_id,
+                metadata={"listing_id": listing_id, "delta_usdt": str(delta)},
+            )
+
+        if not holds:
+            await self._upsert_hold(
+                cur,
+                account_id=seller_collateral_account_id,
+                hold_type="collateral",
+                status="active",
+                amount_usdt=target_amount_usdt,
+                listing_id=listing_id,
+                idempotency_key=_hold_key(f"{idempotency_key}:rebalance"),
+            )
+            return
+
+        hold_id = int(holds[0]["id"])
+        await cur.execute(
+            """
+            UPDATE balance_holds
+            SET amount_usdt = %s
+            WHERE id = %s
+            """,
+            (target_amount_usdt, hold_id),
+        )
 
     async def _ensure_owner_account(self, cur, *, owner_user_id: int, account_kind: str) -> int:
         account_code = f"user:{owner_user_id}:{account_kind}"

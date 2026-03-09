@@ -177,7 +177,7 @@ def test_token_instruction_contains_required_sections() -> None:
 
     text = runtime._shop_token_instruction_text(shop_title="Мой магазин")
     assert "Токен WB API для магазина" in text
-    assert "Отправьте токен следующим сообщением." in text
+    assert "Отправьте токен следующим сообщением ниже." in text
     assert "бот будет читать карточки товаров" in text
     assert "Токен используется только для чтения." in text
 
@@ -218,9 +218,8 @@ def test_listing_created_prompt_activation_explains_activation_effect() -> None:
     )
 
     assert "Активировать объявление сейчас?" in text
-    assert "Обеспечение будет списано с баланса" in text
-    assert "объявление станет доступно покупателям" in text
-    assert "Название для покупателей:</b> Джинсы женские прямые" in text
+    assert "После активации поделитесь ссылкой на магазин." in text
+    assert "Товар:</b> Джинсы женские прямые" in text
     assert "Источник цены:</b> рассчитана по заказам за 30 дней." in text
     assert "Артикул продавца:</b> sku-1" in text
     assert "Цена покупателя:</b> 1200 ₽" in text
