@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-03-02 UTC
+Last updated: 2026-03-09 UTC
 
 ## 1. Documentation Policy
 
@@ -324,6 +324,8 @@ Rules:
 
 - Keep tunnel active during active development sessions.
 - Recreate tunnel if listener is missing before DB operations.
+- Operator workstation has `psql` available (`PostgreSQL 16.13`); prefer direct `psql` checks over ad-hoc Python probes for DB inspection, schema verification, and lock/activity checks.
+- If a missing local tool would materially improve speed, reliability, or operator clarity, ask the operator to install it instead of defaulting to a slower workaround.
 
 ### 7.3 Schema operations
 
