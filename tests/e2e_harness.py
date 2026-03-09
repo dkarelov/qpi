@@ -138,6 +138,15 @@ class FakeMessage:
             chat_id=self.chat.id,
         )
 
+    async def edit_reply_markup(self, reply_markup: Any | None = None) -> None:
+        if self._edit_fails:
+            raise RuntimeError("simulated edit failure")
+        self._transport.record(
+            kind="edit_markup",
+            reply_markup=reply_markup,
+            chat_id=self.chat.id,
+        )
+
     async def delete(self) -> None:
         self._transport.record(kind="delete", chat_id=self.chat.id)
 

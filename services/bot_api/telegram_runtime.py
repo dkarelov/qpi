@@ -84,11 +84,13 @@ _ROLE_ADMIN = "admin"
 _ACTIVE_ROLE_KEY = "active_role"
 _LAST_BUYER_SHOP_SLUG_KEY = "last_buyer_shop_slug"
 _PROMPT_STATE_KEY = "prompt_state"
+_SELLER_LISTINGS_PAGE_KEY = "seller_listings_page"
 _USDT_SUMMARY_QUANT = Decimal("0.1")
 _USDT_EXACT_QUANT = Decimal("0.000001")
 _RUB_QUANT = Decimal("1")
 _LISTING_COLLATERAL_FEE_MULTIPLIER = Decimal("1.01")
 _BUYER_TASK_COMPANION_PRODUCTS = 2
+_NUMBERED_PAGE_SIZE = 10
 
 _SELLER_COMMAND_PREFIXES = (
     "/shop_",
@@ -575,6 +577,7 @@ class TelegramWebhookRuntime:
                     error_message=str(exc)[:300],
                 )
             return
+        await self._retire_message_keyboard(query.message)
         identity = _identity_from_callback(update)
         if identity is None:
             return
@@ -883,9 +886,12 @@ class TelegramWebhookRuntime:
             )
             return
         if action == "listings":
+            requested_page = self._coerce_page_number(payload.entity_id)
             await self._render_seller_listings(
+                context=context,
                 query_message=query_message,
                 seller_user_id=seller.user_id,
+                page=requested_page,
             )
             return
         if action == "listing_create_pick_shop":
@@ -955,6 +961,7 @@ class TelegramWebhookRuntime:
                 query_message=query_message,
                 seller_user_id=seller.user_id,
                 listing_id=int(payload.entity_id),
+                list_page=self._seller_listings_page_from_context(context),
             )
             return
         if action == "listing_title_keep":
@@ -1005,6 +1012,7 @@ class TelegramWebhookRuntime:
                 query_message=query_message,
                 seller_user_id=seller.user_id,
                 listing_id=int(payload.entity_id),
+                list_page=self._seller_listings_page_from_context(context),
             )
             return
         if action in {
@@ -1168,6 +1176,7 @@ class TelegramWebhookRuntime:
                 query_message=query_message,
                 seller_user_id=seller.user_id,
                 listing_id=updated.listing_id,
+                list_page=self._seller_listings_page_from_context(context),
                 notice="Изменения сохранены.",
             )
             return
@@ -1183,6 +1192,7 @@ class TelegramWebhookRuntime:
                 query_message=query_message,
                 seller_user_id=seller.user_id,
                 listing_id=int(payload.entity_id),
+                list_page=self._seller_listings_page_from_context(context),
             )
             return
         if action == "listing_pause":
@@ -1197,6 +1207,7 @@ class TelegramWebhookRuntime:
                 query_message=query_message,
                 seller_user_id=seller.user_id,
                 listing_id=int(payload.entity_id),
+                list_page=self._seller_listings_page_from_context(context),
             )
             return
         if action == "listing_unpause":
@@ -1211,6 +1222,7 @@ class TelegramWebhookRuntime:
                 query_message=query_message,
                 seller_user_id=seller.user_id,
                 listing_id=int(payload.entity_id),
+                list_page=self._seller_listings_page_from_context(context),
             )
             return
         if action == "listing_delete_preview":
@@ -1225,6 +1237,7 @@ class TelegramWebhookRuntime:
                 query_message=query_message,
                 seller_user_id=seller.user_id,
                 listing_id=int(payload.entity_id),
+                list_page=self._seller_listings_page_from_context(context),
             )
             return
         if action == "listing_delete_confirm":
@@ -1236,6 +1249,7 @@ class TelegramWebhookRuntime:
                 )
                 return
             await self._execute_listing_delete(
+                context=context,
                 query_message=query_message,
                 seller_user_id=seller.user_id,
                 listing_id=int(payload.entity_id),
@@ -1712,6 +1726,109 @@ class TelegramWebhookRuntime:
         )
         return f"~{percent}%"
 
+    @staticmethod
+    def _coerce_page_number(raw_value: str | None) -> int:
+        if not raw_value:
+            return 1
+        try:
+            page = int(raw_value)
+        except (TypeError, ValueError):
+            return 1
+        return page if page > 0 else 1
+
+    @staticmethod
+    def _resolve_numbered_page(
+        *,
+        total_items: int,
+        requested_page: int,
+        page_size: int = _NUMBERED_PAGE_SIZE,
+    ) -> tuple[int, int, int, int]:
+        if total_items <= 0:
+            return 1, 1, 0, 0
+        total_pages = (total_items + page_size - 1) // page_size
+        page = max(1, min(requested_page, total_pages))
+        start_index = (page - 1) * page_size
+        end_index = min(start_index + page_size, total_items)
+        return page, total_pages, start_index, end_index
+
+    def _seller_listings_page_from_context(self, context: ContextTypes.DEFAULT_TYPE) -> int:
+        return self._coerce_page_number(str(context.user_data.get(_SELLER_LISTINGS_PAGE_KEY, "1")))
+
+    @staticmethod
+    def _set_seller_listings_page(
+        context: ContextTypes.DEFAULT_TYPE | None,
+        *,
+        page: int,
+    ) -> None:
+        if context is None:
+            return
+        context.user_data[_SELLER_LISTINGS_PAGE_KEY] = page
+
+    def _numbered_page_markup(
+        self,
+        *,
+        flow: str,
+        open_action: str,
+        page_action: str,
+        item_ids: list[int],
+        start_number: int,
+        page: int,
+        total_pages: int,
+        extra_rows: list[list[InlineKeyboardButton]] | None = None,
+        back_row: list[InlineKeyboardButton] | None = None,
+    ) -> InlineKeyboardMarkup:
+        rows: list[list[InlineKeyboardButton]] = []
+        current_row: list[InlineKeyboardButton] = []
+        for offset, item_id in enumerate(item_ids):
+            current_row.append(
+                InlineKeyboardButton(
+                    text=str(start_number + offset),
+                    callback_data=build_callback(
+                        flow=flow,
+                        action=open_action,
+                        entity_id=str(item_id),
+                    ),
+                )
+            )
+            if len(current_row) == 5:
+                rows.append(current_row)
+                current_row = []
+        if current_row:
+            rows.append(current_row)
+
+        if total_pages > 1:
+            nav_row: list[InlineKeyboardButton] = []
+            if page > 1:
+                nav_row.append(
+                    InlineKeyboardButton(
+                        text="⬅️",
+                        callback_data=build_callback(
+                            flow=flow,
+                            action=page_action,
+                            entity_id=str(page - 1),
+                        ),
+                    )
+                )
+            if page < total_pages:
+                nav_row.append(
+                    InlineKeyboardButton(
+                        text="➡️",
+                        callback_data=build_callback(
+                            flow=flow,
+                            action=page_action,
+                            entity_id=str(page + 1),
+                        ),
+                    )
+                )
+            if nav_row:
+                rows.append(nav_row)
+
+        if extra_rows:
+            rows.extend(extra_rows)
+        if back_row:
+            rows.append(back_row)
+        return InlineKeyboardMarkup(rows)
+
     def _listing_edit_menu_markup(self, *, listing_id: int) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
             [
@@ -2029,8 +2146,10 @@ class TelegramWebhookRuntime:
     async def _render_seller_listings(
         self,
         *,
+        context: ContextTypes.DEFAULT_TYPE | None,
         query_message: Message | None,
         seller_user_id: int,
+        page: int = 1,
         notice: str | None = None,
     ) -> None:
         listings = await self._seller_service.list_listing_collateral_views(
@@ -2073,21 +2192,16 @@ class TelegramWebhookRuntime:
 
         shops = await self._seller_service.list_shops(seller_user_id=seller_user_id)
         shop_titles = {shop.shop_id: shop.title for shop in shops}
+        resolved_page, total_pages, start_index, end_index = self._resolve_numbered_page(
+            total_items=len(listings),
+            requested_page=page,
+        )
+        self._set_seller_listings_page(context, page=resolved_page)
+        page_items = listings[start_index:end_index]
         lines = []
         if notice:
             lines.append(html.escape(notice))
-        keyboard_rows: list[list[InlineKeyboardButton]] = [
-            [
-                InlineKeyboardButton(
-                    text="➕ Создать объявление",
-                    callback_data=build_callback(
-                        flow=_ROLE_SELLER,
-                        action="listing_create_pick_shop",
-                    ),
-                )
-            ]
-        ]
-        for idx, listing in enumerate(listings, start=1):
+        for number, listing in enumerate(page_items, start=start_index + 1):
             shop_title = shop_titles.get(listing.shop_id, "Неизвестный магазин")
             display_title = self._listing_display_title(
                 display_title=listing.display_title,
@@ -2098,80 +2212,51 @@ class TelegramWebhookRuntime:
                 reference_price_rub=listing.reference_price_rub,
             )
             lines.append(
-                f"<b>Объявление {idx}</b> · {html.escape(shop_title)}\n"
-                f"Товар: {html.escape(display_title)}\n"
-                f"Цена покупателя: {self._format_price_optional_rub(listing.reference_price_rub)}\n"
-                f"Артикул WB: {listing.wb_product_id}\n"
+                f"<b>{number}. {html.escape(display_title)}</b>\n"
+                f"Магазин: {html.escape(shop_title)}\n"
                 f"Статус: {html.escape(self._humanize_listing_status(listing.status))}\n"
+                f"Цена покупателя: {self._format_price_optional_rub(listing.reference_price_rub)}\n"
                 f"Кэшбэк: {cashback_text}\n"
                 "Запланировано: "
                 f"{listing.slot_count} · В процессе: {listing.in_progress_assignments_count} "
-                f"· Доступно: {listing.available_slots}\n"
-                "Обеспечение: "
-                f"{self._format_usdt_with_rub(listing.collateral_locked_usdt)} / "
-                f"{self._format_usdt_with_rub(listing.collateral_required_usdt)}"
+                f"· Доступно: {listing.available_slots}"
             )
-            action_button: InlineKeyboardButton
-            if listing.status == "draft":
-                action_button = InlineKeyboardButton(
-                    text="✅ Активировать",
-                    callback_data=build_callback(
-                        flow=_ROLE_SELLER,
-                        action="listing_activate",
-                        entity_id=str(listing.listing_id),
-                    ),
-                )
-            elif listing.status == "active":
-                action_button = InlineKeyboardButton(
-                    text="⏸ Пауза",
-                    callback_data=build_callback(
-                        flow=_ROLE_SELLER,
-                        action="listing_pause",
-                        entity_id=str(listing.listing_id),
-                    ),
-                )
-            else:
-                action_button = InlineKeyboardButton(
-                    text="▶️ Снять паузу",
-                    callback_data=build_callback(
-                        flow=_ROLE_SELLER,
-                        action="listing_unpause",
-                        entity_id=str(listing.listing_id),
-                    ),
-                )
-            keyboard_rows.append(
-                [
-                    InlineKeyboardButton(
-                        text="📄 Карточка",
-                        callback_data=build_callback(
-                            flow=_ROLE_SELLER,
-                            action="listing_open",
-                            entity_id=str(listing.listing_id),
-                        ),
-                    ),
-                    action_button,
-                    InlineKeyboardButton(
-                        text="🗑 Удалить",
-                        callback_data=build_callback(
-                            flow=_ROLE_SELLER,
-                            action="listing_delete_preview",
-                            entity_id=str(listing.listing_id),
-                        ),
-                    ),
-                ]
-            )
-        keyboard_rows.append(
-            [
-                InlineKeyboardButton(
-                    text="↩️ Назад",
-                    callback_data=build_callback(flow=_ROLE_SELLER, action="menu"),
-                )
-            ]
-        )
+        title = "Объявления"
+        if total_pages > 1:
+            title = f"Объявления · стр. {resolved_page}/{total_pages}"
         await self._replace_message(
             query_message,
-            "\n\n".join(lines),
-            InlineKeyboardMarkup(keyboard_rows),
+            self._screen_text(
+                title=title,
+                lines=lines,
+                note="Нажмите номер ниже, чтобы открыть карточку объявления.",
+            ),
+            self._numbered_page_markup(
+                flow=_ROLE_SELLER,
+                open_action="listing_open",
+                page_action="listings",
+                item_ids=[item.listing_id for item in page_items],
+                start_number=start_index + 1,
+                page=resolved_page,
+                total_pages=total_pages,
+                extra_rows=[
+                    [
+                        InlineKeyboardButton(
+                            text="➕ Создать объявление",
+                            callback_data=build_callback(
+                                flow=_ROLE_SELLER,
+                                action="listing_create_pick_shop",
+                            ),
+                        )
+                    ]
+                ],
+                back_row=[
+                    InlineKeyboardButton(
+                        text="↩️ Назад",
+                        callback_data=build_callback(flow=_ROLE_SELLER, action="menu"),
+                    )
+                ],
+            ),
             parse_mode="HTML",
         )
 
@@ -2181,6 +2266,7 @@ class TelegramWebhookRuntime:
         query_message: Message | None,
         seller_user_id: int,
         listing_id: int,
+        list_page: int = 1,
         notice: str | None = None,
     ) -> None:
         try:
@@ -2194,8 +2280,10 @@ class TelegramWebhookRuntime:
             )
         except NotFoundError:
             await self._render_seller_listings(
+                context=None,
                 query_message=query_message,
                 seller_user_id=seller_user_id,
+                page=list_page,
                 notice="Объявление не найдено или уже удалено.",
             )
             return
@@ -2220,6 +2308,7 @@ class TelegramWebhookRuntime:
             self._seller_listing_detail_markup(
                 listing_id=listing.listing_id,
                 status=listing.status,
+                list_page=list_page,
             ),
             parse_mode="HTML",
         )
@@ -2380,6 +2469,7 @@ class TelegramWebhookRuntime:
         query_message: Message | None,
         seller_user_id: int,
         listing_id: int,
+        list_page: int = 1,
     ) -> None:
         try:
             listing = await self._seller_service.get_listing(
@@ -2459,6 +2549,7 @@ class TelegramWebhookRuntime:
         query_message: Message | None,
         seller_user_id: int,
         listing_id: int,
+        list_page: int = 1,
     ) -> None:
         try:
             listing = await self._seller_service.get_listing(
@@ -2534,6 +2625,7 @@ class TelegramWebhookRuntime:
             query_message=query_message,
             seller_user_id=seller_user_id,
             listing_id=listing_id,
+            list_page=list_page,
             notice=message,
         )
 
@@ -2543,6 +2635,7 @@ class TelegramWebhookRuntime:
         query_message: Message | None,
         seller_user_id: int,
         listing_id: int,
+        list_page: int = 1,
     ) -> None:
         try:
             result = await self._seller_service.pause_listing(
@@ -2559,9 +2652,11 @@ class TelegramWebhookRuntime:
         else:
             message = "Объявление уже на паузе."
         self._logger.info("seller_listing_paused", listing_id=listing_id, changed=result.changed)
-        await self._render_seller_listings(
+        await self._render_seller_listing_detail(
             query_message=query_message,
             seller_user_id=seller_user_id,
+            listing_id=listing_id,
+            list_page=list_page,
             notice=message,
         )
 
@@ -2571,6 +2666,7 @@ class TelegramWebhookRuntime:
         query_message: Message | None,
         seller_user_id: int,
         listing_id: int,
+        list_page: int = 1,
     ) -> None:
         try:
             listing = await self._seller_service.get_listing(
@@ -2601,9 +2697,11 @@ class TelegramWebhookRuntime:
         else:
             message = "Объявление уже активно."
         self._logger.info("seller_listing_unpaused", listing_id=listing_id, changed=result.changed)
-        await self._render_seller_listings(
+        await self._render_seller_listing_detail(
             query_message=query_message,
             seller_user_id=seller_user_id,
+            listing_id=listing_id,
+            list_page=list_page,
             notice=message,
         )
 
@@ -2613,6 +2711,7 @@ class TelegramWebhookRuntime:
         query_message: Message | None,
         seller_user_id: int,
         listing_id: int,
+        list_page: int = 1,
     ) -> None:
         try:
             preview = await self._seller_service.get_listing_delete_preview(
@@ -2660,7 +2759,11 @@ class TelegramWebhookRuntime:
                     [
                         InlineKeyboardButton(
                             text="↩️ Отмена",
-                            callback_data=build_callback(flow=_ROLE_SELLER, action="listings"),
+                            callback_data=build_callback(
+                                flow=_ROLE_SELLER,
+                                action="listing_open",
+                                entity_id=str(listing_id),
+                            ),
                         )
                     ],
                 ]
@@ -2671,6 +2774,7 @@ class TelegramWebhookRuntime:
     async def _execute_listing_delete(
         self,
         *,
+        context: ContextTypes.DEFAULT_TYPE | None,
         query_message: Message | None,
         seller_user_id: int,
         listing_id: int,
@@ -2703,8 +2807,10 @@ class TelegramWebhookRuntime:
             unassigned_collateral_returned_usdt=str(result.unassigned_collateral_returned_usdt),
         )
         await self._render_seller_listings(
+            context=context,
             query_message=query_message,
             seller_user_id=seller_user_id,
+            page=self._seller_listings_page_from_context(context) if context is not None else 1,
             notice=message,
         )
 
@@ -6629,9 +6735,17 @@ class TelegramWebhookRuntime:
         if message is None:
             return
         try:
-            await message.edit_text(text, reply_markup=markup, parse_mode=parse_mode)
-        except Exception:
             await message.reply_text(text, reply_markup=markup, parse_mode=parse_mode)
+        except Exception:
+            await message.chat.send_message(text, reply_markup=markup, parse_mode=parse_mode)
+
+    async def _retire_message_keyboard(self, message: Message | None) -> None:
+        if message is None:
+            return
+        try:
+            await message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            return
 
     async def _reply_with_photo_if_available(
         self,
@@ -6656,6 +6770,7 @@ class TelegramWebhookRuntime:
         *,
         listing_id: int,
         status: str,
+        list_page: int,
     ) -> InlineKeyboardMarkup:
         if status == "draft":
             action_button = InlineKeyboardButton(
@@ -6710,7 +6825,11 @@ class TelegramWebhookRuntime:
                 [
                     InlineKeyboardButton(
                         text="↩️ Назад к объявлениям",
-                        callback_data=build_callback(flow=_ROLE_SELLER, action="listings"),
+                        callback_data=build_callback(
+                            flow=_ROLE_SELLER,
+                            action="listings",
+                            entity_id=str(list_page),
+                        ),
                     )
                 ],
             ]

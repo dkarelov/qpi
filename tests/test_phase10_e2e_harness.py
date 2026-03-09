@@ -590,7 +590,9 @@ async def test_phase10_e2e_buyer_listing_open_shows_photo_and_detail_card() -> N
     await harness.start(start_arg="shop_shop_tushenka")
     detail_events = await harness.callback(flow="buyer", action="listing_open", entity_id="21")
 
+    assert any(event.kind == "edit_markup" for event in detail_events)
     assert any(event.kind == "reply_photo" for event in detail_events)
+    assert not any(event.kind == "edit" for event in detail_events)
     detail_text = "\n".join(_event_texts(detail_events))
     assert "Артикул WB:</b> 552892532" in detail_text
     assert "Цена:</b> 400 ₽" in detail_text
@@ -630,12 +632,70 @@ async def test_phase10_e2e_seller_listing_open_shows_photo_and_detail_card() -> 
 
     detail_events = await harness.callback(flow="seller", action="listing_open", entity_id="21")
 
+    assert any(event.kind == "edit_markup" for event in detail_events)
     assert any(event.kind == "reply_photo" for event in detail_events)
+    assert not any(event.kind == "edit" for event in detail_events)
     assert any("✏️ Редактировать" in _markup_labels(event) for event in detail_events)
     detail_text = "\n".join(_event_texts(detail_events))
     assert "Цена покупателя:</b> 400 ₽" in detail_text
     assert "Артикул продавца:</b> paper-001" in detail_text
     assert "Ссылка на магазин:" in detail_text
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_seller_listings_are_numbered_and_paginated() -> None:
+    runtime, deps = _build_runtime()
+    deps.seller.list_shops = AsyncMock(
+        return_value=[
+            _ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")
+        ]
+    )
+    deps.seller.list_listing_collateral_views = AsyncMock(
+        return_value=[
+            _ns(
+                listing_id=100 + index,
+                shop_id=11,
+                display_title=f"Товар {index}",
+                reference_price_rub=300 + index,
+                wb_product_id=500000 + index,
+                search_phrase=f"товар {index}",
+                status="active",
+                reward_usdt=Decimal("1.000000"),
+                available_slots=5,
+                slot_count=5,
+                in_progress_assignments_count=0,
+                collateral_locked_usdt=Decimal("5.050000"),
+                collateral_required_usdt=Decimal("5.050000"),
+                reserved_slot_usdt=Decimal("0.000000"),
+            )
+            for index in range(1, 13)
+        ]
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
+
+    page_one_events = await harness.callback(flow="seller", action="listings")
+    page_one_text = "\n".join(_event_texts(page_one_events))
+    page_one_labels = {
+        label for event in page_one_events for label in _markup_labels(event)
+    }
+
+    assert "<b>1. Товар 1</b>" in page_one_text
+    assert "<b>10. Товар 10</b>" in page_one_text
+    assert "<b>11. Товар 11</b>" not in page_one_text
+    assert {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"} <= page_one_labels
+    assert "➡️" in page_one_labels
+    assert "📄 Карточка" not in page_one_labels
+
+    page_two_events = await harness.callback(flow="seller", action="listings", entity_id="2")
+    page_two_text = "\n".join(_event_texts(page_two_events))
+    page_two_labels = {
+        label for event in page_two_events for label in _markup_labels(event)
+    }
+
+    assert "<b>11. Товар 11</b>" in page_two_text
+    assert "<b>12. Товар 12</b>" in page_two_text
+    assert "⬅️" in page_two_labels
+    assert {"11", "12"} <= page_two_labels
 
 
 @pytest.mark.asyncio

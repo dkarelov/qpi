@@ -214,11 +214,18 @@ Transitions:
   - message edit, new reply, or alert.
 - Silent no-op callback behavior is forbidden.
 - Menus are tree-structured (no flat action panel).
+- Callback-driven navigation is immutable/linear:
+  - button presses retire the old inline keyboard,
+  - the bot sends a new screen message instead of editing the previous one.
 - Button labels include emoji/icon prefix.
 - Each role opens with dashboard + section navigation.
 - Seller UX:
   - `Объявления`, `Магазины`, `Баланс` are top sections,
   - shop actions are nested: list -> shop card -> actions.
+- Seller announcement list uses numbered, paginated navigation:
+  - one page shows up to 10 announcements,
+  - each announcement is opened by a number button,
+  - action buttons such as edit/pause/delete live inside the announcement card, not in the list.
 - Seller listing screens show buyer-visible title, WB subject, vendor code, brand, description, photo, sizes, characteristics, `Цена покупателя` in RUB, cashback in RUB with approximate percent, and counters `Запланировано`, `В процессе`, `Доступно`.
 - Seller balance screen shows `Всего`, `Свободно для новых объявлений`, and `Уже выделено под объявления`; activation shortfall is shown only when funds are insufficient.
 - Buyer UX:
@@ -434,6 +441,11 @@ Private dependency handling:
 - `requirements.txt` contains private dependency placeholder for `yc_json_logger` token.
 - Use `infra/scripts/with_private_requirements.sh` for Terraform commands.
 - Bot rollout script requires `TOKEN_YC_JSON_LOGGER` in rollout environment.
+
+Active development rule:
+
+- During the active development phase, completed runtime/code changes should be committed, pushed, and deployed by default unless the operator explicitly says not to deploy.
+- If a deployment fails, treat fixing the deployment path as part of completing the task instead of stopping after the failed rollout.
 
 ## 9. Security and Accepted MVP Risks
 
