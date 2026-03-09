@@ -385,6 +385,11 @@ async def test_phase10_e2e_seller_shop_create_token_first_flow() -> None:
     assert any(
         "Шаг 1 из 2." in text for text in _event_texts(create_prompt_events)
     )
+    assert any(
+        "Контент, Статистика, Вопросы и отзывы" in text
+        for text in _event_texts(create_prompt_events)
+    )
+    assert any("Только для чтения" in text for text in _event_texts(create_prompt_events))
     assert all("➕ Создать магазин" not in _markup_labels(event) for event in create_prompt_events)
 
     token_events = await harness.text("wb_valid_token")

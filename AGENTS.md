@@ -201,6 +201,10 @@ Transitions:
 - Single seller token is used for both:
   - `statistics-api`,
   - `content-api`.
+- Seller UX instructs the operator to create a Basic WB token in read-only mode with categories:
+  - `Контент`,
+  - `Статистика`,
+  - `Вопросы и отзывы`.
 - WB token initial validation endpoints:
   - `GET https://statistics-api.wildberries.ru/ping`.
   - `GET https://content-api.wildberries.ru/ping`.

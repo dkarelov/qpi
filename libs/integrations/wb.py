@@ -55,7 +55,7 @@ class WbPingClient:
 
     def _validate_token_sync(self, token: str) -> WbPingResult:
         statistics_result = _request_ping(
-            "https://statistics-api.wildberries.ru/ping",
+            url="https://statistics-api.wildberries.ru/ping",
             token=token,
             timeout_seconds=self._timeout_seconds,
         )
@@ -63,7 +63,7 @@ class WbPingClient:
             return statistics_result
 
         content_result = _request_ping(
-            "https://content-api.wildberries.ru/ping",
+            url="https://content-api.wildberries.ru/ping",
             token=token,
             timeout_seconds=self._timeout_seconds,
         )

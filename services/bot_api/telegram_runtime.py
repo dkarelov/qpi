@@ -739,13 +739,7 @@ class TelegramWebhookRuntime:
             )
             await self._replace_message(
                 query_message,
-                self._screen_text(
-                    title="Создание магазина",
-                    lines=[
-                        "<b>Шаг 1 из 2.</b> Отправьте токен WB API следующим сообщением ниже.",
-                    ],
-                    note="Сначала бот проверит токен, и только потом попросит название магазина.",
-                ),
+                self._shop_token_instruction_text(),
                 self._seller_back_markup(action="shops", label="↩️ К магазинам"),
                 parse_mode="HTML",
             )
@@ -1470,29 +1464,41 @@ class TelegramWebhookRuntime:
             ]
         )
 
-    def _shop_token_instruction_text(self, *, shop_title: str) -> str:
-        return self._screen_text(
-            title=f"Токен WB API для магазина «{html.escape(shop_title)}»",
-            cta="Отправьте токен следующим сообщением ниже.",
-            lines=[
-                "<b>Шаг 1 из 2.</b>",
-                (
-                    "<b>Зачем:</b> бот будет читать карточки товаров "
-                    "и статусы заказов покупателей."
-                ),
-                (
-                    "<b>Где найти:</b> ЛК ВБ -> Интеграции по API -> "
-                    "Создать токен -> Для интеграции вручную."
-                ),
-                (
-                    "<b>Доступы:</b> «Статистика» и «Контент» "
-                    "*или* «Продвижение», если он покрывает карточки товаров."
-                ),
-            ],
-            note=(
-                "Токен используется только для чтения. "
-                "Сообщение с токеном будет удалено автоматически."
+    def _shop_token_instruction_text(self, *, shop_title: str | None = None) -> str:
+        title = (
+            f"Токен WB API для магазина «{html.escape(shop_title)}»"
+            if shop_title
+            else "Создание магазина"
+        )
+        lines = [
+            "<b>Шаг 1 из 2.</b>",
+            (
+                "<b>Как создать:</b> Создайте Базовый токен в режиме "
+                "«Только для чтения» с категориями: Контент, Статистика, Вопросы и отзывы."
             ),
+            (
+                "<b>Где найти:</b> ЛК ВБ -> Интеграции по API -> "
+                "Создать токен -> Для интеграции вручную."
+            ),
+            (
+                "<b>Зачем нужен токен:</b> для получения информации о товаре, "
+                "проверки статуса заказов и отзывов."
+            ),
+            (
+                "<b>Безопасно:</b> токен создается только в режиме чтения, "
+                "поэтому изменить данные с ним невозможно."
+            ),
+        ]
+        note = (
+            "Сначала бот проверит токен, и только потом попросит название магазина."
+            if shop_title is None
+            else "Сообщение с токеном будет удалено автоматически."
+        )
+        return self._screen_text(
+            title=title,
+            cta="Отправьте токен WB API следующим сообщением ниже.",
+            lines=lines,
+            note=note,
         )
 
     def _listing_create_instruction_text(self, *, shop_title: str) -> str:
@@ -5286,15 +5292,29 @@ class TelegramWebhookRuntime:
                 await message.reply_text("Проверка токена временно недоступна. Попробуйте позже.")
                 return
 
-            ping_result = await self._wb_ping_client.validate_token(wb_token)
+            try:
+                ping_result = await self._wb_ping_client.validate_token(wb_token)
+            except Exception:
+                self._logger.exception(
+                    "seller_shop_create_token_validation_failed",
+                    seller_user_id=seller_user_id,
+                )
+                self._clear_prompt(context)
+                await message.reply_text(
+                    "Не удалось проверить токен. Попробуйте снова через раздел «🏪 Магазины».",
+                    reply_markup=self._seller_back_markup(action="shops", label="↩️ К магазинам"),
+                )
+                return
             if not ping_result.valid:
                 details = ping_result.message or "неизвестная ошибка"
                 await message.reply_text(
                     (
                         "Токен не прошел проверку и не сохранен.\n"
                         f"Причина: {details}\n"
-                        "Проверьте, что токен «Базовый» и у него есть доступы "
-                        "«Статистика» и «Контент», затем отправьте его снова."
+                        "Проверьте, что токен «Базовый», работает в режиме "
+                        "«Только для чтения» и у него есть категории "
+                        "«Контент», «Статистика», «Вопросы и отзывы», "
+                        "затем отправьте его снова."
                     ),
                     reply_markup=self._seller_back_markup(action="shops", label="↩️ К магазинам"),
                 )
@@ -5392,11 +5412,29 @@ class TelegramWebhookRuntime:
                     "Не удалось продолжить ввод токена. Откройте карточку магазина заново."
                 )
                 return
-            response = await self._seller_processor.handle(
-                telegram_id=identity.telegram_id,
-                username=identity.username,
-                text=f"/token_set {shop_id} {text}",
-            )
+            try:
+                response = await self._seller_processor.handle(
+                    telegram_id=identity.telegram_id,
+                    username=identity.username,
+                    text=f"/token_set {shop_id} {text}",
+                )
+            except Exception:
+                self._logger.exception(
+                    "seller_shop_token_update_failed",
+                    seller_user_id=seller_user_id,
+                    shop_id=shop_id,
+                )
+                self._clear_prompt(context)
+                await self._render_seller_shop_details(
+                    query_message=message,
+                    seller_user_id=seller_user_id,
+                    shop_id=shop_id,
+                    notice=(
+                        "Не удалось проверить или сохранить токен. "
+                        "Попробуйте снова через карточку магазина."
+                    ),
+                )
+                return
             self._clear_prompt(context)
             if seller_user_id > 0:
                 await self._render_seller_shop_details(

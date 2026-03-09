@@ -177,9 +177,11 @@ def test_token_instruction_contains_required_sections() -> None:
 
     text = runtime._shop_token_instruction_text(shop_title="Мой магазин")
     assert "Токен WB API для магазина" in text
-    assert "Отправьте токен следующим сообщением ниже." in text
-    assert "бот будет читать карточки товаров" in text
-    assert "Токен используется только для чтения." in text
+    assert "Отправьте токен WB API следующим сообщением ниже." in text
+    assert "Создайте Базовый токен в режиме «Только для чтения»" in text
+    assert "Контент, Статистика, Вопросы и отзывы" in text
+    assert "получения информации о товаре, проверки статуса заказов и отзывов" in text
+    assert "изменить данные с ним невозможно" in text
 
 
 def test_listing_create_instruction_contains_new_fields_and_fx_reference() -> None:
