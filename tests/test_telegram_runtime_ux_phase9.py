@@ -287,6 +287,12 @@ def test_wallet_link_builder_uses_ton_transfer_with_usdt_jetton_and_micro_units(
     assert "text=QPI+deposit+%2391" in link
 
 
+def test_telegram_wallet_link_builder_uses_wallet_start_url() -> None:
+    runtime = _build_runtime()
+
+    assert runtime._build_telegram_wallet_open_link() == "https://t.me/wallet/start"
+
+
 def test_copyable_code_helper_wraps_value_in_html_code() -> None:
     runtime = _build_runtime()
 

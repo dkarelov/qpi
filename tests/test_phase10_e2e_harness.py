@@ -547,13 +547,21 @@ async def test_phase10_e2e_seller_topup_and_transactions_flow() -> None:
         "Сумма (должна полностью совпадать):" in text
         for text in _event_texts(topup_create_events)
     )
-    assert any("1.2001 USDT" in text for text in _event_texts(topup_create_events))
+    assert any("<code>1.2001 USDT</code>" in text for text in _event_texts(topup_create_events))
     assert any(
         "<code>UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH</code>" in text
         for text in _event_texts(topup_create_events)
     )
-    assert any("👛 Открыть в кошельке" in _markup_labels(event) for event in topup_create_events)
+    assert any(
+        "👛 Открыть Телеграм Кошелек" in _markup_labels(event)
+        for event in topup_create_events
+    )
+    assert any(
+        "🔗 Ссылка (другие кошельки)" in _markup_labels(event)
+        for event in topup_create_events
+    )
     wallet_urls = [url for event in topup_create_events for url in _markup_urls(event)]
+    assert "https://t.me/wallet/start" in wallet_urls
     assert any(url.startswith("ton://transfer/") for url in wallet_urls)
     assert any("amount=1200100" in url for url in wallet_urls)
 

@@ -5838,10 +5838,16 @@ class TelegramWebhookRuntime:
                 )
                 return
             self._clear_prompt(context)
+            expected_amount_text = self._format_copyable_code(
+                f"{self._format_usdt_value(intent.expected_amount_usdt, precise=True)} USDT"
+            )
             await message.reply_text(
                 self._screen_text(
                     title="Счет на пополнение создан",
-                    cta="Откройте кошелек по кнопке ниже или скопируйте адрес вручную.",
+                    cta=(
+                        "Откройте Телеграм Кошелек или используйте ссылку для других "
+                        "кошельков, либо скопируйте адрес и сумму вручную."
+                    ),
                     lines=[
                         (
                             "<b>Срок действия:</b> "
@@ -5851,20 +5857,26 @@ class TelegramWebhookRuntime:
                         f"<b>Адрес:</b> {self._format_copyable_code(intent.deposit_address)}",
                         (
                             "<b>Сумма (должна полностью совпадать):</b> "
-                            f"{self._format_usdt_value(intent.expected_amount_usdt, precise=True)} "
-                            "USDT"
+                            f"{expected_amount_text}"
                         ),
                     ],
                     note=(
-                        "Если кнопка кошелька не открывается, скопируйте адрес вручную "
-                        "и после перевода проверьте раздел «🧾 Транзакции»."
+                        "Телеграм Кошелек откроется без автоматически подставленного перевода. "
+                        "Ссылка для других кошельков может открыть уже подготовленный перевод. "
+                        "В любом случае адрес и сумму можно скопировать вручную."
                     ),
                 ),
                 reply_markup=InlineKeyboardMarkup(
                     [
                         [
                             InlineKeyboardButton(
-                                text="👛 Открыть в кошельке",
+                                text="👛 Открыть Телеграм Кошелек",
+                                url=self._build_telegram_wallet_open_link(),
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                text="🔗 Ссылка (другие кошельки)",
                                 url=self._build_ton_usdt_wallet_link(
                                     destination_address=intent.deposit_address,
                                     expected_amount_usdt=intent.expected_amount_usdt,
@@ -6556,6 +6568,9 @@ class TelegramWebhookRuntime:
         query = urllib.parse.urlencode(params)
         encoded_address = urllib.parse.quote(normalized_address, safe="")
         return f"ton://transfer/{encoded_address}?{query}"
+
+    def _build_telegram_wallet_open_link(self) -> str:
+        return self._settings.telegram_wallet_open_url
 
     def _build_buyer_listing_token(self, *, search_phrase: str, wb_product_id: int) -> str:
         payload = [search_phrase, wb_product_id, _BUYER_TASK_COMPANION_PRODUCTS]

@@ -96,6 +96,10 @@ class BotApiSettings(BaseAppSettings):
         default="EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
         alias="TONAPI_USDT_JETTON_MASTER",
     )
+    telegram_wallet_open_url: str = Field(
+        default="https://t.me/wallet/start",
+        alias="TELEGRAM_WALLET_OPEN_URL",
+    )
     display_rub_per_usdt: Decimal = Field(default=Decimal("90"), alias="DISPLAY_RUB_PER_USDT")
     fx_rate_ttl_seconds: int = Field(default=900, alias="FX_RATE_TTL_SECONDS")
     fx_rate_timeout_seconds: int = Field(default=5, alias="FX_RATE_TIMEOUT_SECONDS")
@@ -227,6 +231,7 @@ class BotApiSettings(BaseAppSettings):
         "seller_collateral_shard_key",
         "seller_collateral_shard_address",
         "tonapi_usdt_jetton_master",
+        "telegram_wallet_open_url",
     )
     @classmethod
     def validate_seller_collateral_shard_fields(cls, value: str) -> str:

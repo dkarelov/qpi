@@ -241,9 +241,11 @@ Transitions:
 - Seller balance screen shows `Всего`, `Свободно для новых объявлений`, and `Уже выделено под объявления`; activation shortfall is shown only when funds are insufficient.
 - Seller top-up invoice screen:
   - shows the TON USDT address in copy-friendly monospace,
-  - shows the exact `USDT` transfer amount,
-  - includes a generic TON jetton wallet deeplink button,
-  - keeps the raw address visible as fallback if the wallet deeplink does not open.
+  - shows the exact `USDT` transfer amount in copy-friendly monospace,
+  - includes two wallet actions:
+    - Telegram Wallet home opener,
+    - generic TON jetton transfer link for other wallets,
+  - keeps the raw address and amount visible as fallback if wallet opening does not work.
 - Transaction/history screens:
   - use representative `Транзакции ...` titles,
   - use `<` / `>` pagination when needed,
