@@ -109,6 +109,7 @@ Persistence and schema:
   - primary: derived from `GET https://statistics-api.wildberries.ru/api/v1/supplier/orders` over the last 30 days,
   - fallback: manual seller input when no historical orders exist for the product.
 - Seller confirms or edits the buyer-visible title before the draft is saved.
+- Seller cannot edit an existing announcement after creation; if parameters must change, the seller creates a new announcement and deletes the old one.
 - Cashback is converted once to fixed `reward_usdt` at creation.
 - Listing collateral requirement: `reward_usdt * slot_count * 1.01`.
 - Listing activation/unpause requires:
@@ -217,6 +218,11 @@ Transitions:
 - Callback-driven navigation is immutable/linear:
   - button presses retire the old inline keyboard,
   - the bot sends a new screen message instead of editing the previous one.
+- Standard screen layout:
+  - title,
+  - italic call to action immediately below the title,
+  - main content blocks separated by empty lines,
+  - italic explanatory note at the bottom with next steps or issue guidance.
 - Button labels include emoji/icon prefix.
 - Each role opens with dashboard + section navigation.
 - Seller UX:
@@ -226,11 +232,21 @@ Transitions:
   - one page shows up to 10 announcements,
   - each announcement is opened by a number button,
   - action buttons such as edit/pause/delete live inside the announcement card, not in the list.
-- Seller listing screens show buyer-visible title, WB subject, vendor code, brand, description, photo, sizes, characteristics, `Цена покупателя` in RUB, cashback in RUB with approximate percent, and counters `Запланировано`, `В процессе`, `Доступно`.
+- Seller announcement card is streamlined:
+  - title starts with green/red activity indicator,
+  - top section shows only WB article, cashback, search phrase, plan/in-progress, shop link, collateral, and activity status,
+  - the rest of the WB data lives inside collapsed `Параметры`, `Описание`, and `Характеристики` sections,
+  - if collateral is insufficient, the note explains that balance top-up is required before activation.
 - Seller balance screen shows `Всего`, `Свободно для новых объявлений`, and `Уже выделено под объявления`; activation shortfall is shown only when funds are insufficient.
+- Transaction/history screens:
+  - use representative `Транзакции ...` titles,
+  - use `<` / `>` pagination when needed,
+  - separate transaction blocks with empty lines,
+  - use color indicators for statuses.
 - Buyer UX:
   - shops/tasks/balance sections,
   - task flow contains explicit submit-token and cancel-task actions.
+- All user-facing timestamps are rendered in `MSK` (`Europe/Moscow`).
 - Admin UX:
   - `Выводы`, `Депозиты`, `Исключения` sections.
 - Sensitive inputs (tokens, payloads, withdrawal addresses) are deleted when possible.

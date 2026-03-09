@@ -187,6 +187,7 @@ def test_listing_create_instruction_contains_new_fields_and_fx_reference() -> No
 
     text = runtime._listing_create_instruction_text(shop_title="Тушенка")
     assert "Создание объявления для магазина «Тушенка»" in text
+    assert "<i>Отправьте сообщение с информацией об объявлении согласно формату ниже.</i>" in text
     assert (
         "&lt;артикул ВБ&gt; &lt;кэшбэк руб&gt; "
         "&lt;макс заказов&gt; &lt;поисковая фраза&gt;"
@@ -196,6 +197,21 @@ def test_listing_create_instruction_contains_new_fields_and_fx_reference() -> No
     assert "~100" in text
     assert "подтянет карточку товара" in text
     assert "попробует определить цену покупателя" in text
+
+
+def test_screen_text_places_cta_after_title_and_separates_lines() -> None:
+    runtime = _build_runtime()
+
+    text = runtime._screen_text(
+        title="Экран",
+        cta="Сделайте следующий шаг.",
+        lines=["Первый блок", "Второй блок"],
+        note="Подсказка внизу.",
+    )
+
+    assert text.startswith("<b>Экран</b>\n\n<i>Сделайте следующий шаг.</i>")
+    assert "Первый блок\n\nВторой блок" in text
+    assert text.endswith("<i>Подсказка внизу.</i>")
 
 
 def test_listing_created_prompt_activation_explains_activation_effect() -> None:
@@ -254,3 +270,18 @@ def test_buyer_task_instruction_contains_title_and_search_phrase() -> None:
     assert "<b>Товар:</b> Джинсы женские прямые" in text
     assert "Поисковая фраза:</b> &quot;женские джинсы&quot;" in text
     assert "Отправьте токен-подтверждение сюда." in text
+
+
+def test_seller_listing_detail_markup_hides_edit_button_when_activation_is_blocked() -> None:
+    runtime = _build_runtime()
+
+    markup = runtime._seller_listing_detail_markup(
+        listing_id=21,
+        status="draft",
+        list_page=1,
+        can_activate=False,
+    )
+    labels = _flatten_labels(markup)
+
+    assert "✏️ Редактировать" not in labels
+    assert "⛔ Недостаточно средств" in labels

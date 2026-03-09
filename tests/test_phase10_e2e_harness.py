@@ -635,10 +635,11 @@ async def test_phase10_e2e_seller_listing_open_shows_photo_and_detail_card() -> 
     assert any(event.kind == "edit_markup" for event in detail_events)
     assert any(event.kind == "reply_photo" for event in detail_events)
     assert not any(event.kind == "edit" for event in detail_events)
-    assert any("✏️ Редактировать" in _markup_labels(event) for event in detail_events)
+    assert all("✏️ Редактировать" not in _markup_labels(event) for event in detail_events)
     detail_text = "\n".join(_event_texts(detail_events))
-    assert "Цена покупателя:</b> 400 ₽" in detail_text
-    assert "Артикул продавца:</b> paper-001" in detail_text
+    assert "🟢 Бумага A4 для принтера" in detail_text
+    assert "План по заказам / В процессе:</b> 5 / 0" in detail_text
+    assert "Параметры" in detail_text
     assert "Ссылка на магазин:" in detail_text
 
 
@@ -699,31 +700,13 @@ async def test_phase10_e2e_seller_listings_are_numbered_and_paginated() -> None:
 
 
 @pytest.mark.asyncio
-async def test_phase10_e2e_seller_listing_edit_flow_saves_changes() -> None:
+async def test_phase10_e2e_seller_listing_edit_flow_is_disabled() -> None:
     runtime, deps = _build_runtime()
     harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
 
-    edit_menu_events = await harness.callback(flow="seller", action="listing_edit", entity_id="21")
-    assert any("Редактирование объявления" in text for text in _event_texts(edit_menu_events))
-
-    title_prompt_events = await harness.callback(
-        flow="seller",
-        action="listing_edit_title",
-        entity_id="21",
-    )
-    assert any("Редактирование: Название" in text for text in _event_texts(title_prompt_events))
-
-    confirm_events = await harness.text("Бумага A4 для принтера Обновлено")
-    assert any("Подтвердите изменения" in text for text in _event_texts(confirm_events))
-    assert any("✅ Сохранить изменения" in _markup_labels(event) for event in confirm_events)
-
-    save_events = await harness.callback(
-        flow="seller",
-        action="listing_edit_confirm",
-        entity_id="21",
-    )
-    assert any("Изменения сохранены." in text for text in _event_texts(save_events))
-    deps.seller.update_listing.assert_awaited_once()
+    edit_events = await harness.callback(flow="seller", action="listing_edit", entity_id="21")
+    assert any("Редактирование отключено" in text for text in _event_texts(edit_events))
+    deps.seller.update_listing.assert_not_awaited()
 
 
 @pytest.mark.asyncio

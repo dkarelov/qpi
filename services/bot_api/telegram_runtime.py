@@ -13,6 +13,7 @@ from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from psycopg.rows import dict_row
 
@@ -91,6 +92,7 @@ _RUB_QUANT = Decimal("1")
 _LISTING_COLLATERAL_FEE_MULTIPLIER = Decimal("1.01")
 _BUYER_TASK_COMPANION_PRODUCTS = 2
 _NUMBERED_PAGE_SIZE = 10
+_MSK_TZ = ZoneInfo("Europe/Moscow")
 
 _SELLER_COMMAND_PREFIXES = (
     "/shop_",
@@ -964,6 +966,46 @@ class TelegramWebhookRuntime:
                 list_page=self._seller_listings_page_from_context(context),
             )
             return
+        if action == "listing_activation_blocked":
+            await self._replace_message(
+                query_message,
+                self._screen_text(
+                    title="Объявление не готово к активации",
+                    lines=[
+                        "Сейчас на балансе не хватает средств для обеспечения объявления.",
+                    ],
+                    note=(
+                        "Пополните баланс, затем вернитесь к карточке объявления "
+                        "и активируйте его."
+                    ),
+                    warning=True,
+                ),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="➕ Пополнить",
+                                callback_data=build_callback(
+                                    flow=_ROLE_SELLER,
+                                    action="topup_prompt",
+                                ),
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ К объявлениям",
+                                callback_data=build_callback(
+                                    flow=_ROLE_SELLER,
+                                    action="listings",
+                                    entity_id=str(self._seller_listings_page_from_context(context)),
+                                ),
+                            )
+                        ],
+                    ]
+                ),
+                parse_mode="HTML",
+            )
+            return
         if action == "listing_title_keep":
             await self._create_listing_from_prompt(
                 context=context,
@@ -1001,18 +1043,35 @@ class TelegramWebhookRuntime:
             )
             return
         if action == "listing_edit":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось определить объявление. Нажмите кнопку еще раз.",
-                    self._seller_menu_markup(),
-                )
-                return
-            await self._render_seller_listing_edit_menu(
-                query_message=query_message,
-                seller_user_id=seller.user_id,
-                listing_id=int(payload.entity_id),
-                list_page=self._seller_listings_page_from_context(context),
+            await self._replace_message(
+                query_message,
+                self._screen_text(
+                    title="Редактирование отключено",
+                    lines=[
+                        "Редактирование объявлений недоступно, чтобы не создавать конфликтов "
+                        "с уже начатыми заданиями покупателей.",
+                    ],
+                    note=(
+                        "Если нужно изменить параметры, создайте новое объявление "
+                        "и удалите старое."
+                    ),
+                    warning=True,
+                ),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ К объявлениям",
+                                callback_data=build_callback(
+                                    flow=_ROLE_SELLER,
+                                    action="listings",
+                                    entity_id=str(self._seller_listings_page_from_context(context)),
+                                ),
+                            )
+                        ]
+                    ]
+                ),
+                parse_mode="HTML",
             )
             return
         if action in {
@@ -1020,164 +1079,20 @@ class TelegramWebhookRuntime:
             "listing_edit_search",
             "listing_edit_cashback",
             "listing_edit_slots",
+            "listing_edit_confirm",
         }:
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось определить объявление. Нажмите кнопку еще раз.",
-                    self._seller_menu_markup(),
-                )
-                return
-            listing_id = int(payload.entity_id)
-            try:
-                listing = await self._seller_service.get_listing(
-                    seller_user_id=seller.user_id,
-                    listing_id=listing_id,
-                )
-            except NotFoundError:
-                await self._replace_message(query_message, "Объявление не найдено.")
-                return
-            field_map = {
-                "listing_edit_title": (
-                    "title",
-                    "Название",
-                    self._listing_display_title(
-                        display_title=listing.display_title,
-                        fallback=listing.search_phrase,
-                    ),
-                    "Введите новое название объявления следующим сообщением ниже.",
-                ),
-                "listing_edit_search": (
-                    "search_phrase",
-                    "Поисковая фраза",
-                    listing.search_phrase,
-                    "Введите новую поисковую фразу следующим сообщением ниже.",
-                ),
-                "listing_edit_cashback": (
-                    "cashback_rub",
-                    "Кэшбэк",
-                    str(
-                        (listing.reward_usdt * self._display_rub_per_usdt).quantize(
-                            _RUB_QUANT,
-                            rounding=ROUND_HALF_UP,
-                        )
-                    ),
-                    "Введите новый кэшбэк в рублях. Пример: 100",
-                ),
-                "listing_edit_slots": (
-                    "slot_count",
-                    "Макс. заказов",
-                    str(listing.slot_count),
-                    "Введите новое максимальное количество заказов. Пример: 5",
-                ),
-            }
-            field_key, field_label, current_value, hint = field_map[action]
-            self._set_prompt(
-                context,
-                role=_ROLE_SELLER,
-                prompt_type="seller_listing_edit_value",
-                sensitive=False,
-                extra={
-                    "seller_user_id": seller.user_id,
-                    "listing_id": listing_id,
-                    "field_key": field_key,
-                },
-            )
+            self._clear_prompt(context)
             await self._replace_message(
                 query_message,
-                self._listing_edit_field_prompt_text(
-                    field_label=field_label,
-                    current_value=current_value,
-                    hint=hint,
+                self._screen_text(
+                    title="Редактирование отключено",
+                    lines=[
+                        "Изменение объявления недоступно.",
+                    ],
+                    note="Создайте новое объявление с нужными параметрами и удалите старое.",
+                    warning=True,
                 ),
-                self._listing_edit_menu_markup(listing_id=listing_id),
                 parse_mode="HTML",
-            )
-            return
-        if action == "listing_edit_confirm":
-            prompt_state = context.user_data.get(_PROMPT_STATE_KEY)
-            if not isinstance(prompt_state, dict):
-                await self._replace_message(
-                    query_message,
-                    "Не удалось продолжить редактирование. Откройте карточку объявления заново.",
-                )
-                return
-            listing_id = int(prompt_state.get("listing_id", 0))
-            if listing_id < 1:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось продолжить редактирование. Откройте карточку объявления заново.",
-                )
-                return
-            try:
-                current_listing = await self._seller_service.get_listing(
-                    seller_user_id=seller.user_id,
-                    listing_id=listing_id,
-                )
-                if current_listing.status in {"active", "paused"}:
-                    await self._validate_listing_product_availability(
-                        seller_user_id=seller.user_id,
-                        shop_id=current_listing.shop_id,
-                        wb_product_id=current_listing.wb_product_id,
-                    )
-                updated = await self._seller_service.update_listing(
-                    seller_user_id=seller.user_id,
-                    listing_id=listing_id,
-                    display_title=str(prompt_state.get("proposed_display_title", "")).strip(),
-                    search_phrase=str(prompt_state.get("proposed_search_phrase", "")).strip(),
-                    reward_usdt=Decimal(str(prompt_state.get("proposed_reward_usdt", "0"))),
-                    slot_count=int(prompt_state.get("proposed_slot_count", 0)),
-                    idempotency_key=f"tg-listing-edit:{seller.user_id}:{listing_id}",
-                )
-            except NotFoundError:
-                await self._replace_message(query_message, "Объявление не найдено.")
-                return
-            except ListingValidationError as exc:
-                await self._replace_message(query_message, str(exc))
-                return
-            except InsufficientFundsError:
-                await self._replace_message(
-                    query_message,
-                    "Недостаточно средств для сохранения изменений.",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="➕ Пополнить",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_SELLER,
-                                        action="topup_prompt",
-                                    ),
-                                )
-                            ],
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ К карточке",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_SELLER,
-                                        action="listing_open",
-                                        entity_id=str(listing_id),
-                                    ),
-                                )
-                            ],
-                        ]
-                    ),
-                )
-                return
-            except (InvalidStateError, ValueError):
-                await self._replace_message(
-                    query_message,
-                    "Не удалось сохранить изменения. Проверьте данные и попробуйте снова.",
-                    self._listing_edit_menu_markup(listing_id=listing_id),
-                )
-                return
-            self._clear_prompt(context)
-            await self._render_seller_listing_detail(
-                query_message=query_message,
-                seller_user_id=seller.user_id,
-                listing_id=updated.listing_id,
-                list_page=self._seller_listings_page_from_context(context),
-                notice="Изменения сохранены.",
             )
             return
         if action == "listing_activate":
@@ -1282,6 +1197,7 @@ class TelegramWebhookRuntime:
             await self._render_seller_topup_history(
                 query_message=query_message,
                 seller_user_id=seller.user_id,
+                page=self._coerce_page_number(payload.entity_id),
             )
             return
 
@@ -1316,6 +1232,7 @@ class TelegramWebhookRuntime:
 
         text = self._screen_text(
             title="Кабинет продавца",
+            cta="Выберите раздел ниже.",
             lines=[
                 f"<b>Магазины:</b> {shops_total} · {shops_active} активно",
                 f"<b>Объявления:</b> {listings_total} · {listings_active} активно",
@@ -1326,7 +1243,7 @@ class TelegramWebhookRuntime:
                 f"<b>Баланс:</b> {self._format_usdt_with_rub(balance_total)}",
                 f"<b>Свободно:</b> {self._format_usdt_with_rub(balance_free)}",
             ],
-            note="Выберите раздел ниже.",
+            note="Откройте объявления, магазины или баланс в зависимости от задачи.",
         )
         await self._replace_message(
             query_message,
@@ -1555,8 +1472,9 @@ class TelegramWebhookRuntime:
     def _shop_token_instruction_text(self, *, shop_title: str) -> str:
         return self._screen_text(
             title=f"Токен WB API для магазина «{html.escape(shop_title)}»",
+            cta="Отправьте токен следующим сообщением ниже.",
             lines=[
-                "<b>Шаг 1 из 2.</b> Отправьте токен следующим сообщением ниже.",
+                "<b>Шаг 1 из 2.</b>",
                 (
                     "<b>Зачем:</b> бот будет читать карточки товаров "
                     "и статусы заказов покупателей."
@@ -1580,6 +1498,7 @@ class TelegramWebhookRuntime:
         fx_text = self._format_decimal(self._display_rub_per_usdt, quant=Decimal("0.01"))
         return self._screen_text(
             title=f"Создание объявления для магазина «{html.escape(shop_title)}»",
+            cta="Отправьте сообщение с информацией об объявлении согласно формату ниже.",
             lines=[
                 (
                     "<b>Формат:</b> "
@@ -1633,9 +1552,9 @@ class TelegramWebhookRuntime:
     def _listing_title_edit_prompt_text(self, *, current_title: str) -> str:
         return self._screen_text(
             title="Название объявления",
+            cta="Отправьте новое название следующим сообщением ниже.",
             lines=[
                 f"<b>Текущее название:</b> {html.escape(current_title)}",
-                "Отправьте новое название следующим сообщением ниже.",
             ],
             note="Название увидят покупатели.",
         )
@@ -1686,6 +1605,7 @@ class TelegramWebhookRuntime:
             lines.append("<b>Источник цены:</b> введена вручную.")
         return self._screen_text(
             title="Проверьте объявление",
+            cta="Проверьте данные объявления и выберите следующее действие ниже.",
             lines=lines,
             note="Если название подходит, сохраните его. Если нет, отредактируйте название.",
         )
@@ -1698,6 +1618,7 @@ class TelegramWebhookRuntime:
     ) -> str:
         return self._screen_text(
             title="Нужна цена покупателя",
+            cta="Введите текущую цену покупателя в рублях следующим сообщением ниже.",
             lines=[
                 "Карточка товара найдена, но по заказам за 30 дней цена не определилась.",
                 f"<b>Артикул ВБ:</b> {wb_product_id}",
@@ -1706,7 +1627,7 @@ class TelegramWebhookRuntime:
                 f"<b>Артикул продавца:</b> {html.escape(snapshot.vendor_code or '—')}",
                 f"<b>Название WB:</b> {html.escape(snapshot.name)}",
             ],
-            note="Введите текущую цену покупателя в рублях с учетом всех скидок. Пример: 392",
+            note="Укажите цену с учетом всех скидок. Пример: 392.",
         )
 
     def _format_listing_cashback_percent(
@@ -2309,6 +2230,7 @@ class TelegramWebhookRuntime:
                 listing_id=listing.listing_id,
                 status=listing.status,
                 list_page=list_page,
+                can_activate=self._listing_has_sufficient_collateral(collateral_view),
             ),
             parse_mode="HTML",
         )
@@ -2845,11 +2767,9 @@ class TelegramWebhookRuntime:
             )
         text = self._screen_text(
             title="Баланс продавца",
+            cta="Выберите следующее действие ниже.",
             lines=lines,
-            note=(
-                "Суммы показаны в $ и приблизительно в ₽. "
-                "Для нулей рублевая оценка не показывается."
-            ),
+            note="Используйте пополнение, если средств не хватает для активации объявлений.",
         )
         await self._replace_message(
             query_message,
@@ -2863,16 +2783,18 @@ class TelegramWebhookRuntime:
         *,
         query_message: Message | None,
         seller_user_id: int,
+        page: int = 1,
     ) -> None:
         intents = await self._deposit_service.list_seller_deposit_intents(
             seller_user_id=seller_user_id,
-            limit=10,
+            limit=100,
         )
         if not intents:
             await self._replace_message(
                 query_message,
                 self._screen_text(
-                    title="Пополнения",
+                    title="Транзакции продавца",
+                    cta="Здесь отображаются пополнения баланса продавца.",
                     lines=["Транзакций пока нет."],
                     note="Нажмите «➕ Пополнить», чтобы создать счет.",
                 ),
@@ -2881,14 +2803,20 @@ class TelegramWebhookRuntime:
             )
             return
 
+        resolved_page, total_pages, start_index, end_index = self._resolve_numbered_page(
+            total_items=len(intents),
+            requested_page=page,
+            page_size=8,
+        )
         lines: list[str] = []
-        for item in intents:
+        for item in intents[start_index:end_index]:
             expected_amount = self._format_usdt_value(item.expected_amount_usdt, precise=True)
             block = (
+                f"<b>Пополнение</b>\n"
                 f"<b>Сумма:</b> {expected_amount} USDT\n"
-                f"<b>Статус:</b> {html.escape(self._humanize_deposit_status(item.status))}\n"
-                f"<b>Создан:</b> {item.created_at:%d.%m.%Y %H:%M UTC}\n"
-                f"<b>Срок счета:</b> до {item.expires_at:%d.%m.%Y %H:%M UTC}"
+                f"<b>Статус:</b> {self._deposit_status_badge(item.status)}\n"
+                f"<b>Создан:</b> {self._format_datetime_msk(item.created_at)}\n"
+                f"<b>Срок счета:</b> до {self._format_datetime_msk(item.expires_at)}"
             )
             if item.status == "credited" and item.credited_amount_usdt is not None:
                 block += (
@@ -2901,10 +2829,51 @@ class TelegramWebhookRuntime:
                 block += "\n<i>Если вы оплатили после срока, обратитесь к администратору.</i>"
             lines.append(block)
 
+        keyboard_rows: list[list[InlineKeyboardButton]] = []
+        if total_pages > 1:
+            nav_row: list[InlineKeyboardButton] = []
+            if resolved_page > 1:
+                nav_row.append(
+                    InlineKeyboardButton(
+                        text="⬅️",
+                        callback_data=build_callback(
+                            flow=_ROLE_SELLER,
+                            action="topup_history",
+                            entity_id=str(resolved_page - 1),
+                        ),
+                    )
+                )
+            if resolved_page < total_pages:
+                nav_row.append(
+                    InlineKeyboardButton(
+                        text="➡️",
+                        callback_data=build_callback(
+                            flow=_ROLE_SELLER,
+                            action="topup_history",
+                            entity_id=str(resolved_page + 1),
+                        ),
+                    )
+                )
+            if nav_row:
+                keyboard_rows.append(nav_row)
+        keyboard_rows.extend(self._seller_balance_menu_markup().inline_keyboard)
+
         await self._replace_message(
             query_message,
-            self._screen_text(title="Пополнения", lines=lines),
-            self._seller_balance_menu_markup(),
+            self._screen_text(
+                title=(
+                    f"Транзакции продавца · стр. {resolved_page}/{total_pages}"
+                    if total_pages > 1
+                    else "Транзакции продавца"
+                ),
+                cta="Проверьте статус транзакций ниже.",
+                lines=lines,
+                note=(
+                    "Если перевод завис или счет истек, создайте новый счет "
+                    "или обратитесь к администратору."
+                ),
+            ),
+            InlineKeyboardMarkup(keyboard_rows),
             parse_mode="HTML",
         )
 
@@ -3339,6 +3308,7 @@ class TelegramWebhookRuntime:
             await self._render_buyer_withdraw_history(
                 query_message=query_message,
                 buyer_user_id=buyer.user_id,
+                page=self._coerce_page_number(payload.entity_id),
             )
             return
 
@@ -3375,6 +3345,7 @@ class TelegramWebhookRuntime:
 
         text = self._screen_text(
             title="Кабинет покупателя",
+            cta="Выберите раздел ниже.",
             lines=[
                 (
                     "<b>Задания:</b> "
@@ -3384,7 +3355,7 @@ class TelegramWebhookRuntime:
                 f"<b>Баланс:</b> {self._format_usdt_with_rub(total_balance)}",
                 f"<b>Доступно:</b> {self._format_usdt_with_rub(snapshot.buyer_available_usdt)}",
             ],
-            note="Выберите раздел ниже.",
+            note="Откройте магазины, задания или баланс и вывод в зависимости от следующего шага.",
         )
         await self._replace_message(
             query_message,
@@ -3633,7 +3604,7 @@ class TelegramWebhookRuntime:
                     self._buyer_task_instruction_text(assignment),
                     (
                         "<b>Срок отправки:</b> "
-                        f"до {assignment.reservation_expires_at:%d.%m.%Y %H:%M UTC}"
+                        f"до {self._format_datetime_msk(assignment.reservation_expires_at)}"
                     ),
                 ],
                 note="После отправки токена-подтверждения бот продолжит проверку автоматически.",
@@ -3645,7 +3616,7 @@ class TelegramWebhookRuntime:
                     self._buyer_task_instruction_text(assignment),
                     (
                         "<b>Срок отправки:</b> "
-                        f"до {assignment.reservation_expires_at:%d.%m.%Y %H:%M UTC}"
+                        f"до {self._format_datetime_msk(assignment.reservation_expires_at)}"
                     ),
                 ],
             )
@@ -3899,7 +3870,8 @@ class TelegramWebhookRuntime:
             if item.status in {"reserved", "order_submitted"}:
                 lines.append(self._buyer_task_instruction_text(item))
                 lines.append(
-                    f"<b>Срок отправки:</b> до {item.reservation_expires_at:%d.%m.%Y %H:%M UTC}"
+                    "<b>Срок отправки:</b> "
+                    f"до {self._format_datetime_msk(item.reservation_expires_at)}"
                 )
                 keyboard_rows.append(
                     [
@@ -3952,6 +3924,7 @@ class TelegramWebhookRuntime:
         )
         text = self._screen_text(
             title="Баланс покупателя",
+            cta="Выберите следующее действие ниже.",
             lines=[
                 f"<b>Доступно:</b> {self._format_usdt_with_rub(snapshot.buyer_available_usdt)}",
                 (
@@ -3989,7 +3962,7 @@ class TelegramWebhookRuntime:
                     ],
                     [
                         InlineKeyboardButton(
-                            text="🧾 История выводов",
+                            text="🧾 Транзакции",
                             callback_data=build_callback(
                                 flow=_ROLE_BUYER,
                                 action="withdraw_history",
@@ -4071,6 +4044,7 @@ class TelegramWebhookRuntime:
         *,
         query_message: Message | None,
         buyer_user_id: int,
+        page: int = 1,
     ) -> None:
         history = await self._finance_service.list_buyer_withdrawal_history(
             buyer_user_id=buyer_user_id
@@ -4078,7 +4052,12 @@ class TelegramWebhookRuntime:
         if not history:
             await self._replace_message(
                 query_message,
-                "🧾 История выводов пока пустая.",
+                self._screen_text(
+                    title="Транзакции покупателя",
+                    cta="Здесь отображаются выводы покупателя.",
+                    lines=["Транзакций пока нет."],
+                    note="Когда появятся заявки на вывод, они будут видны здесь.",
+                ),
                 InlineKeyboardMarkup(
                     [
                         [
@@ -4092,32 +4071,78 @@ class TelegramWebhookRuntime:
                         ]
                     ]
                 ),
+                parse_mode="HTML",
             )
             return
 
-        lines = ["🧾 Транзакции вывода:"]
-        for item in history:
+        resolved_page, total_pages, start_index, end_index = self._resolve_numbered_page(
+            total_items=len(history),
+            requested_page=page,
+            page_size=8,
+        )
+        lines: list[str] = []
+        for item in history[start_index:end_index]:
             block = (
-                f"• Сумма: {self._format_usdt_value(item.amount_usdt, precise=True)} USDT\n"
-                f"Статус: {self._humanize_withdraw_status(item.status)}\n"
-                f"Адрес: {item.payout_address}"
+                f"<b>Вывод</b>\n"
+                f"<b>Сумма:</b> {self._format_usdt_value(item.amount_usdt, precise=True)} USDT\n"
+                f"<b>Статус:</b> {self._withdraw_status_badge(item.status)}\n"
+                f"<b>Адрес:</b> {html.escape(item.payout_address)}"
             )
             if item.tx_hash:
-                block += f"\nХэш перевода: {item.tx_hash}"
+                block += f"\n<b>Хэш перевода:</b> {html.escape(item.tx_hash)}"
             lines.append(block)
+        keyboard_rows: list[list[InlineKeyboardButton]] = []
+        if total_pages > 1:
+            nav_row: list[InlineKeyboardButton] = []
+            if resolved_page > 1:
+                nav_row.append(
+                    InlineKeyboardButton(
+                        text="⬅️",
+                        callback_data=build_callback(
+                            flow=_ROLE_BUYER,
+                            action="withdraw_history",
+                            entity_id=str(resolved_page - 1),
+                        ),
+                    )
+                )
+            if resolved_page < total_pages:
+                nav_row.append(
+                    InlineKeyboardButton(
+                        text="➡️",
+                        callback_data=build_callback(
+                            flow=_ROLE_BUYER,
+                            action="withdraw_history",
+                            entity_id=str(resolved_page + 1),
+                        ),
+                    )
+                )
+            if nav_row:
+                keyboard_rows.append(nav_row)
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    text="↩️ Назад к балансу",
+                    callback_data=build_callback(flow=_ROLE_BUYER, action="balance"),
+                )
+            ]
+        )
         await self._replace_message(
             query_message,
-            "\n\n".join(lines),
-            InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            text="↩️ Назад к балансу",
-                            callback_data=build_callback(flow=_ROLE_BUYER, action="balance"),
-                        )
-                    ]
-                ]
+            self._screen_text(
+                title=(
+                    f"Транзакции покупателя · стр. {resolved_page}/{total_pages}"
+                    if total_pages > 1
+                    else "Транзакции покупателя"
+                ),
+                cta="Проверьте статус выводов ниже.",
+                lines=lines,
+                note=(
+                    "Если вывод отклонен или задержан, проверьте статус "
+                    "и при необходимости оформите новую заявку."
+                ),
             ),
+            InlineKeyboardMarkup(keyboard_rows),
+            parse_mode="HTML",
         )
 
     async def _ensure_admin_user(self, *, telegram_id: int, username: str | None) -> int:
@@ -4171,12 +4196,13 @@ class TelegramWebhookRuntime:
 
         text = self._screen_text(
             title="Кабинет администратора",
+            cta="Выберите раздел ниже.",
             lines=[
                 f"<b>Выводы в очереди:</b> {len(pending_withdrawals)}",
                 f"<b>Платежи на ручной разбор:</b> {len(review_txs)}",
                 f"<b>Просроченные счета:</b> {len(expired_intents)}",
             ],
-            note="Выберите раздел ниже.",
+            note="Откройте выводы, пополнения или исключения в зависимости от текущей задачи.",
         )
         await self._replace_message(
             query_message,
@@ -4190,7 +4216,9 @@ class TelegramWebhookRuntime:
             query_message,
             self._screen_text(
                 title="Выводы",
-                lines=["Выберите действие."],
+                cta="Выберите действие ниже.",
+                lines=["Раздел для обработки заявок на вывод."],
+                note="Откройте очередь или перейдите к конкретной заявке по номеру.",
             ),
             InlineKeyboardMarkup(
                 [
@@ -4228,7 +4256,9 @@ class TelegramWebhookRuntime:
             query_message,
             self._screen_text(
                 title="Пополнения",
-                lines=["Выберите действие."],
+                cta="Выберите действие ниже.",
+                lines=["Раздел для ручных пополнений и исключений по счетам."],
+                note="Откройте ручное пополнение или проверьте спорные/просроченные операции.",
             ),
             InlineKeyboardMarkup(
                 [
@@ -4367,14 +4397,14 @@ class TelegramWebhookRuntime:
             f"<b>Сумма:</b> {self._format_usdt_value(detail.amount_usdt, precise=True)} USDT",
             f"<b>Статус:</b> {html.escape(self._humanize_withdraw_status(detail.status))}",
             f"<b>Кошелек:</b> {html.escape(detail.payout_address)}",
-            f"<b>Создана:</b> {detail.requested_at:%d.%m.%Y %H:%M UTC}",
+            f"<b>Создана:</b> {self._format_datetime_msk(detail.requested_at)}",
             (
-                f"<b>Обработана:</b> {detail.processed_at:%d.%m.%Y %H:%M UTC}"
+                f"<b>Обработана:</b> {self._format_datetime_msk(detail.processed_at)}"
                 if detail.processed_at
                 else "<b>Обработана:</b> -"
             ),
             (
-                f"<b>Отправлена:</b> {detail.sent_at:%d.%m.%Y %H:%M UTC}"
+                f"<b>Отправлена:</b> {self._format_datetime_msk(detail.sent_at)}"
                 if detail.sent_at
                 else "<b>Отправлена:</b> -"
             ),
@@ -4695,7 +4725,7 @@ class TelegramWebhookRuntime:
                     "Ожидалось: "
                     f"{self._format_usdt_value(intent.expected_amount_usdt, precise=True)} USDT\n"
                     f"Суффикс: {intent.suffix_code:03d}\n"
-                    f"Истек: {intent.expires_at:%d.%m.%Y %H:%M UTC}"
+                    f"Истек: {self._format_datetime_msk(intent.expires_at)}"
                 )
         else:
             lines.append("Просроченных счетов нет.")
@@ -5698,106 +5728,18 @@ class TelegramWebhookRuntime:
             )
             return
 
-        if prompt_type == "seller_listing_edit_value":
-            listing_id = int(prompt_state.get("listing_id", 0))
-            field_key = str(prompt_state.get("field_key", "")).strip()
-            if listing_id < 1 or not field_key:
-                self._clear_prompt(context)
-                await message.reply_text(
-                    "Не удалось продолжить редактирование. Откройте карточку объявления заново.",
-                    reply_markup=self._seller_back_markup(
-                        action="listings",
-                        label="↩️ К объявлениям",
-                    ),
-                )
-                return
-            try:
-                listing = await self._seller_service.get_listing(
-                    seller_user_id=int(prompt_state.get("seller_user_id", 0)),
-                    listing_id=listing_id,
-                )
-            except NotFoundError:
-                await message.reply_text(
-                    "Объявление не найдено.",
-                    reply_markup=self._seller_back_markup(
-                        action="listings",
-                        label="↩️ К объявлениям",
-                    ),
-                )
-                return
-            new_display_title = self._listing_display_title(
-                display_title=listing.display_title,
-                fallback=listing.search_phrase,
-            )
-            new_search_phrase = listing.search_phrase
-            new_reward_usdt = listing.reward_usdt
-            new_slot_count = listing.slot_count
-            try:
-                if field_key == "title":
-                    new_display_title = text.strip()
-                    if not new_display_title:
-                        raise ValueError("empty title")
-                elif field_key == "search_phrase":
-                    new_search_phrase = text.strip()
-                    if not new_search_phrase:
-                        raise ValueError("empty search")
-                elif field_key == "cashback_rub":
-                    cashback_rub = Decimal(text.strip())
-                    if cashback_rub <= Decimal("0"):
-                        raise ValueError("bad cashback")
-                    await self._refresh_display_rub_per_usdt()
-                    new_reward_usdt = (cashback_rub / self._display_rub_per_usdt).quantize(
-                        _USDT_EXACT_QUANT,
-                        rounding=ROUND_HALF_UP,
-                    )
-                elif field_key == "slot_count":
-                    new_slot_count = int(text.strip())
-                    if new_slot_count < 1:
-                        raise ValueError("bad slots")
-                else:
-                    raise ValueError("unknown field")
-            except (InvalidOperation, ValueError):
-                await message.reply_text(
-                    "Не удалось разобрать значение. Проверьте формат и попробуйте снова.",
-                    reply_markup=self._listing_edit_menu_markup(listing_id=listing_id),
-                )
-                return
-            self._set_prompt(
-                context,
-                role=_ROLE_SELLER,
-                prompt_type="seller_listing_edit_confirm",
-                sensitive=False,
-                extra={
-                    "seller_user_id": int(prompt_state.get("seller_user_id", 0)),
-                    "listing_id": listing_id,
-                    "proposed_display_title": new_display_title,
-                    "proposed_search_phrase": new_search_phrase,
-                    "proposed_reward_usdt": str(new_reward_usdt),
-                    "proposed_slot_count": new_slot_count,
-                },
-            )
+        if prompt_type in {"seller_listing_edit_value", "seller_listing_edit_confirm"}:
+            self._clear_prompt(context)
             await message.reply_text(
-                self._listing_edit_confirmation_text(
-                    listing=listing,
-                    new_display_title=new_display_title,
-                    new_search_phrase=new_search_phrase,
-                    new_reward_usdt=new_reward_usdt,
-                    new_slot_count=new_slot_count,
+                self._screen_text(
+                    title="Редактирование отключено",
+                    lines=[
+                        "Изменение объявления недоступно.",
+                    ],
+                    note="Создайте новое объявление с нужными параметрами и удалите старое.",
+                    warning=True,
                 ),
-                reply_markup=self._listing_edit_confirm_markup(listing_id=listing_id),
                 parse_mode="HTML",
-            )
-            return
-
-        if prompt_type == "seller_listing_edit_confirm":
-            await message.reply_text(
-                (
-                    "Используйте кнопки ниже, чтобы сохранить изменения "
-                    "или вернуться к редактированию."
-                ),
-                reply_markup=self._listing_edit_confirm_markup(
-                    listing_id=int(prompt_state.get("listing_id", 0))
-                ),
             )
             return
 
@@ -6506,18 +6448,39 @@ class TelegramWebhookRuntime:
     def _screen_text(
         *,
         title: str,
+        cta: str | None = None,
         lines: list[str] | None = None,
         note: str | None = None,
         warning: bool = False,
     ) -> str:
         parts = [f"{'⚠️ ' if warning else ''}<b>{title}</b>"]
+        if cta:
+            parts.append(f"<i>{cta}</i>")
         if lines:
             filtered = [line for line in lines if line]
             if filtered:
-                parts.append("\n".join(filtered))
+                parts.append("\n\n".join(filtered))
         if note:
             parts.append(f"<i>{note}</i>")
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _format_datetime_msk(value: datetime | None) -> str:
+        if value is None:
+            return "—"
+        normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        localized = normalized.astimezone(_MSK_TZ)
+        return localized.strftime("%d.%m.%Y %H:%M MSK")
+
+    @staticmethod
+    def _status_badge(label: str, *, color: str) -> str:
+        marker = {
+            "green": "🟢",
+            "red": "🔴",
+            "yellow": "🟡",
+            "blue": "🔵",
+        }.get(color, "⚪")
+        return f"{marker} {html.escape(label)}"
 
     def _build_buyer_listing_token(self, *, search_phrase: str, wb_product_id: int) -> str:
         payload = [search_phrase, wb_product_id, _BUYER_TASK_COMPANION_PRODUCTS]
@@ -6550,6 +6513,34 @@ class TelegramWebhookRuntime:
             "paused": "На паузе",
         }
         return mapping.get(status, status)
+
+    def _listing_activity_badge(self, *, is_active: bool) -> str:
+        return self._status_badge(
+            "активно" if is_active else "не активно",
+            color="green" if is_active else "red",
+        )
+
+    def _deposit_status_badge(self, status: str) -> str:
+        label = self._humanize_deposit_status(status)
+        color = {
+            "credited": "green",
+            "expired": "red",
+            "cancelled": "red",
+            "manual_review": "yellow",
+            "matched": "blue",
+            "pending": "yellow",
+        }.get(status, "blue")
+        return self._status_badge(label, color=color)
+
+    def _withdraw_status_badge(self, status: str) -> str:
+        label = self._humanize_withdraw_status(status)
+        color = {
+            "withdraw_sent": "green",
+            "approved": "blue",
+            "rejected": "red",
+            "withdraw_pending_admin": "yellow",
+        }.get(status, "blue")
+        return self._status_badge(label, color=color)
 
     @staticmethod
     def _humanize_assignment_status(status: str) -> str:
@@ -6771,13 +6762,23 @@ class TelegramWebhookRuntime:
         listing_id: int,
         status: str,
         list_page: int,
+        can_activate: bool,
     ) -> InlineKeyboardMarkup:
-        if status == "draft":
+        if status == "draft" and can_activate:
             action_button = InlineKeyboardButton(
                 text="✅ Активировать",
                 callback_data=build_callback(
                     flow=_ROLE_SELLER,
                     action="listing_activate",
+                    entity_id=str(listing_id),
+                ),
+            )
+        elif status == "draft":
+            action_button = InlineKeyboardButton(
+                text="⛔ Недостаточно средств",
+                callback_data=build_callback(
+                    flow=_ROLE_SELLER,
+                    action="listing_activation_blocked",
                     entity_id=str(listing_id),
                 ),
             )
@@ -6803,14 +6804,6 @@ class TelegramWebhookRuntime:
             [
                 [
                     action_button,
-                    InlineKeyboardButton(
-                        text="✏️ Редактировать",
-                        callback_data=build_callback(
-                            flow=_ROLE_SELLER,
-                            action="listing_edit",
-                            entity_id=str(listing_id),
-                        ),
-                    ),
                 ],
                 [
                     InlineKeyboardButton(
@@ -6835,6 +6828,37 @@ class TelegramWebhookRuntime:
             ]
         )
 
+    @staticmethod
+    def _listing_has_sufficient_collateral(collateral_view) -> bool:
+        if collateral_view is None:
+            return True
+        return collateral_view.collateral_locked_usdt >= collateral_view.collateral_required_usdt
+
+    def _format_listing_collateral_line(self, *, collateral_view) -> str:
+        if collateral_view is None:
+            return "—"
+        required_text = self._format_usdt_with_rub(collateral_view.collateral_required_usdt)
+        if self._listing_has_sufficient_collateral(collateral_view):
+            return f"🟢 {required_text}"
+        return (
+            "🔴 "
+            f"{self._format_usdt(collateral_view.collateral_required_usdt)} "
+            "(недостаточно средств)"
+        )
+
+    def _listing_detail_note(self, *, listing, collateral_view) -> str:
+        if listing.status == "active":
+            return (
+                "Объявление активно. При необходимости поставьте его на паузу "
+                "или поделитесь ссылкой на магазин."
+            )
+        if not self._listing_has_sufficient_collateral(collateral_view):
+            return (
+                "Для активации пополните баланс продавца, затем вернитесь "
+                "к карточке объявления."
+            )
+        return "Проверьте параметры и активируйте объявление, когда будете готовы."
+
     def _seller_listing_detail_html(
         self,
         *,
@@ -6851,54 +6875,53 @@ class TelegramWebhookRuntime:
         in_progress = (
             collateral_view.in_progress_assignments_count if collateral_view is not None else 0
         )
-        available = (
-            collateral_view.available_slots
-            if collateral_view is not None
-            else listing.available_slots
-        )
         cashback_text = self._format_cashback_with_percent(
             reward_usdt=listing.reward_usdt,
             reference_price_rub=listing.reference_price_rub,
         )
+        is_active = listing.status == "active"
+        title = f"{'🟢' if is_active else '🔴'} {html.escape(display_title)}"
         lines: list[str] = []
         if notice:
             lines.append(html.escape(notice))
         lines.extend(
             [
-                f"<b>{html.escape(display_title)}</b>",
                 f"<b>Артикул WB:</b> {listing.wb_product_id}",
-                f"<b>Предмет:</b> {html.escape(listing.wb_subject_name or '—')}",
-                f"<b>Артикул продавца:</b> {html.escape(listing.wb_vendor_code or '—')}",
-                f"<b>Бренд:</b> {html.escape(listing.wb_brand_name or '—')}",
-                f"<b>Название WB:</b> {html.escape(listing.wb_source_title or display_title)}",
-                self._format_listing_price_line(
-                    label="Цена покупателя",
-                    price_rub=listing.reference_price_rub,
-                    source=listing.reference_price_source,
-                ),
                 f"<b>Кэшбэк:</b> {html.escape(cashback_text)}",
                 f"<b>Поисковая фраза:</b> &quot;{html.escape(listing.search_phrase)}&quot;",
-                f"<b>Статус:</b> {html.escape(self._humanize_listing_status(listing.status))}",
+                f"<b>План по заказам / В процессе:</b> {planned} / {in_progress}",
+            ]
+        )
+        if shop_link:
+            lines.append(f"<b>Ссылка на магазин:</b>\n{html.escape(shop_link)}")
+        lines.extend(
+            [
                 (
-                    f"<b>План:</b> {planned} · <b>В процессе:</b> {in_progress} "
-                    f"· <b>Доступно:</b> {available}"
+                    "<b>Обеспечение:</b> "
+                    f"{self._format_listing_collateral_line(collateral_view=collateral_view)}"
+                ),
+                (
+                    f"<b>Статус:</b> "
+                    f"{self._listing_activity_badge(is_active=is_active)}"
                 ),
             ]
         )
-        if collateral_view is not None:
-            locked_text = html.escape(
-                self._format_usdt_with_rub(collateral_view.collateral_locked_usdt)
-            )
-            required_text = html.escape(
-                self._format_usdt_with_rub(collateral_view.collateral_required_usdt)
-            )
-            lines.append(
-                f"<b>Обеспечение:</b> {locked_text} / {required_text}"
-            )
-        if shop_link:
-            lines.append(f"<b>Ссылка на магазин:</b>\n{html.escape(shop_link)}")
+        parameters_lines = [
+            f"Предмет: {html.escape(listing.wb_subject_name or '—')}",
+            f"Артикул продавца: {html.escape(listing.wb_vendor_code or '—')}",
+            f"Бренд: {html.escape(listing.wb_brand_name or '—')}",
+            f"Название WB: {html.escape(listing.wb_source_title or display_title)}",
+            self._format_listing_price_line(
+                label="Цена покупателя",
+                price_rub=listing.reference_price_rub,
+                source=listing.reference_price_source,
+            ).replace("<b>", "").replace("</b>", ""),
+            f"Размеры: {html.escape(self._format_sizes_text(listing.wb_tech_sizes))}",
+        ]
         lines.append(
-            f"<b>Размеры:</b> {html.escape(self._format_sizes_text(listing.wb_tech_sizes))}"
+            "<b>Параметры</b>\n<blockquote expandable>"
+            + "\n".join(parameters_lines)
+            + "</blockquote>"
         )
         description_block = self._format_expandable_block_html(
             title="Описание",
@@ -6909,7 +6932,12 @@ class TelegramWebhookRuntime:
         characteristics_block = self._format_characteristics_block_html(listing.wb_characteristics)
         if characteristics_block:
             lines.append(characteristics_block)
-        return "\n".join(lines)
+        return self._screen_text(
+            title=title,
+            cta="Проверьте объявление и выберите следующее действие ниже.",
+            lines=lines,
+            note=self._listing_detail_note(listing=listing, collateral_view=collateral_view),
+        )
 
     def _buyer_listing_detail_html(self, *, listing, notice: str | None = None) -> str:
         display_title = self._listing_display_title(
@@ -6925,7 +6953,6 @@ class TelegramWebhookRuntime:
         )
         lines.extend(
             [
-                f"<b>{html.escape(display_title)}</b>",
                 f"<b>Артикул WB:</b> {listing.wb_product_id}",
                 f"<b>Предмет:</b> {html.escape(listing.wb_subject_name or '—')}",
                 f"<b>Бренд:</b> {html.escape(listing.wb_brand_name or '—')}",
@@ -6949,7 +6976,12 @@ class TelegramWebhookRuntime:
         characteristics_block = self._format_characteristics_block_html(listing.wb_characteristics)
         if characteristics_block:
             lines.append(characteristics_block)
-        return "\n".join(lines)
+        return self._screen_text(
+            title=display_title,
+            cta="Проверьте товар и выберите следующее действие ниже.",
+            lines=lines,
+            note="Если товар подходит, забронируйте место и выполните шаги из задания.",
+        )
 
     def _format_listing_price_line(
         self,
