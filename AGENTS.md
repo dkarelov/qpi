@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-03-09 UTC
+Last updated: 2026-03-10 UTC
 
 ## 1. Documentation Policy
 
@@ -381,7 +381,9 @@ Rule:
 
 - Any bot release that starts reading new DB columns must apply schema before the bot process is restarted.
 - For production-like legacy drift, run `python -m libs.db.runtime_schema_compat apply` before declarative `schema_cli apply`.
-- Production schema apply should be executed from an operator machine or CI runner with `psqldef` available, using the standard SSH tunnel to `127.0.0.1:15432`.
+- Operator-driven production schema apply remains the SSH-tunnel path to `127.0.0.1:15432`.
+- CI production deploys run `runtime_schema_compat` + `schema_cli apply` on the bot VM itself against the private DB URL from `/etc/qpi/bot.env`, with `psqldef` uploaded to the VM for the run.
+- CI skips production schema apply entirely when no schema-related files changed (`schema/**`, `libs/db/**`, deployment schema runner).
 
 ### 7.4 Runtime smoke checks
 
@@ -455,8 +457,8 @@ Workflows:
 - `.github/workflows/deploy_bot.yml`:
   - lint + tests,
   - schema drift regression against a PostgreSQL CI service,
-  - additive runtime schema compatibility patch through SSH tunnel,
-  - declarative production schema apply through SSH tunnel before rollout,
+  - detects whether schema-related files changed before deciding to run production schema steps,
+  - when needed, uploads `psqldef` + schema runner to the bot VM and executes runtime compatibility + declarative schema apply there over the private DB path before rollout,
   - package bot artifact,
   - rollout to bot VM,
   - health verification,

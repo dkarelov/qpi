@@ -166,7 +166,7 @@ CREATE TABLE "public"."wb_report_rows" (
     CONSTRAINT wb_report_rows_pkey PRIMARY KEY ("rrd_id", "srid")
 );
 
-CREATE INDEX idx_wb_report_rows_srid ON public.wb_report_rows USING btree (srid);
+CREATE INDEX idx_wb_report_rows_srid ON public.wb_report_rows USING btree ("srid");
 
 CREATE INDEX idx_wb_report_rows_sale_dt ON public.wb_report_rows USING btree (sale_dt);
 

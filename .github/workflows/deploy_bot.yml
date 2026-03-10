@@ -10,6 +10,7 @@ on:
       - "requirements.txt"
       - "pyproject.toml"
       - "infra/scripts/remote_rollout_bot.sh"
+      - "infra/scripts/remote_apply_schema.sh"
       - "infra/scripts/merge_bot_env.py"
       - ".github/workflows/deploy_bot.yml"
   workflow_dispatch:
@@ -83,6 +84,44 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect schema-related changes
+        id: schema_scope
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "apply_schema=true" >> "${GITHUB_OUTPUT}"
+            echo "reason=workflow_dispatch" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          before="${{ github.event.before }}"
+          zero_sha="0000000000000000000000000000000000000000"
+          if [[ -z "${before}" || "${before}" == "${zero_sha}" ]]; then
+            echo "apply_schema=true" >> "${GITHUB_OUTPUT}"
+            echo "reason=missing_before_sha" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "${before}"
+          fi
+
+          changed_files="$(git diff --name-only "${before}" "${GITHUB_SHA}")"
+          printf '%s\n' "${changed_files}"
+
+          if printf '%s\n' "${changed_files}" | grep -Eq \
+            '^(schema/|libs/db/|infra/scripts/remote_apply_schema\.sh$)'; then
+            echo "apply_schema=true" >> "${GITHUB_OUTPUT}"
+            echo "reason=schema_related_files_changed" >> "${GITHUB_OUTPUT}"
+          else
+            echo "apply_schema=false" >> "${GITHUB_OUTPUT}"
+            echo "reason=no_schema_related_changes" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Report schema apply decision
+        run: |
+          echo "apply_schema=${{ steps.schema_scope.outputs.apply_schema }}"
+          echo "reason=${{ steps.schema_scope.outputs.reason }}"
+
       - name: Validate required deployment secrets
         run: |
           test -n "${BOT_VM_HOST}" || { echo "BOT_VM_HOST variable is required"; exit 1; }
@@ -98,6 +137,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install psqldef
+        if: steps.schema_scope.outputs.apply_schema == 'true'
         run: |
           curl -fsSL -o /tmp/psqldef.tar.gz \
             "https://github.com/sqldef/sqldef/releases/download/${PSQLDEF_VERSION}/psqldef_linux_amd64.tar.gz"
@@ -175,6 +215,15 @@ jobs:
             /tmp/qpi-rollout.env \
             "${BOT_VM_SSH_USER:-ubuntu}@${BOT_VM_HOST}:/tmp/qpi-rollout.env"
 
+      - name: Upload remote schema tooling
+        if: steps.schema_scope.outputs.apply_schema == 'true'
+        run: |
+          scp -P "${BOT_VM_SSH_PORT:-22}" \
+            -i ~/.ssh/bot_vm_key \
+            "/tmp/psqldef" \
+            "infra/scripts/remote_apply_schema.sh" \
+            "${BOT_VM_SSH_USER:-ubuntu}@${BOT_VM_HOST}:/tmp/"
+
       - name: Merge env overrides on VM
         run: |
           ssh -p "${BOT_VM_SSH_PORT:-22}" \
@@ -186,40 +235,21 @@ jobs:
           sudo chown root:ubuntu /etc/qpi/bot.env
           sudo chmod 0640 /etc/qpi/bot.env"
 
-      - name: Open production DB tunnel
+      - name: Apply production schema on VM
+        if: steps.schema_scope.outputs.apply_schema == 'true'
         run: |
-          ssh -fNT -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-            -p "${BOT_VM_SSH_PORT:-22}" \
+          ssh -p "${BOT_VM_SSH_PORT:-22}" \
             -i ~/.ssh/bot_vm_key \
-            -L 127.0.0.1:15432:10.131.0.28:5432 \
-            "${BOT_VM_SSH_USER:-ubuntu}@${BOT_VM_HOST}"
-          ss -ltn | grep ':15432'
+            "${BOT_VM_SSH_USER:-ubuntu}@${BOT_VM_HOST}" \
+            "chmod +x /tmp/psqldef /tmp/remote_apply_schema.sh && \
+             /tmp/remote_apply_schema.sh \
+               '${{ steps.build.outputs.release_id }}' \
+               '/tmp/${{ steps.build.outputs.archive_name }}'"
 
-      - name: Resolve production DATABASE_URL
+      - name: Skip production schema apply
+        if: steps.schema_scope.outputs.apply_schema != 'true'
         run: |
-          remote_db_url="$(
-            ssh -p "${BOT_VM_SSH_PORT:-22}" \
-              -i ~/.ssh/bot_vm_key \
-              "${BOT_VM_SSH_USER:-ubuntu}@${BOT_VM_HOST}" \
-              "sudo awk 'index(\$0, \"DATABASE_URL=\") == 1 { sub(/^DATABASE_URL=/, \"\"); print; exit }' /etc/qpi/bot.env"
-          )"
-          test -n "${remote_db_url}" || { echo "DATABASE_URL missing in /etc/qpi/bot.env"; exit 1; }
-          echo "::add-mask::${remote_db_url}"
-          tunneled_db_url="$(
-            REMOTE_DATABASE_URL="${remote_db_url}" python -c "import os; from urllib.parse import quote, urlparse, urlunparse; raw=os.environ['REMOTE_DATABASE_URL'].strip(); raw='postgresql://'+raw[len('postgres://'):] if raw.startswith('postgres://') else raw; raw='postgresql://'+raw[len('postgresql+psycopg://'):] if raw.startswith('postgresql+psycopg://') else raw; parsed=urlparse(raw); userinfo=''; userinfo=(quote(parsed.username)+((':'+quote(parsed.password)) if parsed.password else '')+'@') if parsed.username else ''; print(urlunparse(parsed._replace(netloc=f'{userinfo}127.0.0.1:15432')))"
-          )"
-          echo "::add-mask::${tunneled_db_url}"
-          echo "PRODUCTION_DATABASE_URL=${tunneled_db_url}" >> "${GITHUB_ENV}"
-
-      - name: Apply production runtime schema compatibility
-        run: |
-          DATABASE_URL="${PRODUCTION_DATABASE_URL}" \
-            python -m libs.db.runtime_schema_compat apply
-
-      - name: Apply production schema
-        run: |
-          DATABASE_URL="${PRODUCTION_DATABASE_URL}" \
-            python -m libs.db.schema_cli apply
+          echo "Skipping production schema apply: ${{ steps.schema_scope.outputs.reason }}"
 
       - name: Rollout and verify health
         run: |
