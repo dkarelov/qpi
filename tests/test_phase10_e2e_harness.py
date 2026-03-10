@@ -549,6 +549,7 @@ async def test_phase10_e2e_seller_topup_and_transactions_flow() -> None:
     assert any(
         "Введите сумму пополнения в USDT" in text for text in _event_texts(topup_prompt_events)
     )
+    assert any("❓ Как перевести?" in _markup_labels(event) for event in topup_prompt_events)
 
     topup_create_events = await harness.text("1.2")
     assert any("Счет на пополнение создан" in text for text in _event_texts(topup_create_events))
@@ -584,6 +585,12 @@ async def test_phase10_e2e_seller_topup_and_transactions_flow() -> None:
         'href="https://help.ru.wallet.tg/article/80-kak-kupit-kriptovalutu-na-p2p-markete"'
         in topup_help_text
     )
+    assert (
+        "Рекомендуем делать перевод на несколько объявлений сразу" in topup_help_text
+    )
+    assert "1. Зайдите" in topup_help_text
+    assert "2. Пополните" in topup_help_text
+    assert "3. Выведите" in topup_help_text
     assert "Сеть TON." in topup_help_text
 
     history_events = await harness.callback(flow="seller", action="topup_history")
@@ -691,6 +698,84 @@ async def test_phase10_e2e_seller_listing_open_shows_photo_and_detail_card() -> 
     assert "План по заказам / В процессе:</b> 5 / 0" in detail_text
     assert "Параметры" in detail_text
     assert "Ссылка на магазин:" in detail_text
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_seller_draft_listing_uses_available_balance_for_activation() -> None:
+    runtime, deps = _build_runtime()
+    deps.seller.list_shops = AsyncMock(
+        return_value=[
+            _ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")
+        ]
+    )
+    deps.seller.get_seller_balance_snapshot = AsyncMock(
+        return_value=_ns(
+            seller_available_usdt=Decimal("5.050000"),
+            seller_collateral_usdt=Decimal("0.000000"),
+        )
+    )
+    deps.seller.get_listing = AsyncMock(
+        return_value=_ns(
+            listing_id=21,
+            shop_id=11,
+            display_title="Бумага A4 для принтера",
+            wb_product_id=552892532,
+            wb_subject_name="Бумага офисная",
+            wb_vendor_code="paper-001",
+            wb_source_title="BRAUBERG Бумага A4 для принтера",
+            wb_brand_name="BRAUBERG",
+            wb_description="Белая бумага для офиса",
+            wb_photo_url="https://example.com/photo.webp",
+            wb_tech_sizes=["0"],
+            wb_characteristics=[{"name": "Плотность", "value": "80 г/м2"}],
+            reference_price_rub=400,
+            reference_price_source="orders",
+            reward_usdt=Decimal("1.000000"),
+            slot_count=5,
+            available_slots=5,
+            collateral_required_usdt=Decimal("5.050000"),
+            status="draft",
+            search_phrase="бумага а4 для принтера",
+        )
+    )
+    deps.seller.list_listing_collateral_views = AsyncMock(
+        return_value=[
+            _ns(
+                listing_id=21,
+                shop_id=11,
+                display_title="Бумага A4 для принтера",
+                reference_price_rub=400,
+                wb_photo_url="https://example.com/photo.webp",
+                wb_product_id=552892532,
+                search_phrase="бумага а4 для принтера",
+                status="draft",
+                reward_usdt=Decimal("1.000000"),
+                available_slots=5,
+                slot_count=5,
+                in_progress_assignments_count=0,
+                collateral_locked_usdt=Decimal("0.000000"),
+                collateral_required_usdt=Decimal("5.050000"),
+                reserved_slot_usdt=Decimal("0.000000"),
+            )
+        ]
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
+
+    list_events = await harness.callback(flow="seller", action="listings")
+    list_text = "\n".join(_event_texts(list_events))
+    list_labels = {label for event in list_events for label in _markup_labels(event)}
+
+    assert "(недостаточно средств)" not in list_text
+    assert "🟢 $5.1 (~505 ₽)" in list_text
+    assert "1" in list_labels
+
+    detail_events = await harness.callback(flow="seller", action="listing_open", entity_id="21")
+    detail_text = "\n".join(_event_texts(detail_events))
+    detail_labels = {label for event in detail_events for label in _markup_labels(event)}
+
+    assert "(недостаточно средств)" not in detail_text
+    assert "✅ Активировать" in detail_labels
+    assert "⛔ Недостаточно средств" not in detail_labels
 
 
 @pytest.mark.asyncio

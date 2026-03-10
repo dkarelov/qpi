@@ -962,43 +962,18 @@ class TelegramWebhookRuntime:
             )
             return
         if action == "listing_activation_blocked":
+            if payload.entity_id:
+                await self._render_seller_listing_detail(
+                    query_message=query_message,
+                    seller_user_id=seller.user_id,
+                    listing_id=int(payload.entity_id),
+                    list_page=self._seller_listings_page_from_context(context),
+                )
+                return
             await self._replace_message(
                 query_message,
-                self._screen_text(
-                    title="Объявление не готово к активации",
-                    lines=[
-                        "Сейчас на балансе не хватает средств для обеспечения объявления.",
-                    ],
-                    note=(
-                        "Пополните баланс, затем вернитесь к карточке объявления "
-                        "и активируйте его."
-                    ),
-                    warning=True,
-                ),
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="➕ Пополнить",
-                                callback_data=build_callback(
-                                    flow=_ROLE_SELLER,
-                                    action="topup_prompt",
-                                ),
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ К объявлениям",
-                                callback_data=build_callback(
-                                    flow=_ROLE_SELLER,
-                                    action="listings",
-                                    entity_id=str(self._seller_listings_page_from_context(context)),
-                                ),
-                            )
-                        ],
-                    ]
-                ),
-                parse_mode="HTML",
+                "Не удалось открыть карточку объявления. Попробуйте еще раз.",
+                self._seller_menu_markup(),
             )
             return
         if action == "listing_title_keep":
@@ -1185,7 +1160,20 @@ class TelegramWebhookRuntime:
                     "Введите сумму пополнения в USDT (например, 1.2).\n"
                     "Бот автоматически рассчитает точную сумму для перевода."
                 ),
-                self._seller_balance_menu_markup(),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="❓ Как перевести?",
+                                callback_data=build_callback(
+                                    flow=_ROLE_SELLER,
+                                    action="topup_help",
+                                ),
+                            )
+                        ],
+                        *self._seller_balance_menu_markup().inline_keyboard,
+                    ]
+                ),
             )
             return
         if action == "topup_history":
@@ -2122,6 +2110,9 @@ class TelegramWebhookRuntime:
             return
 
         shops = await self._seller_service.list_shops(seller_user_id=seller_user_id)
+        balance_snapshot = await self._seller_service.get_seller_balance_snapshot(
+            seller_user_id=seller_user_id,
+        )
         shop_slugs = {shop.shop_id: shop.slug for shop in shops}
         resolved_page, total_pages, start_index, end_index = self._resolve_numbered_page(
             total_items=len(listings),
@@ -2160,7 +2151,10 @@ class TelegramWebhookRuntime:
                 + f"<b>Ссылка на магазин:</b> {html.escape(shop_link)}\n"
                 + (
                     "<b>Обеспечение:</b> "
-                    f"{self._format_listing_collateral_line(collateral_view=listing)}"
+                    f"{self._format_listing_collateral_line(
+                        collateral_view=listing,
+                        seller_available_usdt=balance_snapshot.seller_available_usdt,
+                    )}"
                 )
                 + "\n"
                 + (
@@ -2239,6 +2233,9 @@ class TelegramWebhookRuntime:
         views = await self._seller_service.list_listing_collateral_views(
             seller_user_id=seller_user_id,
         )
+        balance_snapshot = await self._seller_service.get_seller_balance_snapshot(
+            seller_user_id=seller_user_id,
+        )
         collateral_view = next((item for item in views if item.listing_id == listing_id), None)
         await self._reply_with_photo_if_available(
             query_message,
@@ -2249,6 +2246,7 @@ class TelegramWebhookRuntime:
             self._seller_listing_detail_html(
                 listing=listing,
                 collateral_view=collateral_view,
+                seller_available_usdt=balance_snapshot.seller_available_usdt,
                 shop_link=(
                     f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"
                 ),
@@ -2258,7 +2256,11 @@ class TelegramWebhookRuntime:
                 listing_id=listing.listing_id,
                 status=listing.status,
                 list_page=list_page,
-                can_activate=self._listing_has_sufficient_collateral(collateral_view),
+                can_activate=self._listing_has_sufficient_collateral(
+                    collateral_view=collateral_view,
+                    seller_available_usdt=balance_snapshot.seller_available_usdt,
+                    listing_status=listing.status,
+                ),
             ),
             parse_mode="HTML",
         )
@@ -2917,25 +2919,28 @@ class TelegramWebhookRuntime:
                 title="Как перевести USDT",
                 cta=(
                     "Следуйте шагам ниже, затем вернитесь к сообщению со счетом "
-                    "и отправьте точную сумму в сети TON."
+                    "и отправьте точную сумму в сети TON.\n"
+                    "Рекомендуем делать перевод на несколько объявлений сразу, "
+                    "так как комиссия за перевод в сети TON составляет "
+                    "фиксированный 1 USDT."
                 ),
                 lines=[
                     (
-                        'Зайдите в <a href="https://help.ru.wallet.tg/article/60-znakomstvo-s-wallet">'
+                        '1. Зайдите в <a href="https://help.ru.wallet.tg/article/60-znakomstvo-s-wallet">'
                         "официальный кошелек Wallet</a> в Telegram: "
                         '<a href="https://t.me/wallet">@wallet</a>.\n'
                         "Также можно использовать любой другой TON-совместимый кошелек "
                         "или перевести USDT напрямую с криптобиржи."
                     ),
                     (
-                        'Пополните Крипто Кошелек, купив необходимый объем USDT, '
+                        '2. Пополните Крипто Кошелек, купив необходимый объем USDT, '
                         'например на <a href="https://help.ru.wallet.tg/article/80-kak-kupit-kriptovalutu-na-p2p-markete">'
                         "P2P Маркете</a>.\n"
                         "Самый простой и быстрый способ: "
                         "Крипто Кошелек > Пополнить > P2P Экспресс."
                     ),
                     (
-                        "Выведите USDT на предоставленный в боте адрес:\n"
+                        "3. Выведите USDT на предоставленный в боте адрес:\n"
                         "Крипто Кошелек > Вывести > Внешний кошелек или биржа > "
                         "Доллары > Сеть TON."
                     ),
@@ -7036,16 +7041,33 @@ class TelegramWebhookRuntime:
         )
 
     @staticmethod
-    def _listing_has_sufficient_collateral(collateral_view) -> bool:
+    def _listing_has_sufficient_collateral(
+        *,
+        collateral_view,
+        seller_available_usdt: Decimal = Decimal("0.000000"),
+        listing_status: str | None = None,
+    ) -> bool:
         if collateral_view is None:
             return True
-        return collateral_view.collateral_locked_usdt >= collateral_view.collateral_required_usdt
+        status = listing_status or getattr(collateral_view, "status", None)
+        effective_collateral = collateral_view.collateral_locked_usdt
+        if status == "draft":
+            effective_collateral += seller_available_usdt
+        return effective_collateral >= collateral_view.collateral_required_usdt
 
-    def _format_listing_collateral_line(self, *, collateral_view) -> str:
+    def _format_listing_collateral_line(
+        self,
+        *,
+        collateral_view,
+        seller_available_usdt: Decimal = Decimal("0.000000"),
+    ) -> str:
         if collateral_view is None:
             return "—"
         required_text = self._format_usdt_with_rub(collateral_view.collateral_required_usdt)
-        if self._listing_has_sufficient_collateral(collateral_view):
+        if self._listing_has_sufficient_collateral(
+            collateral_view=collateral_view,
+            seller_available_usdt=seller_available_usdt,
+        ):
             return f"🟢 {required_text}"
         return (
             "🔴 "
@@ -7053,13 +7075,23 @@ class TelegramWebhookRuntime:
             "(недостаточно средств)"
         )
 
-    def _listing_detail_note(self, *, listing, collateral_view) -> str:
+    def _listing_detail_note(
+        self,
+        *,
+        listing,
+        collateral_view,
+        seller_available_usdt: Decimal = Decimal("0.000000"),
+    ) -> str:
         if listing.status == "active":
             return (
                 "Объявление активно. При необходимости поставьте его на паузу "
                 "или поделитесь ссылкой на магазин."
             )
-        if not self._listing_has_sufficient_collateral(collateral_view):
+        if not self._listing_has_sufficient_collateral(
+            collateral_view=collateral_view,
+            seller_available_usdt=seller_available_usdt,
+            listing_status=listing.status,
+        ):
             return (
                 "Для активации пополните баланс продавца, затем вернитесь "
                 "к карточке объявления."
@@ -7071,6 +7103,7 @@ class TelegramWebhookRuntime:
         *,
         listing,
         collateral_view,
+        seller_available_usdt: Decimal = Decimal("0.000000"),
         shop_link: str | None = None,
         notice: str | None = None,
     ) -> str:
@@ -7105,7 +7138,10 @@ class TelegramWebhookRuntime:
             [
                 (
                     "<b>Обеспечение:</b> "
-                    f"{self._format_listing_collateral_line(collateral_view=collateral_view)}"
+                    f"{self._format_listing_collateral_line(
+                        collateral_view=collateral_view,
+                        seller_available_usdt=seller_available_usdt,
+                    )}"
                 ),
                 (
                     f"<b>Статус:</b> "
@@ -7143,7 +7179,11 @@ class TelegramWebhookRuntime:
             title=title,
             cta="Проверьте объявление и выберите следующее действие ниже.",
             lines=lines,
-            note=self._listing_detail_note(listing=listing, collateral_view=collateral_view),
+            note=self._listing_detail_note(
+                listing=listing,
+                collateral_view=collateral_view,
+                seller_available_usdt=seller_available_usdt,
+            ),
         )
 
     def _buyer_listing_detail_html(self, *, listing, notice: str | None = None) -> str:

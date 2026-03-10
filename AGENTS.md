@@ -244,6 +244,7 @@ Transitions:
   - the rest of the WB data lives inside collapsed `Параметры`, `Описание`, and `Характеристики` sections,
   - if collateral is insufficient, the note explains that balance top-up is required before activation.
 - Seller balance screen shows `Всего`, `Свободно для новых объявлений`, and `Уже выделено под объявления`; activation shortfall is shown only when funds are insufficient.
+- Seller top-up amount entry screen also includes `Как перевести?`, which opens the same transfer guidance before invoice creation.
 - Seller top-up invoice screen:
   - shows the TON USDT address in copy-friendly monospace,
   - shows the exact `USDT` transfer amount in copy-friendly monospace,
