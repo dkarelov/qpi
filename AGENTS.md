@@ -128,7 +128,7 @@ Persistence and schema:
 - Buyer receives setup token (base64 JSON array):
   - `[search_phrase, wb_product_id, 1, wb_brand_name]`, where `wb_brand_name` is an empty string when unavailable.
 - Buyer submits verification token (base64 JSON array):
-  - `[order_id, ordered_at]`, where `ordered_at` is ISO datetime without timezone.
+  - `[order_id, ordered_at]`, where `ordered_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
 - Verification token must be submitted within 2 hours of reservation.
 - `order_id` is globally unique (`1 order_id = 1 slot`).
 - Buyer can cancel task in pre-submit states (`reserved`, `order_submitted`).

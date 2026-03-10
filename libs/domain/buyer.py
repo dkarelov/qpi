@@ -960,7 +960,7 @@ def decode_purchase_payload(payload_base64: str) -> DecodedPurchasePayload:
     ordered_at_raw = parsed[1]
     if not isinstance(ordered_at_raw, str):
         raise PayloadValidationError("payload field 'ordered_at' must be ISO datetime string")
-    ordered_at = _parse_iso_naive_datetime(ordered_at_raw)
+    ordered_at = _parse_iso_datetime_utc(ordered_at_raw)
 
     wb_product_id: int | None = None
     if len(parsed) == 3:
@@ -985,10 +985,14 @@ def decode_purchase_payload(payload_base64: str) -> DecodedPurchasePayload:
     )
 
 
-def _parse_iso_naive_datetime(value: str) -> datetime:
+def _parse_iso_datetime_utc(value: str) -> datetime:
     normalized = value.strip()
     if not normalized:
         raise PayloadValidationError("payload field 'ordered_at' must not be empty")
+
+    # Accept JS toISOString() payloads and normalize all timestamps to UTC.
+    if normalized.endswith(("Z", "z")):
+        normalized = normalized[:-1] + "+00:00"
 
     try:
         parsed = datetime.fromisoformat(normalized)
@@ -997,7 +1001,6 @@ def _parse_iso_naive_datetime(value: str) -> datetime:
             "payload field 'ordered_at' is not valid ISO datetime"
         ) from exc
 
-    if parsed.tzinfo is not None:
-        raise PayloadValidationError("payload field 'ordered_at' must not contain timezone")
-
-    return parsed.replace(tzinfo=UTC)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)

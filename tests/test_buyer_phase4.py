@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 import pytest
 from psycopg.rows import dict_row
 
-from libs.domain.buyer import BuyerService
+from libs.domain.buyer import BuyerService, decode_purchase_payload
 from libs.domain.errors import DuplicateOrderError, InvalidStateError, PayloadValidationError
 from services.bot_api.buyer_handlers import BuyerCommandProcessor
 from tests.helpers import create_account, create_listing, create_shop, create_user
@@ -744,13 +745,6 @@ async def test_worker_expiry_transitions_reserved_to_expired_and_releases_funds(
             ).decode("ascii"),
             "contain [order_id, ordered_at]",
         ),
-        (
-            lambda _wb_product_id: _encode_payload(
-                order_id="ORD-TS",
-                ordered_at="2026-02-26T15:00:00+03:00",
-            ),
-            "must not contain timezone",
-        ),
     ],
 )
 async def test_submit_payload_validation_matrix_rejects_invalid_inputs(
@@ -799,6 +793,30 @@ async def test_submit_payload_validation_matrix_rejects_invalid_inputs(
             )
             order_count = await cur.fetchone()
             assert order_count["count"] == 0
+
+
+def test_decode_purchase_payload_accepts_js_utc_timestamp() -> None:
+    decoded = decode_purchase_payload(
+        _encode_payload(
+            order_id="ORD-UTC-Z",
+            ordered_at="2026-03-10T20:32:23.807Z",
+        )
+    )
+
+    assert decoded.order_id == "ORD-UTC-Z"
+    assert decoded.ordered_at == datetime(2026, 3, 10, 20, 32, 23, 807000, tzinfo=UTC)
+
+
+def test_decode_purchase_payload_normalizes_timezone_offset_to_utc() -> None:
+    decoded = decode_purchase_payload(
+        _encode_payload(
+            order_id="ORD-OFFSET",
+            ordered_at="2026-02-26T15:00:00+03:00",
+        )
+    )
+
+    assert decoded.order_id == "ORD-OFFSET"
+    assert decoded.ordered_at == datetime(2026, 2, 26, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
