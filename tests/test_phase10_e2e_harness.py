@@ -610,7 +610,7 @@ async def test_phase10_e2e_buyer_deeplink_reserve_submit_payload_flow() -> None:
     deeplink_text = "\n".join(_event_texts(deeplink_events))
     assert "Магазин: Тушенка" in deeplink_text
     assert "Бумага A4 для принтера" in deeplink_text
-    assert any("✅ Выполнить задание" in _markup_labels(event) for event in deeplink_events)
+    assert any("✅ Купить" in _markup_labels(event) for event in deeplink_events)
 
     reserve_events = await harness.callback(
         flow="buyer",
@@ -651,9 +651,12 @@ async def test_phase10_e2e_buyer_listing_open_shows_photo_and_detail_card() -> N
     assert any(event.kind == "reply_photo" for event in detail_events)
     assert not any(event.kind == "edit" for event in detail_events)
     detail_text = "\n".join(_event_texts(detail_events))
-    assert "Артикул WB:</b> 552892532" in detail_text
     assert "Цена:</b> 400 ₽" in detail_text
     assert "Характеристики" in detail_text
+    assert "Артикул WB:</b>" not in detail_text
+    assert "Бренд:</b>" not in detail_text
+    assert "Название WB:</b>" not in detail_text
+    assert any("✅ Купить" in _markup_labels(event) for event in detail_events)
 
 
 @pytest.mark.asyncio

@@ -3817,7 +3817,7 @@ class TelegramWebhookRuntime:
                 [
                     [
                         InlineKeyboardButton(
-                            text="✅ Выполнить задание",
+                            text="✅ Купить",
                             callback_data=build_callback(
                                 flow=_ROLE_BUYER,
                                 action="reserve",
@@ -6444,7 +6444,7 @@ class TelegramWebhookRuntime:
                         ),
                     ),
                     InlineKeyboardButton(
-                        text="✅ Выполнить задание",
+                        text="✅ Купить",
                         callback_data=build_callback(
                             flow=_ROLE_BUYER,
                             action="reserve",
@@ -7200,10 +7200,7 @@ class TelegramWebhookRuntime:
         )
         lines.extend(
             [
-                f"<b>Артикул WB:</b> {listing.wb_product_id}",
                 f"<b>Предмет:</b> {html.escape(listing.wb_subject_name or '—')}",
-                f"<b>Бренд:</b> {html.escape(listing.wb_brand_name or '—')}",
-                f"<b>Название WB:</b> {html.escape(listing.wb_source_title or display_title)}",
                 self._format_listing_price_line(
                     label="Цена",
                     price_rub=listing.reference_price_rub,
@@ -7227,7 +7224,7 @@ class TelegramWebhookRuntime:
             title=display_title,
             cta="Проверьте товар и выберите следующее действие ниже.",
             lines=lines,
-            note="Если товар подходит, нажмите «Выполнить задание» и следуйте шагам из задания.",
+            note="Если товар подходит, нажмите «Купить» и следуйте шагам из задания.",
         )
 
     def _format_listing_price_line(

@@ -140,10 +140,11 @@ class BuyerCommandProcessor:
                     return BuyerCommandResponse(text="У вас пока нет назначений.")
                 lines = []
                 for assignment in assignments:
+                    display_title = (assignment.display_title or assignment.search_phrase).strip()
                     lines.append(
                         f"{assignment.assignment_id} | shop={assignment.shop_slug} | "
                         f"listing={assignment.listing_id} | "
-                        f"wb_product_id={assignment.wb_product_id} | "
+                        f"товар=\"{display_title}\" | "
                         f"status={assignment.status} | кэшбэк={assignment.reward_usdt} USDT | "
                         f"order_id={assignment.order_id or '-'}"
                     )
@@ -191,14 +192,14 @@ class BuyerCommandProcessor:
                     f"Ссылка: {deep_link}"
                 )
             )
-        lines = [
-            (
-                f"{item.listing_id} | wb_product_id={item.wb_product_id} | "
+        lines = []
+        for item in listings:
+            display_title = (item.display_title or item.search_phrase).strip()
+            lines.append(
+                f"{item.listing_id} | товар=\"{display_title}\" | "
                 f"поиск=\"{item.search_phrase}\" | кэшбэк={item.reward_usdt} USDT | "
                 f"slots={item.available_slots}/{item.slot_count}"
             )
-            for item in listings
-        ]
         return BuyerCommandResponse(
             text=(
                 f"Магазин: {shop.title} ({shop.slug})\n"

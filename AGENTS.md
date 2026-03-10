@@ -122,8 +122,9 @@ Persistence and schema:
 
 - Buyer enters shop by deeplink `shop_<slug>` or by saved shops menu.
 - Buyer can reserve slot only on active listings.
-- Buyer-facing primary CTA for an active listing is `Выполнить задание`.
-- Buyer-facing listing screens show buyer-visible title, WB subject, brand, description, photo, sizes, characteristics, cashback in RUB with approximate percent, and `Цена` in RUB.
+- Buyer-facing primary CTA for an active listing is `Купить`.
+- Buyer-facing listing screens show buyer-visible title, WB subject, description, photo, sizes, characteristics, cashback in RUB with approximate percent, and `Цена` in RUB.
+- Buyer-facing flow must not expose WB article (`Артикул WB` / `Артикул ВБ`), WB brand, or WB source title.
 - Buyer receives setup token (base64 JSON array):
   - `[search_phrase, wb_product_id, 2]`.
 - Buyer submits verification token (base64 JSON array):
@@ -260,7 +261,7 @@ Transitions:
   - use color indicators for statuses.
 - Buyer UX:
   - shops/tasks/balance sections,
-  - active listing CTA uses `Выполнить задание`,
+  - active listing CTA uses `Купить`,
   - task flow contains explicit submit-token and cancel-task actions.
 - All user-facing timestamps are rendered in `MSK` (`Europe/Moscow`).
 - Admin UX:
