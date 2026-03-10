@@ -170,7 +170,7 @@ def test_buyer_listing_token_contains_search_phrase_product_count_and_brand() ->
     )
     decoded = json.loads(base64.b64decode(token).decode("utf-8"))
 
-    assert decoded == ["бумага а4 для принтера 500 листов белая", 552892532, 0, "BRAUBERG"]
+    assert decoded == ["бумага а4 для принтера 500 листов белая", 552892532, 1, "BRAUBERG"]
 
 
 def test_token_instruction_contains_required_sections() -> None:
@@ -276,7 +276,7 @@ def test_buyer_task_instruction_contains_title_and_search_phrase() -> None:
     assert "<b>Товар:</b> Джинсы женские прямые" in text
     assert "Поисковая фраза:</b> &quot;женские джинсы&quot;" in text
     assert "Отправьте токен-подтверждение сюда." in text
-    assert decoded == ["женские джинсы", 12345678, 0, "LeBrand"]
+    assert decoded == ["женские джинсы", 12345678, 1, "LeBrand"]
 
 
 def test_wallet_link_builder_uses_ton_transfer_with_usdt_jetton_and_micro_units() -> None:
