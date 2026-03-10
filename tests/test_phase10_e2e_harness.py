@@ -455,6 +455,8 @@ async def test_phase10_e2e_seller_listing_create_and_activate_flow() -> None:
         "Название для покупателей:</b> Бумага A4 для принтера" in text
         for text in _event_texts(preview_events)
     )
+    assert any(event.kind == "reply_photo" for event in preview_events)
+    assert any(event.photo == "https://example.com/photo.webp" for event in preview_events)
     assert any("✅ Сохранить текущее название" in _markup_labels(event) for event in preview_events)
 
     create_events = await harness.callback(flow="seller", action="listing_title_keep")
@@ -487,6 +489,8 @@ async def test_phase10_e2e_seller_listing_create_asks_manual_price_when_no_order
 
     confirm_title_events = await harness.text("392")
     assert any("Цена покупателя:</b> 392 ₽" in text for text in _event_texts(confirm_title_events))
+    assert any(event.kind == "reply_photo" for event in confirm_title_events)
+    assert any(event.photo == "https://example.com/photo.webp" for event in confirm_title_events)
 
     created_events = await harness.callback(flow="seller", action="listing_title_keep")
     assert any("Активировать объявление сейчас?" in text for text in _event_texts(created_events))
@@ -565,10 +569,22 @@ async def test_phase10_e2e_seller_topup_and_transactions_flow() -> None:
         "🔗 Ссылка (другие кошельки)" in _markup_labels(event)
         for event in topup_create_events
     )
+    assert any("❓ Как перевести?" in _markup_labels(event) for event in topup_create_events)
     wallet_urls = [url for event in topup_create_events for url in _markup_urls(event)]
     assert "https://t.me/wallet/start" in wallet_urls
     assert any(url.startswith("ton://transfer/") for url in wallet_urls)
     assert any("amount=1200100" in url for url in wallet_urls)
+
+    topup_help_events = await harness.callback(flow="seller", action="topup_help")
+    topup_help_text = "\n".join(_event_texts(topup_help_events))
+    assert "Как перевести USDT" in topup_help_text
+    assert 'href="https://help.ru.wallet.tg/article/60-znakomstvo-s-wallet"' in topup_help_text
+    assert 'href="https://t.me/wallet"' in topup_help_text
+    assert (
+        'href="https://help.ru.wallet.tg/article/80-kak-kupit-kriptovalutu-na-p2p-markete"'
+        in topup_help_text
+    )
+    assert "Сеть TON." in topup_help_text
 
     history_events = await harness.callback(flow="seller", action="topup_history")
     history_text = "\n".join(_event_texts(history_events))

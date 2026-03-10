@@ -1195,6 +1195,9 @@ class TelegramWebhookRuntime:
                 page=self._coerce_page_number(payload.entity_id),
             )
             return
+        if action == "topup_help":
+            await self._render_seller_topup_help(query_message=query_message)
+            return
 
         await self._replace_message(
             query_message,
@@ -2273,6 +2276,10 @@ class TelegramWebhookRuntime:
                 "Не удалось продолжить создание объявления. Откройте раздел заново.",
             )
             return
+        await self._reply_with_photo_if_available(
+            query_message,
+            photo_url=str(prompt_state.get("wb_photo_url", "")).strip() or None,
+        )
         await self._replace_message(
             query_message,
             self._listing_title_confirmation_text(
@@ -2900,6 +2907,65 @@ class TelegramWebhookRuntime:
                 separate_blocks=True,
             ),
             InlineKeyboardMarkup(keyboard_rows),
+            parse_mode="HTML",
+        )
+
+    async def _render_seller_topup_help(self, *, query_message: Message | None) -> None:
+        await self._replace_message(
+            query_message,
+            self._screen_text(
+                title="Как перевести USDT",
+                cta=(
+                    "Следуйте шагам ниже, затем вернитесь к сообщению со счетом "
+                    "и отправьте точную сумму в сети TON."
+                ),
+                lines=[
+                    (
+                        'Зайдите в <a href="https://help.ru.wallet.tg/article/60-znakomstvo-s-wallet">'
+                        "официальный кошелек Wallet</a> в Telegram: "
+                        '<a href="https://t.me/wallet">@wallet</a>.\n'
+                        "Также можно использовать любой другой TON-совместимый кошелек "
+                        "или перевести USDT напрямую с криптобиржи."
+                    ),
+                    (
+                        'Пополните Крипто Кошелек, купив необходимый объем USDT, '
+                        'например на <a href="https://help.ru.wallet.tg/article/80-kak-kupit-kriptovalutu-na-p2p-markete">'
+                        "P2P Маркете</a>.\n"
+                        "Самый простой и быстрый способ: "
+                        "Крипто Кошелек > Пополнить > P2P Экспресс."
+                    ),
+                    (
+                        "Выведите USDT на предоставленный в боте адрес:\n"
+                        "Крипто Кошелек > Вывести > Внешний кошелек или биржа > "
+                        "Доллары > Сеть TON."
+                    ),
+                ],
+                note=(
+                    "Важно точно указать сумму перевода, так как по ней "
+                    "идентифицируется ваш платеж. Адрес и сумма остаются "
+                    "в предыдущем сообщении со счетом."
+                ),
+                separate_blocks=True,
+            ),
+            InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            text="↩️ К балансу",
+                            callback_data=build_callback(flow=_ROLE_SELLER, action="balance"),
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="🧾 Транзакции",
+                            callback_data=build_callback(
+                                flow=_ROLE_SELLER,
+                                action="topup_history",
+                            ),
+                        )
+                    ],
+                ]
+            ),
             parse_mode="HTML",
         )
 
@@ -5676,6 +5742,10 @@ class TelegramWebhookRuntime:
                 },
             )
             if next_prompt_type == "seller_listing_create_review":
+                await self._reply_with_photo_if_available(
+                    message,
+                    photo_url=snapshot.photo_url,
+                )
                 await message.reply_text(
                     prompt_reply_text,
                     reply_markup=self._listing_title_review_markup(),
@@ -5919,6 +5989,15 @@ class TelegramWebhookRuntime:
                                     destination_address=intent.deposit_address,
                                     expected_amount_usdt=intent.expected_amount_usdt,
                                     text=f"QPI deposit #{intent.deposit_intent_id}",
+                                ),
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                text="❓ Как перевести?",
+                                callback_data=build_callback(
+                                    flow=_ROLE_SELLER,
+                                    action="topup_help",
                                 ),
                             )
                         ],

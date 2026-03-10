@@ -109,6 +109,7 @@ Persistence and schema:
   - primary: derived from `GET https://statistics-api.wildberries.ru/api/v1/supplier/orders` over the last 30 days,
   - fallback: manual seller input when no historical orders exist for the product.
 - Seller confirms or edits the buyer-visible title before the draft is saved.
+- Seller listing confirmation preview shows the product photo when WB returned one.
 - Seller cannot edit an existing announcement after creation; if parameters must change, the seller creates a new announcement and deletes the old one.
 - Cashback is converted once to fixed `reward_usdt` at creation.
 - Listing collateral requirement: `reward_usdt * slot_count * 1.01`.
@@ -249,6 +250,7 @@ Transitions:
   - includes two wallet actions:
     - Telegram Wallet home opener,
     - generic TON jetton transfer link for other wallets,
+  - includes `Как перевести?`, which opens a separate guidance screen with Wallet/P2P help links and TON withdrawal steps,
   - keeps the raw address and amount visible as fallback if wallet opening does not work.
 - Transaction/history screens:
   - use representative `Транзакции ...` titles,
