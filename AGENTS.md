@@ -124,9 +124,9 @@ Persistence and schema:
 - Buyer can reserve slot only on active listings.
 - Buyer-facing primary CTA for an active listing is `Купить`.
 - Buyer-facing listing screens show buyer-visible title, WB subject, description, photo, sizes, characteristics, cashback in RUB with approximate percent, and `Цена` in RUB.
-- Buyer-facing flow must not expose WB article (`Артикул WB` / `Артикул ВБ`), WB brand, or WB source title.
+- Buyer-facing listing screens/cards must not expose WB article (`Артикул WB` / `Артикул ВБ`), WB brand, or WB source title.
 - Buyer receives setup token (base64 JSON array):
-  - `[search_phrase, wb_product_id, 2]`.
+  - `[search_phrase, wb_product_id, 0, wb_brand_name]`, where `wb_brand_name` is an empty string when unavailable.
 - Buyer submits verification token (base64 JSON array):
   - `[order_id, ordered_at]`, where `ordered_at` is ISO datetime without timezone.
 - Verification token must be submitted within 2 hours of reservation.

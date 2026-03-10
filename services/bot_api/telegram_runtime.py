@@ -91,7 +91,7 @@ _USDT_SUMMARY_QUANT = Decimal("0.1")
 _USDT_EXACT_QUANT = Decimal("0.000001")
 _RUB_QUANT = Decimal("1")
 _LISTING_COLLATERAL_FEE_MULTIPLIER = Decimal("1.01")
-_BUYER_TASK_COMPANION_PRODUCTS = 2
+_BUYER_TASK_COMPANION_PRODUCTS = 0
 _NUMBERED_PAGE_SIZE = 10
 _MSK_TZ = ZoneInfo("Europe/Moscow")
 
@@ -6694,8 +6694,19 @@ class TelegramWebhookRuntime:
     def _build_telegram_wallet_open_link(self) -> str:
         return self._settings.telegram_wallet_open_url
 
-    def _build_buyer_listing_token(self, *, search_phrase: str, wb_product_id: int) -> str:
-        payload = [search_phrase, wb_product_id, _BUYER_TASK_COMPANION_PRODUCTS]
+    def _build_buyer_listing_token(
+        self,
+        *,
+        search_phrase: str,
+        wb_product_id: int,
+        brand_name: str | None,
+    ) -> str:
+        payload = [
+            search_phrase,
+            wb_product_id,
+            _BUYER_TASK_COMPANION_PRODUCTS,
+            (brand_name or "").strip(),
+        ]
         raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         return base64.b64encode(raw.encode("utf-8")).decode("ascii")
 
@@ -6703,6 +6714,7 @@ class TelegramWebhookRuntime:
         listing_token = self._build_buyer_listing_token(
             search_phrase=assignment.search_phrase,
             wb_product_id=assignment.wb_product_id,
+            brand_name=getattr(assignment, "wb_brand_name", None),
         )
         display_title = self._listing_display_title(
             display_title=getattr(assignment, "display_title", None),

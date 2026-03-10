@@ -160,16 +160,17 @@ def test_buyer_cashback_formatter_uses_summary_usdt() -> None:
     assert runtime._format_buyer_listing_cashback(Decimal("0")) == "$0.0"
 
 
-def test_buyer_listing_token_contains_search_phrase_product_and_companion_count() -> None:
+def test_buyer_listing_token_contains_search_phrase_product_count_and_brand() -> None:
     runtime = _build_runtime()
 
     token = runtime._build_buyer_listing_token(
         search_phrase="бумага а4 для принтера 500 листов белая",
         wb_product_id=552892532,
+        brand_name="BRAUBERG",
     )
     decoded = json.loads(base64.b64decode(token).decode("utf-8"))
 
-    assert decoded == ["бумага а4 для принтера 500 листов белая", 552892532, 2]
+    assert decoded == ["бумага а4 для принтера 500 листов белая", 552892532, 0, "BRAUBERG"]
 
 
 def test_token_instruction_contains_required_sections() -> None:
@@ -265,13 +266,17 @@ def test_buyer_task_instruction_contains_title_and_search_phrase() -> None:
             "display_title": "Джинсы женские прямые",
             "search_phrase": "женские джинсы",
             "wb_product_id": 12345678,
+            "wb_brand_name": "LeBrand",
         },
     )()
     text = runtime._buyer_task_instruction_text(assignment)
+    token = text.split("<code>", maxsplit=1)[1].split("</code>", maxsplit=1)[0]
+    decoded = json.loads(base64.b64decode(token).decode("utf-8"))
 
     assert "<b>Товар:</b> Джинсы женские прямые" in text
     assert "Поисковая фраза:</b> &quot;женские джинсы&quot;" in text
     assert "Отправьте токен-подтверждение сюда." in text
+    assert decoded == ["женские джинсы", 12345678, 0, "LeBrand"]
 
 
 def test_wallet_link_builder_uses_ton_transfer_with_usdt_jetton_and_micro_units() -> None:
