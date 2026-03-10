@@ -263,8 +263,11 @@ Transitions:
   - shops/purchases/balance sections,
   - buyer section title is `Покупки`, not `Задания`,
   - active listing CTA uses `Купить`,
-  - purchase list uses store title (not slug), hides `expired_2h`, and shows fields in order: `Товар`, `Магазин`, `Кэшбэк`, optional `Номер заказа`, `Статус`,
-  - dashboard purchase counters are grouped as `ожидают заказа`, `заказаны`, `выкуплены`, `выплачены`,
+  - purchase list uses store title (not slug), shows only in-progress purchases, and shows fields in order: `Товар`, `Магазин`, `Кэшбэк`, optional `Номер заказа`, `Статус`,
+  - dashboard purchase counters are grouped as `ожидают заказа`, `заказаны`, `выкуплены`,
+  - buyer dashboard `Баланс` equals withdrawable amount only,
+  - buyer balance screen shows only `Доступно для вывода` and `В процессе вывода`,
+  - irrelevant actions must be hidden when they cannot be used in the current state (for example withdrawal buttons when withdrawable balance is zero),
   - purchase flow contains explicit submit-token and cancel-purchase actions.
 - All user-facing timestamps are rendered in `MSK` (`Europe/Moscow`).
 - Admin UX:

@@ -875,7 +875,8 @@ async def test_phase10_e2e_same_telegram_user_can_open_seller_and_buyer_dashboar
 
     assert any("<b>Магазины:</b>" in text for text in _event_texts(seller_events))
     assert any("<b>Покупки:</b>" in text for text in _event_texts(buyer_events))
-    assert any("<b>На выводе:</b>" in text for text in _event_texts(buyer_events))
+    assert any("<b>Баланс:</b> $5.0" in text for text in _event_texts(buyer_events))
+    assert not any("<b>На выводе:</b>" in text for text in _event_texts(buyer_events))
     deps.seller.bootstrap_seller.assert_awaited()
     deps.buyer.bootstrap_buyer.assert_awaited()
 
@@ -955,7 +956,7 @@ async def test_phase10_e2e_buyer_purchases_screen_uses_shop_title_and_hides_expi
                 listing_id=22,
                 shop_slug="shop_mug",
                 shop_title="Термокружки",
-                status="withdraw_sent",
+                status="eligible_for_withdrawal",
                 display_title="Термокружка",
                 wb_source_title="Термокружка",
                 wb_subject_name="Посуда",
@@ -974,11 +975,11 @@ async def test_phase10_e2e_buyer_purchases_screen_uses_shop_title_and_hides_expi
             _ns(
                 assignment_id=33,
                 listing_id=23,
-                shop_slug="shop_expired",
-                shop_title="Просроченные",
-                status="expired_2h",
-                display_title="Просроченный товар",
-                wb_source_title="Просроченный товар",
+                shop_slug="shop_paid",
+                shop_title="Выплаченные",
+                status="withdraw_sent",
+                display_title="Оплаченный товар",
+                wb_source_title="Оплаченный товар",
                 wb_subject_name="Тест",
                 wb_brand_name=None,
                 wb_description="",
@@ -987,7 +988,7 @@ async def test_phase10_e2e_buyer_purchases_screen_uses_shop_title_and_hides_expi
                 wb_characteristics=[],
                 reference_price_rub=100,
                 reward_usdt=Decimal("0.100000"),
-                order_id=None,
+                order_id="ORDER-PAID",
                 search_phrase="тест",
                 wb_product_id=552892534,
                 reservation_expires_at=datetime(2026, 3, 2, 14, 0, 0),
@@ -1004,7 +1005,7 @@ async def test_phase10_e2e_buyer_purchases_screen_uses_shop_title_and_hides_expi
     assert "<b>Магазин:</b> Тушенка" in text
     assert "<b>Магазин:</b> Термокружки" in text
     assert "shop_tushenka" not in text
-    assert "Бронь истекла" not in text
+    assert "Выплаченные" not in text
     assert text.count("<b>Номер заказа:</b>") == 1
     assert first_block.index("<b>Товар:</b> Бумага A4 для принтера") < first_block.index(
         "<b>Магазин:</b> Тушенка"
@@ -1014,6 +1015,30 @@ async def test_phase10_e2e_buyer_purchases_screen_uses_shop_title_and_hides_expi
         "<b>Статус:</b> Ожидает заказа"
     )
     assert "\n\n<b>Товар:</b> Термокружка" in text
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_buyer_balance_hides_withdraw_actions_when_zero() -> None:
+    runtime, deps = _build_runtime()
+    deps.finance.get_buyer_balance_snapshot = AsyncMock(
+        return_value=_ns(
+            buyer_available_usdt=Decimal("0.000000"),
+            buyer_withdraw_pending_usdt=Decimal("0.000000"),
+        )
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    events = await harness.callback(flow="buyer", action="balance")
+    labels = []
+    for event in events:
+        labels.extend(_markup_labels(event))
+    text = "\n".join(_event_texts(events))
+
+    assert "<b>Доступно для вывода:</b> $0.0" in text
+    assert "<b>В процессе вывода:</b> $0.0" in text
+    assert "💸 Вывести все доступное" not in labels
+    assert "✍️ Указать сумму вручную" not in labels
+    assert "🧾 Транзакции" in labels
 
 
 @pytest.mark.asyncio

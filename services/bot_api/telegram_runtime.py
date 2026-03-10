@@ -3442,14 +3442,11 @@ class TelegramWebhookRuntime:
             "awaiting_order": 0,
             "ordered": 0,
             "picked_up": 0,
-            "paid": 0,
         }
         for item in assignments:
             bucket = self._buyer_dashboard_status_bucket(item.status)
             if bucket is not None:
                 bucket_counts[bucket] += 1
-        total_balance = snapshot.buyer_available_usdt + snapshot.buyer_withdraw_pending_usdt
-
         text = self._screen_text(
             title="Кабинет покупателя",
             cta="Выберите раздел ниже.",
@@ -3458,20 +3455,9 @@ class TelegramWebhookRuntime:
                     "<b>Покупки:</b> "
                     f"ожидают заказа: {bucket_counts['awaiting_order']} · "
                     f"заказаны: {bucket_counts['ordered']} · "
-                    f"выкуплены: {bucket_counts['picked_up']} · "
-                    f"выплачены: {bucket_counts['paid']} · "
-                    f"всего: {len(assignments)}"
+                    f"выкуплены: {bucket_counts['picked_up']}"
                 ),
-                f"<b>Баланс:</b> {self._format_usdt_with_rub(total_balance)}",
-                (
-                    "<b>Доступно:</b> "
-                    f"{self._format_usdt_with_rub(snapshot.buyer_available_usdt)} "
-                    "— можно вывести сейчас"
-                ),
-                (
-                    "<b>На выводе:</b> "
-                    f"{self._format_usdt_with_rub(snapshot.buyer_withdraw_pending_usdt)}"
-                ),
+                f"<b>Баланс:</b> {self._format_usdt_with_rub(snapshot.buyer_available_usdt)}",
             ],
             separate_blocks=True,
         )
@@ -4061,28 +4047,24 @@ class TelegramWebhookRuntime:
         snapshot = await self._finance_service.get_buyer_balance_snapshot(
             buyer_user_id=buyer_user_id
         )
-        total_balance = snapshot.buyer_available_usdt + snapshot.buyer_withdraw_pending_usdt
         text = self._screen_text(
             title="Баланс покупателя",
             cta="Выберите следующее действие ниже.",
             lines=[
-                f"<b>Баланс:</b> {self._format_usdt_with_rub(total_balance)}",
                 (
-                    "<b>Доступно:</b> "
-                    f"{self._format_usdt_with_rub(snapshot.buyer_available_usdt)} "
-                    "— можно вывести сейчас"
+                    "<b>Доступно для вывода:</b> "
+                    f"{self._format_usdt_with_rub(snapshot.buyer_available_usdt)}"
                 ),
                 (
-                    "<b>На выводе:</b> "
+                    "<b>В процессе вывода:</b> "
                     f"{self._format_usdt_with_rub(snapshot.buyer_withdraw_pending_usdt)}"
                 ),
             ],
             separate_blocks=True,
         )
-        await self._replace_message(
-            query_message,
-            text,
-            InlineKeyboardMarkup(
+        keyboard_rows: list[list[InlineKeyboardButton]] = []
+        if snapshot.buyer_available_usdt > Decimal("0.000000"):
+            keyboard_rows.extend(
                 [
                     [
                         InlineKeyboardButton(
@@ -4102,23 +4084,31 @@ class TelegramWebhookRuntime:
                             ),
                         )
                     ],
-                    [
-                        InlineKeyboardButton(
-                            text="🧾 Транзакции",
-                            callback_data=build_callback(
-                                flow=_ROLE_BUYER,
-                                action="withdraw_history",
-                            ),
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text="↩️ Назад",
-                            callback_data=build_callback(flow=_ROLE_BUYER, action="menu"),
-                        )
-                    ],
                 ]
-            ),
+            )
+        keyboard_rows.extend(
+            [
+                [
+                    InlineKeyboardButton(
+                        text="🧾 Транзакции",
+                        callback_data=build_callback(
+                            flow=_ROLE_BUYER,
+                            action="withdraw_history",
+                        ),
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="↩️ Назад",
+                        callback_data=build_callback(flow=_ROLE_BUYER, action="menu"),
+                    )
+                ],
+            ]
+        )
+        await self._replace_message(
+            query_message,
+            text,
+            InlineKeyboardMarkup(keyboard_rows),
             parse_mode="HTML",
         )
 
@@ -6827,7 +6817,15 @@ class TelegramWebhookRuntime:
 
     @staticmethod
     def _buyer_visible_assignments(assignments):
-        return [item for item in assignments if item.status != "expired_2h"]
+        visible_statuses = {
+            "reserved",
+            "order_submitted",
+            "order_verified",
+            "picked_up_wait_unlock",
+            "eligible_for_withdrawal",
+            "withdraw_pending_admin",
+        }
+        return [item for item in assignments if item.status in visible_statuses]
 
     @staticmethod
     def _buyer_shop_title(assignment) -> str:
@@ -6849,8 +6847,6 @@ class TelegramWebhookRuntime:
             "returned_within_14d",
         }:
             return "picked_up"
-        if status == "withdraw_sent":
-            return "paid"
         return None
 
     @staticmethod
