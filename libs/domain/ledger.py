@@ -82,7 +82,7 @@ class FinanceService:
         seller_collateral_account_id: int,
         reward_reserved_account_id: int,
         idempotency_key: str,
-        reservation_timeout_hours: int = 2,
+        reservation_timeout_hours: int = 4,
     ) -> AssignmentReservationResult:
         if reservation_timeout_hours < 1:
             raise ValueError("reservation_timeout_hours must be >= 1")

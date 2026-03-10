@@ -590,6 +590,19 @@ async def test_reservation_is_idempotent_and_decrements_slot_once(db_pool) -> No
             assert listing["available_slots"] == 1
 
             await cur.execute(
+                """
+                SELECT
+                    ROUND(EXTRACT(EPOCH FROM (reservation_expires_at - created_at)))
+                    AS timeout_seconds
+                FROM assignments
+                WHERE id = %s
+                """,
+                (first.assignment_id,),
+            )
+            timeout_row = await cur.fetchone()
+            assert int(timeout_row["timeout_seconds"]) == 4 * 60 * 60
+
+            await cur.execute(
                 "SELECT current_balance_usdt FROM accounts WHERE id = %s",
                 (fixture["seller_collateral_account_id"],),
             )

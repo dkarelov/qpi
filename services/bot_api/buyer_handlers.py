@@ -136,19 +136,24 @@ class BuyerCommandProcessor:
                 assignments = await self._buyer_service.list_buyer_assignments(
                     buyer_user_id=buyer_user_id
                 )
+                assignments = [item for item in assignments if item.status != "expired_2h"]
                 if not assignments:
-                    return BuyerCommandResponse(text="У вас пока нет назначений.")
+                    return BuyerCommandResponse(text="У вас пока нет покупок.")
                 lines = []
                 for assignment in assignments:
                     display_title = (assignment.display_title or assignment.search_phrase).strip()
+                    shop_name = (
+                        str(getattr(assignment, "shop_title", "") or "").strip()
+                        or assignment.shop_slug
+                    )
                     lines.append(
-                        f"{assignment.assignment_id} | shop={assignment.shop_slug} | "
+                        f"{assignment.assignment_id} | shop={shop_name} | "
                         f"listing={assignment.listing_id} | "
                         f"товар=\"{display_title}\" | "
                         f"status={assignment.status} | кэшбэк={assignment.reward_usdt} USDT | "
                         f"order_id={assignment.order_id or '-'}"
                     )
-                return BuyerCommandResponse(text="Мои назначения:\n" + "\n".join(lines))
+                return BuyerCommandResponse(text="Мои покупки:\n" + "\n".join(lines))
 
             return BuyerCommandResponse(text="Неизвестная команда. Отправьте /start.")
         except ValueError:

@@ -198,6 +198,7 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
                     assignment_id=31,
                     listing_id=21,
                     shop_slug="shop_tushenka",
+                    shop_title="Тушенка",
                     status="reserved",
                     display_title="Бумага A4 для принтера",
                     wb_source_title="BRAUBERG Бумага A4 для принтера",
@@ -619,7 +620,7 @@ async def test_phase10_e2e_buyer_deeplink_reserve_submit_payload_flow() -> None:
         query_id="reserve-1",
     )
     reserve_text = "\n".join(_event_texts(reserve_events))
-    assert "<b>Задание создано</b>" in reserve_text
+    assert "<b>Покупка создана</b>" in reserve_text
     assert any("Ввести токен-подтверждение" in _markup_labels(event) for event in reserve_events)
 
     submit_prompt_events = await harness.callback(
@@ -628,7 +629,9 @@ async def test_phase10_e2e_buyer_deeplink_reserve_submit_payload_flow() -> None:
         entity_id="31",
     )
     assert any(
-        "Вставьте токен-подтверждение" in text for text in _event_texts(submit_prompt_events)
+        "Вставьте токен из расширения следующим сообщением ниже."
+        in text
+        for text in _event_texts(submit_prompt_events)
     )
 
     payload_events = await harness.text("WyJPUkRFUi0xIiwiMjAyNi0wMy0wMlQxMjozMDowMCJd")
@@ -871,7 +874,8 @@ async def test_phase10_e2e_same_telegram_user_can_open_seller_and_buyer_dashboar
     buyer_events = await harness.callback(flow="root", action="role", entity_id="buyer")
 
     assert any("<b>Магазины:</b>" in text for text in _event_texts(seller_events))
-    assert any("<b>Задания:</b>" in text for text in _event_texts(buyer_events))
+    assert any("<b>Покупки:</b>" in text for text in _event_texts(buyer_events))
+    assert any("<b>На выводе:</b>" in text for text in _event_texts(buyer_events))
     deps.seller.bootstrap_seller.assert_awaited()
     deps.buyer.bootstrap_buyer.assert_awaited()
 
@@ -905,7 +909,7 @@ async def test_phase10_e2e_buyer_cancel_task_flow() -> None:
         action="assignment_cancel_prompt",
         entity_id="31",
     )
-    assert any("Отказаться от задания?" in text for text in _event_texts(prompt_events))
+    assert any("<b>Отмена покупки</b>" in text for text in _event_texts(prompt_events))
 
     confirm_events = await harness.callback(
         flow="buyer",
@@ -914,10 +918,102 @@ async def test_phase10_e2e_buyer_cancel_task_flow() -> None:
         query_id="cancel-1",
     )
     assert any(
-        "Задание отменено. Оно снова доступно для других покупателей." in text
+        "Покупка отменена. Она снова доступна другим покупателям." in text
         for text in _event_texts(confirm_events)
     )
     deps.buyer.cancel_assignment_by_buyer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_buyer_purchases_screen_uses_shop_title_and_hides_expired() -> None:
+    runtime, deps = _build_runtime()
+    deps.buyer.list_buyer_assignments = AsyncMock(
+        return_value=[
+            _ns(
+                assignment_id=31,
+                listing_id=21,
+                shop_slug="shop_tushenka",
+                shop_title="Тушенка",
+                status="reserved",
+                display_title="Бумага A4 для принтера",
+                wb_source_title="BRAUBERG Бумага A4 для принтера",
+                wb_subject_name="Бумага офисная",
+                wb_brand_name="BRAUBERG",
+                wb_description="Белая бумага для офиса",
+                wb_photo_url="https://example.com/photo.webp",
+                wb_tech_sizes=["0"],
+                wb_characteristics=[{"name": "Плотность", "value": "80 г/м2"}],
+                reference_price_rub=400,
+                reward_usdt=Decimal("0.250000"),
+                order_id=None,
+                search_phrase="бумага а4 для принтера",
+                wb_product_id=552892532,
+                reservation_expires_at=datetime(2026, 3, 2, 14, 0, 0),
+            ),
+            _ns(
+                assignment_id=32,
+                listing_id=22,
+                shop_slug="shop_mug",
+                shop_title="Термокружки",
+                status="withdraw_sent",
+                display_title="Термокружка",
+                wb_source_title="Термокружка",
+                wb_subject_name="Посуда",
+                wb_brand_name=None,
+                wb_description="Термокружка 400 мл",
+                wb_photo_url=None,
+                wb_tech_sizes=[],
+                wb_characteristics=[],
+                reference_price_rub=990,
+                reward_usdt=Decimal("1.100000"),
+                order_id="ORDER-2",
+                search_phrase="термокружка",
+                wb_product_id=552892533,
+                reservation_expires_at=datetime(2026, 3, 2, 14, 0, 0),
+            ),
+            _ns(
+                assignment_id=33,
+                listing_id=23,
+                shop_slug="shop_expired",
+                shop_title="Просроченные",
+                status="expired_2h",
+                display_title="Просроченный товар",
+                wb_source_title="Просроченный товар",
+                wb_subject_name="Тест",
+                wb_brand_name=None,
+                wb_description="",
+                wb_photo_url=None,
+                wb_tech_sizes=[],
+                wb_characteristics=[],
+                reference_price_rub=100,
+                reward_usdt=Decimal("0.100000"),
+                order_id=None,
+                search_phrase="тест",
+                wb_product_id=552892534,
+                reservation_expires_at=datetime(2026, 3, 2, 14, 0, 0),
+            ),
+        ]
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    events = await harness.callback(flow="buyer", action="assignments")
+    text = "\n".join(_event_texts(events))
+    first_block = text.split("<b>Товар:</b> Термокружка", maxsplit=1)[0]
+
+    assert "<b>Покупки</b>" in text
+    assert "<b>Магазин:</b> Тушенка" in text
+    assert "<b>Магазин:</b> Термокружки" in text
+    assert "shop_tushenka" not in text
+    assert "Бронь истекла" not in text
+    assert text.count("<b>Номер заказа:</b>") == 1
+    assert first_block.index("<b>Товар:</b> Бумага A4 для принтера") < first_block.index(
+        "<b>Магазин:</b> Тушенка"
+    )
+    assert first_block.index("<b>Магазин:</b> Тушенка") < first_block.index("<b>Кэшбэк:</b>")
+    assert first_block.index("<b>Кэшбэк:</b>") < first_block.index(
+        "<b>Статус:</b> Ожидает заказа"
+    )
+    assert "\n\n<b>Товар:</b> Термокружка" in text
 
 
 @pytest.mark.asyncio

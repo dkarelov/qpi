@@ -3198,12 +3198,12 @@ class TelegramWebhookRuntime:
             if not payload.entity_id:
                 await self._replace_message(
                     query_message,
-                    "Не удалось открыть задание. Попробуйте снова.",
+                    "Не удалось открыть покупку. Попробуйте снова.",
                     InlineKeyboardMarkup(
                         [
                             [
                                 InlineKeyboardButton(
-                                    text="↩️ Назад к заданиям",
+                                    text="↩️ Назад к покупкам",
                                     callback_data=build_callback(
                                         flow=_ROLE_BUYER,
                                         action="assignments",
@@ -3224,12 +3224,15 @@ class TelegramWebhookRuntime:
             )
             await self._replace_message(
                 query_message,
-                "Вставьте токен-подтверждение из расширения одним сообщением.",
+                self._screen_text(
+                    title="Токен-подтверждение",
+                    cta="Вставьте токен из расширения следующим сообщением ниже.",
+                ),
                 InlineKeyboardMarkup(
                     [
                         [
                             InlineKeyboardButton(
-                                text="↩️ Назад к заданиям",
+                                text="↩️ Назад к покупкам",
                                 callback_data=build_callback(
                                     flow=_ROLE_BUYER,
                                     action="assignments",
@@ -3238,18 +3241,19 @@ class TelegramWebhookRuntime:
                         ]
                     ]
                 ),
+                parse_mode="HTML",
             )
             return
         if action == "assignment_cancel_prompt":
             if not payload.entity_id:
                 await self._replace_message(
                     query_message,
-                    "Не удалось открыть задание. Попробуйте снова.",
+                    "Не удалось открыть покупку. Попробуйте снова.",
                     InlineKeyboardMarkup(
                         [
                             [
                                 InlineKeyboardButton(
-                                    text="↩️ Назад к заданиям",
+                                    text="↩️ Назад к покупкам",
                                     callback_data=build_callback(
                                         flow=_ROLE_BUYER,
                                         action="assignments",
@@ -3261,8 +3265,8 @@ class TelegramWebhookRuntime:
                 )
                 return
             assignment_id = int(payload.entity_id)
-            assignments = await self._buyer_service.list_buyer_assignments(
-                buyer_user_id=buyer.user_id
+            assignments = self._buyer_visible_assignments(
+                await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer.user_id)
             )
             assignment = next(
                 (item for item in assignments if item.assignment_id == assignment_id),
@@ -3271,12 +3275,12 @@ class TelegramWebhookRuntime:
             if assignment is None:
                 await self._replace_message(
                     query_message,
-                    "Задание не найдено.",
+                    "Покупка не найдена.",
                     InlineKeyboardMarkup(
                         [
                             [
                                 InlineKeyboardButton(
-                                    text="↩️ Назад к заданиям",
+                                    text="↩️ Назад к покупкам",
                                     callback_data=build_callback(
                                         flow=_ROLE_BUYER,
                                         action="assignments",
@@ -3290,12 +3294,12 @@ class TelegramWebhookRuntime:
             if assignment.status not in {"reserved", "order_submitted"}:
                 await self._replace_message(
                     query_message,
-                    "Это задание уже нельзя отменить.",
+                    "Эту покупку уже нельзя отменить.",
                     InlineKeyboardMarkup(
                         [
                             [
                                 InlineKeyboardButton(
-                                    text="↩️ Назад к заданиям",
+                                    text="↩️ Назад к покупкам",
                                     callback_data=build_callback(
                                         flow=_ROLE_BUYER,
                                         action="assignments",
@@ -3308,13 +3312,18 @@ class TelegramWebhookRuntime:
                 return
             await self._replace_message(
                 query_message,
-                "Отказаться от задания?\n"
-                "Бронь будет снята, а задание снова станет доступно для других покупателей.",
+                self._screen_text(
+                    title="Отмена покупки",
+                    cta="Подтвердите действие ниже.",
+                    lines=[
+                        "Бронь будет снята, а покупка снова станет доступна другим покупателям."
+                    ],
+                ),
                 InlineKeyboardMarkup(
                     [
                         [
                             InlineKeyboardButton(
-                                text="✅ Отказаться от задания",
+                                text="✅ Отказаться от покупки",
                                 callback_data=build_callback(
                                     flow=_ROLE_BUYER,
                                     action="assignment_cancel_confirm",
@@ -3324,7 +3333,7 @@ class TelegramWebhookRuntime:
                         ],
                         [
                             InlineKeyboardButton(
-                                text="↩️ Назад к заданиям",
+                                text="↩️ Назад к покупкам",
                                 callback_data=build_callback(
                                     flow=_ROLE_BUYER,
                                     action="assignments",
@@ -3333,18 +3342,19 @@ class TelegramWebhookRuntime:
                         ],
                     ]
                 ),
+                parse_mode="HTML",
             )
             return
         if action == "assignment_cancel_confirm":
             if not payload.entity_id:
                 await self._replace_message(
                     query_message,
-                    "Не удалось отменить задание. Попробуйте снова.",
+                    "Не удалось отменить покупку. Попробуйте снова.",
                     InlineKeyboardMarkup(
                         [
                             [
                                 InlineKeyboardButton(
-                                    text="↩️ Назад к заданиям",
+                                    text="↩️ Назад к покупкам",
                                     callback_data=build_callback(
                                         flow=_ROLE_BUYER,
                                         action="assignments",
@@ -3422,22 +3432,22 @@ class TelegramWebhookRuntime:
         buyer_user_id: int,
     ) -> None:
         await self._refresh_display_rub_per_usdt()
-        assignments = await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
+        assignments = self._buyer_visible_assignments(
+            await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
+        )
         snapshot = await self._finance_service.get_buyer_balance_snapshot(
             buyer_user_id=buyer_user_id
         )
-
-        in_progress_statuses = {
-            "reserved",
-            "order_submitted",
-            "order_verified",
-            "picked_up_wait_unlock",
+        bucket_counts = {
+            "awaiting_order": 0,
+            "ordered": 0,
+            "picked_up": 0,
+            "paid": 0,
         }
-        ready_statuses = {"eligible_for_withdrawal", "withdraw_pending_admin"}
-
-        in_progress = sum(1 for item in assignments if item.status in in_progress_statuses)
-        ready = sum(1 for item in assignments if item.status in ready_statuses)
-        paid = sum(1 for item in assignments if item.status == "withdraw_sent")
+        for item in assignments:
+            bucket = self._buyer_dashboard_status_bucket(item.status)
+            if bucket is not None:
+                bucket_counts[bucket] += 1
         total_balance = snapshot.buyer_available_usdt + snapshot.buyer_withdraw_pending_usdt
 
         text = self._screen_text(
@@ -3445,14 +3455,25 @@ class TelegramWebhookRuntime:
             cta="Выберите раздел ниже.",
             lines=[
                 (
-                    "<b>Задания:</b> "
-                    f"{in_progress} в процессе · {ready} к выводу · "
-                    f"{paid} выплачено · {len(assignments)} всего"
+                    "<b>Покупки:</b> "
+                    f"ожидают заказа: {bucket_counts['awaiting_order']} · "
+                    f"заказаны: {bucket_counts['ordered']} · "
+                    f"выкуплены: {bucket_counts['picked_up']} · "
+                    f"выплачены: {bucket_counts['paid']} · "
+                    f"всего: {len(assignments)}"
                 ),
                 f"<b>Баланс:</b> {self._format_usdt_with_rub(total_balance)}",
-                f"<b>Доступно:</b> {self._format_usdt_with_rub(snapshot.buyer_available_usdt)}",
+                (
+                    "<b>Доступно:</b> "
+                    f"{self._format_usdt_with_rub(snapshot.buyer_available_usdt)} "
+                    "— можно вывести сейчас"
+                ),
+                (
+                    "<b>На выводе:</b> "
+                    f"{self._format_usdt_with_rub(snapshot.buyer_withdraw_pending_usdt)}"
+                ),
             ],
-            note="Откройте магазины, задания или баланс и вывод в зависимости от следующего шага.",
+            separate_blocks=True,
         )
         await self._replace_message(
             query_message,
@@ -3467,7 +3488,7 @@ class TelegramWebhookRuntime:
         query_message: Message | None,
         buyer_user_id: int,
     ) -> None:
-        lines = ["Откройте магазин по коду или выберите один из сохраненных."]
+        lines: list[str] = []
         saved_shops = await self._buyer_service.list_saved_shops(
             buyer_user_id=buyer_user_id,
             limit=12,
@@ -3523,7 +3544,12 @@ class TelegramWebhookRuntime:
         )
         await self._replace_message(
             query_message,
-            self._screen_text(title="Магазины", lines=lines),
+            self._screen_text(
+                title="Магазины",
+                cta="Откройте магазин по коду или выберите один из сохраненных.",
+                lines=lines,
+                separate_blocks=True,
+            ),
             InlineKeyboardMarkup(keyboard_rows),
             parse_mode="HTML",
         )
@@ -3560,12 +3586,11 @@ class TelegramWebhookRuntime:
             return
         except NoSlotsAvailableError:
             active_same_listing: bool = False
-            assignments = await self._buyer_service.list_buyer_assignments(
-                buyer_user_id=buyer_user_id
+            assignments = self._buyer_visible_assignments(
+                await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
             )
             for item in assignments:
                 if item.listing_id == listing_id and item.status not in {
-                    "expired_2h",
                     "wb_invalid",
                     "returned_within_14d",
                     "delivery_expired",
@@ -3576,13 +3601,13 @@ class TelegramWebhookRuntime:
             if active_same_listing:
                 await self._replace_message(
                     query_message,
-                    "У вас уже есть активное задание по этому товару.\n"
-                    "Продолжить можно в разделе «📋 Задания».",
+                    "У вас уже есть активная покупка по этому товару.\n"
+                    "Продолжить можно в разделе «📋 Покупки».",
                     InlineKeyboardMarkup(
                         [
                             [
                                 InlineKeyboardButton(
-                                    text="📋 Мои задания",
+                                    text="📋 Покупки",
                                     callback_data=build_callback(
                                         flow=_ROLE_BUYER,
                                         action="assignments",
@@ -3605,7 +3630,7 @@ class TelegramWebhookRuntime:
 
             await self._replace_message(
                 query_message,
-                "Свободных заданий по этому товару нет. Попробуйте выбрать другой товар.",
+                "Свободных покупок по этому товару нет. Попробуйте выбрать другой товар.",
                 InlineKeyboardMarkup(
                     [
                         [
@@ -3642,13 +3667,13 @@ class TelegramWebhookRuntime:
             if "already has assignment" in details:
                 await self._replace_message(
                     query_message,
-                    "У вас уже есть активное задание по этому товару.\n"
-                    "Продолжить можно в разделе «📋 Задания».",
+                    "У вас уже есть активная покупка по этому товару.\n"
+                    "Продолжить можно в разделе «📋 Покупки».",
                     InlineKeyboardMarkup(
                         [
                             [
                                 InlineKeyboardButton(
-                                    text="📋 Мои задания",
+                                    text="📋 Покупки",
                                     callback_data=build_callback(
                                         flow=_ROLE_BUYER,
                                         action="assignments",
@@ -3670,7 +3695,7 @@ class TelegramWebhookRuntime:
                 return
             await self._replace_message(
                 query_message,
-                "Не удалось начать задание. Попробуйте снова.",
+                "Не удалось открыть покупку. Попробуйте снова.",
                 InlineKeyboardMarkup(
                     [
                         [
@@ -3684,23 +3709,25 @@ class TelegramWebhookRuntime:
             )
             return
 
-        assignments = await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
+        assignments = self._buyer_visible_assignments(
+            await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
+        )
         assignment = next(
             (item for item in assignments if item.assignment_id == reservation.assignment_id),
             None,
         )
         if assignment is None:
             text = self._screen_text(
-                title="Задание создано",
-                lines=["Откройте раздел «📋 Задания», чтобы продолжить."],
+                title="Покупка создана",
+                cta="Откройте раздел «📋 Покупки», чтобы продолжить.",
             )
         elif reservation.created:
             text = self._screen_text(
-                title="Задание создано",
+                title="Покупка создана",
                 lines=[
                     self._buyer_task_instruction_text(assignment),
                     (
-                        "<b>Срок отправки:</b> "
+                        "<b>Срок заказа:</b> "
                         f"до {self._format_datetime_msk(assignment.reservation_expires_at)}"
                     ),
                 ],
@@ -3708,11 +3735,11 @@ class TelegramWebhookRuntime:
             )
         else:
             text = self._screen_text(
-                title="Задание уже активно",
+                title="Покупка уже активна",
                 lines=[
                     self._buyer_task_instruction_text(assignment),
                     (
-                        "<b>Срок отправки:</b> "
+                        "<b>Срок заказа:</b> "
                         f"до {self._format_datetime_msk(assignment.reservation_expires_at)}"
                     ),
                 ],
@@ -3740,7 +3767,7 @@ class TelegramWebhookRuntime:
                     ],
                     [
                         InlineKeyboardButton(
-                            text="🚫 Отказаться от задания",
+                            text="🚫 Отказаться от покупки",
                             callback_data=build_callback(
                                 flow=_ROLE_BUYER,
                                 action="assignment_cancel_prompt",
@@ -3750,7 +3777,7 @@ class TelegramWebhookRuntime:
                     ],
                     [
                         InlineKeyboardButton(
-                            text="📋 Мои задания",
+                            text="📋 Покупки",
                             callback_data=build_callback(
                                 flow=_ROLE_BUYER,
                                 action="assignments",
@@ -3855,12 +3882,12 @@ class TelegramWebhookRuntime:
         except NotFoundError:
             await self._replace_message(
                 query_message,
-                "Задание не найдено.",
+                "Покупка не найдена.",
                 InlineKeyboardMarkup(
                     [
                         [
                             InlineKeyboardButton(
-                                text="↩️ Назад к заданиям",
+                                text="↩️ Назад к покупкам",
                                 callback_data=build_callback(
                                     flow=_ROLE_BUYER,
                                     action="assignments",
@@ -3874,12 +3901,12 @@ class TelegramWebhookRuntime:
         except InvalidStateError:
             await self._replace_message(
                 query_message,
-                "Это задание уже нельзя отменить.",
+                "Эту покупку уже нельзя отменить.",
                 InlineKeyboardMarkup(
                     [
                         [
                             InlineKeyboardButton(
-                                text="↩️ Назад к заданиям",
+                                text="↩️ Назад к покупкам",
                                 callback_data=build_callback(
                                     flow=_ROLE_BUYER,
                                     action="assignments",
@@ -3892,9 +3919,9 @@ class TelegramWebhookRuntime:
             return
 
         text = (
-            "Задание отменено. Оно снова доступно для других покупателей."
+            "Покупка отменена. Она снова доступна другим покупателям."
             if result.changed
-            else "Задание уже было отменено ранее."
+            else "Покупка уже была отменена ранее."
         )
         await self._replace_message(
             query_message,
@@ -3903,7 +3930,7 @@ class TelegramWebhookRuntime:
                 [
                     [
                         InlineKeyboardButton(
-                            text="📋 Мои задания",
+                            text="📋 Покупки",
                             callback_data=build_callback(flow=_ROLE_BUYER, action="assignments"),
                         )
                     ],
@@ -3924,11 +3951,16 @@ class TelegramWebhookRuntime:
         buyer_user_id: int,
     ) -> None:
         await self._refresh_display_rub_per_usdt()
-        assignments = await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
+        assignments = self._buyer_visible_assignments(
+            await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
+        )
         if not assignments:
             await self._replace_message(
                 query_message,
-                "📋 У вас пока нет заданий.",
+                self._screen_text(
+                    title="Покупки",
+                    cta="У вас пока нет покупок.",
+                ),
                 InlineKeyboardMarkup(
                     [
                         [
@@ -3942,32 +3974,36 @@ class TelegramWebhookRuntime:
                         ]
                     ]
                 ),
+                parse_mode="HTML",
             )
             return
 
-        lines = ["📋 Мои задания:"]
+        lines: list[str] = []
         keyboard_rows: list[list[InlineKeyboardButton]] = []
-        for idx, item in enumerate(assignments, start=1):
+        for item in assignments:
             display_title = self._listing_display_title(
                 display_title=item.display_title,
                 fallback=item.search_phrase,
             )
+            shop_title = html.escape(self._buyer_shop_title(item))
             cashback_text = self._format_cashback_with_percent(
                 reward_usdt=item.reward_usdt,
                 reference_price_rub=item.reference_price_rub,
             )
-            lines.append(
-                f"<b>Задание {idx}</b> · магазин: {html.escape(item.shop_slug)}\n"
-                f"Товар: {html.escape(display_title)}\n"
-                f"Статус: {html.escape(self._humanize_assignment_status(item.status))}\n"
-                f"Кэшбэк: {cashback_text}"
-            )
+            block_lines = [
+                f"<b>Товар:</b> {html.escape(display_title)}",
+                f"<b>Магазин:</b> {shop_title}",
+                f"<b>Кэшбэк:</b> {cashback_text}",
+            ]
             if item.order_id:
-                lines.append(f"<b>Номер заказа:</b> {html.escape(item.order_id)}")
+                block_lines.append(f"<b>Номер заказа:</b> {html.escape(item.order_id)}")
+            block_lines.append(
+                f"<b>Статус:</b> {html.escape(self._humanize_assignment_status(item.status))}"
+            )
             if item.status in {"reserved", "order_submitted"}:
-                lines.append(self._buyer_task_instruction_text(item))
-                lines.append(
-                    "<b>Срок отправки:</b> "
+                block_lines.append(self._buyer_task_instruction_text(item, include_title=False))
+                block_lines.append(
+                    "<b>Срок заказа:</b> "
                     f"до {self._format_datetime_msk(item.reservation_expires_at)}"
                 )
                 keyboard_rows.append(
@@ -3985,7 +4021,7 @@ class TelegramWebhookRuntime:
                 keyboard_rows.append(
                     [
                         InlineKeyboardButton(
-                            text="🚫 Отказаться от задания",
+                            text="🚫 Отказаться от покупки",
                             callback_data=build_callback(
                                 flow=_ROLE_BUYER,
                                 action="assignment_cancel_prompt",
@@ -3994,6 +4030,7 @@ class TelegramWebhookRuntime:
                         )
                     ]
                 )
+            lines.append("\n".join(block_lines))
         keyboard_rows.append(
             [
                 InlineKeyboardButton(
@@ -4004,7 +4041,12 @@ class TelegramWebhookRuntime:
         )
         await self._replace_message(
             query_message,
-            self._screen_text(title="Задания", lines=lines),
+            self._screen_text(
+                title="Покупки",
+                cta="Проверьте статус покупок и выберите следующее действие ниже.",
+                lines=lines,
+                separate_blocks=True,
+            ),
             InlineKeyboardMarkup(keyboard_rows),
             parse_mode="HTML",
         )
@@ -4019,20 +4061,23 @@ class TelegramWebhookRuntime:
         snapshot = await self._finance_service.get_buyer_balance_snapshot(
             buyer_user_id=buyer_user_id
         )
+        total_balance = snapshot.buyer_available_usdt + snapshot.buyer_withdraw_pending_usdt
         text = self._screen_text(
             title="Баланс покупателя",
             cta="Выберите следующее действие ниже.",
             lines=[
-                f"<b>Доступно:</b> {self._format_usdt_with_rub(snapshot.buyer_available_usdt)}",
+                f"<b>Баланс:</b> {self._format_usdt_with_rub(total_balance)}",
                 (
-                    "<b>В ожидании вывода:</b> "
+                    "<b>Доступно:</b> "
+                    f"{self._format_usdt_with_rub(snapshot.buyer_available_usdt)} "
+                    "— можно вывести сейчас"
+                ),
+                (
+                    "<b>На выводе:</b> "
                     f"{self._format_usdt_with_rub(snapshot.buyer_withdraw_pending_usdt)}"
                 ),
             ],
-            note=(
-                "Вывод оформляется в USDT, поэтому на следующих шагах "
-                "сумма будет указана именно в USDT."
-            ),
+            separate_blocks=True,
         )
         await self._replace_message(
             query_message,
@@ -6031,7 +6076,7 @@ class TelegramWebhookRuntime:
             assignment_id = int(prompt_state.get("assignment_id", 0))
             if assignment_id < 1:
                 self._clear_prompt(context)
-                await message.reply_text("Задание не найдено. Откройте список заданий заново.")
+                await message.reply_text("Покупка не найдена. Откройте список покупок заново.")
                 return
             try:
                 buyer = await self._buyer_service.bootstrap_buyer(
@@ -6044,13 +6089,13 @@ class TelegramWebhookRuntime:
                     payload_base64=text,
                 )
             except NotFoundError:
-                await message.reply_text("Задание не найдено.")
+                await message.reply_text("Покупка не найдена.")
                 return
             except PayloadValidationError as exc:
                 details = str(exc).strip().lower()
                 base = (
                     "Токен-подтверждение не принят.\n"
-                    "Проверьте, что вы скопировали его полностью из расширения для этого задания."
+                    "Проверьте, что вы скопировали его полностью из расширения для этой покупки."
                 )
                 if details and "timezone" in details:
                     await message.reply_text(
@@ -6060,11 +6105,11 @@ class TelegramWebhookRuntime:
                     await message.reply_text(base)
                 return
             except DuplicateOrderError:
-                await message.reply_text("Этот номер заказа уже использован в другом задании.")
+                await message.reply_text("Этот номер заказа уже использован в другой покупке.")
                 return
             except InvalidStateError:
                 await message.reply_text(
-                    "Сейчас нельзя отправить токен-подтверждение для этого задания."
+                    "Сейчас нельзя отправить токен-подтверждение для этой покупки."
                 )
                 return
 
@@ -6494,21 +6539,13 @@ class TelegramWebhookRuntime:
         return None
 
     async def _delete_sensitive_message(self, message: Message, *, notify: bool = True) -> None:
-        deleted = False
         try:
             await message.delete()
-            deleted = True
         except Exception as exc:
             self._logger.warning(
                 "telegram_sensitive_delete_failed",
                 error_type=type(exc).__name__,
                 error_message=str(exc)[:300],
-            )
-        if notify:
-            await message.chat.send_message(
-                "Сообщение с чувствительными данными "
-                f"{'удалено' if deleted else 'не удалось удалить автоматически'}. "
-                "При необходимости удалите его вручную."
             )
 
     @staticmethod
@@ -6710,7 +6747,7 @@ class TelegramWebhookRuntime:
         raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         return base64.b64encode(raw.encode("utf-8")).decode("ascii")
 
-    def _buyer_task_instruction_text(self, assignment) -> str:
+    def _buyer_task_instruction_text(self, assignment, *, include_title: bool = True) -> str:
         listing_token = self._build_buyer_listing_token(
             search_phrase=assignment.search_phrase,
             wb_product_id=assignment.wb_product_id,
@@ -6720,14 +6757,19 @@ class TelegramWebhookRuntime:
             display_title=getattr(assignment, "display_title", None),
             fallback=assignment.search_phrase,
         )
-        return (
-            f"<b>Товар:</b> {html.escape(display_title)}\n"
-            f"<b>Поисковая фраза:</b> &quot;{html.escape(assignment.search_phrase)}&quot;\n"
-            "1. Введите следующий токен в расширении Qpilka:\n"
-            f"<code>{listing_token}</code>\n"
-            "2. Выполните шаги до оформления заказа.\n"
-            "3. Отправьте токен-подтверждение сюда."
+        lines: list[str] = []
+        if include_title:
+            lines.append(f"<b>Товар:</b> {html.escape(display_title)}")
+        lines.extend(
+            [
+                f"<b>Поисковая фраза:</b> &quot;{html.escape(assignment.search_phrase)}&quot;",
+                "1. Введите следующий токен в расширении Qpilka:",
+                f"<code>{listing_token}</code>",
+                "2. Выполните шаги до оформления заказа.",
+                "3. Отправьте токен-подтверждение сюда.",
+            ]
         )
+        return "\n".join(lines)
 
     @staticmethod
     def _humanize_listing_status(status: str) -> str:
@@ -6769,19 +6811,47 @@ class TelegramWebhookRuntime:
     @staticmethod
     def _humanize_assignment_status(status: str) -> str:
         mapping = {
-            "reserved": "Ожидает подтверждение покупки",
-            "order_submitted": "Подтверждение получено",
-            "order_verified": "Покупка проверена",
-            "picked_up_wait_unlock": "Ожидаем срок разблокировки кэшбэка",
-            "eligible_for_withdrawal": "Кэшбэк доступен для вывода",
-            "withdraw_pending_admin": "Заявка на вывод на проверке",
-            "withdraw_sent": "Кэшбэк выплачен",
+            "reserved": "Ожидает заказа",
+            "order_submitted": "Заказан",
+            "order_verified": "Заказан",
+            "picked_up_wait_unlock": "Выкуплен",
+            "eligible_for_withdrawal": "Выкуплен",
+            "withdraw_pending_admin": "Выкуплен",
+            "withdraw_sent": "Выплачен",
             "expired_2h": "Бронь истекла",
-            "wb_invalid": "Проверка WB не пройдена",
-            "returned_within_14d": "Заказ возвращен",
+            "wb_invalid": "Не подтвержден",
+            "returned_within_14d": "Возвращен",
             "delivery_expired": "Срок выкупа истек",
         }
         return mapping.get(status, status)
+
+    @staticmethod
+    def _buyer_visible_assignments(assignments):
+        return [item for item in assignments if item.status != "expired_2h"]
+
+    @staticmethod
+    def _buyer_shop_title(assignment) -> str:
+        title = str(getattr(assignment, "shop_title", "") or "").strip()
+        if title:
+            return title
+        return str(getattr(assignment, "shop_slug", "") or "").strip()
+
+    @staticmethod
+    def _buyer_dashboard_status_bucket(status: str) -> str | None:
+        if status == "reserved":
+            return "awaiting_order"
+        if status in {"order_submitted", "order_verified", "wb_invalid", "delivery_expired"}:
+            return "ordered"
+        if status in {
+            "picked_up_wait_unlock",
+            "eligible_for_withdrawal",
+            "withdraw_pending_admin",
+            "returned_within_14d",
+        }:
+            return "picked_up"
+        if status == "withdraw_sent":
+            return "paid"
+        return None
 
     @staticmethod
     def _humanize_withdraw_status(status: str) -> str:
@@ -7236,7 +7306,7 @@ class TelegramWebhookRuntime:
             title=display_title,
             cta="Проверьте товар и выберите следующее действие ниже.",
             lines=lines,
-            note="Если товар подходит, нажмите «Купить» и следуйте шагам из задания.",
+            separate_blocks=True,
         )
 
     def _format_listing_price_line(
@@ -7383,7 +7453,7 @@ class TelegramWebhookRuntime:
                         ),
                     ),
                     InlineKeyboardButton(
-                        text="📋 Задания",
+                        text="📋 Покупки",
                         callback_data=build_callback(flow=_ROLE_BUYER, action="assignments"),
                     ),
                 ],

@@ -22,7 +22,7 @@ Documentation rules:
 Glossary for Telegram UX:
 
 - `Объявление` = seller-created buyer-facing offer for one WB product.
-- `Задание` = buyer reservation/work item tied to one announcement.
+- `Покупка` = buyer reservation/work item tied to one announcement.
 - `Активно` = user-facing wording for active/open availability or status.
 
 ## 2. Product Scope (Current MVP)
@@ -129,9 +129,9 @@ Persistence and schema:
   - `[search_phrase, wb_product_id, 1, wb_brand_name]`, where `wb_brand_name` is an empty string when unavailable.
 - Buyer submits verification token (base64 JSON array):
   - `[order_id, ordered_at]`, where `ordered_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
-- Verification token must be submitted within 2 hours of reservation.
+- Verification token must be submitted within 4 hours of reservation.
 - `order_id` is globally unique (`1 order_id = 1 slot`).
-- Buyer can cancel task in pre-submit states (`reserved`, `order_submitted`).
+- Buyer can cancel purchase in pre-submit states (`reserved`, `order_submitted`).
 - One buyer cannot repeatedly buy the same target item:
   - duplicate reserve attempts are blocked,
   - already-bought item is not treated as a new available task.
@@ -157,7 +157,7 @@ Terminal/error states:
 
 Transitions:
 
-- `reserved -> expired_2h` after 2h without valid verification token.
+- `reserved -> expired_2h` after 4h without valid verification token (legacy status code name retained).
 - Valid verification token transitions to `order_verified`.
 - WB event `Продажа` transitions to `picked_up_wait_unlock` and sets unlock time `pickup + 15d`.
 - WB event `Возврат` within unlock window transitions to `returned_within_14d`.
@@ -229,7 +229,7 @@ Transitions:
   - title,
   - italic call to action immediately below the title,
   - main content blocks separated by empty lines,
-  - italic explanatory note at the bottom with next steps or issue guidance.
+  - optional italic note at the bottom only when it adds non-obvious next steps or issue guidance.
 - Button labels include emoji/icon prefix.
 - Each role opens with dashboard + section navigation.
 - Seller UX:
@@ -260,9 +260,12 @@ Transitions:
   - separate transaction blocks with empty lines,
   - use color indicators for statuses.
 - Buyer UX:
-  - shops/tasks/balance sections,
+  - shops/purchases/balance sections,
+  - buyer section title is `Покупки`, not `Задания`,
   - active listing CTA uses `Купить`,
-  - task flow contains explicit submit-token and cancel-task actions.
+  - purchase list uses store title (not slug), hides `expired_2h`, and shows fields in order: `Товар`, `Магазин`, `Кэшбэк`, optional `Номер заказа`, `Статус`,
+  - dashboard purchase counters are grouped as `ожидают заказа`, `заказаны`, `выкуплены`, `выплачены`,
+  - purchase flow contains explicit submit-token and cancel-purchase actions.
 - All user-facing timestamps are rendered in `MSK` (`Europe/Moscow`).
 - Admin UX:
   - `Выводы`, `Депозиты`, `Исключения` sections.

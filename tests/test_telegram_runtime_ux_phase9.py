@@ -60,7 +60,7 @@ def test_buyer_menu_is_dashboard_sections() -> None:
     labels_set = set(labels)
 
     assert "🏪 Магазины" in labels_set
-    assert "📋 Задания" in labels_set
+    assert "📋 Покупки" in labels_set
     assert "💳 Баланс и вывод" in labels_set
 
 

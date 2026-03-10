@@ -372,7 +372,7 @@ class BuyerService:
         buyer_user_id: int,
         listing_id: int,
         idempotency_key: str,
-        reservation_timeout_hours: int = 2,
+        reservation_timeout_hours: int = 4,
     ) -> AssignmentReservationResult:
         existing = await self._find_reservation_by_idempotency(idempotency_key=idempotency_key)
         if existing is not None:
@@ -640,6 +640,7 @@ class BuyerService:
                         l.wb_characteristics_json,
                         l.search_phrase,
                         s.slug AS shop_slug,
+                        s.title AS shop_title,
                         bo.ordered_at
                     FROM assignments a
                     JOIN listings l ON l.id = a.listing_id
@@ -656,6 +657,7 @@ class BuyerService:
                         assignment_id=row["id"],
                         listing_id=row["listing_id"],
                         shop_slug=row["shop_slug"],
+                        shop_title=row["shop_title"],
                         wb_product_id=row["wb_product_id"],
                         display_title=row["display_title"],
                         wb_source_title=row["wb_source_title"],
