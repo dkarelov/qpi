@@ -57,7 +57,7 @@ async def _insert_wb_report_row(
                     """
                     INSERT INTO wb_report_rows (
                         rrd_id,
-                        srid,
+                        wb_srid,
                         nm_id,
                         supplier_oper_name,
                         sale_dt,

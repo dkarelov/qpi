@@ -38,7 +38,7 @@ _EXPECTED_REPORT_COLUMNS = {
     "sticker_id",
     "site_country",
     "assembly_id",
-    "srid",
+    "wb_srid",
     "order_uid",
     "delivery_method",
     "uuid_promocode",
@@ -236,21 +236,21 @@ async def test_daily_report_scrapper_ingests_projected_columns_and_deduplicates(
                     realizationreport_id,
                     currency_name,
                     rrd_id,
-                    srid,
+                    wb_srid,
                     supplier_oper_name,
                     delivery_method,
                     uuid_promocode,
                     sale_price_promocode_discount_prc
                 FROM wb_report_rows
                 WHERE rrd_id = 100001
-                  AND srid = 'order-srid-1'
+                  AND wb_srid = 'order-srid-1'
                 """
             )
             row = await cur.fetchone()
             assert row["realizationreport_id"] == 401
             assert row["currency_name"] == "RUB"
             assert row["rrd_id"] == 100001
-            assert row["srid"] == "order-srid-1"
+            assert row["wb_srid"] == "order-srid-1"
             assert row["supplier_oper_name"] == "Продажа"
             assert row["delivery_method"] == "pickup"
             assert row["uuid_promocode"] == "promo-1"

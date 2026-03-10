@@ -323,7 +323,7 @@ class OrderTrackerService:
                             create_dt,
                             rrd_id
                         FROM wb_report_rows wr
-                        WHERE wr.srid = a.order_id
+                        WHERE wr.wb_srid = a.order_id
                           AND wr.nm_id = l.wb_product_id
                           AND wr.supplier_oper_name IN (%s, %s)
                         ORDER BY

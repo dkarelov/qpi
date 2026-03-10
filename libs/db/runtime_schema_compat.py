@@ -80,6 +80,28 @@ def _table_exists(cur: psycopg.Cursor, *, table_name: str) -> bool:
     return row is not None and row[0] is not None
 
 
+def _constraint_definition(
+    cur: psycopg.Cursor,
+    *,
+    table_name: str,
+    constraint_name: str,
+) -> str | None:
+    cur.execute(
+        """
+        SELECT pg_get_constraintdef(c.oid)
+        FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE n.nspname = 'public'
+          AND t.relname = %s
+          AND c.conname = %s
+        """,
+        (table_name, constraint_name),
+    )
+    row = cur.fetchone()
+    return row[0] if row is not None else None
+
+
 def _ensure_user_capability_columns(cur: psycopg.Cursor) -> None:
     if not _table_exists(cur, table_name="users"):
         return
@@ -244,6 +266,57 @@ def _ensure_buyer_orders_wb_product_id(cur: psycopg.Cursor) -> None:
     cur.execute("ALTER TABLE public.buyer_orders ALTER COLUMN wb_product_id SET NOT NULL")
 
 
+def _ensure_wb_report_rows_wb_srid(cur: psycopg.Cursor) -> None:
+    if not _table_exists(cur, table_name="wb_report_rows"):
+        return
+
+    has_legacy_srid = _column_exists(cur, table_name="wb_report_rows", column_name="srid")
+    if not _column_exists(cur, table_name="wb_report_rows", column_name="wb_srid"):
+        cur.execute("ALTER TABLE public.wb_report_rows ADD COLUMN wb_srid text")
+
+    if has_legacy_srid:
+        cur.execute(
+            """
+            UPDATE public.wb_report_rows
+            SET wb_srid = srid
+            WHERE wb_srid IS NULL
+            """
+        )
+
+    cur.execute("SELECT COUNT(*) FROM public.wb_report_rows WHERE wb_srid IS NULL")
+    missing_count = int(cur.fetchone()[0])
+    if missing_count:
+        raise RuntimeError(
+            "runtime schema compatibility failed: wb_report_rows.wb_srid "
+            f"still has {missing_count} NULL rows after backfill"
+        )
+
+    cur.execute("ALTER TABLE public.wb_report_rows ALTER COLUMN wb_srid SET NOT NULL")
+
+    primary_key_def = _constraint_definition(
+        cur,
+        table_name="wb_report_rows",
+        constraint_name="wb_report_rows_pkey",
+    )
+    if primary_key_def and "srid" in primary_key_def and "wb_srid" not in primary_key_def:
+        cur.execute("ALTER TABLE public.wb_report_rows DROP CONSTRAINT wb_report_rows_pkey")
+        cur.execute(
+            """
+            ALTER TABLE public.wb_report_rows
+            ADD CONSTRAINT wb_report_rows_pkey PRIMARY KEY (rrd_id, wb_srid)
+            """
+        )
+
+    if _index_exists(cur, index_name="idx_wb_report_rows_srid"):
+        cur.execute("DROP INDEX public.idx_wb_report_rows_srid")
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_wb_report_rows_srid
+        ON public.wb_report_rows USING btree (wb_srid)
+        """
+    )
+
+
 def apply_runtime_schema_compatibility(database_url: str) -> None:
     normalized_database_url = normalize_database_url(database_url)
     with psycopg.connect(normalized_database_url) as conn:
@@ -252,6 +325,7 @@ def apply_runtime_schema_compatibility(database_url: str) -> None:
             _ensure_listing_metadata_columns(cur)
             _ensure_assignments_wb_product_id(cur)
             _ensure_buyer_orders_wb_product_id(cur)
+            _ensure_wb_report_rows_wb_srid(cur)
         conn.commit()
 
 

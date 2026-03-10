@@ -48,7 +48,7 @@ _REPORT_COLUMN_NAMES = (
     "sticker_id",
     "site_country",
     "assembly_id",
-    "srid",
+    "wb_srid",
     "order_uid",
     "delivery_method",
     "uuid_promocode",
@@ -59,11 +59,11 @@ _REPORT_UPSERT_QUERY = (
     "INSERT INTO wb_report_rows "
     f"({', '.join(_REPORT_COLUMN_NAMES)}) "
     f"VALUES ({', '.join(f'%({column})s' for column in _REPORT_COLUMN_NAMES)}) "
-    "ON CONFLICT (rrd_id, srid) DO UPDATE SET "
+    "ON CONFLICT (rrd_id, wb_srid) DO UPDATE SET "
     + ", ".join(
         f"{column} = EXCLUDED.{column}"
         for column in _REPORT_COLUMN_NAMES
-        if column not in {"rrd_id", "srid"}
+        if column not in {"rrd_id", "wb_srid"}
     )
 )
 
@@ -498,11 +498,11 @@ def classify_token_invalidation_source(status_code: int | None, message: str | N
 
 def project_report_row(row: dict[str, Any]) -> dict[str, Any] | None:
     rrd_id = _to_int(row.get("rrd_id"))
-    srid = _to_text(row.get("srid"))
+    wb_srid = _to_text(row.get("srid"))
     supplier_oper_name = _to_text(row.get("supplier_oper_name"))
     if (
         rrd_id is None
-        or srid is None
+        or wb_srid is None
         or supplier_oper_name is None
         or supplier_oper_name not in _ALLOWED_SUPPLIER_OPER_NAMES
     ):
@@ -532,7 +532,7 @@ def project_report_row(row: dict[str, Any]) -> dict[str, Any] | None:
         "sticker_id": _to_text(row.get("sticker_id")),
         "site_country": _to_text(row.get("site_country")),
         "assembly_id": _to_int(row.get("assembly_id")),
-        "srid": srid,
+        "wb_srid": wb_srid,
         "order_uid": _to_text(row.get("order_uid")),
         "delivery_method": _to_text(row.get("delivery_method")),
         "uuid_promocode": _to_text(row.get("uuid_promocode")),

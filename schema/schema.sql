@@ -158,15 +158,15 @@ CREATE TABLE "public"."wb_report_rows" (
     "sticker_id" text,
     "site_country" text,
     "assembly_id" bigint,
-    "srid" text NOT NULL,
+    "wb_srid" text NOT NULL,
     "order_uid" text,
     "delivery_method" text,
     "uuid_promocode" text,
     "sale_price_promocode_discount_prc" numeric(20,6),
-    CONSTRAINT wb_report_rows_pkey PRIMARY KEY ("rrd_id", "srid")
+    CONSTRAINT wb_report_rows_pkey PRIMARY KEY ("rrd_id", "wb_srid")
 );
 
-CREATE INDEX idx_wb_report_rows_srid ON public.wb_report_rows USING btree ("srid");
+CREATE INDEX idx_wb_report_rows_srid ON public.wb_report_rows USING btree (wb_srid);
 
 CREATE INDEX idx_wb_report_rows_sale_dt ON public.wb_report_rows USING btree (sale_dt);
 
