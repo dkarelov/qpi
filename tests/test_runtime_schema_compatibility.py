@@ -275,6 +275,18 @@ async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assig
                 "DROP CONSTRAINT withdrawal_requests_status_check"
             )
             cur.execute(
+                "ALTER TABLE public.withdrawal_requests "
+                "ALTER COLUMN requester_user_id DROP NOT NULL"
+            )
+            cur.execute(
+                "ALTER TABLE public.withdrawal_requests "
+                "ALTER COLUMN requester_role DROP NOT NULL"
+            )
+            cur.execute(
+                "ALTER TABLE public.withdrawal_requests "
+                "ADD COLUMN buyer_user_id bigint"
+            )
+            cur.execute(
                 """
                 ALTER TABLE public.withdrawal_requests
                 ADD CONSTRAINT withdrawal_requests_status_check CHECK (
@@ -289,6 +301,7 @@ async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assig
                 )
                 """
             )
+            cur.execute("DROP INDEX IF EXISTS public.uq_withdrawal_requests_requester_active")
             cur.execute("ALTER TABLE public.accounts DROP CONSTRAINT accounts_account_kind_check")
             cur.execute(
                 """
