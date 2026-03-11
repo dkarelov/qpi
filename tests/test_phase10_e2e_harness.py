@@ -188,9 +188,10 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
         ),
         touch_saved_shop=AsyncMock(return_value=None),
         list_saved_shops=AsyncMock(return_value=[]),
-        get_saved_shop_by_id=AsyncMock(
+        resolve_saved_shop_for_buyer=AsyncMock(
             return_value=_ns(shop_id=11, title="Тушенка", slug="shop_tushenka")
         ),
+        remove_saved_shop=AsyncMock(return_value=_ns(changed=True)),
         reserve_listing_slot=AsyncMock(return_value=_ns(assignment_id=31, created=True)),
         list_buyer_assignments=AsyncMock(
             return_value=[
@@ -609,9 +610,21 @@ async def test_phase10_e2e_buyer_deeplink_reserve_submit_payload_flow() -> None:
 
     deeplink_events = await harness.start(start_arg="shop_shop_tushenka")
     deeplink_text = "\n".join(_event_texts(deeplink_events))
-    assert "Магазин: Тушенка" in deeplink_text
+    assert "Магазин «Тушенка»" in deeplink_text
     assert "Бумага A4 для принтера" in deeplink_text
-    assert any("✅ Купить" in _markup_labels(event) for event in deeplink_events)
+    deeplink_labels = []
+    for event in deeplink_events:
+        deeplink_labels.extend(_markup_labels(event))
+    assert "1" in deeplink_labels
+    assert "✅ Купить" not in deeplink_labels
+    assert "🔎 Просмотр" not in deeplink_labels
+
+    detail_events = await harness.callback(
+        flow="buyer",
+        action="listing_open",
+        entity_id="21",
+    )
+    assert any("✅ Купить" in _markup_labels(event) for event in detail_events)
 
     reserve_events = await harness.callback(
         flow="buyer",
@@ -640,6 +653,63 @@ async def test_phase10_e2e_buyer_deeplink_reserve_submit_payload_flow() -> None:
 
     deps.buyer.reserve_listing_slot.assert_awaited_once()
     deps.buyer.submit_purchase_payload.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_buyer_shops_screen_uses_numbered_shop_list() -> None:
+    runtime, deps = _build_runtime()
+    deps.buyer.list_saved_shops = AsyncMock(
+        return_value=[
+            _ns(
+                shop_id=11,
+                slug="shop_tushenka",
+                title="Тушенка",
+                active_listings_count=1,
+            ),
+            _ns(
+                shop_id=12,
+                slug="shop_empty",
+                title="Пустой магазин",
+                active_listings_count=0,
+            ),
+        ]
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    events = await harness.callback(flow="buyer", action="shops")
+    text = "\n".join(_event_texts(events))
+    labels = []
+    for event in events:
+        labels.extend(_markup_labels(event))
+
+    assert "<i>Выберите номер магазина.</i>" in text
+    assert "1. 🟢 Тушенка (объявлений: 1)" in text
+    assert "2. 🔴 Пустой магазин (объявлений: 0)" in text
+    assert "Сохраненные магазины:" not in text
+    assert "Открыть последний магазин" not in labels
+    assert "Открыть магазин по коду" not in labels
+    assert "1" in labels
+    assert "2" in labels
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_buyer_shop_screen_shows_purchases_button_when_no_other_listings(
+) -> None:
+    runtime, deps = _build_runtime()
+    deps.buyer.list_active_listings_by_shop_slug = AsyncMock(return_value=[])
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    events = await harness.start(start_arg="shop_shop_tushenka")
+    text = "\n".join(_event_texts(events))
+    labels = []
+    for event in events:
+        labels.extend(_markup_labels(event))
+
+    assert (
+        "У вас уже есть активная покупка в этом магазине. "
+        "Других объявлений здесь пока нет."
+    ) in text
+    assert "📋 Покупки" in labels
 
 
 @pytest.mark.asyncio

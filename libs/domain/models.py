@@ -149,6 +149,7 @@ class BuyerSavedShopResult:
     slug: str
     title: str
     last_opened_at: datetime
+    active_listings_count: int = 0
 
 
 @dataclass(frozen=True)

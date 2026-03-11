@@ -308,7 +308,15 @@ class BuyerService:
                         s.id,
                         s.slug,
                         s.title,
-                        bss.last_opened_at
+                        bss.last_opened_at,
+                        (
+                            SELECT COUNT(*)
+                            FROM listings l
+                            WHERE l.shop_id = s.id
+                              AND l.deleted_at IS NULL
+                              AND l.status = 'active'
+                              AND l.available_slots > 0
+                        ) AS active_listings_count
                     FROM buyer_saved_shops bss
                     JOIN shops s ON s.id = bss.shop_id
                     WHERE bss.buyer_user_id = %s
@@ -325,6 +333,7 @@ class BuyerService:
                         slug=row["slug"],
                         title=row["title"],
                         last_opened_at=row["last_opened_at"],
+                        active_listings_count=int(row["active_listings_count"]),
                     )
                     for row in rows
                 ]
@@ -365,6 +374,26 @@ class BuyerService:
                 )
 
         return await run_in_transaction(self._pool, operation, read_only=True)
+
+    async def remove_saved_shop(
+        self,
+        *,
+        buyer_user_id: int,
+        shop_id: int,
+    ) -> StatusChangeResult:
+        async def operation(conn: AsyncConnection) -> StatusChangeResult:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    DELETE FROM buyer_saved_shops
+                    WHERE buyer_user_id = %s
+                      AND shop_id = %s
+                    """,
+                    (buyer_user_id, shop_id),
+                )
+                return StatusChangeResult(changed=cur.rowcount > 0)
+
+        return await run_in_transaction(self._pool, operation)
 
     async def reserve_listing_slot(
         self,

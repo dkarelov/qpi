@@ -3008,6 +3008,24 @@ class TelegramWebhookRuntime:
             await self._render_buyer_shops_section(
                 query_message=query_message,
                 buyer_user_id=buyer.user_id,
+                page=self._coerce_page_number(payload.entity_id),
+            )
+            return
+        if action == "shop_page":
+            slug = str(context.user_data.get(_LAST_BUYER_SHOP_SLUG_KEY, "")).strip()
+            if not slug:
+                await self._render_buyer_shops_section(
+                    query_message=query_message,
+                    buyer_user_id=buyer.user_id,
+                    notice="Магазин не найден. Выберите его из списка заново.",
+                )
+                return
+            await self._send_buyer_shop_catalog(
+                query_message,
+                slug=slug,
+                buyer_user_id=buyer.user_id,
+                prefer_edit=True,
+                page=self._coerce_page_number(payload.entity_id),
             )
             return
         if action == "open_last_shop":
@@ -3022,7 +3040,7 @@ class TelegramWebhookRuntime:
             if not slug:
                 await self._replace_message(
                     query_message,
-                    "Нет сохраненного магазина. Нажмите «🔎 Открыть магазин по коду».",
+                    "Нет сохраненного магазина. Выберите магазин из списка.",
                     InlineKeyboardMarkup(
                         [
                             [
@@ -3074,7 +3092,7 @@ class TelegramWebhookRuntime:
             except (NotFoundError, ValueError):
                 await self._replace_message(
                     query_message,
-                    "Этот магазин больше недоступен. Откройте магазин по коду.",
+                    "Этот магазин больше недоступен. Выберите другой магазин.",
                     InlineKeyboardMarkup(
                         [
                             [
@@ -3096,6 +3114,21 @@ class TelegramWebhookRuntime:
                 slug=saved_shop.slug,
                 buyer_user_id=buyer.user_id,
                 prefer_edit=True,
+                page=1,
+            )
+            return
+        if action == "shop_remove":
+            if not payload.entity_id:
+                await self._render_buyer_shops_section(
+                    query_message=query_message,
+                    buyer_user_id=buyer.user_id,
+                    notice="Не удалось определить магазин. Выберите его заново.",
+                )
+                return
+            await self._execute_buyer_saved_shop_remove(
+                query_message=query_message,
+                buyer_user_id=buyer.user_id,
+                shop_id=int(payload.entity_id),
             )
             return
         if action == "prompt_shop_slug":
@@ -3473,71 +3506,142 @@ class TelegramWebhookRuntime:
         *,
         query_message: Message | None,
         buyer_user_id: int,
+        page: int = 1,
+        notice: str | None = None,
     ) -> None:
         lines: list[str] = []
         saved_shops = await self._buyer_service.list_saved_shops(
             buyer_user_id=buyer_user_id,
-            limit=12,
+            limit=100,
         )
-        keyboard_rows: list[list[InlineKeyboardButton]] = [
-            [
-                InlineKeyboardButton(
-                    text="🔎 Открыть магазин по коду",
-                    callback_data=build_callback(
-                        flow=_ROLE_BUYER,
-                        action="prompt_shop_slug",
-                    ),
-                )
-            ]
-        ]
-        if saved_shops:
-            lines.append("<b>Сохраненные магазины:</b>")
-            for shop in saved_shops:
-                lines.append(f"• {html.escape(shop.title)}")
-                keyboard_rows.append(
-                    [
-                        InlineKeyboardButton(
-                            text=f"🏪 {shop.title}",
-                            callback_data=build_callback(
-                                flow=_ROLE_BUYER,
-                                action="open_saved_shop",
-                                entity_id=str(shop.shop_id),
-                            ),
-                        )
-                    ]
-                )
-            keyboard_rows.append(
-                [
-                    InlineKeyboardButton(
-                        text="🔁 Открыть последний магазин",
-                        callback_data=build_callback(
-                            flow=_ROLE_BUYER,
-                            action="open_last_shop",
-                        ),
-                    )
-                ]
+        if notice:
+            lines.append(html.escape(notice))
+        if not saved_shops:
+            text = self._screen_text(
+                title="Магазины",
+                cta="Сохраненных магазинов пока нет.",
+                lines=lines,
+                separate_blocks=True,
             )
-        else:
-            lines.append("Сохраненных магазинов пока нет.")
+            await self._replace_message(
+                query_message,
+                text,
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад",
+                                callback_data=build_callback(flow=_ROLE_BUYER, action="menu"),
+                            )
+                        ]
+                    ]
+                ),
+                parse_mode="HTML",
+            )
+            return
 
-        keyboard_rows.append(
-            [
-                InlineKeyboardButton(
-                    text="↩️ Назад",
-                    callback_data=build_callback(flow=_ROLE_BUYER, action="menu"),
-                )
-            ]
+        resolved_page, total_pages, start_index, end_index = self._resolve_numbered_page(
+            total_items=len(saved_shops),
+            requested_page=page,
         )
+        shops_page = saved_shops[start_index:end_index]
+        for idx, shop in enumerate(shops_page, start=start_index + 1):
+            badge = self._buyer_shop_activity_badge(shop.active_listings_count)
+            lines.append(
+                f"<b>{idx}. {badge} {html.escape(shop.title)} "
+                f"(объявлений: {shop.active_listings_count})</b>"
+            )
+
         await self._replace_message(
             query_message,
             self._screen_text(
                 title="Магазины",
-                cta="Откройте магазин по коду или выберите один из сохраненных.",
+                cta="Выберите номер магазина.",
                 lines=lines,
                 separate_blocks=True,
             ),
-            InlineKeyboardMarkup(keyboard_rows),
+            self._numbered_page_markup(
+                flow=_ROLE_BUYER,
+                open_action="open_saved_shop",
+                page_action="shops",
+                item_ids=[shop.shop_id for shop in shops_page],
+                start_number=start_index + 1,
+                page=resolved_page,
+                total_pages=total_pages,
+                back_row=[
+                    InlineKeyboardButton(
+                        text="↩️ Назад",
+                        callback_data=build_callback(flow=_ROLE_BUYER, action="menu"),
+                    )
+                ],
+            ),
             parse_mode="HTML",
+        )
+
+    async def _execute_buyer_saved_shop_remove(
+        self,
+        *,
+        query_message: Message | None,
+        buyer_user_id: int,
+        shop_id: int,
+    ) -> None:
+        try:
+            shop = await self._buyer_service.resolve_saved_shop_for_buyer(
+                buyer_user_id=buyer_user_id,
+                shop_id=shop_id,
+            )
+        except NotFoundError:
+            await self._render_buyer_shops_section(
+                query_message=query_message,
+                buyer_user_id=buyer_user_id,
+                notice="Магазин уже удален из списка.",
+            )
+            return
+
+        assignments = self._buyer_visible_assignments(
+            await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
+        )
+        if any(item.shop_slug == shop.slug for item in assignments):
+            await self._replace_message(
+                query_message,
+                self._screen_text(
+                    title=f"Магазин «{html.escape(shop.title)}»",
+                    cta="Удаление недоступно, пока в магазине есть незавершенная покупка.",
+                ),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="📋 Покупки",
+                                callback_data=build_callback(
+                                    flow=_ROLE_BUYER,
+                                    action="assignments",
+                                ),
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к магазинам",
+                                callback_data=build_callback(
+                                    flow=_ROLE_BUYER,
+                                    action="shops",
+                                ),
+                            )
+                        ],
+                    ]
+                ),
+                parse_mode="HTML",
+            )
+            return
+
+        await self._buyer_service.remove_saved_shop(
+            buyer_user_id=buyer_user_id,
+            shop_id=shop_id,
+        )
+        await self._render_buyer_shops_section(
+            query_message=query_message,
+            buyer_user_id=buyer_user_id,
+            notice=f"Магазин «{shop.title}» удален из списка.",
         )
 
     async def _execute_buyer_reserve(
@@ -6384,6 +6488,7 @@ class TelegramWebhookRuntime:
         slug: str,
         buyer_user_id: int | None = None,
         prefer_edit: bool = False,
+        page: int = 1,
     ) -> None:
         await self._refresh_display_rub_per_usdt()
         try:
@@ -6429,31 +6534,85 @@ class TelegramWebhookRuntime:
                     slug=shop.slug,
                 )
 
-        header = f"Магазин: {shop.title}"
-        if not listings:
-            text = self._screen_text(
-                title=html.escape(header),
-                lines=["Активных объявлений пока нет."],
+        active_shop_purchase = None
+        if buyer_user_id is not None:
+            buyer_assignments = self._buyer_visible_assignments(
+                await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
             )
-            markup = InlineKeyboardMarkup(
-                [
+            active_shop_purchase = next(
+                (item for item in buyer_assignments if item.shop_slug == shop.slug),
+                None,
+            )
+
+        can_remove_shop = active_shop_purchase is None and buyer_user_id is not None
+        header = f"Магазин «{shop.title}»"
+        if not listings:
+            if active_shop_purchase is not None:
+                text = self._screen_text(
+                    title=html.escape(header),
+                    cta=(
+                        "У вас уже есть активная покупка в этом магазине. "
+                        "Других объявлений здесь пока нет."
+                    ),
+                )
+                keyboard_rows = [
+                    [
+                        InlineKeyboardButton(
+                            text="📋 Покупки",
+                            callback_data=build_callback(
+                                flow=_ROLE_BUYER,
+                                action="assignments",
+                            ),
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="↩️ Назад к магазинам",
+                            callback_data=build_callback(flow=_ROLE_BUYER, action="shops"),
+                        )
+                    ],
+                ]
+            else:
+                text = self._screen_text(
+                    title=html.escape(header),
+                    cta="Активных объявлений пока нет.",
+                )
+                keyboard_rows: list[list[InlineKeyboardButton]] = []
+                if can_remove_shop:
+                    keyboard_rows.append(
+                        [
+                            InlineKeyboardButton(
+                                text="🗑 Удалить магазин",
+                                callback_data=build_callback(
+                                    flow=_ROLE_BUYER,
+                                    action="shop_remove",
+                                    entity_id=str(shop.shop_id),
+                                ),
+                            )
+                        ]
+                    )
+                keyboard_rows.append(
                     [
                         InlineKeyboardButton(
                             text="↩️ Назад к магазинам",
                             callback_data=build_callback(flow=_ROLE_BUYER, action="shops"),
                         )
                     ]
-                ]
-            )
+                )
+            markup = InlineKeyboardMarkup(keyboard_rows)
             if prefer_edit:
                 await self._replace_message(message, text, markup, parse_mode="HTML")
             elif message is not None:
                 await message.reply_text(text, reply_markup=markup, parse_mode="HTML")
             return
 
-        lines = [f"<b>{html.escape(header)}</b>", "Активные объявления:"]
-        keyboard_rows: list[list[InlineKeyboardButton]] = []
-        for idx, listing in enumerate(listings, start=1):
+        resolved_page, total_pages, start_index, end_index = self._resolve_numbered_page(
+            total_items=len(listings),
+            requested_page=page,
+        )
+        listings_page = listings[start_index:end_index]
+        lines: list[str] = []
+        for idx, listing in enumerate(listings_page, start=start_index + 1):
             display_title = self._listing_display_title(
                 display_title=listing.display_title,
                 fallback=listing.search_phrase,
@@ -6463,41 +6622,46 @@ class TelegramWebhookRuntime:
                 reference_price_rub=listing.reference_price_rub,
             )
             lines.append(
-                f"<b>Объявление {idx}</b>\n"
-                f"Товар: {html.escape(display_title)}\n"
-                f"Цена: {self._format_price_optional_rub(listing.reference_price_rub)}\n"
-                f"Кэшбэк: {cashback_text}"
+                f"<b>{idx}. {html.escape(display_title)}</b>\n"
+                f"<b>Цена:</b> {self._format_price_optional_rub(listing.reference_price_rub)}\n"
+                f"<b>Кэшбэк:</b> {cashback_text}"
             )
-            keyboard_rows.append(
+        extra_rows: list[list[InlineKeyboardButton]] = []
+        if can_remove_shop:
+            extra_rows.append(
                 [
                     InlineKeyboardButton(
-                        text="🔎 Просмотр",
+                        text="🗑 Удалить магазин",
                         callback_data=build_callback(
                             flow=_ROLE_BUYER,
-                            action="listing_open",
-                            entity_id=str(listing.listing_id),
-                        ),
-                    ),
-                    InlineKeyboardButton(
-                        text="✅ Купить",
-                        callback_data=build_callback(
-                            flow=_ROLE_BUYER,
-                            action="reserve",
-                            entity_id=str(listing.listing_id),
+                            action="shop_remove",
+                            entity_id=str(shop.shop_id),
                         ),
                     )
                 ]
             )
-        keyboard_rows.append(
-            [
+        text = self._screen_text(
+            title=html.escape(header),
+            cta="Выберите номер объявления.",
+            lines=lines,
+            separate_blocks=True,
+        )
+        markup = self._numbered_page_markup(
+            flow=_ROLE_BUYER,
+            open_action="listing_open",
+            page_action="shop_page",
+            item_ids=[listing.listing_id for listing in listings_page],
+            start_number=start_index + 1,
+            page=resolved_page,
+            total_pages=total_pages,
+            extra_rows=extra_rows,
+            back_row=[
                 InlineKeyboardButton(
                     text="↩️ Назад к магазинам",
                     callback_data=build_callback(flow=_ROLE_BUYER, action="shops"),
                 )
-            ]
+            ],
         )
-        text = "\n".join(lines)
-        markup = InlineKeyboardMarkup(keyboard_rows)
         if prefer_edit:
             await self._replace_message(message, text, markup, parse_mode="HTML")
         elif message is not None:
@@ -6833,6 +6997,10 @@ class TelegramWebhookRuntime:
         if title:
             return title
         return str(getattr(assignment, "shop_slug", "") or "").strip()
+
+    @staticmethod
+    def _buyer_shop_activity_badge(active_listings_count: int) -> str:
+        return "🟢" if active_listings_count > 0 else "🔴"
 
     @staticmethod
     def _buyer_dashboard_status_bucket(status: str) -> str | None:
