@@ -289,6 +289,26 @@ async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assig
                 )
                 """
             )
+            cur.execute("DROP INDEX IF EXISTS public.uq_assignments_buyer_product_active")
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX uq_assignments_buyer_product_active
+                ON public.assignments USING btree (buyer_user_id, wb_product_id)
+                WHERE (
+                    status = ANY (
+                        ARRAY[
+                            'reserved'::text,
+                            'order_submitted'::text,
+                            'order_verified'::text,
+                            'picked_up_wait_unlock'::text,
+                            'eligible_for_withdrawal'::text,
+                            'withdraw_pending_admin'::text,
+                            'withdraw_sent'::text
+                        ]
+                    )
+                )
+                """
+            )
 
     async with await psycopg.AsyncConnection.connect(isolated_database) as conn:
         seller_user_id = await create_user(

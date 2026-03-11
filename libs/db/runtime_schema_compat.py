@@ -72,6 +72,20 @@ def _index_exists(cur: psycopg.Cursor, *, index_name: str) -> bool:
     return row is not None and row[0] is not None
 
 
+def _index_definition(cur: psycopg.Cursor, *, index_name: str) -> str | None:
+    cur.execute(
+        """
+        SELECT indexdef
+        FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname = %s
+        """,
+        (index_name,),
+    )
+    row = cur.fetchone()
+    return row[0] if row is not None else None
+
+
 def _table_exists(cur: psycopg.Cursor, *, table_name: str) -> bool:
     cur.execute("SELECT to_regclass(%s)", (f"public.{table_name}",))
     row = cur.fetchone()
@@ -214,7 +228,17 @@ def _ensure_assignments_wb_product_id(cur: psycopg.Cursor) -> None:
             """
         )
 
-    if not _index_exists(cur, index_name="uq_assignments_buyer_product_active"):
+    active_index_def = _index_definition(cur, index_name="uq_assignments_buyer_product_active")
+    if active_index_def is not None:
+        normalized_def = active_index_def.lower()
+        if (
+            "eligible_for_withdrawal" in normalized_def
+            or "withdraw_pending_admin" in normalized_def
+        ):
+            cur.execute("DROP INDEX public.uq_assignments_buyer_product_active")
+            active_index_def = None
+
+    if active_index_def is None:
         cur.execute(
             """
             CREATE UNIQUE INDEX uq_assignments_buyer_product_active
