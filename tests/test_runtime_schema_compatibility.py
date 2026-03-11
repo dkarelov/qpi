@@ -13,7 +13,7 @@ from libs.config.settings import BotApiSettings
 from libs.domain.buyer import BuyerService
 from libs.domain.seller import SellerService
 from services.bot_api.telegram_runtime import TelegramWebhookRuntime
-from tests.helpers import create_listing, create_shop, create_user
+from tests.helpers import create_account, create_listing, create_shop, create_user
 from tests.utils import run_runtime_schema_compat_apply, run_schema_apply
 
 
@@ -237,3 +237,168 @@ async def test_runtime_schema_compat_apply_backfills_legacy_assignment_product_i
             assert cur.fetchone()[0] == "idx_assignments_buyer_product_status"
             cur.execute("SELECT to_regclass('public.uq_assignments_buyer_product_active')")
             assert cur.fetchone()[0] == "uq_assignments_buyer_product_active"
+
+
+@pytest.mark.asyncio
+async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assignment_statuses(
+    isolated_database: str,
+) -> None:
+    with psycopg.connect(isolated_database, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "ALTER TABLE public.assignments DROP CONSTRAINT assignments_status_check"
+            )
+            cur.execute(
+                """
+                ALTER TABLE public.assignments
+                ADD CONSTRAINT assignments_status_check CHECK (
+                    status = ANY (
+                        ARRAY[
+                            'reserved'::text,
+                            'order_submitted'::text,
+                            'order_verified'::text,
+                            'picked_up_wait_unlock'::text,
+                            'eligible_for_withdrawal'::text,
+                            'withdraw_pending_admin'::text,
+                            'withdraw_sent'::text,
+                            'expired_2h'::text,
+                            'wb_invalid'::text,
+                            'returned_within_14d'::text,
+                            'delivery_expired'::text
+                        ]
+                    )
+                )
+                """
+            )
+            cur.execute(
+                "ALTER TABLE public.withdrawal_requests "
+                "DROP CONSTRAINT withdrawal_requests_status_check"
+            )
+            cur.execute(
+                """
+                ALTER TABLE public.withdrawal_requests
+                ADD CONSTRAINT withdrawal_requests_status_check CHECK (
+                    status = ANY (
+                        ARRAY[
+                            'withdraw_pending_admin'::text,
+                            'approved'::text,
+                            'rejected'::text,
+                            'withdraw_sent'::text
+                        ]
+                    )
+                )
+                """
+            )
+
+    async with await psycopg.AsyncConnection.connect(isolated_database) as conn:
+        seller_user_id = await create_user(
+            conn,
+            telegram_id=993001,
+            role="seller",
+            username="compat_seller_status",
+        )
+        buyer_user_id = await create_user(
+            conn,
+            telegram_id=993002,
+            role="buyer",
+            username="compat_buyer_status",
+        )
+        shop_id = await create_shop(
+            conn,
+            seller_user_id=seller_user_id,
+            slug="compat-status-shop",
+            title="Compat Status Shop",
+        )
+        listing_id = await create_listing(
+            conn,
+            shop_id=shop_id,
+            seller_user_id=seller_user_id,
+            wb_product_id=552892540,
+            search_phrase="термокружка",
+            reward_usdt=Decimal("1.000000"),
+            slot_count=1,
+            available_slots=0,
+            status="active",
+            reference_price_rub=990,
+            reference_price_source="manual",
+        )
+        buyer_available_account_id = await create_account(
+            conn,
+            owner_user_id=buyer_user_id,
+            account_code=f"user:{buyer_user_id}:buyer_available",
+            account_kind="buyer_available",
+            balance=Decimal("0.000000"),
+        )
+        buyer_pending_account_id = await create_account(
+            conn,
+            owner_user_id=buyer_user_id,
+            account_code=f"user:{buyer_user_id}:buyer_withdraw_pending",
+            account_kind="buyer_withdraw_pending",
+            balance=Decimal("1.000000"),
+        )
+
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO assignments (
+                    listing_id,
+                    buyer_user_id,
+                    wb_product_id,
+                    status,
+                    reward_usdt,
+                    reservation_expires_at,
+                    idempotency_key
+                )
+                VALUES (%s, %s, %s, 'eligible_for_withdrawal', %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    listing_id,
+                    buyer_user_id,
+                    552892540,
+                    Decimal("1.000000"),
+                    datetime.now(UTC) + timedelta(hours=2),
+                    "compat-assignment-status",
+                ),
+            )
+            assignment_id = int((await cur.fetchone())[0])
+            await cur.execute(
+                """
+                INSERT INTO withdrawal_requests (
+                    buyer_user_id,
+                    from_account_id,
+                    to_account_id,
+                    amount_usdt,
+                    status,
+                    payout_address,
+                    idempotency_key
+                )
+                VALUES (%s, %s, %s, %s, 'approved', %s, %s)
+                RETURNING id
+                """,
+                (
+                    buyer_user_id,
+                    buyer_available_account_id,
+                    buyer_pending_account_id,
+                    Decimal("1.000000"),
+                    "UQ_COMPAT",
+                    "compat-withdraw-approved",
+                ),
+            )
+            withdrawal_request_id = int((await cur.fetchone())[0])
+        await conn.commit()
+
+    run_runtime_schema_compat_apply(isolated_database)
+    run_schema_apply(isolated_database)
+
+    with psycopg.connect(isolated_database, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT status FROM public.assignments WHERE id = %s", (assignment_id,))
+            assert cur.fetchone()[0] == "withdraw_sent"
+            cur.execute(
+                "SELECT status FROM public.withdrawal_requests WHERE id = %s",
+                (withdrawal_request_id,),
+            )
+            assert cur.fetchone()[0] == "withdraw_pending_admin"
+            cur.execute("SELECT to_regclass('public.uq_withdrawal_requests_buyer_active')")
+            assert cur.fetchone()[0] == "uq_withdrawal_requests_buyer_active"

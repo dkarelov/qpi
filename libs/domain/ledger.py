@@ -17,11 +17,13 @@ from libs.domain.errors import (
     NotFoundError,
 )
 from libs.domain.models import (
+    ActiveWithdrawalRequestView,
     AssignmentReservationResult,
     BuyerBalanceSnapshot,
     BuyerWithdrawalHistoryItem,
     ManualDepositResult,
     PendingWithdrawalView,
+    ProcessedWithdrawalView,
     StatusChangeResult,
     TransferResult,
     WithdrawalRequestDetail,
@@ -323,7 +325,7 @@ class FinanceService:
                 if assignment is None:
                     raise NotFoundError(f"assignment {assignment_id} not found")
 
-                if assignment["status"] == "eligible_for_withdrawal":
+                if assignment["status"] == "withdraw_sent":
                     return StatusChangeResult(changed=False)
 
                 if assignment["status"] != "picked_up_wait_unlock":
@@ -340,7 +342,7 @@ class FinanceService:
                 await cur.execute(
                     """
                     UPDATE assignments
-                    SET status = 'eligible_for_withdrawal',
+                    SET status = 'withdraw_sent',
                         updated_at = timezone('utc', now())
                     WHERE id = %s
                     """,
@@ -404,6 +406,20 @@ class FinanceService:
                         created=False,
                     )
 
+                await cur.execute(
+                    """
+                    SELECT id
+                    FROM withdrawal_requests
+                    WHERE buyer_user_id = %s
+                      AND status = 'withdraw_pending_admin'
+                    FOR UPDATE
+                    """,
+                    (buyer_user_id,),
+                )
+                active = await cur.fetchone()
+                if active is not None:
+                    raise InvalidStateError("buyer already has active withdrawal request")
+
                 await self._transfer_locked(
                     cur,
                     from_account_id=from_account_id,
@@ -416,29 +432,37 @@ class FinanceService:
                     metadata={"buyer_user_id": buyer_user_id},
                 )
 
-                await cur.execute(
-                    """
-                    INSERT INTO withdrawal_requests (
-                        buyer_user_id,
-                        from_account_id,
-                        to_account_id,
-                        amount_usdt,
-                        status,
-                        payout_address,
-                        idempotency_key
+                try:
+                    await cur.execute(
+                        """
+                        INSERT INTO withdrawal_requests (
+                            buyer_user_id,
+                            from_account_id,
+                            to_account_id,
+                            amount_usdt,
+                            status,
+                            payout_address,
+                            idempotency_key
+                        )
+                        VALUES (%s, %s, %s, %s, 'withdraw_pending_admin', %s, %s)
+                        RETURNING id
+                        """,
+                        (
+                            buyer_user_id,
+                            from_account_id,
+                            pending_account_id,
+                            amount,
+                            payout_address,
+                            idempotency_key,
+                        ),
                     )
-                    VALUES (%s, %s, %s, %s, 'withdraw_pending_admin', %s, %s)
-                    RETURNING id
-                    """,
-                    (
-                        buyer_user_id,
-                        from_account_id,
-                        pending_account_id,
-                        amount,
-                        payout_address,
-                        idempotency_key,
-                    ),
-                )
+                except UniqueViolation as exc:
+                    constraint_name = exc.diag.constraint_name if exc.diag is not None else None
+                    if constraint_name == "uq_withdrawal_requests_buyer_active":
+                        raise InvalidStateError(
+                            "buyer already has active withdrawal request"
+                        ) from exc
+                    raise
                 withdrawal_request = await cur.fetchone()
 
                 await self._upsert_hold(
@@ -458,18 +482,18 @@ class FinanceService:
 
         return await run_in_transaction(self._pool, operation)
 
-    async def approve_withdrawal_request(
+    async def cancel_withdrawal_request(
         self,
         *,
         request_id: int,
-        admin_user_id: int,
+        buyer_user_id: int,
         idempotency_key: str,
     ) -> StatusChangeResult:
         async def operation(conn: AsyncConnection) -> StatusChangeResult:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
-                    SELECT id, status
+                    SELECT id, buyer_user_id, from_account_id, to_account_id, status, amount_usdt
                     FROM withdrawal_requests
                     WHERE id = %s
                     FOR UPDATE
@@ -480,31 +504,49 @@ class FinanceService:
                 if request is None:
                     raise NotFoundError(f"withdrawal request {request_id} not found")
 
-                if request["status"] == "approved":
+                if request["buyer_user_id"] != buyer_user_id:
+                    raise InvalidStateError("withdrawal request does not belong to buyer")
+
+                if request["status"] == "cancelled":
                     return StatusChangeResult(changed=False)
 
                 if request["status"] != "withdraw_pending_admin":
-                    raise InvalidStateError("withdrawal request must be pending admin")
+                    raise InvalidStateError(
+                        "withdrawal request cannot be cancelled from current state"
+                    )
 
                 await cur.execute(
                     """
                     UPDATE withdrawal_requests
-                    SET status = 'approved',
-                        admin_user_id = %s,
+                    SET status = 'cancelled',
                         processed_at = timezone('utc', now())
                     WHERE id = %s
                     """,
-                    (admin_user_id, request_id),
+                    (request_id,),
                 )
 
-                await self._insert_admin_audit(
+                await self._transfer_locked(
                     cur,
-                    admin_user_id=admin_user_id,
-                    action="withdraw_approved",
-                    target_type="withdrawal_request",
-                    target_id=str(request_id),
-                    payload={"request_id": request_id},
-                    idempotency_key=idempotency_key,
+                    from_account_id=request["to_account_id"],
+                    to_account_id=request["from_account_id"],
+                    amount_usdt=_normalize_amount(request["amount_usdt"]),
+                    event_type="withdraw_cancel",
+                    idempotency_key=_ledger_key(idempotency_key),
+                    entity_type="withdrawal_request",
+                    entity_id=request_id,
+                    metadata={"request_id": request_id, "buyer_user_id": buyer_user_id},
+                )
+
+                await cur.execute(
+                    """
+                    UPDATE balance_holds
+                    SET status = 'released',
+                        released_at = timezone('utc', now())
+                    WHERE withdrawal_request_id = %s
+                        AND hold_type = 'withdrawal'
+                        AND status = 'active'
+                    """,
+                    (request_id,),
                 )
 
                 return StatusChangeResult(changed=True)
@@ -541,7 +583,7 @@ class FinanceService:
                 if request["status"] == "rejected":
                     return StatusChangeResult(changed=False)
 
-                if request["status"] not in {"withdraw_pending_admin", "approved"}:
+                if request["status"] != "withdraw_pending_admin":
                     raise InvalidStateError(
                         "withdrawal request cannot be rejected from current state"
                     )
@@ -596,7 +638,7 @@ class FinanceService:
 
         return await run_in_transaction(self._pool, operation)
 
-    async def mark_withdrawal_sent(
+    async def complete_withdrawal_request(
         self,
         *,
         request_id: int,
@@ -624,8 +666,8 @@ class FinanceService:
                 if request["status"] == "withdraw_sent":
                     return StatusChangeResult(changed=False)
 
-                if request["status"] != "approved":
-                    raise InvalidStateError("withdrawal request must be approved before sending")
+                if request["status"] != "withdraw_pending_admin":
+                    raise InvalidStateError("withdrawal request must be pending admin")
 
                 await cur.execute(
                     """
@@ -693,6 +735,25 @@ class FinanceService:
                 return StatusChangeResult(changed=True)
 
         return await run_in_transaction(self._pool, operation)
+
+    async def mark_withdrawal_sent(
+        self,
+        *,
+        request_id: int,
+        admin_user_id: int,
+        pending_account_id: int,
+        system_payout_account_id: int,
+        tx_hash: str,
+        idempotency_key: str,
+    ) -> StatusChangeResult:
+        return await self.complete_withdrawal_request(
+            request_id=request_id,
+            admin_user_id=admin_user_id,
+            pending_account_id=pending_account_id,
+            system_payout_account_id=system_payout_account_id,
+            tx_hash=tx_hash,
+            idempotency_key=idempotency_key,
+        )
 
     async def manual_deposit_credit(
         self,
@@ -874,14 +935,82 @@ class FinanceService:
 
         return await run_in_transaction(self._pool, operation, read_only=True)
 
+    async def get_active_buyer_withdrawal_request(
+        self,
+        *,
+        buyer_user_id: int,
+    ) -> ActiveWithdrawalRequestView | None:
+        async def operation(conn: AsyncConnection) -> ActiveWithdrawalRequestView | None:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT
+                        wr.id,
+                        wr.amount_usdt,
+                        wr.status,
+                        wr.payout_address,
+                        wr.requested_at,
+                        wr.processed_at,
+                        wr.sent_at,
+                        wr.note,
+                        p.tx_hash
+                    FROM withdrawal_requests wr
+                    LEFT JOIN payouts p ON p.withdrawal_request_id = wr.id
+                    WHERE wr.buyer_user_id = %s
+                      AND wr.status = 'withdraw_pending_admin'
+                    ORDER BY wr.requested_at DESC, wr.id DESC
+                    LIMIT 1
+                    """,
+                    (buyer_user_id,),
+                )
+                row = await cur.fetchone()
+                if row is None:
+                    return None
+                return ActiveWithdrawalRequestView(
+                    withdrawal_request_id=row["id"],
+                    amount_usdt=row["amount_usdt"],
+                    status=row["status"],
+                    payout_address=row["payout_address"],
+                    requested_at=row["requested_at"],
+                    processed_at=row["processed_at"],
+                    sent_at=row["sent_at"],
+                    note=row["note"],
+                    tx_hash=row["tx_hash"],
+                )
+
+        return await run_in_transaction(self._pool, operation, read_only=True)
+
+    async def count_buyer_withdrawal_history(
+        self,
+        *,
+        buyer_user_id: int,
+    ) -> int:
+        async def operation(conn: AsyncConnection) -> int:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT COUNT(*) AS total_count
+                    FROM withdrawal_requests
+                    WHERE buyer_user_id = %s
+                    """,
+                    (buyer_user_id,),
+                )
+                row = await cur.fetchone()
+                return int(row["total_count"])
+
+        return await run_in_transaction(self._pool, operation, read_only=True)
+
     async def list_buyer_withdrawal_history(
         self,
         *,
         buyer_user_id: int,
         limit: int = 20,
+        offset: int = 0,
     ) -> list[BuyerWithdrawalHistoryItem]:
         if limit < 1:
             raise ValueError("limit must be >= 1")
+        if offset < 0:
+            raise ValueError("offset must be >= 0")
 
         async def operation(conn: AsyncConnection) -> list[BuyerWithdrawalHistoryItem]:
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -902,8 +1031,9 @@ class FinanceService:
                     WHERE wr.buyer_user_id = %s
                     ORDER BY wr.requested_at DESC, wr.id DESC
                     LIMIT %s
+                    OFFSET %s
                     """,
-                    (buyer_user_id, limit),
+                    (buyer_user_id, limit, offset),
                 )
                 rows = await cur.fetchall()
                 return [
@@ -927,9 +1057,12 @@ class FinanceService:
         self,
         *,
         limit: int = 50,
+        offset: int = 0,
     ) -> list[PendingWithdrawalView]:
         if limit < 1:
             raise ValueError("limit must be >= 1")
+        if offset < 0:
+            raise ValueError("offset must be >= 0")
 
         async def operation(conn: AsyncConnection) -> list[PendingWithdrawalView]:
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -948,8 +1081,9 @@ class FinanceService:
                     WHERE wr.status = 'withdraw_pending_admin'
                     ORDER BY wr.requested_at ASC, wr.id ASC
                     LIMIT %s
+                    OFFSET %s
                     """,
-                    (limit,),
+                    (limit, offset),
                 )
                 rows = await cur.fetchall()
                 return [
@@ -961,6 +1095,80 @@ class FinanceService:
                         amount_usdt=row["amount_usdt"],
                         payout_address=row["payout_address"],
                         requested_at=row["requested_at"],
+                    )
+                    for row in rows
+                ]
+
+        return await run_in_transaction(self._pool, operation, read_only=True)
+
+    async def count_processed_withdrawals(self) -> int:
+        async def operation(conn: AsyncConnection) -> int:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT COUNT(*) AS total_count
+                    FROM withdrawal_requests
+                    WHERE status <> 'withdraw_pending_admin'
+                    """,
+                )
+                row = await cur.fetchone()
+                return int(row["total_count"])
+
+        return await run_in_transaction(self._pool, operation, read_only=True)
+
+    async def list_processed_withdrawals(
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[ProcessedWithdrawalView]:
+        if limit < 1:
+            raise ValueError("limit must be >= 1")
+        if offset < 0:
+            raise ValueError("offset must be >= 0")
+
+        async def operation(conn: AsyncConnection) -> list[ProcessedWithdrawalView]:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT
+                        wr.id,
+                        wr.buyer_user_id,
+                        u.telegram_id,
+                        u.username,
+                        wr.amount_usdt,
+                        wr.status,
+                        wr.payout_address,
+                        wr.requested_at,
+                        wr.processed_at,
+                        wr.sent_at,
+                        wr.note,
+                        p.tx_hash
+                    FROM withdrawal_requests wr
+                    JOIN users u ON u.id = wr.buyer_user_id
+                    LEFT JOIN payouts p ON p.withdrawal_request_id = wr.id
+                    WHERE wr.status <> 'withdraw_pending_admin'
+                    ORDER BY COALESCE(wr.processed_at, wr.requested_at) DESC, wr.id DESC
+                    LIMIT %s
+                    OFFSET %s
+                    """,
+                    (limit, offset),
+                )
+                rows = await cur.fetchall()
+                return [
+                    ProcessedWithdrawalView(
+                        withdrawal_request_id=row["id"],
+                        buyer_user_id=row["buyer_user_id"],
+                        buyer_telegram_id=row["telegram_id"],
+                        buyer_username=row["username"],
+                        amount_usdt=row["amount_usdt"],
+                        status=row["status"],
+                        payout_address=row["payout_address"],
+                        requested_at=row["requested_at"],
+                        processed_at=row["processed_at"],
+                        sent_at=row["sent_at"],
+                        note=row["note"],
+                        tx_hash=row["tx_hash"],
                     )
                     for row in rows
                 ]

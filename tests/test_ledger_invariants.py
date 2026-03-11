@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytest
 from psycopg.rows import dict_row
 
+from libs.domain.errors import InvalidStateError
 from libs.domain.ledger import FinanceService
 from tests.helpers import create_account, create_listing, create_shop, create_user
 
@@ -136,14 +137,7 @@ async def test_ledger_flows_keep_global_balance_and_double_entry_invariant(db_po
     )
     assert withdrawal.created is True
 
-    approved = await service.approve_withdrawal_request(
-        request_id=withdrawal.withdrawal_request_id,
-        admin_user_id=admin_id,
-        idempotency_key="withdraw-approve-2",
-    )
-    assert approved.changed is True
-
-    sent = await service.mark_withdrawal_sent(
+    sent = await service.complete_withdrawal_request(
         request_id=withdrawal.withdrawal_request_id,
         admin_user_id=admin_id,
         pending_account_id=buyer_pending_account_id,
@@ -189,7 +183,7 @@ async def test_ledger_flows_keep_global_balance_and_double_entry_invariant(db_po
                 (reservation.assignment_id,),
             )
             assignment_row = await cur.fetchone()
-            assert assignment_row["status"] == "eligible_for_withdrawal"
+            assert assignment_row["status"] == "withdraw_sent"
 
             await cur.execute(
                 "SELECT status FROM withdrawal_requests WHERE id = %s",
@@ -309,6 +303,104 @@ async def test_reject_withdrawal_persists_reason_note(db_pool) -> None:
     detail = await service.get_withdrawal_request_detail(request_id=request.withdrawal_request_id)
     assert detail.status == "rejected"
     assert detail.note == "invalid payout address"
+
+
+@pytest.mark.asyncio
+async def test_buyer_cancel_withdrawal_returns_funds_and_marks_cancelled(db_pool) -> None:
+    service = FinanceService(db_pool)
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            buyer_id = await create_user(
+                conn,
+                telegram_id=3921,
+                role="buyer",
+                username="buyer_cancel",
+            )
+            buyer_available_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_available",
+                account_kind="buyer_available",
+                balance=Decimal("3.000000"),
+            )
+            buyer_pending_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_withdraw_pending",
+                account_kind="buyer_withdraw_pending",
+                balance=Decimal("0.000000"),
+            )
+
+    request = await service.create_withdrawal_request(
+        buyer_user_id=buyer_id,
+        from_account_id=buyer_available_account_id,
+        pending_account_id=buyer_pending_account_id,
+        amount_usdt=Decimal("1.500000"),
+        payout_address="UQ_CANCEL_TEST",
+        idempotency_key="withdraw-cancel-1",
+    )
+
+    cancelled = await service.cancel_withdrawal_request(
+        request_id=request.withdrawal_request_id,
+        buyer_user_id=buyer_id,
+        idempotency_key="withdraw-cancel-1:cancel",
+    )
+    assert cancelled.changed is True
+
+    snapshot = await service.get_buyer_balance_snapshot(buyer_user_id=buyer_id)
+    assert snapshot.buyer_available_usdt == Decimal("3.000000")
+    assert snapshot.buyer_withdraw_pending_usdt == Decimal("0.000000")
+
+    detail = await service.get_withdrawal_request_detail(request_id=request.withdrawal_request_id)
+    assert detail.status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_buyer_cannot_create_second_active_withdrawal_request(db_pool) -> None:
+    service = FinanceService(db_pool)
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            buyer_id = await create_user(
+                conn,
+                telegram_id=3922,
+                role="buyer",
+                username="buyer_active_once",
+            )
+            buyer_available_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_available",
+                account_kind="buyer_available",
+                balance=Decimal("5.000000"),
+            )
+            buyer_pending_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_withdraw_pending",
+                account_kind="buyer_withdraw_pending",
+                balance=Decimal("0.000000"),
+            )
+
+    await service.create_withdrawal_request(
+        buyer_user_id=buyer_id,
+        from_account_id=buyer_available_account_id,
+        pending_account_id=buyer_pending_account_id,
+        amount_usdt=Decimal("1.000000"),
+        payout_address="UQ_ACTIVE_1",
+        idempotency_key="withdraw-active-1",
+    )
+
+    with pytest.raises(InvalidStateError, match="active withdrawal request"):
+        await service.create_withdrawal_request(
+            buyer_user_id=buyer_id,
+            from_account_id=buyer_available_account_id,
+            pending_account_id=buyer_pending_account_id,
+            amount_usdt=Decimal("1.000000"),
+            payout_address="UQ_ACTIVE_2",
+            idempotency_key="withdraw-active-2",
+        )
 
 
 @pytest.mark.asyncio

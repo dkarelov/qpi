@@ -132,20 +132,25 @@ Persistence and schema:
 - Verification token must be submitted within 4 hours of reservation.
 - `order_id` is globally unique (`1 order_id = 1 slot`).
 - Buyer can cancel purchase in pre-submit states (`reserved`, `order_submitted`).
+- Validation must happen as early as possible in buyer flows and still be rechecked at final write/transfer time.
+- Buyer can have at most one active withdrawal request at a time.
+- Buyer can cancel their own withdrawal request while it is still pending admin action and then create a new one.
+- Buyer withdrawal address must pass TonAPI parse validation for TON mainnet before the request is created.
 - One buyer cannot repeatedly buy the same target item:
   - duplicate reserve attempts are blocked,
   - already-bought item is not treated as a new available task.
 
 ### 4.3 Assignment lifecycle rules
 
-Active states:
+In-progress states:
 
 - `reserved`
 - `order_submitted`
 - `order_verified`
 - `picked_up_wait_unlock`
-- `eligible_for_withdrawal`
-- `withdraw_pending_admin`
+
+Completed visible state:
+
 - `withdraw_sent`
 
 Terminal/error states:
@@ -162,15 +167,20 @@ Transitions:
 - WB event `Продажа` transitions to `picked_up_wait_unlock` and sets unlock time `pickup + 15d`.
 - WB event `Возврат` within unlock window transitions to `returned_within_14d`.
 - `order_verified -> delivery_expired` after 60 days without pickup.
-- Unlock timer transitions to `eligible_for_withdrawal`.
+- Unlock timer credits buyer balance and transitions assignment to `withdraw_sent` (`Выплачен`).
 
 ### 4.4 Admin and finance rules
 
 - Admin operations are Telegram-driven and auditable.
 - Withdrawals require admin decision path:
   - open request,
-  - approve/reject,
-  - mark sent with tx hash.
+  - reject with reason, or
+  - enter tx hash for a completed transfer.
+- Withdrawal completion is single-step:
+  - admin enters tx hash only after sending funds,
+  - bot verifies the tx hash on-chain against the configured TON USDT payout wallet, buyer address, and exact amount,
+  - only a verified tx completes the request,
+  - failed/missing tx verification leaves the request pending for retry.
 - Manual deposit is supported for exception handling/bonuses/corrections.
 - Manual deposit input supports role aliases:
   - `seller` maps to `seller_available`,
@@ -268,17 +278,20 @@ Transitions:
   - buyer shop catalog uses a numbered, paginated listing list; number buttons open the detail card, and the catalog itself does not show direct `Просмотр` / `Купить` buttons,
   - buyer can remove a shop only from their own saved-shop list, and removal is blocked while that shop has an unfinished buyer purchase,
   - if a shop has no other buyer-visible listings but the buyer already has an active purchase there, the shop screen shows a `Покупки` shortcut instead of a dead end,
-  - purchase list uses store title (not slug), shows only in-progress purchases, and shows fields in order: `Товар`, `Магазин`, `Кэшбэк`, optional `Номер заказа`, `Статус`,
-  - purchase status line includes color markers: red for `Ожидает заказа`, yellow for `Заказан`, green for `Выкуплен`,
+  - purchase list uses store title (not slug), shows in-progress and paid purchases, and shows fields in order: `Товар`, `Магазин`, `Кэшбэк`, optional `Номер заказа`, `Статус`,
+  - purchase status line includes color markers: red for `Ожидает заказа`, yellow for `Заказан`, green for `Выкуплен` / `Выплачен`,
   - dashboard purchase counters are grouped as `ожидают заказа`, `заказаны`, `выкуплены`,
   - buyer dashboard `Баланс` equals withdrawable amount only,
   - buyer balance screen shows only `Доступно для вывода` and `В процессе вывода`,
+  - if the buyer already has an active withdrawal request, new withdrawal actions are hidden and the screen shows that request plus a cancel action,
+  - buyer withdrawal history is full paginated history with `<` / `>` navigation, timestamps, comments, and tx hash when available,
   - irrelevant actions must be hidden when they cannot be used in the current state (for example withdrawal buttons when withdrawable balance is zero),
   - purchase flow contains explicit submit-token and cancel-purchase actions.
 - All user-facing timestamps are rendered in `MSK` (`Europe/Moscow`).
 - Admin UX:
   - `Выводы`, `Депозиты`, `Исключения` sections.
-- Sensitive inputs (tokens, payloads, withdrawal addresses) are deleted when possible.
+- Admin withdrawals section contains pending/actionable requests and processed-history access.
+- Sensitive inputs (tokens, payloads) are deleted when possible.
 
 ### 4.8 Money, precision, and FX rules
 

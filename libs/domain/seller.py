@@ -35,8 +35,6 @@ _OPEN_ASSIGNMENT_STATES = (
     "order_submitted",
     "order_verified",
     "picked_up_wait_unlock",
-    "eligible_for_withdrawal",
-    "withdraw_pending_admin",
 )
 _MANUAL_SOURCE = "manual"
 _SCRAPPER_WITHDRAWN_SOURCE = "scrapper_401_withdrawn"
@@ -1528,10 +1526,10 @@ class SellerService:
             await cur.execute(
                 """
                 UPDATE assignments
-                SET status = 'eligible_for_withdrawal',
+                SET status = 'withdraw_sent',
                     updated_at = timezone('utc', now())
                 WHERE id = %s
-                  AND status <> 'eligible_for_withdrawal'
+                  AND status <> 'withdraw_sent'
                 """,
                 (hold["assignment_id"],),
             )

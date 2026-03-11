@@ -13,8 +13,6 @@ _ACTIVE_ASSIGNMENT_STATUSES = (
     "order_submitted",
     "order_verified",
     "picked_up_wait_unlock",
-    "eligible_for_withdrawal",
-    "withdraw_pending_admin",
     "withdraw_sent",
 )
 _LISTING_JSON_COLUMNS = (
@@ -228,8 +226,6 @@ def _ensure_assignments_wb_product_id(cur: psycopg.Cursor) -> None:
                         'order_submitted'::text,
                         'order_verified'::text,
                         'picked_up_wait_unlock'::text,
-                        'eligible_for_withdrawal'::text,
-                        'withdraw_pending_admin'::text,
                         'withdraw_sent'::text
                     ]
                 )
@@ -264,6 +260,58 @@ def _ensure_buyer_orders_wb_product_id(cur: psycopg.Cursor) -> None:
         )
 
     cur.execute("ALTER TABLE public.buyer_orders ALTER COLUMN wb_product_id SET NOT NULL")
+
+
+def _normalize_withdrawal_and_assignment_statuses(cur: psycopg.Cursor) -> None:
+    if _table_exists(cur, table_name="withdrawal_requests"):
+        cur.execute(
+            """
+            UPDATE public.withdrawal_requests
+            SET status = 'withdraw_pending_admin'
+            WHERE status = 'approved'
+            """
+        )
+        cur.execute(
+            """
+            SELECT buyer_user_id, COUNT(*)
+            FROM public.withdrawal_requests
+            WHERE status = 'withdraw_pending_admin'
+            GROUP BY buyer_user_id
+            HAVING COUNT(*) > 1
+            LIMIT 1
+            """
+        )
+        duplicate_pending_row = cur.fetchone()
+        if duplicate_pending_row is not None:
+            buyer_user_id, duplicate_count = duplicate_pending_row
+            raise RuntimeError(
+                "runtime schema compatibility failed: duplicate pending withdrawal requests "
+                f"for buyer_user_id={buyer_user_id}, count={duplicate_count}"
+            )
+
+        if not _index_exists(cur, index_name="uq_withdrawal_requests_buyer_active"):
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX uq_withdrawal_requests_buyer_active
+                ON public.withdrawal_requests USING btree (buyer_user_id)
+                WHERE (status = 'withdraw_pending_admin'::text)
+                """
+            )
+
+    if _table_exists(cur, table_name="assignments"):
+        cur.execute(
+            """
+            UPDATE public.assignments
+            SET status = 'withdraw_sent',
+                updated_at = timezone('utc', now())
+            WHERE status = ANY (
+                ARRAY[
+                    'eligible_for_withdrawal'::text,
+                    'withdraw_pending_admin'::text
+                ]
+            )
+            """
+        )
 
 
 def _ensure_wb_report_rows_wb_srid(cur: psycopg.Cursor) -> None:
@@ -325,6 +373,7 @@ def apply_runtime_schema_compatibility(database_url: str) -> None:
             _ensure_listing_metadata_columns(cur)
             _ensure_assignments_wb_product_id(cur)
             _ensure_buyer_orders_wb_product_id(cur)
+            _normalize_withdrawal_and_assignment_statuses(cur)
             _ensure_wb_report_rows_wb_srid(cur)
         conn.commit()
 

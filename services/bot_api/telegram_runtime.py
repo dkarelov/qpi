@@ -36,6 +36,7 @@ from libs.domain.fx_rates import FxRateService
 from libs.domain.ledger import FinanceService
 from libs.domain.seller import SellerService
 from libs.integrations.fx_rates import CoinGeckoUsdtRubClient
+from libs.integrations.tonapi import TonapiApiError, TonapiClient
 from libs.integrations.wb import WbPingClient
 from libs.integrations.wb_public import (
     WbObservedBuyerPrice,
@@ -94,6 +95,8 @@ _LISTING_COLLATERAL_FEE_MULTIPLIER = Decimal("1.01")
 _BUYER_TASK_COMPANION_PRODUCTS = 1
 _NUMBERED_PAGE_SIZE = 10
 _MSK_TZ = ZoneInfo("Europe/Moscow")
+_TON_FRIENDLY_MAINNET_PREFIXES = frozenset({"E", "U"})
+_TON_FRIENDLY_TESTNET_PREFIXES = frozenset({"k", "0"})
 
 _SELLER_COMMAND_PREFIXES = (
     "/shop_",
@@ -225,6 +228,8 @@ class TelegramWebhookRuntime:
         self._buyer_processor: BuyerCommandProcessor | None = None
         self._wb_ping_client: WbPingClient | None = None
         self._wb_public_client: WbPublicCatalogClient | None = None
+        self._tonapi_client: TonapiClient | None = None
+        self._payout_wallet_raw_form: str | None = None
         self._display_rub_per_usdt = settings.display_rub_per_usdt
 
     def run(self) -> None:
@@ -328,6 +333,13 @@ class TelegramWebhookRuntime:
                 orders_timeout_seconds=self._settings.wb_orders_timeout_seconds,
                 orders_lookback_days=self._settings.wb_orders_lookback_days,
             )
+            self._tonapi_client = TonapiClient(
+                base_url=self._settings.tonapi_base_url,
+                api_key=self._settings.tonapi_api_key,
+                timeout_seconds=self._settings.tonapi_timeout_seconds,
+                unauth_min_interval_seconds=self._settings.tonapi_unauth_min_interval_seconds,
+            )
+            self._payout_wallet_raw_form = None
             self._seller_processor = SellerCommandProcessor(
                 seller_service=self._seller_service,
                 wb_ping_client=wb_ping_client,
@@ -1257,11 +1269,7 @@ class TelegramWebhookRuntime:
                         ) AS in_progress,
                         COALESCE(
                             COUNT(*) FILTER (
-                                WHERE a.status IN (
-                                    'eligible_for_withdrawal',
-                                    'withdraw_pending_admin',
-                                    'withdraw_sent'
-                                )
+                                WHERE a.status = 'withdraw_sent'
                             ),
                             0
                         ) AS completed,
@@ -3419,6 +3427,31 @@ class TelegramWebhookRuntime:
             )
             return
         if action == "withdraw_prompt_amount":
+            active_request = await self._finance_service.get_active_buyer_withdrawal_request(
+                buyer_user_id=buyer.user_id
+            )
+            if active_request is not None:
+                await self._replace_message(
+                    query_message,
+                    (
+                        "У вас уже есть активная заявка на вывод. "
+                        "Откройте баланс и отмените ее, если нужно создать новую."
+                    ),
+                    InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text="↩️ Назад к балансу",
+                                    callback_data=build_callback(
+                                        flow=_ROLE_BUYER,
+                                        action="balance",
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
+                )
+                return
             self._set_prompt(
                 context,
                 role=_ROLE_BUYER,
@@ -3434,6 +3467,155 @@ class TelegramWebhookRuntime:
                         [
                             InlineKeyboardButton(
                                 text="↩️ Назад к балансу",
+                                callback_data=build_callback(
+                                    flow=_ROLE_BUYER,
+                                    action="balance",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
+            )
+            return
+        if action == "withdraw_cancel_prompt":
+            if not payload.entity_id:
+                await self._replace_message(
+                    query_message,
+                    "Не удалось определить заявку на вывод. Откройте баланс заново.",
+                    InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text="↩️ Назад к балансу",
+                                    callback_data=build_callback(
+                                        flow=_ROLE_BUYER,
+                                        action="balance",
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
+                )
+                return
+            detail = await self._finance_service.get_withdrawal_request_detail(
+                request_id=int(payload.entity_id)
+            )
+            if detail.buyer_user_id != buyer.user_id or detail.status != "withdraw_pending_admin":
+                await self._replace_message(
+                    query_message,
+                    "Эту заявку уже нельзя отменить.",
+                    InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text="↩️ Назад к балансу",
+                                    callback_data=build_callback(
+                                        flow=_ROLE_BUYER,
+                                        action="balance",
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
+                )
+                return
+            await self._replace_message(
+                query_message,
+                self._screen_text(
+                    title="Отмена вывода",
+                    cta="Подтвердите действие ниже.",
+                    lines=[
+                        (
+                            "<b>Сумма:</b> "
+                            f"{self._format_usdt_value(detail.amount_usdt, precise=True)} USDT"
+                        ),
+                        f"<b>Адрес:</b> {html.escape(detail.payout_address)}",
+                        "Средства вернутся в доступный баланс покупателя.",
+                    ],
+                ),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="✅ Отменить заявку",
+                                callback_data=build_callback(
+                                    flow=_ROLE_BUYER,
+                                    action="withdraw_cancel_confirm",
+                                    entity_id=str(detail.withdrawal_request_id),
+                                ),
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к балансу",
+                                callback_data=build_callback(
+                                    flow=_ROLE_BUYER,
+                                    action="balance",
+                                ),
+                            )
+                        ],
+                    ]
+                ),
+                parse_mode="HTML",
+            )
+            return
+        if action == "withdraw_cancel_confirm":
+            if not payload.entity_id:
+                await self._replace_message(
+                    query_message,
+                    "Не удалось определить заявку на вывод. Откройте баланс заново.",
+                    InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text="↩️ Назад к балансу",
+                                    callback_data=build_callback(
+                                        flow=_ROLE_BUYER,
+                                        action="balance",
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
+                )
+                return
+            try:
+                result = await self._finance_service.cancel_withdrawal_request(
+                    request_id=int(payload.entity_id),
+                    buyer_user_id=buyer.user_id,
+                    idempotency_key=f"tg-buyer-withdraw-cancel:{buyer.user_id}:{payload.entity_id}",
+                )
+            except (NotFoundError, InvalidStateError):
+                await self._replace_message(
+                    query_message,
+                    "Эту заявку уже нельзя отменить.",
+                    InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text="↩️ Назад к балансу",
+                                    callback_data=build_callback(
+                                        flow=_ROLE_BUYER,
+                                        action="balance",
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
+                )
+                return
+            await self._replace_message(
+                query_message,
+                (
+                    "Заявка на вывод отменена. Средства вернулись в доступный баланс."
+                    if result.changed
+                    else "Заявка уже была отменена ранее."
+                ),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="💳 Баланс и вывод",
                                 callback_data=build_callback(
                                     flow=_ROLE_BUYER,
                                     action="balance",
@@ -4149,23 +4331,56 @@ class TelegramWebhookRuntime:
         snapshot = await self._finance_service.get_buyer_balance_snapshot(
             buyer_user_id=buyer_user_id
         )
+        active_request = await self._finance_service.get_active_buyer_withdrawal_request(
+            buyer_user_id=buyer_user_id
+        )
+        lines = [
+            (
+                "<b>Доступно для вывода:</b> "
+                f"{self._format_usdt_with_rub(snapshot.buyer_available_usdt)}"
+            ),
+            (
+                "<b>В процессе вывода:</b> "
+                f"{self._format_usdt_with_rub(snapshot.buyer_withdraw_pending_usdt)}"
+            ),
+        ]
+        if active_request is not None:
+            lines.append(
+                "\n".join(
+                    [
+                        f"<b>Активная заявка #{active_request.withdrawal_request_id}</b>",
+                        (
+                            "<b>Сумма:</b> "
+                            f"{self._format_usdt_value(active_request.amount_usdt, precise=True)}"
+                            " USDT"
+                        ),
+                        f"<b>Статус:</b> {self._withdraw_status_badge(active_request.status)}",
+                        f"<b>Адрес:</b> {html.escape(active_request.payout_address)}",
+                        f"<b>Создана:</b> {self._format_datetime_msk(active_request.requested_at)}",
+                    ]
+                )
+            )
         text = self._screen_text(
             title="Баланс покупателя",
             cta="Выберите следующее действие ниже.",
-            lines=[
-                (
-                    "<b>Доступно для вывода:</b> "
-                    f"{self._format_usdt_with_rub(snapshot.buyer_available_usdt)}"
-                ),
-                (
-                    "<b>В процессе вывода:</b> "
-                    f"{self._format_usdt_with_rub(snapshot.buyer_withdraw_pending_usdt)}"
-                ),
-            ],
+            lines=lines,
             separate_blocks=True,
         )
         keyboard_rows: list[list[InlineKeyboardButton]] = []
-        if snapshot.buyer_available_usdt > Decimal("0.000000"):
+        if active_request is not None:
+            keyboard_rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="🚫 Отменить заявку",
+                        callback_data=build_callback(
+                            flow=_ROLE_BUYER,
+                            action="withdraw_cancel_prompt",
+                            entity_id=str(active_request.withdrawal_request_id),
+                        ),
+                    )
+                ]
+            )
+        elif snapshot.buyer_available_usdt > Decimal("0.000000"):
             keyboard_rows.extend(
                 [
                     [
@@ -4221,6 +4436,32 @@ class TelegramWebhookRuntime:
         query_message: Message | None,
         buyer_user_id: int,
     ) -> None:
+        active_request = await self._finance_service.get_active_buyer_withdrawal_request(
+            buyer_user_id=buyer_user_id
+        )
+        if active_request is not None:
+            await self._replace_message(
+                query_message,
+                (
+                    "У вас уже есть активная заявка на вывод. "
+                    "Дождитесь обработки или отмените ее на экране баланса."
+                ),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к балансу",
+                                callback_data=build_callback(
+                                    flow=_ROLE_BUYER,
+                                    action="balance",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
+            )
+            return
+
         snapshot = await self._finance_service.get_buyer_balance_snapshot(
             buyer_user_id=buyer_user_id
         )
@@ -4249,7 +4490,7 @@ class TelegramWebhookRuntime:
             context,
             role=_ROLE_BUYER,
             prompt_type="buyer_withdraw_address",
-            sensitive=True,
+            sensitive=False,
             extra={
                 "buyer_user_id": buyer_user_id,
                 "amount_usdt": str(amount),
@@ -4258,7 +4499,7 @@ class TelegramWebhookRuntime:
         await self._replace_message(
             query_message,
             (
-                "Введите адрес кошелька для вывода "
+                "Введите адрес кошелька в сети TON для вывода "
                 f"{self._format_usdt_value(amount, precise=True)} USDT."
             ),
             InlineKeyboardMarkup(
@@ -4280,10 +4521,10 @@ class TelegramWebhookRuntime:
         buyer_user_id: int,
         page: int = 1,
     ) -> None:
-        history = await self._finance_service.list_buyer_withdrawal_history(
+        total_items = await self._finance_service.count_buyer_withdrawal_history(
             buyer_user_id=buyer_user_id
         )
-        if not history:
+        if total_items < 1:
             await self._replace_message(
                 query_message,
                 self._screen_text(
@@ -4310,28 +4551,42 @@ class TelegramWebhookRuntime:
             return
 
         resolved_page, total_pages, start_index, end_index = self._resolve_numbered_page(
-            total_items=len(history),
+            total_items=total_items,
             requested_page=page,
             page_size=8,
         )
+        history = await self._finance_service.list_buyer_withdrawal_history(
+            buyer_user_id=buyer_user_id,
+            limit=end_index - start_index,
+            offset=start_index,
+        )
         lines: list[str] = []
-        for item in history[start_index:end_index]:
-            block = (
-                f"<b>Вывод</b>\n"
-                f"<b>Сумма:</b> {self._format_usdt_value(item.amount_usdt, precise=True)} USDT\n"
-                f"<b>Статус:</b> {self._withdraw_status_badge(item.status)}\n"
-                f"<b>Адрес:</b> {html.escape(item.payout_address)}"
-            )
+        for item in history:
+            block_lines = [
+                f"<b>Вывод #{item.withdrawal_request_id}</b>",
+                f"<b>Сумма:</b> {self._format_usdt_value(item.amount_usdt, precise=True)} USDT",
+                f"<b>Статус:</b> {self._withdraw_status_badge(item.status)}",
+                f"<b>Адрес:</b> {html.escape(item.payout_address)}",
+                f"<b>Создана:</b> {self._format_datetime_msk(item.requested_at)}",
+            ]
+            if item.processed_at is not None:
+                block_lines.append(
+                    f"<b>Обработана:</b> {self._format_datetime_msk(item.processed_at)}"
+                )
+            if item.sent_at is not None:
+                block_lines.append(f"<b>Отправлена:</b> {self._format_datetime_msk(item.sent_at)}")
+            if item.note:
+                block_lines.append(f"<b>Комментарий:</b> {html.escape(item.note)}")
             if item.tx_hash:
-                block += f"\n<b>Хэш перевода:</b> {html.escape(item.tx_hash)}"
-            lines.append(block)
+                block_lines.append(f"<b>Хэш перевода:</b> {html.escape(item.tx_hash)}")
+            lines.append("\n".join(block_lines))
         keyboard_rows: list[list[InlineKeyboardButton]] = []
         if total_pages > 1:
             nav_row: list[InlineKeyboardButton] = []
             if resolved_page > 1:
                 nav_row.append(
                     InlineKeyboardButton(
-                        text="⬅️",
+                        text="<",
                         callback_data=build_callback(
                             flow=_ROLE_BUYER,
                             action="withdraw_history",
@@ -4342,7 +4597,7 @@ class TelegramWebhookRuntime:
             if resolved_page < total_pages:
                 nav_row.append(
                     InlineKeyboardButton(
-                        text="➡️",
+                        text=">",
                         callback_data=build_callback(
                             flow=_ROLE_BUYER,
                             action="withdraw_history",
@@ -4452,17 +4707,29 @@ class TelegramWebhookRuntime:
             self._screen_text(
                 title="Выводы",
                 cta="Выберите действие ниже.",
-                lines=["Раздел для обработки заявок на вывод."],
-                note="Откройте очередь или перейдите к конкретной заявке по номеру.",
+                lines=["Раздел для обработки и проверки заявок на вывод."],
+                note=(
+                    "Откройте ожидающие заявки, историю "
+                    "или перейдите к конкретной заявке по номеру."
+                ),
             ),
             InlineKeyboardMarkup(
                 [
                     [
                         InlineKeyboardButton(
-                            text="📋 Очередь заявок",
+                            text="📋 Ожидают обработки",
                             callback_data=build_callback(
                                 flow=_ROLE_ADMIN,
                                 action="withdrawals",
+                            ),
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="🧾 История выводов",
+                            callback_data=build_callback(
+                                flow=_ROLE_ADMIN,
+                                action="withdrawals_history",
                             ),
                         )
                     ],
@@ -4527,16 +4794,25 @@ class TelegramWebhookRuntime:
         )
 
     async def _render_admin_pending_withdrawals(self, *, query_message: Message | None) -> None:
-        pending = await self._finance_service.list_pending_withdrawals()
+        pending = await self._finance_service.list_pending_withdrawals(limit=1000)
         if not pending:
             await self._replace_message(
                 query_message,
                 self._screen_text(
-                    title="Выводы",
+                    title="Ожидают обработки",
                     lines=["Очередь вывода пуста."],
                 ),
                 InlineKeyboardMarkup(
                     [
+                        [
+                            InlineKeyboardButton(
+                                text="🧾 История выводов",
+                                callback_data=build_callback(
+                                    flow=_ROLE_ADMIN,
+                                    action="withdrawals_history",
+                                ),
+                            )
+                        ],
                         [
                             InlineKeyboardButton(
                                 text="🔎 Открыть заявку по номеру",
@@ -4586,10 +4862,10 @@ class TelegramWebhookRuntime:
         keyboard_rows.append(
             [
                 InlineKeyboardButton(
-                    text="🏦 Ручное пополнение",
+                    text="🧾 История выводов",
                     callback_data=build_callback(
                         flow=_ROLE_ADMIN,
-                        action="manual_deposit_prompt",
+                        action="withdrawals_history",
                     ),
                 )
             ]
@@ -4604,7 +4880,121 @@ class TelegramWebhookRuntime:
         )
         await self._replace_message(
             query_message,
-            self._screen_text(title="Очередь вывода", lines=lines),
+            self._screen_text(title="Ожидают обработки", lines=lines),
+            InlineKeyboardMarkup(keyboard_rows),
+            parse_mode="HTML",
+        )
+
+    async def _render_admin_processed_withdrawals(
+        self,
+        *,
+        query_message: Message | None,
+        page: int = 1,
+    ) -> None:
+        total_items = await self._finance_service.count_processed_withdrawals()
+        if total_items < 1:
+            await self._replace_message(
+                query_message,
+                self._screen_text(
+                    title="История выводов",
+                    lines=["Обработанных выводов пока нет."],
+                ),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад",
+                                callback_data=build_callback(
+                                    flow=_ROLE_ADMIN,
+                                    action="withdrawals_section",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
+                parse_mode="HTML",
+            )
+            return
+
+        resolved_page, total_pages, start_index, end_index = self._resolve_numbered_page(
+            total_items=total_items,
+            requested_page=page,
+            page_size=8,
+        )
+        history = await self._finance_service.list_processed_withdrawals(
+            limit=end_index - start_index,
+            offset=start_index,
+        )
+        lines: list[str] = []
+        for item in history:
+            block_lines = [
+                f"<b>Заявка #{item.withdrawal_request_id}</b>",
+                (
+                    f"Покупатель: {item.buyer_telegram_id} "
+                    f"(@{html.escape(item.buyer_username or '-')})"
+                ),
+                f"Сумма: {self._format_usdt_value(item.amount_usdt, precise=True)} USDT",
+                f"Статус: {self._withdraw_status_badge(item.status)}",
+                f"Кошелек: {html.escape(item.payout_address)}",
+                f"Создана: {self._format_datetime_msk(item.requested_at)}",
+            ]
+            if item.processed_at:
+                block_lines.append(f"Обработана: {self._format_datetime_msk(item.processed_at)}")
+            if item.sent_at:
+                block_lines.append(f"Отправлена: {self._format_datetime_msk(item.sent_at)}")
+            if item.note:
+                block_lines.append(f"Комментарий: {html.escape(item.note)}")
+            if item.tx_hash:
+                block_lines.append(f"Хэш перевода: {html.escape(item.tx_hash)}")
+            lines.append("\n".join(block_lines))
+
+        keyboard_rows: list[list[InlineKeyboardButton]] = []
+        if total_pages > 1:
+            nav_row: list[InlineKeyboardButton] = []
+            if resolved_page > 1:
+                nav_row.append(
+                    InlineKeyboardButton(
+                        text="<",
+                        callback_data=build_callback(
+                            flow=_ROLE_ADMIN,
+                            action="withdrawals_history",
+                            entity_id=str(resolved_page - 1),
+                        ),
+                    )
+                )
+            if resolved_page < total_pages:
+                nav_row.append(
+                    InlineKeyboardButton(
+                        text=">",
+                        callback_data=build_callback(
+                            flow=_ROLE_ADMIN,
+                            action="withdrawals_history",
+                            entity_id=str(resolved_page + 1),
+                        ),
+                    )
+                )
+            if nav_row:
+                keyboard_rows.append(nav_row)
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    text="↩️ Назад",
+                    callback_data=build_callback(flow=_ROLE_ADMIN, action="withdrawals_section"),
+                )
+            ]
+        )
+        await self._replace_message(
+            query_message,
+            self._screen_text(
+                title=(
+                    f"История выводов · стр. {resolved_page}/{total_pages}"
+                    if total_pages > 1
+                    else "История выводов"
+                ),
+                cta="Проверьте обработанные заявки ниже.",
+                lines=lines,
+                separate_blocks=True,
+            ),
             InlineKeyboardMarkup(keyboard_rows),
             parse_mode="HTML",
         )
@@ -4653,31 +5043,10 @@ class TelegramWebhookRuntime:
             keyboard_rows.append(
                 [
                     InlineKeyboardButton(
-                        text="✅ Одобрить",
+                        text="✅ Подтвердить перевод",
                         callback_data=build_callback(
                             flow=_ROLE_ADMIN,
-                            action="withdrawal_approve",
-                            entity_id=str(detail.withdrawal_request_id),
-                        ),
-                    ),
-                    InlineKeyboardButton(
-                        text="❌ Отклонить",
-                        callback_data=build_callback(
-                            flow=_ROLE_ADMIN,
-                            action="withdrawal_reject_prompt",
-                            entity_id=str(detail.withdrawal_request_id),
-                        ),
-                    ),
-                ]
-            )
-        elif detail.status == "approved":
-            keyboard_rows.append(
-                [
-                    InlineKeyboardButton(
-                        text="📤 Отметить как отправлено",
-                        callback_data=build_callback(
-                            flow=_ROLE_ADMIN,
-                            action="withdrawal_sent_prompt",
+                            action="withdrawal_complete_prompt",
                             entity_id=str(detail.withdrawal_request_id),
                         ),
                     ),
@@ -4694,8 +5063,8 @@ class TelegramWebhookRuntime:
         keyboard_rows.append(
             [
                 InlineKeyboardButton(
-                    text="↩️ К очереди",
-                    callback_data=build_callback(flow=_ROLE_ADMIN, action="withdrawals"),
+                    text="↩️ К выводам",
+                    callback_data=build_callback(flow=_ROLE_ADMIN, action="withdrawals_section"),
                 )
             ]
         )
@@ -4704,47 +5073,6 @@ class TelegramWebhookRuntime:
             self._screen_text(title=f"Заявка #{detail.withdrawal_request_id}", lines=lines),
             InlineKeyboardMarkup(keyboard_rows),
             parse_mode="HTML",
-        )
-
-    async def _execute_admin_withdraw_approve(
-        self,
-        *,
-        context: ContextTypes.DEFAULT_TYPE,
-        query_message: Message | None,
-        admin_user_id: int,
-        request_id: int,
-    ) -> None:
-        try:
-            result = await self._finance_service.approve_withdrawal_request(
-                request_id=request_id,
-                admin_user_id=admin_user_id,
-                idempotency_key=f"tg-admin-approve:{admin_user_id}:{request_id}",
-            )
-        except (NotFoundError, InvalidStateError):
-            await self._replace_message(
-                query_message,
-                "Не удалось одобрить заявку. Обновите список и попробуйте снова.",
-            )
-            return
-
-        detail = await self._finance_service.get_withdrawal_request_detail(request_id=request_id)
-        if result.changed:
-            await self._notify_buyer_withdraw_status(
-                context=context,
-                buyer_telegram_id=detail.buyer_telegram_id,
-                message=(
-                    f"Ваша заявка #{request_id} одобрена.\n"
-                    f"Сумма: {self._format_usdt_value(detail.amount_usdt, precise=True)} USDT."
-                ),
-            )
-        self._logger.info(
-            "admin_withdraw_approved",
-            withdrawal_request_id=request_id,
-            changed=result.changed,
-        )
-        await self._render_admin_withdrawal_detail(
-            query_message=query_message,
-            request_id=request_id,
         )
 
     async def _execute_admin_withdraw_reject(
@@ -4795,7 +5123,7 @@ class TelegramWebhookRuntime:
             request_id=request_id,
         )
 
-    async def _execute_admin_withdraw_sent(
+    async def _execute_admin_withdraw_complete(
         self,
         *,
         context: ContextTypes.DEFAULT_TYPE,
@@ -4803,26 +5131,57 @@ class TelegramWebhookRuntime:
         admin_user_id: int,
         request_id: int,
         tx_hash: str,
-    ) -> None:
+    ) -> bool:
         try:
             detail = await self._finance_service.get_withdrawal_request_detail(
                 request_id=request_id
             )
+            validation_error = await self._validate_withdrawal_completion_tx(
+                tx_hash=tx_hash,
+                payout_address=detail.payout_address,
+                amount_usdt=detail.amount_usdt,
+            )
+            if validation_error is not None:
+                await self._replace_message(
+                    query_message,
+                    validation_error,
+                    InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text="↩️ К заявке",
+                                    callback_data=build_callback(
+                                        flow=_ROLE_ADMIN,
+                                        action="withdrawal_detail",
+                                        entity_id=str(request_id),
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
+                )
+                return False
             system_payout_account_id = await self._ensure_system_payout_account_id()
-            result = await self._finance_service.mark_withdrawal_sent(
+            result = await self._finance_service.complete_withdrawal_request(
                 request_id=request_id,
                 admin_user_id=admin_user_id,
                 pending_account_id=detail.to_account_id,
                 system_payout_account_id=system_payout_account_id,
                 tx_hash=tx_hash,
-                idempotency_key=f"tg-admin-sent:{admin_user_id}:{request_id}",
+                idempotency_key=f"tg-admin-complete:{admin_user_id}:{request_id}",
             )
+        except TonapiApiError:
+            await self._replace_message(
+                query_message,
+                "Не удалось проверить перевод через TonAPI. Повторите попытку позже.",
+            )
+            return False
         except (NotFoundError, InvalidStateError):
             await self._replace_message(
                 query_message,
-                "Не удалось отметить заявку как отправленную. Обновите список и попробуйте снова.",
+                "Не удалось завершить заявку. Обновите список и попробуйте снова.",
             )
-            return
+            return False
 
         refreshed = await self._finance_service.get_withdrawal_request_detail(request_id=request_id)
         if result.changed:
@@ -4835,7 +5194,7 @@ class TelegramWebhookRuntime:
                 ),
             )
         self._logger.info(
-            "admin_withdraw_sent",
+            "admin_withdraw_completed",
             withdrawal_request_id=request_id,
             changed=result.changed,
         )
@@ -4843,6 +5202,7 @@ class TelegramWebhookRuntime:
             query_message=query_message,
             request_id=request_id,
         )
+        return True
 
     async def _execute_admin_manual_deposit(
         self,
@@ -5243,6 +5603,12 @@ class TelegramWebhookRuntime:
         if action == "withdrawals":
             await self._render_admin_pending_withdrawals(query_message=query_message)
             return
+        if action == "withdrawals_history":
+            await self._render_admin_processed_withdrawals(
+                query_message=query_message,
+                page=self._coerce_page_number(payload.entity_id),
+            )
+            return
         if action == "withdrawal_detail":
             if not payload.entity_id:
                 await self._replace_message(
@@ -5253,21 +5619,6 @@ class TelegramWebhookRuntime:
                 return
             await self._render_admin_withdrawal_detail(
                 query_message=query_message,
-                request_id=int(payload.entity_id),
-            )
-            return
-        if action == "withdrawal_approve":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось определить заявку. Откройте список и попробуйте снова.",
-                    self._admin_menu_markup(),
-                )
-                return
-            await self._execute_admin_withdraw_approve(
-                context=context,
-                query_message=query_message,
-                admin_user_id=admin_user_id,
                 request_id=int(payload.entity_id),
             )
             return
@@ -5305,7 +5656,7 @@ class TelegramWebhookRuntime:
                 ),
             )
             return
-        if action == "withdrawal_sent_prompt":
+        if action == "withdrawal_complete_prompt":
             if not payload.entity_id:
                 await self._replace_message(
                     query_message,
@@ -5323,7 +5674,10 @@ class TelegramWebhookRuntime:
             )
             await self._replace_message(
                 query_message,
-                f"Введите хэш перевода для заявки #{request_id}.",
+                (
+                    f"Введите хэш перевода для заявки #{request_id}. "
+                    "Заявка будет завершена только после проверки tx в сети TON USDT."
+                ),
                 InlineKeyboardMarkup(
                     [
                         [
@@ -6232,6 +6586,19 @@ class TelegramWebhookRuntime:
                 self._clear_prompt(context)
                 await message.reply_text("Ошибка контекста вывода. Откройте баланс заново.")
                 return
+            active_request = await self._finance_service.get_active_buyer_withdrawal_request(
+                buyer_user_id=buyer_user_id
+            )
+            if active_request is not None:
+                self._clear_prompt(context)
+                await message.reply_text(
+                    (
+                        "У вас уже есть активная заявка на вывод. "
+                        "Откройте баланс и отмените ее, если нужно создать новую."
+                    ),
+                    reply_markup=self._buyer_menu_markup(),
+                )
+                return
             try:
                 amount = Decimal(text)
             except InvalidOperation:
@@ -6240,17 +6607,27 @@ class TelegramWebhookRuntime:
             if amount <= Decimal("0.000000"):
                 await message.reply_text("Сумма должна быть больше 0.")
                 return
+            snapshot = await self._finance_service.get_buyer_balance_snapshot(
+                buyer_user_id=buyer_user_id
+            )
+            if amount > snapshot.buyer_available_usdt:
+                await message.reply_text(
+                    "Сумма превышает доступный баланс.\n"
+                    f"Сейчас доступно: "
+                    f"{self._format_usdt_value(snapshot.buyer_available_usdt, precise=True)} USDT."
+                )
+                return
 
             self._set_prompt(
                 context,
                 role=_ROLE_BUYER,
                 prompt_type="buyer_withdraw_address",
-                sensitive=True,
+                sensitive=False,
                 extra={"buyer_user_id": buyer_user_id, "amount_usdt": str(amount)},
             )
             await message.reply_text(
                 (
-                    "Введите адрес кошелька для вывода "
+                    "Введите адрес кошелька в сети TON для вывода "
                     f"{self._format_usdt_value(amount, precise=True)} USDT."
                 ),
                 reply_markup=InlineKeyboardMarkup(
@@ -6286,6 +6663,16 @@ class TelegramWebhookRuntime:
                 self._clear_prompt(context)
                 await message.reply_text("Ошибка контекста пользователя. Откройте баланс заново.")
                 return
+            try:
+                await self._parse_ton_mainnet_address(address=payout_address)
+            except ValueError as exc:
+                await message.reply_text(str(exc))
+                return
+            except TonapiApiError:
+                await message.reply_text(
+                    "Не удалось проверить адрес через TonAPI. Повторите попытку позже."
+                )
+                return
 
             buyer = await self._buyer_service.bootstrap_buyer(
                 telegram_id=identity.telegram_id,
@@ -6313,20 +6700,19 @@ class TelegramWebhookRuntime:
                 return
             except InvalidStateError:
                 await message.reply_text(
-                    "Не удалось создать заявку на вывод. "
-                    "Проверьте доступный баланс и попробуйте снова.",
+                    (
+                        "У вас уже есть активная заявка на вывод. "
+                        "Откройте баланс и отмените ее, если нужно создать новую."
+                    ),
                     reply_markup=self._buyer_menu_markup(),
                 )
                 return
 
             self._clear_prompt(context)
-            if withdrawal.created:
-                reply = (
-                    "Заявка на вывод создана.\n"
-                    "Статус: на проверке у администратора."
-                )
-            else:
-                reply = "У вас уже есть активная заявка на вывод."
+            reply = (
+                "Заявка на вывод создана.\n"
+                "Статус: на проверке у администратора."
+            )
             self._logger.info(
                 "buyer_withdraw_requested",
                 telegram_update_id=update.update_id,
@@ -6379,14 +6765,15 @@ class TelegramWebhookRuntime:
             if not tx_hash:
                 await message.reply_text("Хэш перевода не может быть пустым.")
                 return
-            self._clear_prompt(context)
-            await self._execute_admin_withdraw_sent(
+            completed = await self._execute_admin_withdraw_complete(
                 context=context,
                 query_message=message,
                 admin_user_id=admin_user_id,
                 request_id=request_id,
                 tx_hash=tx_hash,
             )
+            if completed:
+                self._clear_prompt(context)
             return
 
         if prompt_type == "admin_manual_deposit":
@@ -6815,6 +7202,88 @@ class TelegramWebhookRuntime:
             return "—"
         return self._format_price_rub(amount)
 
+    async def _parse_ton_mainnet_address(self, *, address: str) -> str:
+        normalized_address = address.strip()
+        if not normalized_address:
+            raise ValueError("Адрес не может быть пустым. Повторите ввод.")
+        if ":" not in normalized_address and len(normalized_address) == 48:
+            first_char = normalized_address[0]
+            if first_char in _TON_FRIENDLY_TESTNET_PREFIXES:
+                raise ValueError(
+                    "Нужен адрес USDT в сети TON mainnet. Testnet-адреса не поддерживаются."
+                )
+            if first_char not in _TON_FRIENDLY_MAINNET_PREFIXES:
+                raise ValueError("Похоже, адрес введен в неверном формате. Повторите ввод.")
+        if self._tonapi_client is None:
+            raise TonapiApiError(status_code=None, message="TonAPI client is not ready")
+        parsed = await self._tonapi_client.parse_address(account_id=normalized_address)
+        return parsed.raw_form
+
+    async def _resolve_payout_wallet_raw_form(self) -> str:
+        if self._payout_wallet_raw_form:
+            return self._payout_wallet_raw_form
+        self._payout_wallet_raw_form = await self._parse_ton_mainnet_address(
+            address=self._settings.seller_collateral_shard_address
+        )
+        return self._payout_wallet_raw_form
+
+    async def _validate_withdrawal_completion_tx(
+        self,
+        *,
+        tx_hash: str,
+        payout_address: str,
+        amount_usdt: Decimal,
+    ) -> str | None:
+        normalized_tx_hash = tx_hash.strip()
+        if not normalized_tx_hash:
+            return "Хэш перевода не может быть пустым."
+        if self._tonapi_client is None:
+            raise TonapiApiError(status_code=None, message="TonAPI client is not ready")
+
+        payout_wallet_raw = (await self._resolve_payout_wallet_raw_form()).strip().lower()
+        destination_raw = (
+            await self._parse_ton_mainnet_address(address=payout_address)
+        ).strip().lower()
+        expected_amount = amount_usdt.quantize(_USDT_EXACT_QUANT, rounding=ROUND_HALF_UP)
+        before_lt: int | None = None
+
+        for _ in range(self._settings.tonapi_max_pages_per_shard):
+            page = await self._tonapi_client.get_jetton_account_history(
+                account_id=self._settings.seller_collateral_shard_address,
+                jetton_id=self._settings.tonapi_usdt_jetton_master,
+                limit=self._settings.tonapi_page_limit,
+                before_lt=before_lt,
+            )
+            if not page.operations:
+                break
+
+            for operation in page.operations:
+                if operation.transaction_hash != normalized_tx_hash:
+                    continue
+                source_raw = (operation.source_address or "").strip().lower()
+                recipient_raw = (operation.destination_address or "").strip().lower()
+                amount_on_chain = operation.amount_usdt.quantize(
+                    _USDT_EXACT_QUANT,
+                    rounding=ROUND_HALF_UP,
+                )
+
+                if source_raw != payout_wallet_raw:
+                    return "Транзакция найдена, но отправлена не с настроенного payout-кошелька."
+                if recipient_raw != destination_raw:
+                    return "Транзакция найдена, но адрес получателя не совпадает с заявкой."
+                if amount_on_chain != expected_amount:
+                    return "Транзакция найдена, но сумма не совпадает с заявкой."
+                return None
+
+            if page.next_from is None:
+                break
+            before_lt = page.next_from
+
+        return (
+            "Транзакция с таким хэшем пока не найдена "
+            "в истории TON USDT. Повторите попытку позже."
+        )
+
     @staticmethod
     def _screen_text(
         *,
@@ -6954,9 +7423,9 @@ class TelegramWebhookRuntime:
         label = self._humanize_withdraw_status(status)
         color = {
             "withdraw_sent": "green",
-            "approved": "blue",
             "rejected": "red",
             "withdraw_pending_admin": "yellow",
+            "cancelled": "blue",
         }.get(status, "blue")
         return self._status_badge(label, color=color)
 
@@ -6967,8 +7436,8 @@ class TelegramWebhookRuntime:
             "order_submitted": "Заказан",
             "order_verified": "Заказан",
             "picked_up_wait_unlock": "Выкуплен",
-            "eligible_for_withdrawal": "Выкуплен",
-            "withdraw_pending_admin": "Выкуплен",
+            "eligible_for_withdrawal": "Выплачен",
+            "withdraw_pending_admin": "Выплачен",
             "withdraw_sent": "Выплачен",
             "expired_2h": "Бронь истекла",
             "wb_invalid": "Не подтвержден",
@@ -6986,6 +7455,7 @@ class TelegramWebhookRuntime:
             "picked_up_wait_unlock",
             "eligible_for_withdrawal",
             "withdraw_pending_admin",
+            "withdraw_sent",
         }
         return [item for item in assignments if item.status in visible_statuses]
 
@@ -7010,6 +7480,7 @@ class TelegramWebhookRuntime:
             "picked_up_wait_unlock",
             "eligible_for_withdrawal",
             "withdraw_pending_admin",
+            "withdraw_sent",
             "returned_within_14d",
         }:
             return "picked_up"
@@ -7031,8 +7502,8 @@ class TelegramWebhookRuntime:
     def _humanize_withdraw_status(status: str) -> str:
         mapping = {
             "withdraw_pending_admin": "На проверке",
-            "approved": "Одобрено",
             "rejected": "Отклонено",
+            "cancelled": "Отменено",
             "withdraw_sent": "Отправлено",
         }
         return mapping.get(status, status)

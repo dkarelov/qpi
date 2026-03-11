@@ -92,6 +92,15 @@ class BotApiSettings(BaseAppSettings):
         default=24,
         alias="SELLER_COLLATERAL_INVOICE_TTL_HOURS",
     )
+    tonapi_base_url: str = Field(default="https://tonapi.io", alias="TONAPI_BASE_URL")
+    tonapi_api_key: str | None = Field(default=None, alias="TONAPI_API_KEY")
+    tonapi_timeout_seconds: int = Field(default=30, alias="TONAPI_TIMEOUT_SECONDS")
+    tonapi_page_limit: int = Field(default=100, alias="TONAPI_PAGE_LIMIT")
+    tonapi_max_pages_per_shard: int = Field(default=20, alias="TONAPI_MAX_PAGES_PER_SHARD")
+    tonapi_unauth_min_interval_seconds: float = Field(
+        default=4.0,
+        alias="TONAPI_UNAUTH_MIN_INTERVAL_SECONDS",
+    )
     tonapi_usdt_jetton_master: str = Field(
         default="EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
         alias="TONAPI_USDT_JETTON_MASTER",
@@ -230,6 +239,7 @@ class BotApiSettings(BaseAppSettings):
     @field_validator(
         "seller_collateral_shard_key",
         "seller_collateral_shard_address",
+        "tonapi_base_url",
         "tonapi_usdt_jetton_master",
         "telegram_wallet_open_url",
     )
@@ -239,6 +249,16 @@ class BotApiSettings(BaseAppSettings):
         if not normalized:
             raise ValueError("configured TON/seller collateral value must not be empty")
         return normalized
+
+    @field_validator("tonapi_api_key", mode="before")
+    @classmethod
+    def normalize_optional_tonapi_api_key(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        return value
 
     @field_validator("seller_collateral_shard_chain", "seller_collateral_shard_asset")
     @classmethod
@@ -253,6 +273,20 @@ class BotApiSettings(BaseAppSettings):
     def validate_seller_collateral_invoice_ttl_hours(cls, value: int) -> int:
         if value < 1:
             raise ValueError("SELLER_COLLATERAL_INVOICE_TTL_HOURS must be >= 1")
+        return value
+
+    @field_validator("tonapi_timeout_seconds", "tonapi_page_limit", "tonapi_max_pages_per_shard")
+    @classmethod
+    def validate_tonapi_positive_ints(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("TONAPI_* must be >= 1")
+        return value
+
+    @field_validator("tonapi_unauth_min_interval_seconds")
+    @classmethod
+    def validate_tonapi_unauth_min_interval_seconds(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("TONAPI_UNAUTH_MIN_INTERVAL_SECONDS must be >= 0")
         return value
 
     @field_validator("display_rub_per_usdt")

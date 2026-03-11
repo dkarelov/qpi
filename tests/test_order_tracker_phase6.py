@@ -257,7 +257,7 @@ async def test_order_tracker_sale_moves_to_pickup_and_unlocks_after_15_days(
                 (fixture["assignment_id"],),
             )
             assignment = await cur.fetchone()
-            assert assignment["status"] == "eligible_for_withdrawal"
+            assert assignment["status"] == "withdraw_sent"
             assert assignment["pickup_at"] is not None
             assert assignment["unlock_at"] is not None
             assert assignment["unlock_at"] - assignment["pickup_at"] == timedelta(days=15)
@@ -393,7 +393,7 @@ async def test_order_tracker_ignores_return_after_unlock_window_and_unlocks(
                 (fixture["assignment_id"],),
             )
             assignment = await cur.fetchone()
-            assert assignment["status"] == "eligible_for_withdrawal"
+            assert assignment["status"] == "withdraw_sent"
 
 
 @pytest.mark.asyncio

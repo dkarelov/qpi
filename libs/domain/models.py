@@ -226,6 +226,19 @@ class BuyerWithdrawalHistoryItem:
 
 
 @dataclass(frozen=True)
+class ActiveWithdrawalRequestView:
+    withdrawal_request_id: int
+    amount_usdt: Decimal
+    status: str
+    payout_address: str
+    requested_at: datetime
+    processed_at: datetime | None
+    sent_at: datetime | None
+    note: str | None
+    tx_hash: str | None
+
+
+@dataclass(frozen=True)
 class PendingWithdrawalView:
     withdrawal_request_id: int
     buyer_user_id: int
@@ -234,6 +247,22 @@ class PendingWithdrawalView:
     amount_usdt: Decimal
     payout_address: str
     requested_at: datetime
+
+
+@dataclass(frozen=True)
+class ProcessedWithdrawalView:
+    withdrawal_request_id: int
+    buyer_user_id: int
+    buyer_telegram_id: int
+    buyer_username: str | None
+    amount_usdt: Decimal
+    status: str
+    payout_address: str
+    requested_at: datetime
+    processed_at: datetime | None
+    sent_at: datetime | None
+    note: str | None
+    tx_hash: str | None
 
 
 @dataclass(frozen=True)

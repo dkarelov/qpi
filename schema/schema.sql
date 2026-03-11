@@ -39,7 +39,7 @@ CREATE TABLE "public"."assignments" (
     "listing_id" bigint NOT NULL,
     "buyer_user_id" bigint NOT NULL,
     "wb_product_id" bigint NOT NULL,
-    "status" text NOT NULL CONSTRAINT assignments_status_check CHECK (status = ANY (ARRAY['reserved'::text, 'order_submitted'::text, 'order_verified'::text, 'picked_up_wait_unlock'::text, 'eligible_for_withdrawal'::text, 'withdraw_pending_admin'::text, 'withdraw_sent'::text, 'expired_2h'::text, 'wb_invalid'::text, 'returned_within_14d'::text, 'delivery_expired'::text])),
+    "status" text NOT NULL CONSTRAINT assignments_status_check CHECK (status = ANY (ARRAY['reserved'::text, 'order_submitted'::text, 'order_verified'::text, 'picked_up_wait_unlock'::text, 'withdraw_sent'::text, 'expired_2h'::text, 'wb_invalid'::text, 'returned_within_14d'::text, 'delivery_expired'::text])),
     "reward_usdt" numeric(20,6) NOT NULL CONSTRAINT assignments_reward_usdt_check CHECK (reward_usdt > 0::numeric),
     "reservation_expires_at" timestamp with time zone NOT NULL,
     "order_id" text,
@@ -68,7 +68,7 @@ CREATE INDEX idx_assignments_unlock_due ON public.assignments USING btree (unloc
 
 CREATE UNIQUE INDEX uq_assignments_order_id ON public.assignments USING btree (order_id) WHERE (order_id IS NOT NULL);
 
-CREATE UNIQUE INDEX uq_assignments_buyer_product_active ON public.assignments USING btree (buyer_user_id, wb_product_id) WHERE (status = ANY (ARRAY['reserved'::text, 'order_submitted'::text, 'order_verified'::text, 'picked_up_wait_unlock'::text, 'eligible_for_withdrawal'::text, 'withdraw_pending_admin'::text, 'withdraw_sent'::text]));
+CREATE UNIQUE INDEX uq_assignments_buyer_product_active ON public.assignments USING btree (buyer_user_id, wb_product_id) WHERE (status = ANY (ARRAY['reserved'::text, 'order_submitted'::text, 'order_verified'::text, 'picked_up_wait_unlock'::text, 'withdraw_sent'::text]));
 
 ALTER TABLE ONLY "public"."assignments" ADD CONSTRAINT "assignments_buyer_user_id_fkey" FOREIGN KEY ("buyer_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 
@@ -482,7 +482,7 @@ CREATE TABLE "public"."withdrawal_requests" (
     "from_account_id" bigint NOT NULL,
     "to_account_id" bigint NOT NULL,
     "amount_usdt" numeric(20,6) NOT NULL CONSTRAINT withdrawal_requests_amount_usdt_check CHECK (amount_usdt > 0::numeric),
-    "status" text NOT NULL CONSTRAINT withdrawal_requests_status_check CHECK (status = ANY (ARRAY['withdraw_pending_admin'::text, 'approved'::text, 'rejected'::text, 'withdraw_sent'::text])),
+    "status" text NOT NULL CONSTRAINT withdrawal_requests_status_check CHECK (status = ANY (ARRAY['withdraw_pending_admin'::text, 'rejected'::text, 'withdraw_sent'::text, 'cancelled'::text])),
     "payout_address" text NOT NULL,
     "admin_user_id" bigint,
     "requested_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
@@ -494,6 +494,8 @@ CREATE TABLE "public"."withdrawal_requests" (
 );
 
 CREATE INDEX idx_withdrawal_requests_status ON public.withdrawal_requests USING btree (status);
+
+CREATE UNIQUE INDEX uq_withdrawal_requests_buyer_active ON public.withdrawal_requests USING btree (buyer_user_id) WHERE (status = 'withdraw_pending_admin'::text);
 
 ALTER TABLE ONLY "public"."withdrawal_requests" ADD CONSTRAINT "withdrawal_requests_admin_user_id_fkey" FOREIGN KEY ("admin_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 

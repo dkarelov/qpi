@@ -185,8 +185,6 @@ class BuyerService:
                                         'order_submitted'::text,
                                         'order_verified'::text,
                                         'picked_up_wait_unlock'::text,
-                                        'eligible_for_withdrawal'::text,
-                                        'withdraw_pending_admin'::text,
                                         'withdraw_sent'::text
                                     ]
                               )
@@ -328,8 +326,6 @@ class BuyerService:
                                                 'order_submitted'::text,
                                                 'order_verified'::text,
                                                 'picked_up_wait_unlock'::text,
-                                                'eligible_for_withdrawal'::text,
-                                                'withdraw_pending_admin'::text,
                                                 'withdraw_sent'::text
                                             ]
                                       )
@@ -912,8 +908,6 @@ class BuyerService:
                                     'order_submitted'::text,
                                     'order_verified'::text,
                                     'picked_up_wait_unlock'::text,
-                                    'eligible_for_withdrawal'::text,
-                                    'withdraw_pending_admin'::text,
                                     'withdraw_sent'::text
                                 ]
                           )

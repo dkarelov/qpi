@@ -235,10 +235,13 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
                 buyer_withdraw_pending_usdt=Decimal("0.000000"),
             )
         ),
+        get_active_buyer_withdrawal_request=AsyncMock(return_value=None),
+        count_buyer_withdrawal_history=AsyncMock(return_value=0),
         list_buyer_withdrawal_history=AsyncMock(return_value=[]),
         create_withdrawal_request=AsyncMock(
             return_value=_ns(withdrawal_request_id=77, amount_usdt=Decimal("5.000000"))
         ),
+        cancel_withdrawal_request=AsyncMock(return_value=_ns(changed=True)),
         list_pending_withdrawals=AsyncMock(
             return_value=[
                 _ns(
@@ -253,6 +256,7 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
         get_withdrawal_request_detail=AsyncMock(
             return_value=_ns(
                 withdrawal_request_id=77,
+                buyer_user_id=202,
                 buyer_telegram_id=777001,
                 buyer_username="buyer1",
                 amount_usdt=Decimal("5.000000"),
@@ -267,9 +271,10 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
                 note=None,
             )
         ),
-        approve_withdrawal_request=AsyncMock(return_value=_ns(changed=True)),
+        count_processed_withdrawals=AsyncMock(return_value=0),
+        list_processed_withdrawals=AsyncMock(return_value=[]),
         reject_withdrawal_request=AsyncMock(return_value=_ns(changed=True)),
-        mark_withdrawal_sent=AsyncMock(return_value=_ns(changed=True)),
+        complete_withdrawal_request=AsyncMock(return_value=_ns(changed=True)),
         manual_deposit_credit=AsyncMock(return_value=_ns(created=True)),
     )
 
@@ -338,6 +343,13 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
     runtime._refresh_display_rub_per_usdt = AsyncMock(return_value=None)
     runtime._ensure_admin_user = AsyncMock(return_value=90011)
     runtime._ensure_system_payout_account_id = AsyncMock(return_value=701)
+    runtime._payout_wallet_raw_form = "0:payout-wallet"
+    runtime._tonapi_client = _ns(
+        parse_address=AsyncMock(side_effect=lambda account_id: _ns(raw_form="0:dest-wallet")),
+        get_jetton_account_history=AsyncMock(
+            return_value=_ns(operations=[], next_from=None)
+        ),
+    )
 
     return runtime, _ns(
         seller=seller_service,
@@ -1026,7 +1038,7 @@ async def test_phase10_e2e_buyer_purchases_screen_uses_shop_title_and_hides_expi
                 listing_id=22,
                 shop_slug="shop_mug",
                 shop_title="Термокружки",
-                status="eligible_for_withdrawal",
+                status="withdraw_sent",
                 display_title="Термокружка",
                 wb_source_title="Термокружка",
                 wb_subject_name="Посуда",
@@ -1074,9 +1086,9 @@ async def test_phase10_e2e_buyer_purchases_screen_uses_shop_title_and_hides_expi
     assert "<b>Покупки</b>" in text
     assert "<b>Магазин:</b> Тушенка" in text
     assert "<b>Магазин:</b> Термокружки" in text
+    assert "<b>Магазин:</b> Выплаченные" in text
     assert "shop_tushenka" not in text
-    assert "Выплаченные" not in text
-    assert text.count("<b>Номер заказа:</b>") == 1
+    assert text.count("<b>Номер заказа:</b>") == 2
     assert first_block.index("<b>Товар:</b> Бумага A4 для принтера") < first_block.index(
         "<b>Магазин:</b> Тушенка"
     )
@@ -1085,7 +1097,7 @@ async def test_phase10_e2e_buyer_purchases_screen_uses_shop_title_and_hides_expi
         "<b>Статус:</b> 🔴 Ожидает заказа"
     )
     assert "\n\n<b>Товар:</b> Термокружка" in text
-    assert "<b>Статус:</b> 🟢 Выкуплен" in text
+    assert text.count("<b>Статус:</b> 🟢 Выплачен") >= 2
 
 
 @pytest.mark.asyncio
@@ -1113,6 +1125,129 @@ async def test_phase10_e2e_buyer_balance_hides_withdraw_actions_when_zero() -> N
 
 
 @pytest.mark.asyncio
+async def test_phase10_e2e_buyer_balance_shows_active_request_and_cancel() -> None:
+    runtime, deps = _build_runtime()
+    deps.finance.get_buyer_balance_snapshot = AsyncMock(
+        return_value=_ns(
+            buyer_available_usdt=Decimal("4.000000"),
+            buyer_withdraw_pending_usdt=Decimal("1.000000"),
+        )
+    )
+    deps.finance.get_active_buyer_withdrawal_request = AsyncMock(
+        return_value=_ns(
+            withdrawal_request_id=77,
+            amount_usdt=Decimal("1.000000"),
+            status="withdraw_pending_admin",
+            payout_address="UQ-test-wallet",
+            requested_at=datetime(2026, 3, 2, 12, 0, 0),
+            processed_at=None,
+            sent_at=None,
+            note=None,
+            tx_hash=None,
+        )
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    events = await harness.callback(flow="buyer", action="balance")
+    text = "\n".join(_event_texts(events))
+    labels = []
+    for event in events:
+        labels.extend(_markup_labels(event))
+
+    assert "Активная заявка #77" in text
+    assert "UQ-test-wallet" in text
+    assert "💸 Вывести все доступное" not in labels
+    assert "✍️ Указать сумму вручную" not in labels
+    assert "🚫 Отменить заявку" in labels
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_buyer_can_cancel_pending_withdrawal() -> None:
+    runtime, deps = _build_runtime()
+    deps.finance.get_active_buyer_withdrawal_request = AsyncMock(
+        return_value=_ns(
+            withdrawal_request_id=77,
+            amount_usdt=Decimal("1.000000"),
+            status="withdraw_pending_admin",
+            payout_address="UQ-test-wallet",
+            requested_at=datetime(2026, 3, 2, 12, 0, 0),
+            processed_at=None,
+            sent_at=None,
+            note=None,
+            tx_hash=None,
+        )
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    prompt_events = await harness.callback(
+        flow="buyer",
+        action="withdraw_cancel_prompt",
+        entity_id="77",
+    )
+    assert any("<b>Отмена вывода</b>" in text for text in _event_texts(prompt_events))
+
+    confirm_events = await harness.callback(
+        flow="buyer",
+        action="withdraw_cancel_confirm",
+        entity_id="77",
+    )
+    assert any(
+        "Заявка на вывод отменена. Средства вернулись в доступный баланс." in text
+        for text in _event_texts(confirm_events)
+    )
+    deps.finance.cancel_withdrawal_request.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_buyer_withdraw_amount_validates_early() -> None:
+    runtime, deps = _build_runtime()
+    deps.finance.get_buyer_balance_snapshot = AsyncMock(
+        return_value=_ns(
+            buyer_available_usdt=Decimal("1.000000"),
+            buyer_withdraw_pending_usdt=Decimal("0.000000"),
+        )
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    await harness.callback(flow="buyer", action="withdraw_prompt_amount")
+    events = await harness.text("2.0")
+
+    assert any("Сумма превышает доступный баланс." in text for text in _event_texts(events))
+    deps.finance.create_withdrawal_request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_buyer_withdraw_history_shows_timestamps_and_note() -> None:
+    runtime, deps = _build_runtime()
+    deps.finance.count_buyer_withdrawal_history = AsyncMock(return_value=1)
+    deps.finance.list_buyer_withdrawal_history = AsyncMock(
+        return_value=[
+            _ns(
+                withdrawal_request_id=77,
+                amount_usdt=Decimal("5.000000"),
+                status="rejected",
+                payout_address="UQ-test-wallet",
+                requested_at=datetime(2026, 3, 2, 12, 0, 0),
+                processed_at=datetime(2026, 3, 2, 12, 5, 0),
+                sent_at=None,
+                note="Неверный адрес",
+                tx_hash=None,
+            )
+        ]
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    events = await harness.callback(flow="buyer", action="withdraw_history")
+    text = "\n".join(_event_texts(events))
+
+    assert "Вывод #77" in text
+    assert "<b>Создана:</b> 02.03.2026 15:00 MSK" in text
+    assert "<b>Обработана:</b> 02.03.2026 15:05 MSK" in text
+    assert "<b>Комментарий:</b> Неверный адрес" in text
+    assert "<b>Статус:</b> 🔴 Отклонено" in text
+
+
+@pytest.mark.asyncio
 async def test_phase10_e2e_buyer_cannot_reserve_already_purchased_item() -> None:
     runtime, deps = _build_runtime()
     deps.buyer.reserve_listing_slot = AsyncMock(
@@ -1131,6 +1266,7 @@ async def test_phase10_e2e_admin_withdrawal_flow() -> None:
     runtime, deps = _build_runtime(admin_ids=[9001])
     detail_pending = _ns(
         withdrawal_request_id=77,
+        buyer_user_id=501,
         buyer_telegram_id=777001,
         buyer_username="buyer1",
         amount_usdt=Decimal("5.000000"),
@@ -1144,23 +1280,9 @@ async def test_phase10_e2e_admin_withdrawal_flow() -> None:
         tx_hash=None,
         note=None,
     )
-    detail_approved = _ns(
-        withdrawal_request_id=77,
-        buyer_telegram_id=777001,
-        buyer_username="buyer1",
-        amount_usdt=Decimal("5.000000"),
-        status="approved",
-        payout_address="UQ-test-wallet",
-        requested_at=datetime(2026, 3, 2, 12, 0, 0),
-        processed_at=datetime(2026, 3, 2, 12, 5, 0),
-        sent_at=None,
-        to_account_id=501,
-        from_account_id=401,
-        tx_hash=None,
-        note=None,
-    )
     detail_sent = _ns(
         withdrawal_request_id=77,
+        buyer_user_id=501,
         buyer_telegram_id=777001,
         buyer_username="buyer1",
         amount_usdt=Decimal("5.000000"),
@@ -1179,13 +1301,25 @@ async def test_phase10_e2e_admin_withdrawal_flow() -> None:
     def detail_side_effect(*, request_id: int):
         assert request_id == 77
         detail_calls["count"] += 1
-        if detail_calls["count"] == 1:
+        if detail_calls["count"] <= 2:
             return detail_pending
-        if detail_calls["count"] >= 6:
-            return detail_sent
-        return detail_approved
+        return detail_sent
 
     deps.finance.get_withdrawal_request_detail = AsyncMock(side_effect=detail_side_effect)
+    runtime._tonapi_client.parse_address = AsyncMock(return_value=_ns(raw_form="0:dest-wallet"))
+    runtime._tonapi_client.get_jetton_account_history = AsyncMock(
+        return_value=_ns(
+            operations=[
+                _ns(
+                    transaction_hash="0xabc",
+                    source_address="0:payout-wallet",
+                    destination_address="0:dest-wallet",
+                    amount_usdt=Decimal("5.000000"),
+                )
+            ],
+            next_from=None,
+        )
+    )
     harness = TelegramRuntimeHarness(runtime, telegram_id=9001, username="admin")
 
     open_admin_events = await harness.callback(flow="root", action="role", entity_id="admin")
@@ -1194,15 +1328,9 @@ async def test_phase10_e2e_admin_withdrawal_flow() -> None:
     detail_events = await harness.callback(flow="admin", action="withdrawal_detail", entity_id="77")
     assert any("<b>Заявка #77</b>" in text for text in _event_texts(detail_events))
 
-    approve_events = await harness.callback(
-        flow="admin", action="withdrawal_approve", entity_id="77"
-    )
-    assert any("Статус:</b> Одобрено" in text for text in _event_texts(approve_events))
-    assert any(event.kind == "bot_send" and event.chat_id == 777001 for event in approve_events)
-
     prompt_sent_events = await harness.callback(
         flow="admin",
-        action="withdrawal_sent_prompt",
+        action="withdrawal_complete_prompt",
         entity_id="77",
     )
     assert any(
@@ -1212,9 +1340,45 @@ async def test_phase10_e2e_admin_withdrawal_flow() -> None:
     sent_events = await harness.text("0xabc")
     sent_text = "\n".join(_event_texts(sent_events))
     assert "Хэш перевода:</b> 0xabc" in sent_text
+    assert any(event.kind == "bot_send" and event.chat_id == 777001 for event in sent_events)
 
-    deps.finance.approve_withdrawal_request.assert_awaited_once()
-    deps.finance.mark_withdrawal_sent.assert_awaited_once()
+    deps.finance.complete_withdrawal_request.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_admin_withdrawal_completion_rejects_unknown_tx_hash() -> None:
+    runtime, deps = _build_runtime(admin_ids=[9001])
+    deps.finance.get_withdrawal_request_detail = AsyncMock(
+        return_value=_ns(
+            withdrawal_request_id=77,
+            buyer_user_id=501,
+            buyer_telegram_id=777001,
+            buyer_username="buyer1",
+            amount_usdt=Decimal("5.000000"),
+            status="withdraw_pending_admin",
+            payout_address="UQ-test-wallet",
+            requested_at=datetime(2026, 3, 2, 12, 0, 0),
+            processed_at=None,
+            sent_at=None,
+            to_account_id=501,
+            from_account_id=401,
+            tx_hash=None,
+            note=None,
+        )
+    )
+    runtime._tonapi_client.parse_address = AsyncMock(return_value=_ns(raw_form="0:dest-wallet"))
+    runtime._tonapi_client.get_jetton_account_history = AsyncMock(
+        return_value=_ns(operations=[], next_from=None)
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=9001, username="admin")
+
+    await harness.callback(flow="admin", action="withdrawal_complete_prompt", entity_id="77")
+    events = await harness.text("0xmissing")
+
+    assert any(
+        "Транзакция с таким хэшем пока не найдена" in text for text in _event_texts(events)
+    )
+    deps.finance.complete_withdrawal_request.assert_not_awaited()
 
 
 @pytest.mark.asyncio
