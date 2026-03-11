@@ -471,7 +471,11 @@ async def test_seller_withdrawal_uses_available_balance_only_and_has_role_aware_
                     ],
                 ),
             )
-            balances = {row["account_kind"]: row["current_balance_usdt"] for row in await cur.fetchall()}
+            rows = await cur.fetchall()
+            balances = {
+                row["account_kind"]: row["current_balance_usdt"]
+                for row in rows
+            }
 
     assert balances["seller_available"] == Decimal("1.000000")
     assert balances["seller_collateral"] == Decimal("7.000000")
@@ -546,7 +550,11 @@ async def test_seller_cancel_withdrawal_returns_funds_to_available(db_pool) -> N
                 """,
                 ([seller_available_account_id, seller_pending_account_id],),
             )
-            balances = {row["account_kind"]: row["current_balance_usdt"] for row in await cur.fetchall()}
+            rows = await cur.fetchall()
+            balances = {
+                row["account_kind"]: row["current_balance_usdt"]
+                for row in rows
+            }
 
     assert balances["seller_available"] == Decimal("2.000000")
     assert balances["seller_withdraw_pending"] == Decimal("0.000000")

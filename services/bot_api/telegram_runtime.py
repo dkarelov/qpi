@@ -5477,9 +5477,6 @@ class TelegramWebhookRuntime:
         reason: str,
     ) -> None:
         try:
-            detail = await self._finance_service.get_withdrawal_request_detail(
-                request_id=request_id
-            )
             result = await self._finance_service.reject_withdrawal_request(
                 request_id=request_id,
                 admin_user_id=admin_user_id,
