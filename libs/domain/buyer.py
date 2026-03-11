@@ -316,6 +316,30 @@ class BuyerService:
                               AND l.deleted_at IS NULL
                               AND l.status = 'active'
                               AND l.available_slots > 0
+                              AND NOT EXISTS (
+                                    SELECT 1
+                                    FROM assignments ax
+                                    JOIN listings lx ON lx.id = ax.listing_id
+                                    WHERE ax.buyer_user_id = %s
+                                      AND lx.wb_product_id = l.wb_product_id
+                                      AND ax.status = ANY (
+                                            ARRAY[
+                                                'reserved'::text,
+                                                'order_submitted'::text,
+                                                'order_verified'::text,
+                                                'picked_up_wait_unlock'::text,
+                                                'eligible_for_withdrawal'::text,
+                                                'withdraw_pending_admin'::text,
+                                                'withdraw_sent'::text
+                                            ]
+                                      )
+                              )
+                              AND NOT EXISTS (
+                                    SELECT 1
+                                    FROM buyer_orders bo
+                                    WHERE bo.buyer_user_id = %s
+                                      AND bo.wb_product_id = l.wb_product_id
+                              )
                         ) AS active_listings_count
                     FROM buyer_saved_shops bss
                     JOIN shops s ON s.id = bss.shop_id
@@ -324,7 +348,7 @@ class BuyerService:
                     ORDER BY bss.last_opened_at DESC, s.id DESC
                     LIMIT %s
                     """,
-                    (buyer_user_id, limit),
+                    (buyer_user_id, buyer_user_id, buyer_user_id, limit),
                 )
                 rows = await cur.fetchall()
                 return [

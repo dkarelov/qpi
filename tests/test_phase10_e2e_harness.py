@@ -664,7 +664,7 @@ async def test_phase10_e2e_buyer_shops_screen_uses_numbered_shop_list() -> None:
                 shop_id=11,
                 slug="shop_tushenka",
                 title="Тушенка",
-                active_listings_count=1,
+                active_listings_count=0,
             ),
             _ns(
                 shop_id=12,
@@ -683,7 +683,7 @@ async def test_phase10_e2e_buyer_shops_screen_uses_numbered_shop_list() -> None:
         labels.extend(_markup_labels(event))
 
     assert "<i>Выберите номер магазина.</i>" in text
-    assert "1. 🟢 Тушенка (объявлений: 1)" in text
+    assert "1. 🔴 Тушенка (объявлений: 0)" in text
     assert "2. 🔴 Пустой магазин (объявлений: 0)" in text
     assert "Сохраненные магазины:" not in text
     assert "Открыть последний магазин" not in labels
@@ -1082,9 +1082,10 @@ async def test_phase10_e2e_buyer_purchases_screen_uses_shop_title_and_hides_expi
     )
     assert first_block.index("<b>Магазин:</b> Тушенка") < first_block.index("<b>Кэшбэк:</b>")
     assert first_block.index("<b>Кэшбэк:</b>") < first_block.index(
-        "<b>Статус:</b> Ожидает заказа"
+        "<b>Статус:</b> 🔴 Ожидает заказа"
     )
     assert "\n\n<b>Товар:</b> Термокружка" in text
+    assert "<b>Статус:</b> 🟢 Выкуплен" in text
 
 
 @pytest.mark.asyncio

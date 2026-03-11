@@ -4087,9 +4087,7 @@ class TelegramWebhookRuntime:
             ]
             if item.order_id:
                 block_lines.append(f"<b>Номер заказа:</b> {html.escape(item.order_id)}")
-            block_lines.append(
-                f"<b>Статус:</b> {html.escape(self._humanize_assignment_status(item.status))}"
-            )
+            block_lines.append(f"<b>Статус:</b> {self._buyer_purchase_status_badge(item.status)}")
             if item.status in {"reserved", "order_submitted"}:
                 block_lines.append(self._buyer_task_instruction_text(item, include_title=False))
                 block_lines.append(
@@ -7016,6 +7014,18 @@ class TelegramWebhookRuntime:
         }:
             return "picked_up"
         return None
+
+    def _buyer_purchase_status_badge(self, status: str) -> str:
+        bucket = self._buyer_dashboard_status_bucket(status)
+        if bucket == "awaiting_order":
+            color = "red"
+        elif bucket == "ordered":
+            color = "yellow"
+        elif bucket == "picked_up":
+            color = "green"
+        else:
+            color = "blue"
+        return self._status_badge(self._humanize_assignment_status(status), color=color)
 
     @staticmethod
     def _humanize_withdraw_status(status: str) -> str:
