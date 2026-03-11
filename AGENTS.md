@@ -117,6 +117,10 @@ Persistence and schema:
   - valid WB token,
   - sufficient seller funds,
   - successful live WB metadata read for the stored `wb_product_id`.
+- Seller can withdraw only `seller_available`; `seller_collateral` and active collateral holds are never withdrawable.
+- Seller can have at most one active withdrawal request at a time.
+- Seller can cancel their own withdrawal request while it is still pending admin action and then create a new one.
+- Seller withdrawal address must pass TonAPI parse validation for TON mainnet before the request is created.
 
 ### 4.2 Buyer rules
 
@@ -172,15 +176,16 @@ Transitions:
 ### 4.4 Admin and finance rules
 
 - Admin operations are Telegram-driven and auditable.
-- Withdrawals require admin decision path:
+- Withdrawals use one shared requester model for buyers and sellers and require admin decision path:
   - open request,
   - reject with reason, or
   - enter tx hash for a completed transfer.
 - Withdrawal completion is single-step:
   - admin enters tx hash only after sending funds,
-  - bot verifies the tx hash on-chain against the configured TON USDT payout wallet, buyer address, and exact amount,
+  - bot verifies the tx hash on-chain against the configured TON USDT payout wallet, requester address, and exact amount,
   - only a verified tx completes the request,
   - failed/missing tx verification leaves the request pending for retry.
+- Every new buyer or seller withdrawal request sends an admin push notification with requester role, Telegram identity, amount, and request number.
 - Manual deposit is supported for exception handling/bonuses/corrections.
 - Manual deposit input supports role aliases:
   - `seller` maps to `seller_available`,
@@ -254,7 +259,14 @@ Transitions:
   - top section shows only WB article, cashback, search phrase, plan/in-progress, shop link, collateral, and activity status,
   - the rest of the WB data lives inside collapsed `Параметры`, `Описание`, and `Характеристики` sections,
   - if collateral is insufficient, the note explains that balance top-up is required before activation.
-- Seller balance screen shows `Всего`, `Свободно для новых объявлений`, and `Уже выделено под объявления`; activation shortfall is shown only when funds are insufficient.
+- Seller balance screen shows `Свободно для новых объявлений`, `Уже выделено под объявления`, and `В процессе вывода`; `Всего` is not shown there, and activation shortfall is shown only when funds are insufficient.
+- Seller balance screen offers:
+  - `➕ Пополнить`,
+  - `💸 Вывести все доступное`,
+  - `✍️ Указать сумму вручную`,
+  - `🧾 Транзакции`,
+  - `↩️ Назад`.
+- If the seller already has an active withdrawal request, new withdrawal actions are hidden and the screen shows that request plus `🚫 Отменить заявку`.
 - Seller top-up amount entry screen also includes `Как перевести?`, which opens the same transfer guidance before invoice creation.
 - Seller top-up invoice screen:
   - shows the TON USDT address in copy-friendly monospace,
@@ -264,6 +276,7 @@ Transitions:
     - generic TON jetton transfer link for other wallets,
   - includes `Как перевести?`, which opens a separate guidance screen with Wallet/P2P help links and TON withdrawal steps,
   - keeps the raw address and amount visible as fallback if wallet opening does not work.
+- `Транзакции продавца` is a unified paginated seller balance history for both `Пополнение` and `Вывод`, ordered by creation time descending and showing timestamps, statuses, notes/comments, and tx hash when present.
 - Transaction/history screens:
   - use representative `Транзакции ...` titles,
   - use `<` / `>` pagination when needed,
@@ -290,7 +303,7 @@ Transitions:
 - All user-facing timestamps are rendered in `MSK` (`Europe/Moscow`).
 - Admin UX:
   - `Выводы`, `Депозиты`, `Исключения` sections.
-- Admin withdrawals section contains pending/actionable requests and processed-history access.
+- Admin withdrawals section contains pending/actionable requests and processed-history access for both buyers and sellers, with requester role shown in queue and detail views.
 - Sensitive inputs (tokens, payloads) are deleted when possible.
 
 ### 4.8 Money, precision, and FX rules

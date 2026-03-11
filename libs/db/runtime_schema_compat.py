@@ -29,6 +29,15 @@ _LISTING_OPTIONAL_COLUMNS = (
     "wb_photo_url",
     "reference_price_source",
 )
+_ACCOUNT_KINDS = (
+    "seller_available",
+    "seller_collateral",
+    "seller_withdraw_pending",
+    "buyer_available",
+    "buyer_withdraw_pending",
+    "reward_reserved",
+    "system_payout",
+)
 
 
 def _resolve_database_url(explicit_url: str | None) -> str:
@@ -148,6 +157,29 @@ def _ensure_user_capability_columns(cur: psycopg.Cursor) -> None:
             ALTER COLUMN is_admin SET DEFAULT false,
             ALTER COLUMN is_admin SET NOT NULL
         """
+    )
+
+
+def _ensure_accounts_account_kinds(cur: psycopg.Cursor) -> None:
+    if not _table_exists(cur, table_name="accounts"):
+        return
+
+    constraint_def = _constraint_definition(
+        cur,
+        table_name="accounts",
+        constraint_name="accounts_account_kind_check",
+    )
+    if constraint_def is not None and "seller_withdraw_pending" in constraint_def:
+        return
+
+    if constraint_def is not None:
+        cur.execute("ALTER TABLE public.accounts DROP CONSTRAINT accounts_account_kind_check")
+    cur.execute(
+        "ALTER TABLE public.accounts "
+        "ADD CONSTRAINT accounts_account_kind_check CHECK ("
+        "account_kind = ANY (ARRAY["
+        + ", ".join(f"'{kind}'::text" for kind in _ACCOUNT_KINDS)
+        + "]))"
     )
 
 
@@ -286,6 +318,115 @@ def _ensure_buyer_orders_wb_product_id(cur: psycopg.Cursor) -> None:
     cur.execute("ALTER TABLE public.buyer_orders ALTER COLUMN wb_product_id SET NOT NULL")
 
 
+def _ensure_withdrawal_request_requester_columns(cur: psycopg.Cursor) -> None:
+    if not _table_exists(cur, table_name="withdrawal_requests"):
+        return
+
+    if not _column_exists(cur, table_name="withdrawal_requests", column_name="requester_user_id"):
+        cur.execute("ALTER TABLE public.withdrawal_requests ADD COLUMN requester_user_id bigint")
+    if not _column_exists(cur, table_name="withdrawal_requests", column_name="requester_role"):
+        cur.execute("ALTER TABLE public.withdrawal_requests ADD COLUMN requester_role text")
+
+    if _column_exists(cur, table_name="withdrawal_requests", column_name="buyer_user_id"):
+        cur.execute(
+            """
+            UPDATE public.withdrawal_requests
+            SET requester_user_id = COALESCE(requester_user_id, buyer_user_id),
+                requester_role = COALESCE(NULLIF(requester_role, ''), 'buyer')
+            WHERE buyer_user_id IS NOT NULL
+            """
+        )
+
+    cur.execute(
+        """
+        UPDATE public.withdrawal_requests
+        SET requester_role = 'buyer'
+        WHERE requester_role IS NULL
+        """
+    )
+
+    cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM public.withdrawal_requests
+        WHERE requester_user_id IS NULL
+           OR requester_role IS NULL
+        """
+    )
+    missing_count = int(cur.fetchone()[0])
+    if missing_count:
+        raise RuntimeError(
+            "runtime schema compatibility failed: withdrawal_requests requester columns "
+            f"still have {missing_count} NULL rows after backfill"
+        )
+
+    cur.execute(
+        """
+        SELECT requester_role, requester_user_id, COUNT(*)
+        FROM public.withdrawal_requests
+        WHERE status = 'withdraw_pending_admin'
+        GROUP BY requester_role, requester_user_id
+        HAVING COUNT(*) > 1
+        LIMIT 1
+        """
+    )
+    duplicate_pending_row = cur.fetchone()
+    if duplicate_pending_row is not None:
+        requester_role, requester_user_id, duplicate_count = duplicate_pending_row
+        raise RuntimeError(
+            "runtime schema compatibility failed: duplicate pending withdrawal requests "
+            f"for requester_role={requester_role}, requester_user_id={requester_user_id}, "
+            f"count={duplicate_count}"
+        )
+
+    cur.execute(
+        """
+        ALTER TABLE public.withdrawal_requests
+            ALTER COLUMN requester_user_id SET NOT NULL,
+            ALTER COLUMN requester_role SET NOT NULL
+        """
+    )
+
+    requester_role_check_def = _constraint_definition(
+        cur,
+        table_name="withdrawal_requests",
+        constraint_name="withdrawal_requests_requester_role_check",
+    )
+    if requester_role_check_def is None or "seller" not in requester_role_check_def.lower():
+        if requester_role_check_def is not None:
+            cur.execute(
+                "ALTER TABLE public.withdrawal_requests "
+                "DROP CONSTRAINT withdrawal_requests_requester_role_check"
+            )
+        cur.execute(
+            """
+            ALTER TABLE public.withdrawal_requests
+            ADD CONSTRAINT withdrawal_requests_requester_role_check CHECK (
+                requester_role = ANY (ARRAY['buyer'::text, 'seller'::text])
+            )
+            """
+        )
+
+    if _index_exists(cur, index_name="uq_withdrawal_requests_buyer_active"):
+        cur.execute("DROP INDEX public.uq_withdrawal_requests_buyer_active")
+
+    active_index_def = _index_definition(cur, index_name="uq_withdrawal_requests_requester_active")
+    if active_index_def is not None:
+        normalized_def = active_index_def.lower()
+        if "requester_role" not in normalized_def or "requester_user_id" not in normalized_def:
+            cur.execute("DROP INDEX public.uq_withdrawal_requests_requester_active")
+            active_index_def = None
+
+    if active_index_def is None:
+        cur.execute(
+            """
+            CREATE UNIQUE INDEX uq_withdrawal_requests_requester_active
+            ON public.withdrawal_requests USING btree (requester_role, requester_user_id)
+            WHERE (status = 'withdraw_pending_admin'::text)
+            """
+        )
+
+
 def _normalize_withdrawal_and_assignment_statuses(cur: psycopg.Cursor) -> None:
     if _table_exists(cur, table_name="withdrawal_requests"):
         cur.execute(
@@ -295,32 +436,6 @@ def _normalize_withdrawal_and_assignment_statuses(cur: psycopg.Cursor) -> None:
             WHERE status = 'approved'
             """
         )
-        cur.execute(
-            """
-            SELECT buyer_user_id, COUNT(*)
-            FROM public.withdrawal_requests
-            WHERE status = 'withdraw_pending_admin'
-            GROUP BY buyer_user_id
-            HAVING COUNT(*) > 1
-            LIMIT 1
-            """
-        )
-        duplicate_pending_row = cur.fetchone()
-        if duplicate_pending_row is not None:
-            buyer_user_id, duplicate_count = duplicate_pending_row
-            raise RuntimeError(
-                "runtime schema compatibility failed: duplicate pending withdrawal requests "
-                f"for buyer_user_id={buyer_user_id}, count={duplicate_count}"
-            )
-
-        if not _index_exists(cur, index_name="uq_withdrawal_requests_buyer_active"):
-            cur.execute(
-                """
-                CREATE UNIQUE INDEX uq_withdrawal_requests_buyer_active
-                ON public.withdrawal_requests USING btree (buyer_user_id)
-                WHERE (status = 'withdraw_pending_admin'::text)
-                """
-            )
 
     if _table_exists(cur, table_name="assignments"):
         cur.execute(
@@ -393,10 +508,12 @@ def apply_runtime_schema_compatibility(database_url: str) -> None:
     normalized_database_url = normalize_database_url(database_url)
     with psycopg.connect(normalized_database_url) as conn:
         with conn.cursor() as cur:
+            _ensure_accounts_account_kinds(cur)
             _ensure_user_capability_columns(cur)
             _ensure_listing_metadata_columns(cur)
             _ensure_assignments_wb_product_id(cur)
             _ensure_buyer_orders_wb_product_id(cur)
+            _ensure_withdrawal_request_requester_columns(cur)
             _normalize_withdrawal_and_assignment_statuses(cur)
             _ensure_wb_report_rows_wb_srid(cur)
         conn.commit()

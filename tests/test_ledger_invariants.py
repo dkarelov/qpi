@@ -128,7 +128,8 @@ async def test_ledger_flows_keep_global_balance_and_double_entry_invariant(db_po
     assert unlock.changed is True
 
     withdrawal = await service.create_withdrawal_request(
-        buyer_user_id=buyer_id,
+        requester_user_id=buyer_id,
+        requester_role="buyer",
         from_account_id=buyer_available_account_id,
         pending_account_id=buyer_pending_account_id,
         amount_usdt=Decimal("10.000000"),
@@ -140,7 +141,6 @@ async def test_ledger_flows_keep_global_balance_and_double_entry_invariant(db_po
     sent = await service.complete_withdrawal_request(
         request_id=withdrawal.withdrawal_request_id,
         admin_user_id=admin_id,
-        pending_account_id=buyer_pending_account_id,
         system_payout_account_id=system_payout_account_id,
         tx_hash="0xabc123",
         idempotency_key="withdraw-send-2",
@@ -218,7 +218,8 @@ async def test_buyer_balance_and_withdraw_history_queries(db_pool) -> None:
             )
 
     request = await service.create_withdrawal_request(
-        buyer_user_id=buyer_id,
+        requester_user_id=buyer_id,
+        requester_role="buyer",
         from_account_id=buyer_available_account_id,
         pending_account_id=buyer_pending_account_id,
         amount_usdt=Decimal("2.500000"),
@@ -239,11 +240,13 @@ async def test_buyer_balance_and_withdraw_history_queries(db_pool) -> None:
     pending = await service.list_pending_withdrawals()
     assert len(pending) == 1
     assert pending[0].withdrawal_request_id == request.withdrawal_request_id
-    assert pending[0].buyer_user_id == buyer_id
+    assert pending[0].requester_user_id == buyer_id
+    assert pending[0].requester_role == "buyer"
 
     detail = await service.get_withdrawal_request_detail(request_id=request.withdrawal_request_id)
     assert detail.withdrawal_request_id == request.withdrawal_request_id
-    assert detail.buyer_user_id == buyer_id
+    assert detail.requester_user_id == buyer_id
+    assert detail.requester_role == "buyer"
     assert detail.from_account_id == buyer_available_account_id
     assert detail.to_account_id == buyer_pending_account_id
 
@@ -282,7 +285,8 @@ async def test_reject_withdrawal_persists_reason_note(db_pool) -> None:
             )
 
     request = await service.create_withdrawal_request(
-        buyer_user_id=buyer_id,
+        requester_user_id=buyer_id,
+        requester_role="buyer",
         from_account_id=buyer_available_account_id,
         pending_account_id=buyer_pending_account_id,
         amount_usdt=Decimal("1.000000"),
@@ -293,8 +297,6 @@ async def test_reject_withdrawal_persists_reason_note(db_pool) -> None:
     result = await service.reject_withdrawal_request(
         request_id=request.withdrawal_request_id,
         admin_user_id=admin_id,
-        pending_account_id=buyer_pending_account_id,
-        buyer_available_account_id=buyer_available_account_id,
         reason="invalid payout address",
         idempotency_key="withdraw-note-reject-1",
     )
@@ -333,7 +335,8 @@ async def test_buyer_cancel_withdrawal_returns_funds_and_marks_cancelled(db_pool
             )
 
     request = await service.create_withdrawal_request(
-        buyer_user_id=buyer_id,
+        requester_user_id=buyer_id,
+        requester_role="buyer",
         from_account_id=buyer_available_account_id,
         pending_account_id=buyer_pending_account_id,
         amount_usdt=Decimal("1.500000"),
@@ -343,7 +346,8 @@ async def test_buyer_cancel_withdrawal_returns_funds_and_marks_cancelled(db_pool
 
     cancelled = await service.cancel_withdrawal_request(
         request_id=request.withdrawal_request_id,
-        buyer_user_id=buyer_id,
+        requester_user_id=buyer_id,
+        requester_role="buyer",
         idempotency_key="withdraw-cancel-1:cancel",
     )
     assert cancelled.changed is True
@@ -384,7 +388,8 @@ async def test_buyer_cannot_create_second_active_withdrawal_request(db_pool) -> 
             )
 
     await service.create_withdrawal_request(
-        buyer_user_id=buyer_id,
+        requester_user_id=buyer_id,
+        requester_role="buyer",
         from_account_id=buyer_available_account_id,
         pending_account_id=buyer_pending_account_id,
         amount_usdt=Decimal("1.000000"),
@@ -394,13 +399,161 @@ async def test_buyer_cannot_create_second_active_withdrawal_request(db_pool) -> 
 
     with pytest.raises(InvalidStateError, match="active withdrawal request"):
         await service.create_withdrawal_request(
-            buyer_user_id=buyer_id,
+            requester_user_id=buyer_id,
+            requester_role="buyer",
             from_account_id=buyer_available_account_id,
             pending_account_id=buyer_pending_account_id,
             amount_usdt=Decimal("1.000000"),
             payout_address="UQ_ACTIVE_2",
             idempotency_key="withdraw-active-2",
         )
+
+
+@pytest.mark.asyncio
+async def test_seller_withdrawal_uses_available_balance_only_and_has_role_aware_views(
+    db_pool,
+) -> None:
+    service = FinanceService(db_pool)
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            seller_id = await create_user(
+                conn,
+                telegram_id=3923,
+                role="seller",
+                username="seller_withdraw",
+            )
+            seller_available_account_id = await create_account(
+                conn,
+                owner_user_id=seller_id,
+                account_code=f"user:{seller_id}:seller_available",
+                account_kind="seller_available",
+                balance=Decimal("4.000000"),
+            )
+            seller_collateral_account_id = await create_account(
+                conn,
+                owner_user_id=seller_id,
+                account_code=f"user:{seller_id}:seller_collateral",
+                account_kind="seller_collateral",
+                balance=Decimal("7.000000"),
+            )
+            seller_pending_account_id = await create_account(
+                conn,
+                owner_user_id=seller_id,
+                account_code=f"user:{seller_id}:seller_withdraw_pending",
+                account_kind="seller_withdraw_pending",
+                balance=Decimal("0.000000"),
+            )
+
+    request = await service.create_withdrawal_request(
+        requester_user_id=seller_id,
+        requester_role="seller",
+        from_account_id=seller_available_account_id,
+        pending_account_id=seller_pending_account_id,
+        amount_usdt=Decimal("3.000000"),
+        payout_address="UQ_SELLER_TEST",
+        idempotency_key="seller-withdraw-history-1",
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT account_kind, current_balance_usdt
+                FROM accounts
+                WHERE id = ANY(%s)
+                """,
+                (
+                    [
+                        seller_available_account_id,
+                        seller_collateral_account_id,
+                        seller_pending_account_id,
+                    ],
+                ),
+            )
+            balances = {row["account_kind"]: row["current_balance_usdt"] for row in await cur.fetchall()}
+
+    assert balances["seller_available"] == Decimal("1.000000")
+    assert balances["seller_collateral"] == Decimal("7.000000")
+    assert balances["seller_withdraw_pending"] == Decimal("3.000000")
+
+    history = await service.list_seller_withdrawal_history(seller_user_id=seller_id)
+    assert len(history) == 1
+    assert history[0].withdrawal_request_id == request.withdrawal_request_id
+
+    pending = await service.list_pending_withdrawals()
+    assert len(pending) == 1
+    assert pending[0].requester_user_id == seller_id
+    assert pending[0].requester_role == "seller"
+
+    detail = await service.get_withdrawal_request_detail(request_id=request.withdrawal_request_id)
+    assert detail.requester_user_id == seller_id
+    assert detail.requester_role == "seller"
+
+
+@pytest.mark.asyncio
+async def test_seller_cancel_withdrawal_returns_funds_to_available(db_pool) -> None:
+    service = FinanceService(db_pool)
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            seller_id = await create_user(
+                conn,
+                telegram_id=3924,
+                role="seller",
+                username="seller_cancel",
+            )
+            seller_available_account_id = await create_account(
+                conn,
+                owner_user_id=seller_id,
+                account_code=f"user:{seller_id}:seller_available",
+                account_kind="seller_available",
+                balance=Decimal("2.000000"),
+            )
+            seller_pending_account_id = await create_account(
+                conn,
+                owner_user_id=seller_id,
+                account_code=f"user:{seller_id}:seller_withdraw_pending",
+                account_kind="seller_withdraw_pending",
+                balance=Decimal("0.000000"),
+            )
+
+    request = await service.create_withdrawal_request(
+        requester_user_id=seller_id,
+        requester_role="seller",
+        from_account_id=seller_available_account_id,
+        pending_account_id=seller_pending_account_id,
+        amount_usdt=Decimal("1.250000"),
+        payout_address="UQ_SELLER_CANCEL",
+        idempotency_key="seller-withdraw-cancel-1",
+    )
+
+    cancelled = await service.cancel_withdrawal_request(
+        request_id=request.withdrawal_request_id,
+        requester_user_id=seller_id,
+        requester_role="seller",
+        idempotency_key="seller-withdraw-cancel-1:cancel",
+    )
+    assert cancelled.changed is True
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT account_kind, current_balance_usdt
+                FROM accounts
+                WHERE id = ANY(%s)
+                """,
+                ([seller_available_account_id, seller_pending_account_id],),
+            )
+            balances = {row["account_kind"]: row["current_balance_usdt"] for row in await cur.fetchall()}
+
+    assert balances["seller_available"] == Decimal("2.000000")
+    assert balances["seller_withdraw_pending"] == Decimal("0.000000")
+
+    detail = await service.get_withdrawal_request_detail(request_id=request.withdrawal_request_id)
+    assert detail.status == "cancelled"
+    assert detail.requester_role == "seller"
 
 
 @pytest.mark.asyncio

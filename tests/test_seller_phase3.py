@@ -73,6 +73,9 @@ async def test_seller_bootstrap_is_idempotent_and_creates_accounts(db_pool) -> N
     assert first.user_id == second.user_id
     assert first.seller_available_account_id == second.seller_available_account_id
     assert first.seller_collateral_account_id == second.seller_collateral_account_id
+    assert (
+        first.seller_withdraw_pending_account_id == second.seller_withdraw_pending_account_id
+    )
 
     async with db_pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -81,12 +84,16 @@ async def test_seller_bootstrap_is_idempotent_and_creates_accounts(db_pool) -> N
                 SELECT COUNT(*) AS count
                 FROM accounts
                 WHERE owner_user_id = %s
-                  AND account_kind IN ('seller_available', 'seller_collateral')
+                  AND account_kind IN (
+                      'seller_available',
+                      'seller_collateral',
+                      'seller_withdraw_pending'
+                  )
                 """,
                 (first.user_id,),
             )
             row = await cur.fetchone()
-            assert row["count"] == 2
+            assert row["count"] == 3
 
 
 @pytest.mark.asyncio
@@ -689,6 +696,7 @@ async def test_seller_balance_and_collateral_views(db_pool) -> None:
     snapshot = await service.get_seller_balance_snapshot(seller_user_id=seller.user_id)
     assert snapshot.seller_available_usdt == Decimal("0.000000")
     assert snapshot.seller_collateral_usdt == Decimal("6.060000")
+    assert snapshot.seller_withdraw_pending_usdt == Decimal("0.000000")
 
     views = await service.list_listing_collateral_views(seller_user_id=seller.user_id)
     assert len(views) == 1

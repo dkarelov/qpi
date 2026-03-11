@@ -43,6 +43,7 @@ class SellerBootstrapResult:
     created_user: bool
     seller_available_account_id: int
     seller_collateral_account_id: int
+    seller_withdraw_pending_account_id: int
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,7 @@ class ListingResult:
 class SellerBalanceSnapshot:
     seller_available_usdt: Decimal
     seller_collateral_usdt: Decimal
+    seller_withdraw_pending_usdt: Decimal
 
 
 @dataclass(frozen=True)
@@ -213,7 +215,7 @@ class BuyerBalanceSnapshot:
 
 
 @dataclass(frozen=True)
-class BuyerWithdrawalHistoryItem:
+class WithdrawalHistoryItem:
     withdrawal_request_id: int
     amount_usdt: Decimal
     status: str
@@ -228,6 +230,8 @@ class BuyerWithdrawalHistoryItem:
 @dataclass(frozen=True)
 class ActiveWithdrawalRequestView:
     withdrawal_request_id: int
+    requester_user_id: int
+    requester_role: str
     amount_usdt: Decimal
     status: str
     payout_address: str
@@ -241,9 +245,10 @@ class ActiveWithdrawalRequestView:
 @dataclass(frozen=True)
 class PendingWithdrawalView:
     withdrawal_request_id: int
-    buyer_user_id: int
-    buyer_telegram_id: int
-    buyer_username: str | None
+    requester_user_id: int
+    requester_role: str
+    requester_telegram_id: int
+    requester_username: str | None
     amount_usdt: Decimal
     payout_address: str
     requested_at: datetime
@@ -252,9 +257,10 @@ class PendingWithdrawalView:
 @dataclass(frozen=True)
 class ProcessedWithdrawalView:
     withdrawal_request_id: int
-    buyer_user_id: int
-    buyer_telegram_id: int
-    buyer_username: str | None
+    requester_user_id: int
+    requester_role: str
+    requester_telegram_id: int
+    requester_username: str | None
     amount_usdt: Decimal
     status: str
     payout_address: str
@@ -268,9 +274,10 @@ class ProcessedWithdrawalView:
 @dataclass(frozen=True)
 class WithdrawalRequestDetail:
     withdrawal_request_id: int
-    buyer_user_id: int
-    buyer_telegram_id: int
-    buyer_username: str | None
+    requester_user_id: int
+    requester_role: str
+    requester_telegram_id: int
+    requester_username: str | None
     from_account_id: int
     to_account_id: int
     amount_usdt: Decimal

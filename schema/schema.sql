@@ -2,7 +2,7 @@ CREATE TABLE "public"."accounts" (
     "id" bigserial NOT NULL,
     "owner_user_id" bigint,
     "account_code" text NOT NULL,
-    "account_kind" text NOT NULL CONSTRAINT accounts_account_kind_check CHECK (account_kind = ANY (ARRAY['seller_available'::text, 'seller_collateral'::text, 'buyer_available'::text, 'buyer_withdraw_pending'::text, 'reward_reserved'::text, 'system_payout'::text])),
+    "account_kind" text NOT NULL CONSTRAINT accounts_account_kind_check CHECK (account_kind = ANY (ARRAY['seller_available'::text, 'seller_collateral'::text, 'seller_withdraw_pending'::text, 'buyer_available'::text, 'buyer_withdraw_pending'::text, 'reward_reserved'::text, 'system_payout'::text])),
     "currency" text NOT NULL DEFAULT 'USDT'::text CONSTRAINT accounts_currency_check CHECK (currency = 'USDT'::text),
     "current_balance_usdt" numeric(20,6) NOT NULL DEFAULT 0 CONSTRAINT accounts_current_balance_usdt_check CHECK (current_balance_usdt >= 0::numeric),
     "created_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
@@ -478,7 +478,8 @@ ALTER TABLE "public"."users" ADD CONSTRAINT "users_telegram_id_key" UNIQUE (tele
 
 CREATE TABLE "public"."withdrawal_requests" (
     "id" bigserial NOT NULL,
-    "buyer_user_id" bigint NOT NULL,
+    "requester_user_id" bigint NOT NULL,
+    "requester_role" text NOT NULL CONSTRAINT withdrawal_requests_requester_role_check CHECK (requester_role = ANY (ARRAY['buyer'::text, 'seller'::text])),
     "from_account_id" bigint NOT NULL,
     "to_account_id" bigint NOT NULL,
     "amount_usdt" numeric(20,6) NOT NULL CONSTRAINT withdrawal_requests_amount_usdt_check CHECK (amount_usdt > 0::numeric),
@@ -495,11 +496,11 @@ CREATE TABLE "public"."withdrawal_requests" (
 
 CREATE INDEX idx_withdrawal_requests_status ON public.withdrawal_requests USING btree (status);
 
-CREATE UNIQUE INDEX uq_withdrawal_requests_buyer_active ON public.withdrawal_requests USING btree (buyer_user_id) WHERE (status = 'withdraw_pending_admin'::text);
+CREATE UNIQUE INDEX uq_withdrawal_requests_requester_active ON public.withdrawal_requests USING btree (requester_role, requester_user_id) WHERE (status = 'withdraw_pending_admin'::text);
 
 ALTER TABLE ONLY "public"."withdrawal_requests" ADD CONSTRAINT "withdrawal_requests_admin_user_id_fkey" FOREIGN KEY ("admin_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 
-ALTER TABLE ONLY "public"."withdrawal_requests" ADD CONSTRAINT "withdrawal_requests_buyer_user_id_fkey" FOREIGN KEY ("buyer_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+ALTER TABLE ONLY "public"."withdrawal_requests" ADD CONSTRAINT "withdrawal_requests_requester_user_id_fkey" FOREIGN KEY ("requester_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 
 ALTER TABLE ONLY "public"."withdrawal_requests" ADD CONSTRAINT "withdrawal_requests_from_account_id_fkey" FOREIGN KEY ("from_account_id") REFERENCES "public"."accounts" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 

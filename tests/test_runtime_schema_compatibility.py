@@ -289,6 +289,24 @@ async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assig
                 )
                 """
             )
+            cur.execute("ALTER TABLE public.accounts DROP CONSTRAINT accounts_account_kind_check")
+            cur.execute(
+                """
+                ALTER TABLE public.accounts
+                ADD CONSTRAINT accounts_account_kind_check CHECK (
+                    account_kind = ANY (
+                        ARRAY[
+                            'seller_available'::text,
+                            'seller_collateral'::text,
+                            'buyer_available'::text,
+                            'buyer_withdraw_pending'::text,
+                            'reward_reserved'::text,
+                            'system_payout'::text
+                        ]
+                    )
+                )
+                """
+            )
             cur.execute("DROP INDEX IF EXISTS public.uq_assignments_buyer_product_active")
             cur.execute(
                 """
@@ -416,9 +434,30 @@ async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assig
             cur.execute("SELECT status FROM public.assignments WHERE id = %s", (assignment_id,))
             assert cur.fetchone()[0] == "withdraw_sent"
             cur.execute(
-                "SELECT status FROM public.withdrawal_requests WHERE id = %s",
+                """
+                SELECT requester_user_id, requester_role, status
+                FROM public.withdrawal_requests
+                WHERE id = %s
+                """,
                 (withdrawal_request_id,),
             )
-            assert cur.fetchone()[0] == "withdraw_pending_admin"
+            requester_user_id, requester_role, status = cur.fetchone()
+            assert requester_user_id == buyer_user_id
+            assert requester_role == "buyer"
+            assert status == "withdraw_pending_admin"
             cur.execute("SELECT to_regclass('public.uq_withdrawal_requests_buyer_active')")
-            assert cur.fetchone()[0] == "uq_withdrawal_requests_buyer_active"
+            assert cur.fetchone()[0] is None
+            cur.execute("SELECT to_regclass('public.uq_withdrawal_requests_requester_active')")
+            assert cur.fetchone()[0] == "uq_withdrawal_requests_requester_active"
+            cur.execute(
+                """
+                SELECT pg_get_constraintdef(c.oid)
+                FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                WHERE n.nspname = 'public'
+                  AND t.relname = 'accounts'
+                  AND c.conname = 'accounts_account_kind_check'
+                """
+            )
+            assert "seller_withdraw_pending" in cur.fetchone()[0]

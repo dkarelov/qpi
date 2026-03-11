@@ -20,17 +20,18 @@ from libs.domain.models import (
     ActiveWithdrawalRequestView,
     AssignmentReservationResult,
     BuyerBalanceSnapshot,
-    BuyerWithdrawalHistoryItem,
     ManualDepositResult,
     PendingWithdrawalView,
     ProcessedWithdrawalView,
     StatusChangeResult,
     TransferResult,
+    WithdrawalHistoryItem,
     WithdrawalRequestDetail,
     WithdrawalRequestResult,
 )
 
 _CANCELLATION_STATES = {"expired_2h", "wb_invalid", "returned_within_14d", "delivery_expired"}
+_WITHDRAWAL_REQUESTER_ROLES = frozenset({"buyer", "seller"})
 
 
 class FinanceService:
@@ -380,13 +381,15 @@ class FinanceService:
     async def create_withdrawal_request(
         self,
         *,
-        buyer_user_id: int,
+        requester_user_id: int,
+        requester_role: str,
         from_account_id: int,
         pending_account_id: int,
         amount_usdt: Decimal,
         payout_address: str,
         idempotency_key: str,
     ) -> WithdrawalRequestResult:
+        normalized_requester_role = _normalize_requester_role(requester_role)
         amount = _normalize_amount(amount_usdt)
 
         async def operation(conn: AsyncConnection) -> WithdrawalRequestResult:
@@ -410,15 +413,18 @@ class FinanceService:
                     """
                     SELECT id
                     FROM withdrawal_requests
-                    WHERE buyer_user_id = %s
+                    WHERE requester_user_id = %s
+                      AND requester_role = %s
                       AND status = 'withdraw_pending_admin'
                     FOR UPDATE
                     """,
-                    (buyer_user_id,),
+                    (requester_user_id, normalized_requester_role),
                 )
                 active = await cur.fetchone()
                 if active is not None:
-                    raise InvalidStateError("buyer already has active withdrawal request")
+                    raise InvalidStateError(
+                        f"{normalized_requester_role} already has active withdrawal request"
+                    )
 
                 await self._transfer_locked(
                     cur,
@@ -429,14 +435,18 @@ class FinanceService:
                     idempotency_key=_ledger_key(idempotency_key),
                     entity_type="withdrawal_request",
                     entity_id=None,
-                    metadata={"buyer_user_id": buyer_user_id},
+                    metadata={
+                        "requester_user_id": requester_user_id,
+                        "requester_role": normalized_requester_role,
+                    },
                 )
 
                 try:
                     await cur.execute(
                         """
                         INSERT INTO withdrawal_requests (
-                            buyer_user_id,
+                            requester_user_id,
+                            requester_role,
                             from_account_id,
                             to_account_id,
                             amount_usdt,
@@ -444,11 +454,12 @@ class FinanceService:
                             payout_address,
                             idempotency_key
                         )
-                        VALUES (%s, %s, %s, %s, 'withdraw_pending_admin', %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, 'withdraw_pending_admin', %s, %s)
                         RETURNING id
                         """,
                         (
-                            buyer_user_id,
+                            requester_user_id,
+                            normalized_requester_role,
                             from_account_id,
                             pending_account_id,
                             amount,
@@ -458,9 +469,9 @@ class FinanceService:
                     )
                 except UniqueViolation as exc:
                     constraint_name = exc.diag.constraint_name if exc.diag is not None else None
-                    if constraint_name == "uq_withdrawal_requests_buyer_active":
+                    if constraint_name == "uq_withdrawal_requests_requester_active":
                         raise InvalidStateError(
-                            "buyer already has active withdrawal request"
+                            f"{normalized_requester_role} already has active withdrawal request"
                         ) from exc
                     raise
                 withdrawal_request = await cur.fetchone()
@@ -486,14 +497,24 @@ class FinanceService:
         self,
         *,
         request_id: int,
-        buyer_user_id: int,
+        requester_user_id: int,
+        requester_role: str,
         idempotency_key: str,
     ) -> StatusChangeResult:
+        normalized_requester_role = _normalize_requester_role(requester_role)
+
         async def operation(conn: AsyncConnection) -> StatusChangeResult:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
-                    SELECT id, buyer_user_id, from_account_id, to_account_id, status, amount_usdt
+                    SELECT
+                        id,
+                        requester_user_id,
+                        requester_role,
+                        from_account_id,
+                        to_account_id,
+                        status,
+                        amount_usdt
                     FROM withdrawal_requests
                     WHERE id = %s
                     FOR UPDATE
@@ -504,8 +525,11 @@ class FinanceService:
                 if request is None:
                     raise NotFoundError(f"withdrawal request {request_id} not found")
 
-                if request["buyer_user_id"] != buyer_user_id:
-                    raise InvalidStateError("withdrawal request does not belong to buyer")
+                if (
+                    request["requester_user_id"] != requester_user_id
+                    or request["requester_role"] != normalized_requester_role
+                ):
+                    raise InvalidStateError("withdrawal request does not belong to requester")
 
                 if request["status"] == "cancelled":
                     return StatusChangeResult(changed=False)
@@ -534,7 +558,11 @@ class FinanceService:
                     idempotency_key=_ledger_key(idempotency_key),
                     entity_type="withdrawal_request",
                     entity_id=request_id,
-                    metadata={"request_id": request_id, "buyer_user_id": buyer_user_id},
+                    metadata={
+                        "request_id": request_id,
+                        "requester_user_id": requester_user_id,
+                        "requester_role": normalized_requester_role,
+                    },
                 )
 
                 await cur.execute(
@@ -558,8 +586,6 @@ class FinanceService:
         *,
         request_id: int,
         admin_user_id: int,
-        pending_account_id: int,
-        buyer_available_account_id: int,
         reason: str | None = None,
         idempotency_key: str,
     ) -> StatusChangeResult:
@@ -569,7 +595,7 @@ class FinanceService:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
-                    SELECT id, status, amount_usdt
+                    SELECT id, status, amount_usdt, from_account_id, to_account_id
                     FROM withdrawal_requests
                     WHERE id = %s
                     FOR UPDATE
@@ -602,8 +628,8 @@ class FinanceService:
 
                 await self._transfer_locked(
                     cur,
-                    from_account_id=pending_account_id,
-                    to_account_id=buyer_available_account_id,
+                    from_account_id=request["to_account_id"],
+                    to_account_id=request["from_account_id"],
                     amount_usdt=_normalize_amount(request["amount_usdt"]),
                     event_type="withdraw_reject",
                     idempotency_key=_ledger_key(idempotency_key),
@@ -643,7 +669,6 @@ class FinanceService:
         *,
         request_id: int,
         admin_user_id: int,
-        pending_account_id: int,
         system_payout_account_id: int,
         tx_hash: str,
         idempotency_key: str,
@@ -652,7 +677,7 @@ class FinanceService:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
-                    SELECT id, status, amount_usdt
+                    SELECT id, status, amount_usdt, to_account_id
                     FROM withdrawal_requests
                     WHERE id = %s
                     FOR UPDATE
@@ -683,7 +708,7 @@ class FinanceService:
 
                 await self._transfer_locked(
                     cur,
-                    from_account_id=pending_account_id,
+                    from_account_id=request["to_account_id"],
                     to_account_id=system_payout_account_id,
                     amount_usdt=_normalize_amount(request["amount_usdt"]),
                     event_type="withdraw_sent",
@@ -741,7 +766,6 @@ class FinanceService:
         *,
         request_id: int,
         admin_user_id: int,
-        pending_account_id: int,
         system_payout_account_id: int,
         tx_hash: str,
         idempotency_key: str,
@@ -749,7 +773,6 @@ class FinanceService:
         return await self.complete_withdrawal_request(
             request_id=request_id,
             admin_user_id=admin_user_id,
-            pending_account_id=pending_account_id,
             system_payout_account_id=system_payout_account_id,
             tx_hash=tx_hash,
             idempotency_key=idempotency_key,
@@ -940,12 +963,37 @@ class FinanceService:
         *,
         buyer_user_id: int,
     ) -> ActiveWithdrawalRequestView | None:
+        return await self._get_active_withdrawal_request(
+            requester_user_id=buyer_user_id,
+            requester_role="buyer",
+        )
+
+    async def get_active_seller_withdrawal_request(
+        self,
+        *,
+        seller_user_id: int,
+    ) -> ActiveWithdrawalRequestView | None:
+        return await self._get_active_withdrawal_request(
+            requester_user_id=seller_user_id,
+            requester_role="seller",
+        )
+
+    async def _get_active_withdrawal_request(
+        self,
+        *,
+        requester_user_id: int,
+        requester_role: str,
+    ) -> ActiveWithdrawalRequestView | None:
+        normalized_requester_role = _normalize_requester_role(requester_role)
+
         async def operation(conn: AsyncConnection) -> ActiveWithdrawalRequestView | None:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
                     SELECT
                         wr.id,
+                        wr.requester_user_id,
+                        wr.requester_role,
                         wr.amount_usdt,
                         wr.status,
                         wr.payout_address,
@@ -956,18 +1004,21 @@ class FinanceService:
                         p.tx_hash
                     FROM withdrawal_requests wr
                     LEFT JOIN payouts p ON p.withdrawal_request_id = wr.id
-                    WHERE wr.buyer_user_id = %s
+                    WHERE wr.requester_user_id = %s
+                      AND wr.requester_role = %s
                       AND wr.status = 'withdraw_pending_admin'
                     ORDER BY wr.requested_at DESC, wr.id DESC
                     LIMIT 1
                     """,
-                    (buyer_user_id,),
+                    (requester_user_id, normalized_requester_role),
                 )
                 row = await cur.fetchone()
                 if row is None:
                     return None
                 return ActiveWithdrawalRequestView(
                     withdrawal_request_id=row["id"],
+                    requester_user_id=row["requester_user_id"],
+                    requester_role=row["requester_role"],
                     amount_usdt=row["amount_usdt"],
                     status=row["status"],
                     payout_address=row["payout_address"],
@@ -985,15 +1036,39 @@ class FinanceService:
         *,
         buyer_user_id: int,
     ) -> int:
+        return await self._count_withdrawal_history(
+            requester_user_id=buyer_user_id,
+            requester_role="buyer",
+        )
+
+    async def count_seller_withdrawal_history(
+        self,
+        *,
+        seller_user_id: int,
+    ) -> int:
+        return await self._count_withdrawal_history(
+            requester_user_id=seller_user_id,
+            requester_role="seller",
+        )
+
+    async def _count_withdrawal_history(
+        self,
+        *,
+        requester_user_id: int,
+        requester_role: str,
+    ) -> int:
+        normalized_requester_role = _normalize_requester_role(requester_role)
+
         async def operation(conn: AsyncConnection) -> int:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
                     SELECT COUNT(*) AS total_count
                     FROM withdrawal_requests
-                    WHERE buyer_user_id = %s
+                    WHERE requester_user_id = %s
+                      AND requester_role = %s
                     """,
-                    (buyer_user_id,),
+                    (requester_user_id, normalized_requester_role),
                 )
                 row = await cur.fetchone()
                 return int(row["total_count"])
@@ -1006,13 +1081,43 @@ class FinanceService:
         buyer_user_id: int,
         limit: int = 20,
         offset: int = 0,
-    ) -> list[BuyerWithdrawalHistoryItem]:
+    ) -> list[WithdrawalHistoryItem]:
+        return await self._list_withdrawal_history(
+            requester_user_id=buyer_user_id,
+            requester_role="buyer",
+            limit=limit,
+            offset=offset,
+        )
+
+    async def list_seller_withdrawal_history(
+        self,
+        *,
+        seller_user_id: int,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[WithdrawalHistoryItem]:
+        return await self._list_withdrawal_history(
+            requester_user_id=seller_user_id,
+            requester_role="seller",
+            limit=limit,
+            offset=offset,
+        )
+
+    async def _list_withdrawal_history(
+        self,
+        *,
+        requester_user_id: int,
+        requester_role: str,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[WithdrawalHistoryItem]:
         if limit < 1:
             raise ValueError("limit must be >= 1")
         if offset < 0:
             raise ValueError("offset must be >= 0")
+        normalized_requester_role = _normalize_requester_role(requester_role)
 
-        async def operation(conn: AsyncConnection) -> list[BuyerWithdrawalHistoryItem]:
+        async def operation(conn: AsyncConnection) -> list[WithdrawalHistoryItem]:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
@@ -1028,16 +1133,17 @@ class FinanceService:
                         p.tx_hash
                     FROM withdrawal_requests wr
                     LEFT JOIN payouts p ON p.withdrawal_request_id = wr.id
-                    WHERE wr.buyer_user_id = %s
+                    WHERE wr.requester_user_id = %s
+                      AND wr.requester_role = %s
                     ORDER BY wr.requested_at DESC, wr.id DESC
                     LIMIT %s
                     OFFSET %s
                     """,
-                    (buyer_user_id, limit, offset),
+                    (requester_user_id, normalized_requester_role, limit, offset),
                 )
                 rows = await cur.fetchall()
                 return [
-                    BuyerWithdrawalHistoryItem(
+                    WithdrawalHistoryItem(
                         withdrawal_request_id=row["id"],
                         amount_usdt=row["amount_usdt"],
                         status=row["status"],
@@ -1070,14 +1176,15 @@ class FinanceService:
                     """
                     SELECT
                         wr.id,
-                        wr.buyer_user_id,
+                        wr.requester_user_id,
+                        wr.requester_role,
                         u.telegram_id,
                         u.username,
                         wr.amount_usdt,
                         wr.payout_address,
                         wr.requested_at
                     FROM withdrawal_requests wr
-                    JOIN users u ON u.id = wr.buyer_user_id
+                    JOIN users u ON u.id = wr.requester_user_id
                     WHERE wr.status = 'withdraw_pending_admin'
                     ORDER BY wr.requested_at ASC, wr.id ASC
                     LIMIT %s
@@ -1089,9 +1196,10 @@ class FinanceService:
                 return [
                     PendingWithdrawalView(
                         withdrawal_request_id=row["id"],
-                        buyer_user_id=row["buyer_user_id"],
-                        buyer_telegram_id=row["telegram_id"],
-                        buyer_username=row["username"],
+                        requester_user_id=row["requester_user_id"],
+                        requester_role=row["requester_role"],
+                        requester_telegram_id=row["telegram_id"],
+                        requester_username=row["username"],
                         amount_usdt=row["amount_usdt"],
                         payout_address=row["payout_address"],
                         requested_at=row["requested_at"],
@@ -1133,7 +1241,8 @@ class FinanceService:
                     """
                     SELECT
                         wr.id,
-                        wr.buyer_user_id,
+                        wr.requester_user_id,
+                        wr.requester_role,
                         u.telegram_id,
                         u.username,
                         wr.amount_usdt,
@@ -1145,7 +1254,7 @@ class FinanceService:
                         wr.note,
                         p.tx_hash
                     FROM withdrawal_requests wr
-                    JOIN users u ON u.id = wr.buyer_user_id
+                    JOIN users u ON u.id = wr.requester_user_id
                     LEFT JOIN payouts p ON p.withdrawal_request_id = wr.id
                     WHERE wr.status <> 'withdraw_pending_admin'
                     ORDER BY COALESCE(wr.processed_at, wr.requested_at) DESC, wr.id DESC
@@ -1158,9 +1267,10 @@ class FinanceService:
                 return [
                     ProcessedWithdrawalView(
                         withdrawal_request_id=row["id"],
-                        buyer_user_id=row["buyer_user_id"],
-                        buyer_telegram_id=row["telegram_id"],
-                        buyer_username=row["username"],
+                        requester_user_id=row["requester_user_id"],
+                        requester_role=row["requester_role"],
+                        requester_telegram_id=row["telegram_id"],
+                        requester_username=row["username"],
                         amount_usdt=row["amount_usdt"],
                         status=row["status"],
                         payout_address=row["payout_address"],
@@ -1182,7 +1292,8 @@ class FinanceService:
                     """
                     SELECT
                         wr.id,
-                        wr.buyer_user_id,
+                        wr.requester_user_id,
+                        wr.requester_role,
                         u.telegram_id,
                         u.username,
                         wr.from_account_id,
@@ -1196,7 +1307,7 @@ class FinanceService:
                         wr.note,
                         p.tx_hash
                     FROM withdrawal_requests wr
-                    JOIN users u ON u.id = wr.buyer_user_id
+                    JOIN users u ON u.id = wr.requester_user_id
                     LEFT JOIN payouts p ON p.withdrawal_request_id = wr.id
                     WHERE wr.id = %s
                     """,
@@ -1207,9 +1318,10 @@ class FinanceService:
                     raise NotFoundError(f"withdrawal request {request_id} not found")
                 return WithdrawalRequestDetail(
                     withdrawal_request_id=row["id"],
-                    buyer_user_id=row["buyer_user_id"],
-                    buyer_telegram_id=row["telegram_id"],
-                    buyer_username=row["username"],
+                    requester_user_id=row["requester_user_id"],
+                    requester_role=row["requester_role"],
+                    requester_telegram_id=row["telegram_id"],
+                    requester_username=row["username"],
                     from_account_id=row["from_account_id"],
                     to_account_id=row["to_account_id"],
                     amount_usdt=row["amount_usdt"],
@@ -1466,3 +1578,10 @@ def _hold_key(idempotency_key: str) -> str:
 
 def _normalize_amount(amount: Decimal) -> Decimal:
     return amount.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+
+
+def _normalize_requester_role(requester_role: str) -> str:
+    normalized = requester_role.strip().lower()
+    if normalized not in _WITHDRAWAL_REQUESTER_ROLES:
+        raise ValueError("requester_role must be buyer|seller")
+    return normalized

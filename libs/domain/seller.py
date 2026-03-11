@@ -145,12 +145,18 @@ class SellerService:
                     owner_user_id=user_id,
                     account_kind="seller_collateral",
                 )
+                seller_withdraw_pending_account_id = await self._ensure_owner_account(
+                    cur,
+                    owner_user_id=user_id,
+                    account_kind="seller_withdraw_pending",
+                )
 
                 return SellerBootstrapResult(
                     user_id=user_id,
                     created_user=created_user,
                     seller_available_account_id=seller_available_account_id,
                     seller_collateral_account_id=seller_collateral_account_id,
+                    seller_withdraw_pending_account_id=seller_withdraw_pending_account_id,
                 )
 
         return await run_in_transaction(self._pool, operation)
@@ -831,6 +837,11 @@ class SellerService:
                     owner_user_id=seller_user_id,
                     account_kind="seller_collateral",
                 )
+                withdraw_pending_account_id = await self._ensure_owner_account(
+                    cur,
+                    owner_user_id=seller_user_id,
+                    account_kind="seller_withdraw_pending",
+                )
                 await cur.execute(
                     """
                     SELECT
@@ -839,7 +850,7 @@ class SellerService:
                     FROM accounts
                     WHERE id = ANY(%s)
                     """,
-                    ([available_account_id, collateral_account_id],),
+                    ([available_account_id, collateral_account_id, withdraw_pending_account_id],),
                 )
                 rows = await cur.fetchall()
                 by_id = {row["id"]: row["current_balance_usdt"] for row in rows}
@@ -849,6 +860,9 @@ class SellerService:
                     ),
                     seller_collateral_usdt=_normalize_amount(
                         by_id.get(collateral_account_id, Decimal("0.000000"))
+                    ),
+                    seller_withdraw_pending_usdt=_normalize_amount(
+                        by_id.get(withdraw_pending_account_id, Decimal("0.000000"))
                     ),
                 )
 
