@@ -12,8 +12,8 @@ from libs.db.tx import run_in_transaction
 from libs.domain.buyer import BuyerService
 from libs.domain.errors import InvalidStateError, NotFoundError
 from libs.domain.ledger import FinanceService
-from libs.domain.notifications import NotificationService
 from libs.domain.models import ReservationExpiryResult
+from libs.domain.notifications import NotificationService
 from libs.logging.setup import EventLogger, get_logger
 
 _PICKUP_OPERATION = "Продажа"

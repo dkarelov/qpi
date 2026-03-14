@@ -1062,8 +1062,7 @@ class TelegramWebhookRuntime:
                         "с уже начатыми заданиями покупателей.",
                     ],
                     note=(
-                        "Если нужно изменить параметры, создайте новое объявление "
-                        "и удалите старое."
+                        "Если нужно изменить параметры, создайте новое объявление и удалите старое."
                     ),
                     warning=True,
                 ),
@@ -1755,7 +1754,7 @@ class TelegramWebhookRuntime:
                     "<code>&lt;артикул ВБ&gt; &lt;кэшбэк руб&gt; "
                     "&lt;макс заказов&gt; &lt;поисковая фраза&gt;</code>"
                 ),
-                "<b>Пример:</b> <code>12345678 100 5 \"женские джинсы\"</code>",
+                '<b>Пример:</b> <code>12345678 100 5 "женские джинсы"</code>',
                 (
                     f"<b>Кэшбэк:</b> сумма для покупателя. "
                     f"Конвертация в $ произойдет по текущему курсу ~{fx_text}."
@@ -2131,9 +2130,7 @@ class TelegramWebhookRuntime:
                     f"<b>Кэшбэк:</b> {self._format_usdt_with_rub(listing.reward_usdt)} "
                     f"-> {self._format_usdt_with_rub(new_reward_usdt)}"
                 ),
-                (
-                    f"<b>Кэшбэк, %:</b> {cashback_percent}"
-                ),
+                (f"<b>Кэшбэк, %:</b> {cashback_percent}"),
                 f"<b>Макс. заказов:</b> {listing.slot_count} -> {new_slot_count}",
                 (
                     f"<b>Обеспечение:</b> "
@@ -2187,14 +2184,17 @@ class TelegramWebhookRuntime:
             lines.append("<b>Источник цены:</b> введена вручную.")
         elif reference_price_source == "orders":
             lines.append("<b>Источник цены:</b> рассчитана по заказам за 30 дней.")
-        return self._screen_text(
-            title="Проверьте объявление перед активацией",
-            lines=lines,
-            note=(
-                "Если все верно, активируйте объявление. "
-                "После активации поделитесь ссылкой на магазин."
-            ),
-        ) + "\n\n<b>Активировать объявление сейчас?</b>"
+        return (
+            self._screen_text(
+                title="Проверьте объявление перед активацией",
+                lines=lines,
+                note=(
+                    "Если все верно, активируйте объявление. "
+                    "После активации поделитесь ссылкой на магазин."
+                ),
+            )
+            + "\n\n<b>Активировать объявление сейчас?</b>"
+        )
 
     async def _render_shop_delete_preview(
         self,
@@ -2403,10 +2403,12 @@ class TelegramWebhookRuntime:
                 + f"<b>Ссылка на магазин:</b> {html.escape(shop_link)}\n"
                 + (
                     "<b>Обеспечение:</b> "
-                    f"{self._format_listing_collateral_line(
-                        collateral_view=listing,
-                        seller_available_usdt=balance_snapshot.seller_available_usdt,
-                    )}"
+                    f"{
+                        self._format_listing_collateral_line(
+                            collateral_view=listing,
+                            seller_available_usdt=balance_snapshot.seller_available_usdt,
+                        )
+                    }"
                 )
                 + "\n"
                 + (
@@ -2563,7 +2565,9 @@ class TelegramWebhookRuntime:
                         seller_price_rub=int(prompt_state.get("seller_price_rub", 0)),
                         spp_percent=int(prompt_state.get("spp_percent", 0)),
                         observed_at=(
-                            datetime.fromisoformat(str(prompt_state.get("reference_price_updated_at")))
+                            datetime.fromisoformat(
+                                str(prompt_state.get("reference_price_updated_at"))
+                            )
                             if prompt_state.get("reference_price_updated_at")
                             else None
                         ),
@@ -2641,9 +2645,9 @@ class TelegramWebhookRuntime:
                 reference_price_rub=listing.reference_price_rub,
                 reference_price_source=listing.reference_price_source,
                 search_phrase=listing.search_phrase,
-                cashback_rub=(
-                    listing.reward_usdt * self._display_rub_per_usdt
-                ).quantize(_RUB_QUANT, rounding=ROUND_HALF_UP),
+                cashback_rub=(listing.reward_usdt * self._display_rub_per_usdt).quantize(
+                    _RUB_QUANT, rounding=ROUND_HALF_UP
+                ),
                 reward_usdt=listing.reward_usdt,
                 slot_count=listing.slot_count,
                 collateral_required_usdt=listing.collateral_required_usdt,
@@ -3089,8 +3093,7 @@ class TelegramWebhookRuntime:
             text,
             self._seller_balance_menu_markup(
                 can_withdraw_available=(
-                    active_request is None
-                    and snapshot.seller_available_usdt > Decimal("0.000000")
+                    active_request is None and snapshot.seller_available_usdt > Decimal("0.000000")
                 ),
                 active_request_id=(
                     active_request.withdrawal_request_id if active_request is not None else None
@@ -3268,7 +3271,7 @@ class TelegramWebhookRuntime:
                         "или перевести USDT напрямую с криптобиржи."
                     ),
                     (
-                        '2. Пополните Крипто Кошелек, купив необходимый объем USDT, '
+                        "2. Пополните Крипто Кошелек, купив необходимый объем USDT, "
                         'например на <a href="https://help.ru.wallet.tg/article/80-kak-kupit-kriptovalutu-na-p2p-markete">'
                         "P2P Маркете</a>.\n"
                         "Самый простой и быстрый способ: "
@@ -3560,10 +3563,7 @@ class TelegramWebhookRuntime:
             )
             await self._replace_message(
                 query_message,
-                (
-                    "Введите код магазина из ссылки.\n"
-                    "Это часть после shop_ в ссылке."
-                ),
+                ("Введите код магазина из ссылки.\nЭто часть после shop_ в ссылке."),
                 InlineKeyboardMarkup(
                     [
                         [
@@ -5687,9 +5687,7 @@ class TelegramWebhookRuntime:
             for tx in review_txs:
                 suffix = f"{tx.suffix_code:03d}" if tx.suffix_code is not None else "нет"
                 account_hint = (
-                    f"Счет: #{tx.matched_intent_id}"
-                    if tx.matched_intent_id
-                    else "Счет: не найден"
+                    f"Счет: #{tx.matched_intent_id}" if tx.matched_intent_id else "Счет: не найден"
                 )
                 lines.append(
                     f"Транзакция #{tx.chain_tx_id}\n"
@@ -5861,9 +5859,7 @@ class TelegramWebhookRuntime:
                     )
                     user_row = await cur.fetchone()
                     if user_row is None:
-                        raise NotFoundError(
-                            f"user with telegram_id {target_telegram_id} not found"
-                        )
+                        raise NotFoundError(f"user with telegram_id {target_telegram_id} not found")
                     has_required_role = False
                     if required_role == "seller":
                         has_required_role = bool(
@@ -6035,7 +6031,9 @@ class TelegramWebhookRuntime:
 
     @staticmethod
     def _notification_retry_delay(attempt_number: int) -> int:
-        delay = min(_NOTIFICATION_DISPATCH_MAX_BACKOFF_SECONDS, 30 * (2 ** max(0, attempt_number - 1)))
+        delay = min(
+            _NOTIFICATION_DISPATCH_MAX_BACKOFF_SECONDS, 30 * (2 ** max(0, attempt_number - 1))
+        )
         return int(delay)
 
     @staticmethod
@@ -6061,9 +6059,7 @@ class TelegramWebhookRuntime:
         tx_hash: str | None = None,
     ) -> str:
         subject = (
-            "Заявка продавца на вывод"
-            if requester_role == "seller"
-            else "Ваша заявка на вывод"
+            "Заявка продавца на вывод" if requester_role == "seller" else "Ваша заявка на вывод"
         )
         if status == "rejected":
             message = f"{subject} #{request_id} отклонена."
@@ -6453,14 +6449,10 @@ class TelegramWebhookRuntime:
             except InvalidStateError as exc:
                 details = str(exc).strip().lower()
                 if "title" in details and ("exists" in details or "unique" in details):
-                    error_text = (
-                        "Магазин с таким названием уже есть.\n"
-                        "Введите другое название."
-                    )
+                    error_text = "Магазин с таким названием уже есть.\nВведите другое название."
                 else:
                     error_text = (
-                        "Не удалось создать магазин.\n"
-                        "Проверьте название и попробуйте еще раз."
+                        "Не удалось создать магазин.\nПроверьте название и попробуйте еще раз."
                     )
                 await message.reply_text(
                     error_text,
@@ -6468,13 +6460,12 @@ class TelegramWebhookRuntime:
                 )
                 return
 
-            deep_link = f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"
+            deep_link = (
+                f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"
+            )
             self._clear_prompt(context)
             await message.reply_text(
-                (
-                    f"Магазин «{shop.title}» создан.\n"
-                    f"Ссылка для покупателей:\n{deep_link}"
-                ),
+                (f"Магазин «{shop.title}» создан.\nСсылка для покупателей:\n{deep_link}"),
                 reply_markup=self._seller_shop_detail_markup(
                     shop_id=shop.shop_id,
                     token_is_valid=True,
@@ -6556,8 +6547,7 @@ class TelegramWebhookRuntime:
                 details = str(exc).strip().lower()
                 if "title" in details and ("exists" in details or "unique" in details):
                     error_text = (
-                        "Магазин с таким названием уже существует.\n"
-                        "Введите другое название."
+                        "Магазин с таким названием уже существует.\nВведите другое название."
                     )
                 else:
                     error_text = (
@@ -6573,7 +6563,9 @@ class TelegramWebhookRuntime:
                 )
                 return
             self._clear_prompt(context)
-            deep_link = f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"
+            deep_link = (
+                f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"
+            )
             await message.reply_text(
                 (
                     f"Магазин переименован: «{shop.title}».\n"
@@ -6662,10 +6654,7 @@ class TelegramWebhookRuntime:
                 )
             except (ValueError, InvalidOperation):
                 await message.reply_text(
-                    (
-                        "Не удалось разобрать данные.\n"
-                        "Проверьте формат и отправьте строку еще раз."
-                    ),
+                    ("Не удалось разобрать данные.\nПроверьте формат и отправьте строку еще раз."),
                     reply_markup=back_markup,
                 )
                 return
@@ -6969,9 +6958,7 @@ class TelegramWebhookRuntime:
                 return
             if seller_user_id < 1:
                 self._clear_prompt(context)
-                await message.reply_text(
-                    "Ошибка контекста пользователя. Откройте баланс заново."
-                )
+                await message.reply_text("Ошибка контекста пользователя. Откройте баланс заново.")
                 return
             try:
                 await self._parse_ton_mainnet_address(address=payout_address)
@@ -7020,10 +7007,7 @@ class TelegramWebhookRuntime:
                 return
 
             self._clear_prompt(context)
-            reply = (
-                "Заявка на вывод создана.\n"
-                "Статус: на проверке у администратора."
-            )
+            reply = "Заявка на вывод создана.\nСтатус: на проверке у администратора."
             self._logger.info(
                 "seller_withdraw_requested",
                 telegram_update_id=update.update_id,
@@ -7123,10 +7107,7 @@ class TelegramWebhookRuntime:
                         ),
                         "<b>Сеть:</b> USDT в сети TON (не ERC-20)",
                         f"<b>Адрес:</b> {self._format_copyable_code(intent.deposit_address)}",
-                        (
-                            "<b>Сумма (должна полностью совпадать):</b> "
-                            f"{expected_amount_text}"
-                        ),
+                        (f"<b>Сумма (должна полностью совпадать):</b> {expected_amount_text}"),
                     ],
                     note=(
                         "Телеграм Кошелек откроется без автоматически подставленного перевода. "
@@ -7374,10 +7355,7 @@ class TelegramWebhookRuntime:
                 return
 
             self._clear_prompt(context)
-            reply = (
-                "Заявка на вывод создана.\n"
-                "Статус: на проверке у администратора."
-            )
+            reply = "Заявка на вывод создана.\nСтатус: на проверке у администратора."
             self._logger.info(
                 "buyer_withdraw_requested",
                 telegram_update_id=update.update_id,
@@ -7446,8 +7424,7 @@ class TelegramWebhookRuntime:
             tokens = text.split(maxsplit=3)
             if len(tokens) != 4:
                 await message.reply_text(
-                    "Формат:\n"
-                    "<telegram_id> <роль> <сумма_usdt> <комментарий_или_ссылка>"
+                    "Формат:\n<telegram_id> <роль> <сумма_usdt> <комментарий_или_ссылка>"
                 )
                 return
             telegram_id_raw, account_kind, amount_raw, external_reference = tokens
@@ -7851,9 +7828,9 @@ class TelegramWebhookRuntime:
         if reference_price_rub is None or reference_price_rub < 1:
             return primary
         cashback_rub = Decimal(self._format_cashback_rub_value(reward_usdt))
-        percent = (
-            cashback_rub / Decimal(reference_price_rub) * Decimal("100")
-        ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        percent = (cashback_rub / Decimal(reference_price_rub) * Decimal("100")).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
         return f"{primary[:-1]}, ~{percent}%)" if primary.endswith(")") else primary
 
     def _format_price_rub(self, amount: int | Decimal | None) -> str:
@@ -7907,8 +7884,8 @@ class TelegramWebhookRuntime:
 
         payout_wallet_raw = (await self._resolve_payout_wallet_raw_form()).strip().lower()
         destination_raw = (
-            await self._parse_ton_mainnet_address(address=payout_address)
-        ).strip().lower()
+            (await self._parse_ton_mainnet_address(address=payout_address)).strip().lower()
+        )
         expected_amount = amount_usdt.quantize(_USDT_EXACT_QUANT, rounding=ROUND_HALF_UP)
         before_lt: int | None = None
 
@@ -7945,8 +7922,7 @@ class TelegramWebhookRuntime:
             before_lt = page.next_from
 
         return (
-            "Транзакция с таким хэшем пока не найдена "
-            "в истории TON USDT. Повторите попытку позже."
+            "Транзакция с таким хэшем пока не найдена в истории TON USDT. Повторите попытку позже."
         )
 
     @staticmethod
@@ -8484,10 +8460,7 @@ class TelegramWebhookRuntime:
             seller_available_usdt=seller_available_usdt,
             listing_status=listing.status,
         ):
-            return (
-                "Для активации пополните баланс продавца, затем вернитесь "
-                "к карточке объявления."
-            )
+            return "Для активации пополните баланс продавца, затем вернитесь к карточке объявления."
         return "Проверьте параметры и активируйте объявление, когда будете готовы."
 
     def _seller_listing_detail_html(
@@ -8530,15 +8503,14 @@ class TelegramWebhookRuntime:
             [
                 (
                     "<b>Обеспечение:</b> "
-                    f"{self._format_listing_collateral_line(
-                        collateral_view=collateral_view,
-                        seller_available_usdt=seller_available_usdt,
-                    )}"
+                    f"{
+                        self._format_listing_collateral_line(
+                            collateral_view=collateral_view,
+                            seller_available_usdt=seller_available_usdt,
+                        )
+                    }"
                 ),
-                (
-                    f"<b>Статус:</b> "
-                    f"{self._listing_activity_badge(is_active=is_active)}"
-                ),
+                (f"<b>Статус:</b> {self._listing_activity_badge(is_active=is_active)}"),
             ]
         )
         parameters_lines = [
@@ -8550,7 +8522,9 @@ class TelegramWebhookRuntime:
                 label="Цена покупателя",
                 price_rub=listing.reference_price_rub,
                 source=listing.reference_price_source,
-            ).replace("<b>", "").replace("</b>", ""),
+            )
+            .replace("<b>", "")
+            .replace("</b>", ""),
             f"Размеры: {html.escape(self._format_sizes_text(listing.wb_tech_sizes))}",
         ]
         lines.append(
@@ -8634,8 +8608,7 @@ class TelegramWebhookRuntime:
         elif source == "manual":
             suffix = " (вручную)"
         return (
-            f"<b>{html.escape(label)}:</b> "
-            f"{self._format_price_rub(price_rub)}{html.escape(suffix)}"
+            f"<b>{html.escape(label)}:</b> {self._format_price_rub(price_rub)}{html.escape(suffix)}"
         )
 
     @staticmethod
@@ -8939,8 +8912,7 @@ class TelegramWebhookRuntime:
         if missing_columns:
             missing_list = ", ".join(missing_columns)
             raise RuntimeError(
-                "runtime schema compatibility check failed; missing columns: "
-                f"{missing_list}"
+                f"runtime schema compatibility check failed; missing columns: {missing_list}"
             )
 
         self._logger.info(

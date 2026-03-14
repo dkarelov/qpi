@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from decimal import Decimal, ROUND_HALF_UP
 import html
-from typing import Any, Sequence
+from collections.abc import Sequence
+from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from psycopg.rows import dict_row
@@ -342,7 +343,9 @@ class NotificationService:
         *,
         deposit_intent_id: int,
     ) -> None:
-        ctx = await self._load_deposit_intent_context_locked(cur, deposit_intent_id=deposit_intent_id)
+        ctx = await self._load_deposit_intent_context_locked(
+            cur, deposit_intent_id=deposit_intent_id
+        )
         if ctx is None:
             return
         amount = ctx["credited_amount_usdt"] or ctx["tx_amount_usdt"] or Decimal("0")
@@ -413,7 +416,9 @@ class NotificationService:
         *,
         deposit_intent_id: int,
     ) -> None:
-        ctx = await self._load_deposit_intent_context_locked(cur, deposit_intent_id=deposit_intent_id)
+        ctx = await self._load_deposit_intent_context_locked(
+            cur, deposit_intent_id=deposit_intent_id
+        )
         if ctx is None:
             return
         await self.enqueue_locked(
@@ -434,7 +439,9 @@ class NotificationService:
         *,
         deposit_intent_id: int,
     ) -> None:
-        ctx = await self._load_deposit_intent_context_locked(cur, deposit_intent_id=deposit_intent_id)
+        ctx = await self._load_deposit_intent_context_locked(
+            cur, deposit_intent_id=deposit_intent_id
+        )
         if ctx is None:
             return
         await self.enqueue_locked(
@@ -671,13 +678,16 @@ class NotificationService:
                     f"<b>{title}</b>\n\n"
                     f"<b>Товар:</b> {html.escape(payload['display_title'])}\n"
                     f"<b>Магазин:</b> {html.escape(payload['shop_title'])}\n"
-                    f"<b>Кэшбэк разблокируется:</b> {_format_datetime_msk(payload.get('unlock_at'))}"
+                    "<b>Кэшбэк разблокируется:</b> "
+                    f"{_format_datetime_msk(payload.get('unlock_at'))}"
                 ),
                 parse_mode="HTML",
                 cta_text="📋 Покупки" if item.recipient_scope == "buyer" else "📦 Объявления",
                 cta_flow="buyer" if item.recipient_scope == "buyer" else "seller",
                 cta_action="assignments" if item.recipient_scope == "buyer" else "listing_open",
-                cta_entity_id=None if item.recipient_scope == "buyer" else str(payload["listing_id"]),
+                cta_entity_id=None
+                if item.recipient_scope == "buyer"
+                else str(payload["listing_id"]),
             )
         if event_type in {EVENT_ASSIGNMENT_RETURNED_BUYER, EVENT_ASSIGNMENT_RETURNED_SELLER}:
             return RenderedTelegramNotification(
@@ -691,7 +701,9 @@ class NotificationService:
                 cta_text="📋 Покупки" if item.recipient_scope == "buyer" else "📦 Объявления",
                 cta_flow="buyer" if item.recipient_scope == "buyer" else "seller",
                 cta_action="assignments" if item.recipient_scope == "buyer" else "listing_open",
-                cta_entity_id=None if item.recipient_scope == "buyer" else str(payload["listing_id"]),
+                cta_entity_id=None
+                if item.recipient_scope == "buyer"
+                else str(payload["listing_id"]),
             )
         if event_type in {
             EVENT_ASSIGNMENT_DELIVERY_EXPIRED_BUYER,
@@ -708,9 +720,14 @@ class NotificationService:
                 cta_text="📋 Покупки" if item.recipient_scope == "buyer" else "📦 Объявления",
                 cta_flow="buyer" if item.recipient_scope == "buyer" else "seller",
                 cta_action="assignments" if item.recipient_scope == "buyer" else "listing_open",
-                cta_entity_id=None if item.recipient_scope == "buyer" else str(payload["listing_id"]),
+                cta_entity_id=None
+                if item.recipient_scope == "buyer"
+                else str(payload["listing_id"]),
             )
-        if event_type in {EVENT_ASSIGNMENT_REWARD_UNLOCKED_BUYER, EVENT_ASSIGNMENT_REWARD_UNLOCKED_SELLER}:
+        if event_type in {
+            EVENT_ASSIGNMENT_REWARD_UNLOCKED_BUYER,
+            EVENT_ASSIGNMENT_REWARD_UNLOCKED_SELLER,
+        }:
             heading = "Кэшбэк зачислен" if item.recipient_scope == "buyer" else "Кэшбэк выплачен"
             return RenderedTelegramNotification(
                 text=(
@@ -723,13 +740,19 @@ class NotificationService:
                 cta_text="💰 Баланс" if item.recipient_scope == "buyer" else "📦 Объявления",
                 cta_flow="buyer" if item.recipient_scope == "buyer" else "seller",
                 cta_action="balance" if item.recipient_scope == "buyer" else "listing_open",
-                cta_entity_id=None if item.recipient_scope == "buyer" else str(payload["listing_id"]),
+                cta_entity_id=None
+                if item.recipient_scope == "buyer"
+                else str(payload["listing_id"]),
             )
         if event_type in {
             EVENT_ASSIGNMENT_EARLY_PAYOUT_LISTING_DELETE_BUYER,
             EVENT_ASSIGNMENT_EARLY_PAYOUT_SHOP_DELETE_BUYER,
         }:
-            entity = "объявление" if event_type == EVENT_ASSIGNMENT_EARLY_PAYOUT_LISTING_DELETE_BUYER else "магазин"
+            entity = (
+                "объявление"
+                if event_type == EVENT_ASSIGNMENT_EARLY_PAYOUT_LISTING_DELETE_BUYER
+                else "магазин"
+            )
             return RenderedTelegramNotification(
                 text=(
                     "<b>Кэшбэк зачислен досрочно</b>\n\n"
@@ -749,8 +772,10 @@ class NotificationService:
                 text=(
                     "<b>Токен WB больше не действует</b>\n\n"
                     f"<b>Магазин:</b> {html.escape(payload['shop_title'])}\n"
-                    f"<b>Причина:</b> {html.escape(_token_invalidation_reason(payload.get('source')))}\n"
-                    f"<b>Объявлений поставлено на паузу:</b> {int(payload['paused_listings_count'])}"
+                    "<b>Причина:</b> "
+                    f"{html.escape(_token_invalidation_reason(payload.get('source')))}\n"
+                    "<b>Объявлений поставлено на паузу:</b> "
+                    f"{int(payload['paused_listings_count'])}"
                 ),
                 parse_mode="HTML",
                 cta_text="🏪 Магазины",
@@ -840,7 +865,8 @@ class NotificationService:
             return RenderedTelegramNotification(
                 text=(
                     f"<b>Новая заявка на вывод #{int(payload['withdrawal_request_id'])}</b>\n\n"
-                    f"<b>Роль:</b> {html.escape(_withdraw_requester_label(payload['requester_role']))}\n"
+                    "<b>Роль:</b> "
+                    f"{html.escape(_withdraw_requester_label(payload['requester_role']))}\n"
                     f"<b>Telegram:</b> {int(payload['requester_telegram_id'])} "
                     f"(@{html.escape(payload['requester_username'] or '-')})\n"
                     f"<b>Сумма:</b> {_format_usdt_value(payload['amount_usdt'])} USDT"
@@ -854,8 +880,10 @@ class NotificationService:
         if event_type == EVENT_WITHDRAW_CANCELLED_ADMIN:
             return RenderedTelegramNotification(
                 text=(
-                    f"<b>Заявка на вывод #{int(payload['withdrawal_request_id'])} отменена заявителем</b>\n\n"
-                    f"<b>Роль:</b> {html.escape(_withdraw_requester_label(payload['requester_role']))}\n"
+                    "<b>Заявка на вывод "
+                    f"#{int(payload['withdrawal_request_id'])} отменена заявителем</b>\n\n"
+                    "<b>Роль:</b> "
+                    f"{html.escape(_withdraw_requester_label(payload['requester_role']))}\n"
                     f"<b>Telegram:</b> {int(payload['requester_telegram_id'])} "
                     f"(@{html.escape(payload['requester_username'] or '-')})\n"
                     f"<b>Сумма:</b> {_format_usdt_value(payload['amount_usdt'])} USDT"
@@ -873,13 +901,23 @@ class NotificationService:
                 else "Ваша заявка на вывод"
             )
             if event_type == EVENT_WITHDRAW_REJECTED_REQUESTER:
-                lines = [f"<b>{html.escape(subject)} #{int(payload['withdrawal_request_id'])} отклонена</b>"]
+                lines = [
+                    "<b>"
+                    f"{html.escape(subject)} #{int(payload['withdrawal_request_id'])} отклонена"
+                    "</b>"
+                ]
                 if payload.get("note"):
                     lines.extend(["", f"<b>Причина:</b> {html.escape(str(payload['note']))}"])
             else:
-                lines = [f"<b>{html.escape(subject)} #{int(payload['withdrawal_request_id'])} отправлена</b>"]
+                lines = [
+                    "<b>"
+                    f"{html.escape(subject)} #{int(payload['withdrawal_request_id'])} отправлена"
+                    "</b>"
+                ]
                 if payload.get("tx_hash"):
-                    lines.extend(["", f"<b>Хэш перевода:</b> {html.escape(str(payload['tx_hash']))}"])
+                    lines.extend(
+                        ["", f"<b>Хэш перевода:</b> {html.escape(str(payload['tx_hash']))}"]
+                    )
             return RenderedTelegramNotification(
                 text="\n".join(lines),
                 parse_mode="HTML",

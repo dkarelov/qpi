@@ -17,7 +17,6 @@ from libs.domain.errors import (
     InvalidStateError,
     NotFoundError,
 )
-from libs.domain.notifications import NotificationService
 from libs.domain.models import (
     DeleteExecutionResult,
     DeletePreview,
@@ -30,6 +29,7 @@ from libs.domain.models import (
     TokenInvalidationResult,
     TransferResult,
 )
+from libs.domain.notifications import NotificationService
 
 _OPEN_ASSIGNMENT_STATES = (
     "reserved",
@@ -1540,7 +1540,9 @@ class SellerService:
 
         assignment_transfers_count = 0
         assignment_transferred_usdt = Decimal("0.000000")
-        local_buyer_aggregates = buyer_payout_aggregates if buyer_payout_aggregates is not None else {}
+        local_buyer_aggregates = (
+            buyer_payout_aggregates if buyer_payout_aggregates is not None else {}
+        )
         for hold in active_slot_holds:
             buyer_available_account_id = await self._ensure_owner_account(
                 cur,

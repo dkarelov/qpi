@@ -9,15 +9,15 @@ from psycopg.rows import dict_row
 from libs.config.settings import BotApiSettings
 from libs.domain.buyer import BuyerService
 from libs.domain.ledger import FinanceService
+from libs.domain.models import NotificationOutboxItem
 from libs.domain.notifications import (
     EVENT_ASSIGNMENT_RESERVATION_EXPIRED_BUYER,
     EVENT_ASSIGNMENT_REWARD_UNLOCKED_BUYER,
     EVENT_ASSIGNMENT_REWARD_UNLOCKED_SELLER,
     EVENT_WITHDRAW_CREATED_ADMIN,
-    NotificationService,
     OUTBOX_STATUS_SENT,
+    NotificationService,
 )
-from libs.domain.models import NotificationOutboxItem
 from services.bot_api.telegram_runtime import TelegramWebhookRuntime
 from tests.e2e_harness import FakeBot, FakeTransport
 from tests.helpers import create_account, create_listing, create_shop, create_user
@@ -249,13 +249,19 @@ async def test_reservation_expiry_enqueues_buyer_only(db_pool) -> None:
 
 @pytest.mark.asyncio
 async def test_reward_unlock_enqueues_buyer_and_seller_notifications(db_pool) -> None:
-    _, finance_service, assignment_id, _, reward_reserved_account_id, buyer_available_account_id, _ = (
-        await _prepare_assignment(
-            db_pool,
-            seller_telegram_id=9201,
-            buyer_telegram_id=9202,
-            reward_usdt=Decimal("7.500000"),
-        )
+    (
+        _,
+        finance_service,
+        assignment_id,
+        _,
+        reward_reserved_account_id,
+        buyer_available_account_id,
+        _,
+    ) = await _prepare_assignment(
+        db_pool,
+        seller_telegram_id=9201,
+        buyer_telegram_id=9202,
+        reward_usdt=Decimal("7.500000"),
     )
 
     async with db_pool.connection() as conn:
@@ -297,7 +303,9 @@ async def test_reward_unlock_enqueues_buyer_and_seller_notifications(db_pool) ->
 
 
 @pytest.mark.asyncio
-async def test_runtime_dispatch_sends_and_marks_notification_sent(db_pool, isolated_database: str) -> None:
+async def test_runtime_dispatch_sends_and_marks_notification_sent(
+    db_pool, isolated_database: str
+) -> None:
     runtime = _build_runtime(isolated_database)
     runtime._notification_service = NotificationService(db_pool)
     transport = FakeTransport()
@@ -358,9 +366,11 @@ async def test_runtime_dispatch_sends_and_marks_notification_sent(db_pool, isola
                     ),
                 )
                 assignment_id = int((await cur.fetchone())["id"])
-                await runtime._notification_service.enqueue_assignment_reservation_expired_for_buyer_locked(
-                    cur,
-                    assignment_id=assignment_id,
+                await (
+                    runtime._notification_service.enqueue_assignment_reservation_expired_for_buyer_locked(
+                        cur,
+                        assignment_id=assignment_id,
+                    )
                 )
 
     await runtime._dispatch_notifications_once(bot=bot)
