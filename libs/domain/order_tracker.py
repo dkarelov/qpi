@@ -12,6 +12,7 @@ from libs.db.tx import run_in_transaction
 from libs.domain.buyer import BuyerService
 from libs.domain.errors import InvalidStateError, NotFoundError
 from libs.domain.ledger import FinanceService
+from libs.domain.notifications import NotificationService
 from libs.domain.models import ReservationExpiryResult
 from libs.logging.setup import EventLogger, get_logger
 
@@ -124,6 +125,7 @@ class OrderTrackerService:
         self._unlock_days = unlock_days
         self._buyer_service = buyer_service or BuyerService(pool)
         self._finance_service = finance_service or FinanceService(pool)
+        self._notifications = NotificationService(pool)
         self._logger = logger or get_logger(__name__)
         self._lock_connection: AsyncConnection | None = None
 
@@ -276,6 +278,7 @@ class OrderTrackerService:
                     seller_collateral_account_id=candidate.seller_collateral_account_id,
                     reward_reserved_account_id=candidate.reward_reserved_account_id,
                     idempotency_key=f"{_RETURN_IDEMPOTENCY_PREFIX}:{candidate.assignment_id}",
+                    notification_event="assignment_returned",
                 )
             except (InvalidStateError, NotFoundError):
                 return_skipped_count += 1
@@ -361,7 +364,7 @@ class OrderTrackerService:
         unlock_at = pickup_at_utc + timedelta(days=self._unlock_days)
 
         async def operation(conn: AsyncConnection) -> bool:
-            async with conn.cursor() as cur:
+            async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
                     UPDATE assignments
@@ -375,7 +378,13 @@ class OrderTrackerService:
                     """,
                     (pickup_at_utc, unlock_at, assignment_id),
                 )
-                return cur.rowcount == 1
+                changed = cur.rowcount == 1
+                if changed:
+                    await self._notifications.enqueue_assignment_picked_up_locked(
+                        cur,
+                        assignment_id=assignment_id,
+                    )
+                return changed
 
         return await run_in_transaction(self._pool, operation)
 
@@ -392,6 +401,7 @@ class OrderTrackerService:
                     seller_collateral_account_id=candidate.seller_collateral_account_id,
                     reward_reserved_account_id=candidate.reward_reserved_account_id,
                     idempotency_key=f"{_DELIVERY_EXPIRED_IDEMPOTENCY_PREFIX}:{candidate.assignment_id}",
+                    notification_event="delivery_expired",
                 )
             except (InvalidStateError, NotFoundError):
                 skipped_count += 1

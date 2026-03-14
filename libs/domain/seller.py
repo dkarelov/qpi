@@ -17,6 +17,7 @@ from libs.domain.errors import (
     InvalidStateError,
     NotFoundError,
 )
+from libs.domain.notifications import NotificationService
 from libs.domain.models import (
     DeleteExecutionResult,
     DeletePreview,
@@ -82,6 +83,7 @@ class SellerService:
 
     def __init__(self, pool: AsyncConnectionPool) -> None:
         self._pool = pool
+        self._notifications = NotificationService(pool)
 
     async def bootstrap_seller(
         self,
@@ -430,6 +432,7 @@ class SellerService:
                 transferred_count = 0
                 transferred_amount = Decimal("0.000000")
                 returned_unassigned = Decimal("0.000000")
+                buyer_payout_aggregates: dict[int, dict[str, Any]] = {}
                 for row in listings:
                     listing_result = await self._delete_listing_locked(
                         cur,
@@ -437,6 +440,7 @@ class SellerService:
                         listing_id=row["id"],
                         deleted_by_user_id=deleted_by_user_id,
                         idempotency_key=f"{idempotency_key}:listing:{row['id']}",
+                        buyer_payout_aggregates=buyer_payout_aggregates,
                     )
                     transferred_count += listing_result.assignment_transfers_count
                     transferred_amount += listing_result.assignment_transferred_usdt
@@ -452,6 +456,16 @@ class SellerService:
                     """,
                     (deleted_by_user_id, shop_id),
                 )
+
+                if buyer_payout_aggregates:
+                    shop_title = await self._load_shop_title_locked(cur, shop_id=shop_id)
+                    await self._enqueue_buyer_early_payout_notifications_locked(
+                        cur,
+                        scope="shop",
+                        scope_id=shop_id,
+                        shop_title=shop_title,
+                        aggregates=buyer_payout_aggregates,
+                    )
 
                 return DeleteExecutionResult(
                     changed=True,
@@ -1441,6 +1455,14 @@ class SellerService:
                 )
                 paused_count = cur.rowcount
 
+                if shop_updated or paused_count > 0:
+                    await self._notifications.enqueue_seller_token_invalidated_locked(
+                        cur,
+                        shop_id=shop_id,
+                        paused_listings_count=paused_count,
+                        source=source,
+                    )
+
                 return TokenInvalidationResult(
                     changed=shop_updated or paused_count > 0,
                     paused_listings_count=paused_count,
@@ -1456,13 +1478,15 @@ class SellerService:
         listing_id: int,
         deleted_by_user_id: int,
         idempotency_key: str,
+        buyer_payout_aggregates: dict[int, dict[str, Any]] | None = None,
     ) -> DeleteExecutionResult:
         await cur.execute(
             """
-            SELECT id, deleted_at
-            FROM listings
-            WHERE id = %s
-              AND seller_user_id = %s
+            SELECT l.id, l.deleted_at, s.title AS shop_title
+            FROM listings l
+            JOIN shops s ON s.id = l.shop_id
+            WHERE l.id = %s
+              AND l.seller_user_id = %s
             FOR UPDATE
             """,
             (listing_id, seller_user_id),
@@ -1495,9 +1519,15 @@ class SellerService:
 
         await cur.execute(
             """
-            SELECT h.id, h.assignment_id, h.amount_usdt, a.buyer_user_id
+            SELECT
+                h.id,
+                h.assignment_id,
+                h.amount_usdt,
+                a.buyer_user_id,
+                u.telegram_id AS buyer_telegram_id
             FROM balance_holds h
             JOIN assignments a ON a.id = h.assignment_id
+            JOIN users u ON u.id = a.buyer_user_id
             WHERE h.listing_id = %s
               AND h.hold_type = 'slot_reserve'
               AND h.status = 'active'
@@ -1510,6 +1540,7 @@ class SellerService:
 
         assignment_transfers_count = 0
         assignment_transferred_usdt = Decimal("0.000000")
+        local_buyer_aggregates = buyer_payout_aggregates if buyer_payout_aggregates is not None else {}
         for hold in active_slot_holds:
             buyer_available_account_id = await self._ensure_owner_account(
                 cur,
@@ -1536,6 +1567,16 @@ class SellerService:
             if transfer_result.created:
                 assignment_transfers_count += 1
                 assignment_transferred_usdt += amount
+                aggregate = local_buyer_aggregates.setdefault(
+                    int(hold["buyer_user_id"]),
+                    {
+                        "telegram_id": int(hold["buyer_telegram_id"]),
+                        "item_count": 0,
+                        "total_reward_usdt": Decimal("0.000000"),
+                    },
+                )
+                aggregate["item_count"] += 1
+                aggregate["total_reward_usdt"] += amount
 
             await cur.execute(
                 """
@@ -1627,12 +1668,53 @@ class SellerService:
             (_MANUAL_SOURCE, deleted_by_user_id, listing_id),
         )
 
+        if buyer_payout_aggregates is None and local_buyer_aggregates:
+            await self._enqueue_buyer_early_payout_notifications_locked(
+                cur,
+                scope="listing",
+                scope_id=listing_id,
+                shop_title=listing["shop_title"],
+                aggregates=local_buyer_aggregates,
+            )
+
         return DeleteExecutionResult(
             changed=True,
             assignment_transfers_count=assignment_transfers_count,
             assignment_transferred_usdt=_normalize_amount(assignment_transferred_usdt),
             unassigned_collateral_returned_usdt=unassigned_collateral,
         )
+
+    async def _load_shop_title_locked(self, cur, *, shop_id: int) -> str:
+        await cur.execute(
+            """
+            SELECT title
+            FROM shops
+            WHERE id = %s
+            """,
+            (shop_id,),
+        )
+        row = await cur.fetchone()
+        return str(row["title"]) if row is not None else "Магазин"
+
+    async def _enqueue_buyer_early_payout_notifications_locked(
+        self,
+        cur,
+        *,
+        scope: str,
+        scope_id: int,
+        shop_title: str,
+        aggregates: dict[int, dict[str, Any]],
+    ) -> None:
+        for aggregate in aggregates.values():
+            await self._notifications.enqueue_buyer_early_payout_locked(
+                cur,
+                buyer_telegram_id=int(aggregate["telegram_id"]),
+                scope=scope,
+                scope_id=scope_id,
+                shop_title=shop_title,
+                item_count=int(aggregate["item_count"]),
+                total_reward_usdt=_normalize_amount(aggregate["total_reward_usdt"]),
+            )
 
     async def _load_listing_delete_preview(self, cur, *, listing_id: int) -> DeletePreview:
         await cur.execute(

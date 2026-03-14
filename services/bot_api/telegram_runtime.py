@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import html
 import json
@@ -34,6 +35,7 @@ from libs.domain.errors import (
 )
 from libs.domain.fx_rates import FxRateService
 from libs.domain.ledger import FinanceService
+from libs.domain.notifications import NotificationService
 from libs.domain.seller import SellerService
 from libs.integrations.fx_rates import CoinGeckoUsdtRubClient
 from libs.integrations.tonapi import TonapiApiError, TonapiClient
@@ -136,7 +138,17 @@ _RUNTIME_REQUIRED_SCHEMA_COLUMNS = {
         "reference_price_source",
         "reference_price_updated_at",
     },
+    "notification_outbox": {
+        "recipient_telegram_id",
+        "event_type",
+        "dedupe_key",
+        "status",
+        "next_attempt_at",
+    },
 }
+_NOTIFICATION_DISPATCH_POLL_SECONDS = 2.0
+_NOTIFICATION_DISPATCH_BATCH_SIZE = 50
+_NOTIFICATION_DISPATCH_MAX_BACKOFF_SECONDS = 3600
 
 
 @dataclass(frozen=True)
@@ -223,6 +235,7 @@ class TelegramWebhookRuntime:
         self._buyer_service: BuyerService | None = None
         self._finance_service: FinanceService | None = None
         self._deposit_service: DepositIntentService | None = None
+        self._notification_service: NotificationService | None = None
         self._fx_rate_service: FxRateService | None = None
         self._seller_processor: SellerCommandProcessor | None = None
         self._buyer_processor: BuyerCommandProcessor | None = None
@@ -231,6 +244,7 @@ class TelegramWebhookRuntime:
         self._tonapi_client: TonapiClient | None = None
         self._payout_wallet_raw_form: str | None = None
         self._display_rub_per_usdt = settings.display_rub_per_usdt
+        self._notification_dispatch_task: asyncio.Task[None] | None = None
 
     def run(self) -> None:
         webhook_url = self._build_webhook_url()
@@ -308,6 +322,7 @@ class TelegramWebhookRuntime:
                 self._db_pool.pool,
                 invoice_ttl_hours=self._settings.seller_collateral_invoice_ttl_hours,
             )
+            self._notification_service = NotificationService(self._db_pool.pool)
             self._fx_rate_service = FxRateService(
                 self._db_pool.pool,
                 provider=CoinGeckoUsdtRubClient(
@@ -350,6 +365,9 @@ class TelegramWebhookRuntime:
                 buyer_service=self._buyer_service,
                 bot_username=self._settings.telegram_bot_username,
             )
+            await self._notification_service.sync_admin_users(
+                telegram_ids=self._settings.admin_telegram_ids,
+            )
 
             bot_profile = await application.bot.get_me()
             self._logger.info(
@@ -371,6 +389,9 @@ class TelegramWebhookRuntime:
                 )
             if self._settings.webhook_set_enabled:
                 await self._ensure_webhook_registration(application=application)
+            self._notification_dispatch_task = asyncio.create_task(
+                self._notification_dispatch_loop(bot=application.bot)
+            )
             self._ready = True
             self._logger.info("telegram_webhook_runtime_ready")
         except Exception as exc:
@@ -388,6 +409,13 @@ class TelegramWebhookRuntime:
 
     async def _post_shutdown(self, application: Application) -> None:
         self._ready = False
+        if self._notification_dispatch_task is not None:
+            self._notification_dispatch_task.cancel()
+            try:
+                await self._notification_dispatch_task
+            except asyncio.CancelledError:
+                pass
+            self._notification_dispatch_task = None
         await self._db_pool.close()
         self._logger.info("telegram_webhook_runtime_stopped")
 
@@ -5490,18 +5518,6 @@ class TelegramWebhookRuntime:
             )
             return
 
-        refreshed = await self._finance_service.get_withdrawal_request_detail(request_id=request_id)
-        if result.changed:
-            await self._notify_telegram_user(
-                context=context,
-                telegram_id=refreshed.requester_telegram_id,
-                message=self._withdraw_status_message(
-                    requester_role=refreshed.requester_role,
-                    request_id=request_id,
-                    status="rejected",
-                    reason=reason,
-                ),
-            )
         self._logger.info(
             "admin_withdraw_rejected",
             withdrawal_request_id=request_id,
@@ -5571,18 +5587,6 @@ class TelegramWebhookRuntime:
             )
             return False
 
-        refreshed = await self._finance_service.get_withdrawal_request_detail(request_id=request_id)
-        if result.changed:
-            await self._notify_telegram_user(
-                context=context,
-                telegram_id=refreshed.requester_telegram_id,
-                message=self._withdraw_status_message(
-                    requester_role=refreshed.requester_role,
-                    request_id=request_id,
-                    status="withdraw_sent",
-                    tx_hash=tx_hash,
-                ),
-            )
         self._logger.info(
             "admin_withdraw_completed",
             withdrawal_request_id=request_id,
@@ -5656,13 +5660,10 @@ class TelegramWebhookRuntime:
             message = "Такое пополнение уже было учтено ранее."
         await self._replace_message(query_message, message, self._admin_menu_markup())
         if result.created:
-            await self._notify_telegram_user(
-                context=context,
-                telegram_id=target_telegram_id,
-                message=(
-                    "Баланс пополнен.\n"
-                    f"Сумма: {self._format_usdt_value(amount_usdt, precise=True)} USDT."
-                ),
+            self._logger.info(
+                "admin_manual_deposit_user_notification_enqueued",
+                target_telegram_id=target_telegram_id,
+                amount_usdt=str(amount_usdt),
             )
         self._logger.info(
             "admin_manual_deposit_processed",
@@ -5933,46 +5934,115 @@ class TelegramWebhookRuntime:
             raise ValueError("account_kind must be seller|buyer")
         return mapped
 
-    async def _notify_telegram_user(
-        self,
-        *,
-        context: ContextTypes.DEFAULT_TYPE,
-        telegram_id: int,
-        message: str,
-    ) -> None:
-        try:
-            await context.bot.send_message(chat_id=telegram_id, text=message)
-        except Exception as exc:
-            self._logger.warning(
-                "telegram_user_notify_failed",
-                telegram_id=telegram_id,
-                error_type=type(exc).__name__,
-                error_message=str(exc)[:300],
+    async def _notification_dispatch_loop(self, *, bot) -> None:
+        while True:
+            try:
+                await self._dispatch_notifications_once(bot=bot)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._logger.exception(
+                    "notification_dispatch_loop_failed",
+                    error_type=type(exc).__name__,
+                    error_message=str(exc)[:300],
+                )
+            await asyncio.sleep(_NOTIFICATION_DISPATCH_POLL_SECONDS)
+
+    async def _dispatch_notifications_once(self, *, bot) -> None:
+        if self._notification_service is None:
+            return
+        items = await self._notification_service.claim_pending(
+            limit=_NOTIFICATION_DISPATCH_BATCH_SIZE
+        )
+        for item in items:
+            try:
+                rendered = self._notification_service.render(item)
+                await bot.send_message(
+                    chat_id=item.recipient_telegram_id,
+                    text=rendered.text,
+                    reply_markup=self._notification_markup(rendered),
+                    parse_mode=rendered.parse_mode,
+                )
+            except asyncio.CancelledError:
+                raise
+            except ValueError as exc:
+                await self._notification_service.mark_failed_permanent(
+                    notification_id=item.notification_id,
+                    error=str(exc),
+                )
+                self._logger.warning(
+                    "notification_delivery_failed_render",
+                    notification_id=item.notification_id,
+                    telegram_id=item.recipient_telegram_id,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc)[:300],
+                )
+                continue
+            except Exception as exc:
+                if self._is_permanent_notification_error(exc):
+                    await self._notification_service.mark_failed_permanent(
+                        notification_id=item.notification_id,
+                        error=str(exc),
+                    )
+                    self._logger.warning(
+                        "notification_delivery_failed_permanent",
+                        notification_id=item.notification_id,
+                        telegram_id=item.recipient_telegram_id,
+                        error_type=type(exc).__name__,
+                        error_message=str(exc)[:300],
+                    )
+                else:
+                    retry_delay = self._notification_retry_delay(item.attempt_count + 1)
+                    await self._notification_service.mark_retry(
+                        notification_id=item.notification_id,
+                        error=str(exc),
+                        delay_seconds=retry_delay,
+                    )
+                    self._logger.warning(
+                        "notification_delivery_failed_retry",
+                        notification_id=item.notification_id,
+                        telegram_id=item.recipient_telegram_id,
+                        error_type=type(exc).__name__,
+                        error_message=str(exc)[:300],
+                        retry_delay_seconds=retry_delay,
+                    )
+                continue
+            await self._notification_service.mark_sent(notification_id=item.notification_id)
+            self._logger.info(
+                "notification_delivered",
+                notification_id=item.notification_id,
+                telegram_id=item.recipient_telegram_id,
+                event_type=item.event_type,
             )
 
-    async def _notify_admins_new_withdrawal_request(
-        self,
-        *,
-        context: ContextTypes.DEFAULT_TYPE,
-        requester_role: str,
-        requester_telegram_id: int,
-        requester_username: str | None,
-        withdrawal_request_id: int,
-        amount_usdt: Decimal,
-    ) -> None:
-        message = (
-            f"Новая заявка на вывод #{withdrawal_request_id}.\n"
-            f"Роль: {self._withdraw_requester_label(requester_role)}\n"
-            f"Telegram: {requester_telegram_id} "
-            f"(@{requester_username or '-'})\n"
-            f"Сумма: {self._format_usdt_value(amount_usdt, precise=True)} USDT"
+    def _notification_markup(self, rendered) -> InlineKeyboardMarkup | None:
+        if not rendered.cta_flow or not rendered.cta_action or not rendered.cta_text:
+            return None
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        text=rendered.cta_text,
+                        callback_data=build_callback(
+                            flow=rendered.cta_flow,
+                            action=rendered.cta_action,
+                            entity_id=rendered.cta_entity_id,
+                        ),
+                    )
+                ]
+            ]
         )
-        for admin_telegram_id in sorted(self._admin_telegram_ids):
-            await self._notify_telegram_user(
-                context=context,
-                telegram_id=admin_telegram_id,
-                message=message,
-            )
+
+    @staticmethod
+    def _notification_retry_delay(attempt_number: int) -> int:
+        delay = min(_NOTIFICATION_DISPATCH_MAX_BACKOFF_SECONDS, 30 * (2 ** max(0, attempt_number - 1)))
+        return int(delay)
+
+    @staticmethod
+    def _is_permanent_notification_error(exc: Exception) -> bool:
+        error_type = type(exc).__name__
+        message = str(exc).lower()
+        return error_type == "Forbidden" or "chat not found" in message
 
     @staticmethod
     def _withdraw_requester_label(requester_role: str) -> str:
@@ -6959,15 +7029,6 @@ class TelegramWebhookRuntime:
                 telegram_update_id=update.update_id,
                 withdrawal_request_id=withdrawal.withdrawal_request_id,
             )
-            if withdrawal.created:
-                await self._notify_admins_new_withdrawal_request(
-                    context=context,
-                    requester_role="seller",
-                    requester_telegram_id=identity.telegram_id,
-                    requester_username=identity.username,
-                    withdrawal_request_id=withdrawal.withdrawal_request_id,
-                    amount_usdt=amount,
-                )
             await message.reply_text(reply, reply_markup=self._seller_menu_markup())
             return
 
@@ -7322,15 +7383,6 @@ class TelegramWebhookRuntime:
                 telegram_update_id=update.update_id,
                 withdrawal_request_id=withdrawal.withdrawal_request_id,
             )
-            if withdrawal.created:
-                await self._notify_admins_new_withdrawal_request(
-                    context=context,
-                    requester_role="buyer",
-                    requester_telegram_id=identity.telegram_id,
-                    requester_username=identity.username,
-                    withdrawal_request_id=withdrawal.withdrawal_request_id,
-                    amount_usdt=amount,
-                )
             await message.reply_text(reply, reply_markup=self._buyer_menu_markup())
             return
 

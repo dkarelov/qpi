@@ -10,6 +10,7 @@ from psycopg_pool import AsyncConnectionPool
 from libs.db.tx import run_in_transaction
 from libs.domain.errors import InvalidStateError, NotFoundError
 from libs.domain.ledger import FinanceService
+from libs.domain.notifications import NotificationService
 from libs.domain.models import (
     AdminDepositReviewTxView,
     AdminExpiredDepositIntentView,
@@ -40,6 +41,7 @@ class DepositIntentService:
         self._pool = pool
         self._invoice_ttl_hours = invoice_ttl_hours
         self._finance = finance_service or FinanceService(pool)
+        self._notifications = NotificationService(pool)
 
     async def ensure_default_shard(
         self,
@@ -666,6 +668,13 @@ class DepositIntentService:
                         (normalized_reason, matched_intent_id),
                     )
 
+                await self._notifications.enqueue_deposit_manual_review_locked(
+                    cur,
+                    chain_tx_id=chain_tx_id,
+                    matched_intent_id=matched_intent_id,
+                    reason=normalized_reason,
+                )
+
         await run_in_transaction(self._pool, operation)
 
     async def credit_intent_from_chain_tx(
@@ -818,6 +827,11 @@ class DepositIntentService:
                         idempotency_key=f"{idempotency_key}:audit",
                     )
 
+                await self._notifications.enqueue_deposit_credited_locked(
+                    cur,
+                    deposit_intent_id=deposit_intent_id,
+                )
+
                 return DepositIntentCreditResult(
                     changed=True,
                     ledger_entry_id=transfer.entry_id,
@@ -876,6 +890,10 @@ class DepositIntentService:
                         "reason": normalized_reason,
                     },
                     idempotency_key=idempotency_key,
+                )
+                await self._notifications.enqueue_deposit_cancelled_locked(
+                    cur,
+                    deposit_intent_id=deposit_intent_id,
                 )
                 return True
 
@@ -979,9 +997,16 @@ class DepositIntentService:
                 updated_at = timezone('utc', now())
             WHERE status IN ('pending', 'matched')
               AND expires_at < timezone('utc', now())
+            RETURNING id
             """
         )
-        return int(cur.rowcount)
+        rows = await cur.fetchall()
+        for row in rows:
+            await self._notifications.enqueue_deposit_expired_locked(
+                cur,
+                deposit_intent_id=row["id"],
+            )
+        return len(rows)
 
     async def _ensure_seller_user(self, cur, *, seller_user_id: int) -> None:
         await cur.execute(

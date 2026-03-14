@@ -507,3 +507,24 @@ ALTER TABLE ONLY "public"."withdrawal_requests" ADD CONSTRAINT "withdrawal_reque
 ALTER TABLE ONLY "public"."withdrawal_requests" ADD CONSTRAINT "withdrawal_requests_to_account_id_fkey" FOREIGN KEY ("to_account_id") REFERENCES "public"."accounts" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 
 ALTER TABLE "public"."withdrawal_requests" ADD CONSTRAINT "withdrawal_requests_idempotency_key_key" UNIQUE (idempotency_key);
+
+CREATE TABLE "public"."notification_outbox" (
+    "id" bigserial NOT NULL,
+    "recipient_telegram_id" bigint NOT NULL,
+    "recipient_scope" text NOT NULL,
+    "event_type" text NOT NULL,
+    "dedupe_key" text NOT NULL,
+    "payload_json" jsonb NOT NULL DEFAULT '{}'::jsonb,
+    "status" text NOT NULL CONSTRAINT notification_outbox_status_check CHECK (status = ANY (ARRAY['pending'::text, 'sending'::text, 'sent'::text, 'failed_permanent'::text])),
+    "attempt_count" integer NOT NULL DEFAULT 0,
+    "next_attempt_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    "last_error" text,
+    "sent_at" timestamp with time zone,
+    "created_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    "updated_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    CONSTRAINT notification_outbox_pkey PRIMARY KEY ("id")
+);
+
+ALTER TABLE "public"."notification_outbox" ADD CONSTRAINT "notification_outbox_dedupe_key_key" UNIQUE (dedupe_key);
+
+CREATE INDEX idx_notification_outbox_pending ON public.notification_outbox USING btree (status, next_attempt_at, id);

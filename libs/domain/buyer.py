@@ -21,6 +21,7 @@ from libs.domain.errors import (
     PayloadValidationError,
 )
 from libs.domain.ledger import FinanceService
+from libs.domain.notifications import NotificationService
 from libs.domain.models import (
     AssignmentReservationResult,
     BuyerAssignmentView,
@@ -59,6 +60,7 @@ class BuyerService:
     ) -> None:
         self._pool = pool
         self._finance_service = finance_service or FinanceService(pool)
+        self._notifications = NotificationService(pool)
 
     async def bootstrap_buyer(
         self,
@@ -632,6 +634,10 @@ class BuyerService:
                     """,
                     (decoded.order_id, assignment_id),
                 )
+                await self._notifications.enqueue_assignment_order_verified_for_seller_locked(
+                    cur,
+                    assignment_id=assignment_id,
+                )
                 return BuyerOrderSubmitResult(
                     assignment_id=assignment_id,
                     changed=True,
@@ -840,6 +846,7 @@ class BuyerService:
                     idempotency_key=(
                         f"{_RESERVATION_TIMEOUT_IDEMPOTENCY_PREFIX}:{row['assignment_id']}"
                     ),
+                    notification_event="reservation_expired",
                 )
                 if result.changed:
                     expired_count += 1

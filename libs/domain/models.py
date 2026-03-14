@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -401,3 +402,30 @@ class AdminExpiredDepositIntentView:
     suffix_code: int
     status: str
     expires_at: datetime
+
+
+@dataclass(frozen=True)
+class NotificationOutboxItem:
+    notification_id: int
+    recipient_telegram_id: int
+    recipient_scope: str
+    event_type: str
+    dedupe_key: str
+    payload_json: dict[str, Any]
+    status: str
+    attempt_count: int
+    next_attempt_at: datetime
+    last_error: str | None
+    sent_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class RenderedTelegramNotification:
+    text: str
+    parse_mode: str | None
+    cta_text: str | None
+    cta_flow: str | None
+    cta_action: str | None
+    cta_entity_id: str | None

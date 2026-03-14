@@ -16,6 +16,11 @@ from libs.domain.errors import (
     NoSlotsAvailableError,
     NotFoundError,
 )
+from libs.domain.notifications import (
+    EVENT_WITHDRAW_REJECTED_REQUESTER,
+    EVENT_WITHDRAW_SENT_REQUESTER,
+    NotificationService,
+)
 from libs.domain.models import (
     ActiveWithdrawalRequestView,
     AssignmentReservationResult,
@@ -39,6 +44,7 @@ class FinanceService:
 
     def __init__(self, pool: AsyncConnectionPool) -> None:
         self._pool = pool
+        self._notifications = NotificationService(pool)
 
     async def lock_listing_collateral(
         self,
@@ -224,6 +230,7 @@ class FinanceService:
         seller_collateral_account_id: int,
         reward_reserved_account_id: int,
         idempotency_key: str,
+        notification_event: str | None = None,
     ) -> StatusChangeResult:
         if new_status not in _CANCELLATION_STATES:
             raise ValueError(f"new_status must be one of {_CANCELLATION_STATES}")
@@ -299,6 +306,22 @@ class FinanceService:
                     (assignment_id,),
                 )
 
+                if notification_event == "reservation_expired":
+                    await self._notifications.enqueue_assignment_reservation_expired_for_buyer_locked(
+                        cur,
+                        assignment_id=assignment_id,
+                    )
+                elif notification_event == "assignment_returned":
+                    await self._notifications.enqueue_assignment_returned_locked(
+                        cur,
+                        assignment_id=assignment_id,
+                    )
+                elif notification_event == "delivery_expired":
+                    await self._notifications.enqueue_assignment_delivery_expired_locked(
+                        cur,
+                        assignment_id=assignment_id,
+                    )
+
                 return StatusChangeResult(changed=True)
 
         return await run_in_transaction(self._pool, operation)
@@ -372,6 +395,11 @@ class FinanceService:
                         AND status = 'active'
                     """,
                     (assignment_id,),
+                )
+
+                await self._notifications.enqueue_assignment_reward_unlocked_locked(
+                    cur,
+                    assignment_id=assignment_id,
                 )
 
                 return StatusChangeResult(changed=True)
@@ -486,6 +514,11 @@ class FinanceService:
                     idempotency_key=_hold_key(idempotency_key),
                 )
 
+                await self._notifications.enqueue_withdraw_created_for_admins_locked(
+                    cur,
+                    request_id=withdrawal_request["id"],
+                )
+
                 return WithdrawalRequestResult(
                     withdrawal_request_id=withdrawal_request["id"],
                     created=True,
@@ -577,6 +610,11 @@ class FinanceService:
                     (request_id,),
                 )
 
+                await self._notifications.enqueue_withdraw_cancelled_for_admins_locked(
+                    cur,
+                    request_id=request_id,
+                )
+
                 return StatusChangeResult(changed=True)
 
         return await run_in_transaction(self._pool, operation)
@@ -658,6 +696,12 @@ class FinanceService:
                     target_id=str(request_id),
                     payload={"request_id": request_id, "reason": normalized_reason or None},
                     idempotency_key=idempotency_key,
+                )
+
+                await self._notifications.enqueue_withdraw_status_for_requester_locked(
+                    cur,
+                    request_id=request_id,
+                    event_type=EVENT_WITHDRAW_REJECTED_REQUESTER,
                 )
 
                 return StatusChangeResult(changed=True)
@@ -757,6 +801,12 @@ class FinanceService:
                     idempotency_key=idempotency_key,
                 )
 
+                await self._notifications.enqueue_withdraw_status_for_requester_locked(
+                    cur,
+                    request_id=request_id,
+                    event_type=EVENT_WITHDRAW_SENT_REQUESTER,
+                )
+
                 return StatusChangeResult(changed=True)
 
         return await run_in_transaction(self._pool, operation)
@@ -817,7 +867,7 @@ class FinanceService:
 
                 await cur.execute(
                     """
-                    SELECT id, owner_user_id
+                    SELECT id, owner_user_id, account_kind
                     FROM accounts
                     WHERE id = %s
                     FOR UPDATE
@@ -904,6 +954,18 @@ class FinanceService:
                         "note": normalized_note,
                     },
                     idempotency_key=f"{idempotency_key}:audit",
+                )
+
+                await self._notifications.enqueue_manual_balance_credit_locked(
+                    cur,
+                    target_user_id=target_user_id,
+                    amount_usdt=amount,
+                    recipient_role=(
+                        "seller"
+                        if target_account["account_kind"] == "seller_available"
+                        else "buyer"
+                    ),
+                    dedupe_key=f"manual_deposit:{created['id']}:target:{target_user_id}",
                 )
 
                 return ManualDepositResult(
