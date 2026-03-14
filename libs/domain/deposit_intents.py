@@ -10,7 +10,6 @@ from psycopg_pool import AsyncConnectionPool
 from libs.db.tx import run_in_transaction
 from libs.domain.errors import InvalidStateError, NotFoundError
 from libs.domain.ledger import FinanceService
-from libs.domain.notifications import NotificationService
 from libs.domain.models import (
     AdminDepositReviewTxView,
     AdminExpiredDepositIntentView,
@@ -22,6 +21,7 @@ from libs.domain.models import (
     DepositShardView,
     SellerDepositIntentView,
 )
+from libs.domain.notifications import NotificationService
 
 _ACTIVE_SUFFIX_STATUSES = ("pending", "matched", "manual_review")
 

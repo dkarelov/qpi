@@ -21,7 +21,6 @@ from libs.domain.errors import (
     PayloadValidationError,
 )
 from libs.domain.ledger import FinanceService
-from libs.domain.notifications import NotificationService
 from libs.domain.models import (
     AssignmentReservationResult,
     BuyerAssignmentView,
@@ -33,6 +32,7 @@ from libs.domain.models import (
     ReservationExpiryResult,
     StatusChangeResult,
 )
+from libs.domain.notifications import NotificationService
 
 _ASSIGNMENT_PAYLOAD_ALLOWED_STATES = {"reserved", "order_submitted", "order_verified"}
 _RESERVATION_EXPIRED_STATUS = "expired_2h"

@@ -16,11 +16,6 @@ from libs.domain.errors import (
     NoSlotsAvailableError,
     NotFoundError,
 )
-from libs.domain.notifications import (
-    EVENT_WITHDRAW_REJECTED_REQUESTER,
-    EVENT_WITHDRAW_SENT_REQUESTER,
-    NotificationService,
-)
 from libs.domain.models import (
     ActiveWithdrawalRequestView,
     AssignmentReservationResult,
@@ -33,6 +28,11 @@ from libs.domain.models import (
     WithdrawalHistoryItem,
     WithdrawalRequestDetail,
     WithdrawalRequestResult,
+)
+from libs.domain.notifications import (
+    EVENT_WITHDRAW_REJECTED_REQUESTER,
+    EVENT_WITHDRAW_SENT_REQUESTER,
+    NotificationService,
 )
 
 _CANCELLATION_STATES = {"expired_2h", "wb_invalid", "returned_within_14d", "delivery_expired"}
@@ -307,9 +307,11 @@ class FinanceService:
                 )
 
                 if notification_event == "reservation_expired":
-                    await self._notifications.enqueue_assignment_reservation_expired_for_buyer_locked(
-                        cur,
-                        assignment_id=assignment_id,
+                    await (
+                        self._notifications.enqueue_assignment_reservation_expired_for_buyer_locked(
+                            cur,
+                            assignment_id=assignment_id,
+                        )
                     )
                 elif notification_event == "assignment_returned":
                     await self._notifications.enqueue_assignment_returned_locked(
