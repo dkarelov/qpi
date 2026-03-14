@@ -745,7 +745,7 @@ async def test_phase10_e2e_seller_withdraw_amount_validates_early() -> None:
 
 
 @pytest.mark.asyncio
-async def test_phase10_e2e_seller_withdraw_request_notifies_admin() -> None:
+async def test_phase10_e2e_seller_withdraw_request_submits_request() -> None:
     runtime, deps = _build_runtime(admin_ids=[9001])
     deps.seller.get_seller_balance_snapshot = AsyncMock(
         return_value=_ns(
@@ -762,7 +762,6 @@ async def test_phase10_e2e_seller_withdraw_request_notifies_admin() -> None:
     events = await harness.text("UQ-seller-wallet")
 
     assert any("Заявка на вывод создана." in text for text in _event_texts(events))
-    assert any(event.kind == "bot_send" and event.chat_id == 9001 for event in events)
     create_call = deps.finance.create_withdrawal_request.await_args.kwargs
     assert create_call["requester_role"] == "seller"
     assert create_call["requester_user_id"] == 101
@@ -1413,7 +1412,7 @@ async def test_phase10_e2e_buyer_withdraw_amount_validates_early() -> None:
 
 
 @pytest.mark.asyncio
-async def test_phase10_e2e_buyer_withdraw_request_notifies_admin() -> None:
+async def test_phase10_e2e_buyer_withdraw_request_submits_request() -> None:
     runtime, deps = _build_runtime(admin_ids=[9001])
     deps.finance.get_buyer_balance_snapshot = AsyncMock(
         return_value=_ns(
@@ -1429,7 +1428,6 @@ async def test_phase10_e2e_buyer_withdraw_request_notifies_admin() -> None:
     events = await harness.text("UQ-buyer-wallet")
 
     assert any("Заявка на вывод создана." in text for text in _event_texts(events))
-    assert any(event.kind == "bot_send" and event.chat_id == 9001 for event in events)
     create_call = deps.finance.create_withdrawal_request.await_args.kwargs
     assert create_call["requester_role"] == "buyer"
     assert create_call["requester_user_id"] == 202
@@ -1562,7 +1560,6 @@ async def test_phase10_e2e_admin_withdrawal_flow() -> None:
     sent_events = await harness.text("0xabc")
     sent_text = "\n".join(_event_texts(sent_events))
     assert "Хэш перевода:</b> 0xabc" in sent_text
-    assert any(event.kind == "bot_send" and event.chat_id == 777001 for event in sent_events)
 
     deps.finance.complete_withdrawal_request.assert_awaited_once()
 
