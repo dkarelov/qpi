@@ -1478,9 +1478,9 @@ class TelegramWebhookRuntime:
                 f"<b>Магазины:</b> {shops_total} · {shops_active} активно",
                 f"<b>Объявления:</b> {listings_total} · {listings_active} активно",
                 "<b>Задания:</b> "
-                f"{orders['in_progress']} в процессе · "
-                f"{orders['completed']} оформлено · "
-                f"{orders['picked_up']} выкуплено",
+                f"ожидают заказа: {orders['awaiting_order']} · "
+                f"заказаны: {orders['ordered']} · "
+                f"выкуплены: {orders['picked_up']}",
                 f"<b>Баланс:</b> {self._format_usdt_with_rub(balance_total)}",
                 f"<b>Свободно:</b> {self._format_usdt_with_rub(balance_free)}",
             ],
@@ -1501,22 +1501,30 @@ class TelegramWebhookRuntime:
                     SELECT
                         COALESCE(
                             COUNT(*) FILTER (
+                                WHERE a.status = 'reserved'
+                            ),
+                            0
+                        ) AS awaiting_order,
+                        COALESCE(
+                            COUNT(*) FILTER (
                                 WHERE a.status IN (
-                                    'reserved',
                                     'order_submitted',
-                                    'order_verified',
-                                    'picked_up_wait_unlock'
+                                    'order_verified'
                                 )
                             ),
                             0
-                        ) AS in_progress,
+                        ) AS ordered,
                         COALESCE(
                             COUNT(*) FILTER (
-                                WHERE a.status = 'withdraw_sent'
+                                WHERE a.status IN (
+                                    'picked_up_wait_unlock',
+                                    'eligible_for_withdrawal',
+                                    'withdraw_pending_admin',
+                                    'withdraw_sent'
+                                )
                             ),
                             0
-                        ) AS completed,
-                        COALESCE(COUNT(*) FILTER (WHERE a.pickup_at IS NOT NULL), 0) AS picked_up
+                        ) AS picked_up
                     FROM assignments a
                     JOIN listings l ON l.id = a.listing_id
                     WHERE l.seller_user_id = %s

@@ -361,7 +361,7 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
     runtime._load_shop_wb_token = AsyncMock(return_value="wb-valid")
     runtime._fx_rate_service = None
     runtime._load_seller_order_counters = AsyncMock(
-        return_value={"in_progress": 0, "completed": 0, "picked_up": 0}
+        return_value={"awaiting_order": 0, "ordered": 0, "picked_up": 0}
     )
     runtime._refresh_display_rub_per_usdt = AsyncMock(return_value=None)
     runtime._ensure_admin_user = AsyncMock(return_value=90011)

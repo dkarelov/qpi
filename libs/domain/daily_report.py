@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
@@ -55,17 +56,20 @@ _REPORT_COLUMN_NAMES = (
     "sale_price_promocode_discount_prc",
 )
 
-_REPORT_UPSERT_QUERY = (
-    "INSERT INTO wb_report_rows "
-    f"({', '.join(_REPORT_COLUMN_NAMES)}) "
-    f"VALUES ({', '.join(f'%({column})s' for column in _REPORT_COLUMN_NAMES)}) "
-    "ON CONFLICT (rrd_id, wb_srid) DO UPDATE SET "
-    + ", ".join(
-        f"{column} = EXCLUDED.{column}"
-        for column in _REPORT_COLUMN_NAMES
-        if column not in {"rrd_id", "wb_srid"}
+
+def _build_report_upsert_query(*, include_legacy_srid: bool) -> str:
+    column_names = _REPORT_COLUMN_NAMES + (("srid",) if include_legacy_srid else ())
+    return (
+        "INSERT INTO wb_report_rows "
+        f"({', '.join(column_names)}) "
+        f"VALUES ({', '.join(f'%({column})s' for column in column_names)}) "
+        "ON CONFLICT (rrd_id, wb_srid) DO UPDATE SET "
+        + ", ".join(
+            f"{column} = EXCLUDED.{column}"
+            for column in column_names
+            if column not in {"rrd_id", "wb_srid"}
+        )
     )
-)
 
 
 @dataclass(frozen=True)
@@ -463,8 +467,25 @@ class DailyReportScrapperService:
         async with self._pool.connection() as conn:
             async with conn.transaction():
                 async with conn.cursor() as cur:
-                    await cur.executemany(_REPORT_UPSERT_QUERY, rows)
+                    await cur.executemany(
+                        await self._resolve_report_upsert_query(conn),
+                        rows,
+                    )
         return len(rows)
+
+    async def _resolve_report_upsert_query(self, conn: AsyncConnection) -> str:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'wb_report_rows'
+                  AND column_name = 'srid'
+                """
+            )
+            has_legacy_srid = await cur.fetchone() is not None
+        return _build_report_upsert_query(include_legacy_srid=has_legacy_srid)
 
     async def _maybe_invalidate_token(
         self,
@@ -539,6 +560,7 @@ def project_report_row(row: dict[str, Any]) -> dict[str, Any] | None:
         "sale_price_promocode_discount_prc": _to_decimal(
             row.get("sale_price_promocode_discount_prc")
         ),
+        "srid": wb_srid,
     }
 
 

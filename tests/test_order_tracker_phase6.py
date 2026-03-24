@@ -49,6 +49,7 @@ async def _insert_wb_report_row(
     supplier_oper_name: str,
     event_at: datetime,
     nm_id: int,
+    order_uid: str | None = None,
 ) -> None:
     async with db_pool.connection() as conn:
         async with conn.transaction():
@@ -58,15 +59,25 @@ async def _insert_wb_report_row(
                     INSERT INTO wb_report_rows (
                         rrd_id,
                         wb_srid,
+                        order_uid,
                         nm_id,
                         supplier_oper_name,
                         sale_dt,
                         order_dt,
                         create_dt
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (rrd_id, srid, nm_id, supplier_oper_name, event_at, event_at, event_at),
+                    (
+                        rrd_id,
+                        srid,
+                        order_uid,
+                        nm_id,
+                        supplier_oper_name,
+                        event_at,
+                        event_at,
+                        event_at,
+                    ),
                 )
 
 
@@ -213,6 +224,53 @@ async def _prepare_reserved_assignment(
         "assignment_id": reservation.assignment_id,
         "wb_product_id": wb_product_id,
     }
+
+
+@pytest.mark.asyncio
+async def test_order_tracker_sale_matches_order_uid_when_wb_srid_has_prefix(
+    db_pool,
+    isolated_database: str,
+) -> None:
+    now = datetime.now(UTC)
+    order_uid = "85ad7978a30147eca5278c9cc0f5f967"
+    fixture = await _prepare_order_verified_assignment(
+        db_pool,
+        seller_telegram_id=910011,
+        buyer_telegram_id=920011,
+        order_id=order_uid,
+        wb_product_id=670011,
+        ordered_at=now - timedelta(days=2),
+        reward_usdt=Decimal("10.000000"),
+    )
+    await _insert_wb_report_row(
+        db_pool,
+        rrd_id=810011,
+        srid=f"ebs.{order_uid}.0.0",
+        order_uid=order_uid,
+        supplier_oper_name="Продажа",
+        event_at=now - timedelta(days=1),
+        nm_id=fixture["wb_product_id"],
+    )
+
+    service = _build_tracker_service(db_pool, lock_conninfo=isolated_database, lock_id=500611)
+    result = await service.run_once()
+
+    assert result.wb_pickup_count == 1
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT status, pickup_at, unlock_at
+                FROM assignments
+                WHERE id = %s
+                """,
+                (fixture["assignment_id"],),
+            )
+            assignment = await cur.fetchone()
+            assert assignment["status"] == "picked_up_wait_unlock"
+            assert assignment["pickup_at"] is not None
+            assert assignment["unlock_at"] is not None
 
 
 @pytest.mark.asyncio

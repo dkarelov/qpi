@@ -230,6 +230,9 @@ Transitions:
 - `daily-report-scrapper` invalidates token on WB `401` where message contains:
   - `withdrawn` or `token expired`.
 - Token invalidation auto-pauses active listings via explicit application transaction (no PG trigger).
+- Order tracking matches buyer-submitted `order_id` against WB report identifiers in both forms:
+  - exact WB `srid` / stored `wb_srid`,
+  - WB `order_uid` and the plain UID segment embedded inside prefixed `srid` values such as `ebu.<uid>.7.0`.
 
 ### 4.7 Telegram UX rules (must be preserved)
 
@@ -249,6 +252,7 @@ Transitions:
 - Each role opens with dashboard + section navigation.
 - Seller UX:
   - `Объявления`, `Магазины`, `Баланс` are top sections,
+  - seller dashboard order counters use the same buckets as buyer dashboard: `ожидают заказа`, `заказаны`, `выкуплены`,
   - shop actions are nested: list -> shop card -> actions.
 - Seller announcement list uses numbered, paginated navigation:
   - one page shows up to 10 announcements,
