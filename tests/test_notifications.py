@@ -14,6 +14,7 @@ from libs.domain.notifications import (
     EVENT_ASSIGNMENT_RESERVATION_EXPIRED_BUYER,
     EVENT_ASSIGNMENT_REWARD_UNLOCKED_BUYER,
     EVENT_ASSIGNMENT_REWARD_UNLOCKED_SELLER,
+    EVENT_SELLER_TOKEN_INVALIDATED,
     EVENT_WITHDRAW_CREATED_ADMIN,
     OUTBOX_STATUS_SENT,
     NotificationService,
@@ -68,6 +69,38 @@ def test_render_assignment_reservation_expired_notification_has_buyer_cta() -> N
     assert rendered.cta_flow == "buyer"
     assert rendered.cta_action == "assignments"
     assert rendered.cta_text == "📋 Покупки"
+
+
+def test_render_seller_token_invalidated_notification_uses_neutral_unauthorized_reason() -> None:
+    service = NotificationService(pool=None)  # type: ignore[arg-type]
+
+    rendered = service.render(
+        NotificationOutboxItem(
+            notification_id=2,
+            recipient_telegram_id=5,
+            recipient_scope="seller",
+            event_type=EVENT_SELLER_TOKEN_INVALIDATED,
+            dedupe_key="shop:2:token_invalidated:scrapper_401_unauthorized:1",
+            payload_json={
+                "shop_id": 2,
+                "shop_title": "Shop Test",
+                "paused_listings_count": 1,
+                "source": "scrapper_401_unauthorized",
+            },
+            status="pending",
+            attempt_count=0,
+            next_attempt_at=datetime.now(tz=UTC),
+            last_error=None,
+            sent_at=None,
+            created_at=datetime.now(tz=UTC),
+            updated_at=datetime.now(tz=UTC),
+        )
+    )
+
+    assert "WB отклонил авторизацию токена" in rendered.text
+    assert "WB отозвал токен" not in rendered.text
+    assert rendered.cta_flow == "seller"
+    assert rendered.cta_action == "shop_open"
 
 
 async def _prepare_assignment(

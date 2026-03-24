@@ -17,6 +17,7 @@ from libs.security.token_cipher import decrypt_token
 
 _SCRAPPER_WITHDRAWN_SOURCE = "scrapper_401_withdrawn"
 _SCRAPPER_EXPIRED_SOURCE = "scrapper_401_token_expired"
+_SCRAPPER_UNAUTHORIZED_SOURCE = "scrapper_401_unauthorized"
 _RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504, 522, 524}
 _ALLOWED_SUPPLIER_OPER_NAMES = {
     "Возврат",
@@ -514,7 +515,7 @@ def classify_token_invalidation_source(status_code: int | None, message: str | N
         return _SCRAPPER_WITHDRAWN_SOURCE
     if "token expired" in normalized:
         return _SCRAPPER_EXPIRED_SOURCE
-    return None
+    return _SCRAPPER_UNAUTHORIZED_SOURCE
 
 
 def project_report_row(row: dict[str, Any]) -> dict[str, Any] | None:

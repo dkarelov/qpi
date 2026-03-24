@@ -402,6 +402,64 @@ async def test_daily_report_scrapper_invalidates_token_and_pauses_listings_on_40
             assert listing["pause_source"] == "scrapper_401_token_expired"
 
 
+@pytest.mark.asyncio
+async def test_daily_report_scrapper_invalidates_token_and_pauses_listings_on_401_unauthorized(
+    db_pool,
+) -> None:
+    cipher_key = "phase5-test-key"
+    shop_id = await _prepare_shop_with_token(
+        db_pool,
+        seller_telegram_id=860003,
+        slug="phase5-shop-unauthorized",
+        token_plaintext="wb-token-unauthorized",
+        cipher_key=cipher_key,
+    )
+
+    service = DailyReportScrapperService(
+        db_pool,
+        token_cipher_key=cipher_key,
+        wb_client=StubErrorReportClient(WbReportApiError(status_code=401, message="unauthorized")),
+        concurrency=1,
+        request_limit=100,
+        max_retries=0,
+        retry_delay_seconds=0.1,
+        days_back=3,
+    )
+
+    result = await service.run_once()
+
+    assert result.shops_total == 1
+    assert result.shops_failed == 1
+    assert result.shops_invalidated == 1
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT wb_token_status, wb_token_status_source, wb_token_last_error
+                FROM shops
+                WHERE id = %s
+                """,
+                (shop_id,),
+            )
+            shop = await cur.fetchone()
+            assert shop["wb_token_status"] == "invalid"
+            assert shop["wb_token_status_source"] == "scrapper_401_unauthorized"
+            assert shop["wb_token_last_error"] == "unauthorized"
+
+            await cur.execute(
+                """
+                SELECT status, pause_source
+                FROM listings
+                WHERE shop_id = %s
+                """,
+                (shop_id,),
+            )
+            listing = await cur.fetchone()
+            assert listing["status"] == "paused"
+            assert listing["pause_source"] == "scrapper_401_unauthorized"
+
+
 def test_classify_token_invalidation_source() -> None:
     assert classify_token_invalidation_source(
         401, "token expired"
@@ -409,7 +467,11 @@ def test_classify_token_invalidation_source() -> None:
     assert classify_token_invalidation_source(
         401, "user withdrawn by owner"
     ) == "scrapper_401_withdrawn"
-    assert classify_token_invalidation_source(401, "unknown auth error") is None
+    assert classify_token_invalidation_source(401, "unauthorized") == "scrapper_401_unauthorized"
+    assert (
+        classify_token_invalidation_source(401, "unknown auth error")
+        == "scrapper_401_unauthorized"
+    )
     assert classify_token_invalidation_source(500, "token expired") is None
 
 

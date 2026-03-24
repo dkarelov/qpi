@@ -228,7 +228,9 @@ Transitions:
 - Invalid ping result => token is not persisted.
 - Ping rate limit policy: `3 requests / 30s` per process.
 - `daily-report-scrapper` invalidates token on WB `401` where message contains:
-  - `withdrawn` or `token expired`.
+  - `token expired` => shop token status becomes `expired`,
+  - `withdrawn` => shop token status becomes `invalid`,
+  - any other `401` auth failure (for example `unauthorized`) => shop token status becomes `invalid`.
 - Token invalidation auto-pauses active listings via explicit application transaction (no PG trigger).
 - Order tracking matches buyer-submitted `order_id` against WB report identifiers in both forms:
   - exact WB `srid` / stored `wb_srid`,

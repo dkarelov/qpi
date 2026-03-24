@@ -40,6 +40,7 @@ _OPEN_ASSIGNMENT_STATES = (
 _MANUAL_SOURCE = "manual"
 _SCRAPPER_WITHDRAWN_SOURCE = "scrapper_401_withdrawn"
 _SCRAPPER_EXPIRED_SOURCE = "scrapper_401_token_expired"
+_SCRAPPER_UNAUTHORIZED_SOURCE = "scrapper_401_unauthorized"
 _COLLATERAL_FEE_MULTIPLIER = Decimal("1.01")
 _CYRILLIC_TO_LATIN = {
     "а": "a",
@@ -1402,7 +1403,12 @@ class SellerService:
         source: str,
         error_message: str | None = None,
     ) -> TokenInvalidationResult:
-        if source not in {_SCRAPPER_WITHDRAWN_SOURCE, _SCRAPPER_EXPIRED_SOURCE, _MANUAL_SOURCE}:
+        if source not in {
+            _SCRAPPER_WITHDRAWN_SOURCE,
+            _SCRAPPER_EXPIRED_SOURCE,
+            _SCRAPPER_UNAUTHORIZED_SOURCE,
+            _MANUAL_SOURCE,
+        }:
             raise ValueError("unsupported token invalidation source")
 
         new_status = "expired" if source == _SCRAPPER_EXPIRED_SOURCE else "invalid"

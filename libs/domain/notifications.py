@@ -1084,6 +1084,8 @@ def _token_invalidation_reason(source: str | None) -> str:
         return "WB отозвал токен"
     if source == "scrapper_401_token_expired":
         return "токен истек"
+    if source == "scrapper_401_unauthorized":
+        return "WB отклонил авторизацию токена"
     return "токен недействителен"
 
 

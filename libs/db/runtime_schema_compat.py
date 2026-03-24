@@ -38,6 +38,12 @@ _ACCOUNT_KINDS = (
     "reward_reserved",
     "system_payout",
 )
+_TOKEN_INVALIDATION_SOURCES = (
+    "manual",
+    "scrapper_401_withdrawn",
+    "scrapper_401_token_expired",
+    "scrapper_401_unauthorized",
+)
 
 
 def _resolve_database_url(explicit_url: str | None) -> str:
@@ -204,6 +210,46 @@ def _ensure_listing_metadata_columns(cur: psycopg.Cursor) -> None:
             "ALTER TABLE public.listings "
             f"ADD COLUMN {column_name} jsonb NOT NULL DEFAULT '[]'::jsonb"
         )
+
+
+def _ensure_token_invalidation_sources(cur: psycopg.Cursor) -> None:
+    if _table_exists(cur, table_name="listings"):
+        constraint_def = _constraint_definition(
+            cur,
+            table_name="listings",
+            constraint_name="listings_pause_source_check",
+        )
+        if constraint_def is None or "scrapper_401_unauthorized" not in constraint_def:
+            if constraint_def is not None:
+                cur.execute(
+                    "ALTER TABLE public.listings DROP CONSTRAINT listings_pause_source_check"
+                )
+            cur.execute(
+                "ALTER TABLE public.listings "
+                "ADD CONSTRAINT listings_pause_source_check CHECK ("
+                "pause_source = ANY (ARRAY["
+                + ", ".join(f"'{source}'::text" for source in _TOKEN_INVALIDATION_SOURCES)
+                + "]))"
+            )
+
+    if _table_exists(cur, table_name="shops"):
+        constraint_def = _constraint_definition(
+            cur,
+            table_name="shops",
+            constraint_name="shops_wb_token_status_source_check",
+        )
+        if constraint_def is None or "scrapper_401_unauthorized" not in constraint_def:
+            if constraint_def is not None:
+                cur.execute(
+                    "ALTER TABLE public.shops DROP CONSTRAINT shops_wb_token_status_source_check"
+                )
+            cur.execute(
+                "ALTER TABLE public.shops "
+                "ADD CONSTRAINT shops_wb_token_status_source_check CHECK ("
+                "wb_token_status_source = ANY (ARRAY["
+                + ", ".join(f"'{source}'::text" for source in _TOKEN_INVALIDATION_SOURCES)
+                + "]))"
+            )
 
 
 def _ensure_assignments_wb_product_id(cur: psycopg.Cursor) -> None:
@@ -511,6 +557,7 @@ def apply_runtime_schema_compatibility(database_url: str) -> None:
             _ensure_accounts_account_kinds(cur)
             _ensure_user_capability_columns(cur)
             _ensure_listing_metadata_columns(cur)
+            _ensure_token_invalidation_sources(cur)
             _ensure_assignments_wb_product_id(cur)
             _ensure_buyer_orders_wb_product_id(cur)
             _ensure_withdrawal_request_requester_columns(cur)

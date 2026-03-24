@@ -240,6 +240,110 @@ async def test_runtime_schema_compat_apply_backfills_legacy_assignment_product_i
 
 
 @pytest.mark.asyncio
+async def test_runtime_schema_compat_apply_widens_legacy_token_invalidation_sources(
+    isolated_database: str,
+) -> None:
+    async with await psycopg.AsyncConnection.connect(isolated_database) as conn:
+        seller_user_id = await create_user(
+            conn,
+            telegram_id=992101,
+            role="seller",
+            username="compat_token_seller",
+        )
+        shop_id = await create_shop(
+            conn,
+            seller_user_id=seller_user_id,
+            slug="compat-token-shop",
+            title="Compat Token Shop",
+        )
+        listing_id = await create_listing(
+            conn,
+            shop_id=shop_id,
+            seller_user_id=seller_user_id,
+            wb_product_id=552892533,
+            search_phrase="совместимость токена",
+            reward_usdt=Decimal("0.130000"),
+            slot_count=1,
+            available_slots=1,
+            status="active",
+            reference_price_rub=392,
+            reference_price_source="manual",
+        )
+        await conn.commit()
+
+    with psycopg.connect(isolated_database, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "ALTER TABLE public.listings DROP CONSTRAINT listings_pause_source_check"
+            )
+            cur.execute(
+                """
+                ALTER TABLE public.listings
+                ADD CONSTRAINT listings_pause_source_check CHECK (
+                    pause_source = ANY (
+                        ARRAY[
+                            'manual'::text,
+                            'scrapper_401_withdrawn'::text,
+                            'scrapper_401_token_expired'::text
+                        ]
+                    )
+                )
+                """
+            )
+            cur.execute(
+                "ALTER TABLE public.shops DROP CONSTRAINT shops_wb_token_status_source_check"
+            )
+            cur.execute(
+                """
+                ALTER TABLE public.shops
+                ADD CONSTRAINT shops_wb_token_status_source_check CHECK (
+                    wb_token_status_source = ANY (
+                        ARRAY[
+                            'manual'::text,
+                            'scrapper_401_withdrawn'::text,
+                            'scrapper_401_token_expired'::text
+                        ]
+                    )
+                )
+                """
+            )
+
+    run_runtime_schema_compat_apply(isolated_database)
+    run_schema_apply(isolated_database)
+
+    with psycopg.connect(isolated_database, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE public.shops
+                SET wb_token_status = 'invalid',
+                    wb_token_status_source = 'scrapper_401_unauthorized'
+                WHERE id = %s
+                """,
+                (shop_id,),
+            )
+            cur.execute(
+                """
+                UPDATE public.listings
+                SET status = 'paused',
+                    pause_source = 'scrapper_401_unauthorized'
+                WHERE id = %s
+                """,
+                (listing_id,),
+            )
+            cur.execute(
+                "SELECT wb_token_status_source FROM public.shops WHERE id = %s",
+                (shop_id,),
+            )
+            assert cur.fetchone()[0] == "scrapper_401_unauthorized"
+            cur.execute(
+                "SELECT pause_source FROM public.listings WHERE id = %s",
+                (listing_id,),
+            )
+            assert cur.fetchone()[0] == "scrapper_401_unauthorized"
+
+
+@pytest.mark.asyncio
 async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assignment_statuses(
     isolated_database: str,
 ) -> None:
