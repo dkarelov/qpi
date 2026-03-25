@@ -64,7 +64,9 @@ prepare_ssh_key() {
       printf '%b' "${QPI_DB_VM_SSH_PRIVATE_KEY}" > "${ssh_key_path}"
     fi
     if ! ssh-keygen -y -f "${ssh_key_path}" >/dev/null 2>&1; then
-      printf '%s' "${QPI_DB_VM_SSH_PRIVATE_KEY}" | base64 -d > "${ssh_key_path}"
+      if ! printf '%s' "${QPI_DB_VM_SSH_PRIVATE_KEY}" | base64 -d > "${ssh_key_path}" 2>/dev/null; then
+        :
+      fi
     fi
     sed -i 's/\r$//' "${ssh_key_path}"
     generated_ssh_key=1
@@ -78,7 +80,10 @@ prepare_ssh_key() {
     generated_ssh_key=0
   fi
 
-  ssh-keygen -y -f "${ssh_key_path}" >/dev/null
+  if ! ssh-keygen -y -f "${ssh_key_path}" >/dev/null 2>&1; then
+    echo "Failed to decode QPI_DB_VM_SSH_PRIVATE_KEY into a valid private key." >&2
+    exit 1
+  fi
 }
 
 cleanup() {
