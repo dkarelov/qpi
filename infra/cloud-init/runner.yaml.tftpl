@@ -38,6 +38,6 @@ runcmd:
     ln -sf /opt/yandex-cloud/bin/yc /usr/local/bin/yc
     curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL=/usr/local/bin sh
     curl -fsSL -o /tmp/psqldef.tar.gz \
-      "https://github.com/sqldef/sqldef/releases/download/${PSQLDEF_VERSION}/psqldef_linux_amd64.tar.gz"
+      "https://github.com/sqldef/sqldef/releases/download/v$${PSQLDEF_VERSION#v}/psqldef_linux_amd64.tar.gz"
     tar -xzf /tmp/psqldef.tar.gz -C /tmp
     install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
