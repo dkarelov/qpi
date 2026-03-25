@@ -27,7 +27,7 @@ jobs:
       PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install yc CLI
         run: |
@@ -67,7 +67,7 @@ jobs:
       PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install yc CLI
         run: |

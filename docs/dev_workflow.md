@@ -99,6 +99,7 @@ scripts/dev/run_db_tests_on_runner.sh all
 Behavior:
 
 - `scripts/dev/reset_remote_test_dbs.sh` recreates `qpi_test` and `qpi_test_scratch` through the DB VM admin path.
+- The disposable DBs are created with the user from `TEST_DATABASE_URL` as owner; if the URL omits the app user or points at the wrong user, schema apply will fail with `permission denied for schema public`.
 - Schema is reapplied before each file/batch.
 - Ordinary DB integration, schema compatibility, and migration smoke are run separately.
 - The runner path does not depend on the workstation SSH tunnel.
@@ -114,6 +115,12 @@ The private runner VM is:
 - used for DB-backed validation and code-only deploys,
 - shut down after a short idle window,
 - started once weekly by keepalive automation.
+
+Non-obvious runner details:
+
+- The runner public IP is ephemeral NAT, not a reserved static address. Resolve it through `yc` or `scripts/deploy/private_runner.sh status`; do not hardcode it in scripts/docs.
+- GitHub secrets for SSH keys are best stored as base64-encoded private key material. The scripts can decode raw, escaped, or base64 keys, but base64 is the stable GitHub Actions path.
+- The runner can auto-update its own GitHub runner binary on first use after a new upstream release. That can cause one short restart before it reports `online` again.
 
 Supported lifecycle helper:
 
@@ -138,6 +145,7 @@ scripts/deploy/private_runner.sh schedule-stop
 Implementation notes:
 
 - bootstrap runs on GitHub-hosted runners,
+- bootstrap scripts configure `yc` from `YC_TOKEN` + `YC_FOLDER_ID` themselves; no preexisting `yc init` profile is required,
 - runner registration is kept warm by the weekly keepalive workflow,
 - the cleanup path schedules shutdown rather than treating the runner as always-on infrastructure.
 
@@ -182,6 +190,10 @@ The function wrapper now:
 - prints the created version id,
 - fails on critical config drift after publish.
 
+Current host prerequisite:
+
+- Function bundling requires `zip` on the private runner. It is installed in runner cloud-init and also installed defensively in the deploy-functions workflow.
+
 Terraform:
 
 ```bash
@@ -203,17 +215,26 @@ Private runner bootstrap:
 - If a workflow cannot reach the self-hosted runner, inspect `scripts/deploy/private_runner.sh status`.
 - Verify `YC_FOLDER_ID`, runner instance name, SSH key, and GitHub runner bootstrap token.
 - If the runner disappeared from GitHub after a long idle period, rerun `ensure-ready`; the weekly keepalive should normally prevent that.
+- If a GitHub-hosted bootstrap job says it cannot decode the SSH key, check that the corresponding repo secret is base64-encoded key material rather than a multiline PEM pasted directly.
+- If a workflow is waiting behind another run unexpectedly, inspect runner-job concurrency first. Runner-touching concurrency is intentionally serialized; overlapping push-triggered workflows can delay or cancel each other. For debugging, use `workflow_dispatch` one workflow at a time.
 
 DB reset failures:
 
 - Check DB VM SSH reachability from the private runner.
 - Confirm `QPI_DB_VM_HOST` and the SSH key are correct.
 - Re-run `scripts/dev/reset_remote_test_dbs.sh` directly to isolate reprovision failures from pytest failures.
+- If schema apply fails with `permission denied for schema public`, the disposable DB was created with the wrong owner. Verify that `TEST_DATABASE_URL` uses the app DB user and not `postgres` or another admin-only login.
 
 Deploy wrapper failures:
 
 - Runtime deploy failures before upload usually indicate folder/target mismatch, bad SSH, or low disk on the bot VM.
 - Function deploy failures after create usually indicate critical config drift or bad `YC_FOLDER_ID` / auth.
+- If runtime deploy target verification fails unexpectedly, verify that `BOT_VM_HOST` still belongs to the expected bot instance group in the configured YC folder.
+- If function deploy fails during bundling with `zip: command not found`, the runner host drifted from the expected base packages; install `zip` and keep the runner cloud-init/workflow package step aligned.
+
+GitHub Actions warnings:
+
+- `Node 20` deprecation warnings in workflow logs are about GitHub-provided JavaScript actions such as `actions/checkout` and `actions/setup-python`, not about the QPI application stack. They are non-blocking for now but should be cleaned up by moving to action releases that support the newer Node runtime.
 
 Function deploy vs Terraform deploy:
 

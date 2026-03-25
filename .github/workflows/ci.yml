@@ -53,10 +53,10 @@ jobs:
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -100,7 +100,7 @@ jobs:
       PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Validate required runner secrets
         run: |
@@ -134,10 +134,10 @@ jobs:
       QPI_DB_VM_SSH_PRIVATE_KEY: ${{ secrets.DB_VM_SSH_PRIVATE_KEY }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -191,7 +191,7 @@ jobs:
       PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install yc CLI
         run: |

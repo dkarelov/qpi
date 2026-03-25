@@ -29,6 +29,7 @@ Optional environment:
   PRIVATE_RUNNER_INSTALL_DIR (default: /opt/actions-runner)
   PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES (default: 30)
   PRIVATE_RUNNER_VERSION (default: 2.330.0)
+  MIN_PRIVATE_RUNNER_VERSION (default: 2.329.0)
   PRIVATE_RUNNER_FORCE_RECONFIGURE (default: 0)
   GITHUB_API_URL (default: https://api.github.com)
 EOF
@@ -81,7 +82,17 @@ PRIVATE_RUNNER_SYSTEM_USER="${PRIVATE_RUNNER_SYSTEM_USER:-github-runner}"
 PRIVATE_RUNNER_INSTALL_DIR="${PRIVATE_RUNNER_INSTALL_DIR:-/opt/actions-runner}"
 PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES="${PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES:-30}"
 PRIVATE_RUNNER_VERSION="${PRIVATE_RUNNER_VERSION:-2.330.0}"
+MIN_PRIVATE_RUNNER_VERSION="${MIN_PRIVATE_RUNNER_VERSION:-2.329.0}"
 GITHUB_API_URL="${GITHUB_API_URL:-https://api.github.com}"
+
+version_lt() {
+  [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" != "$2" ]]
+}
+
+if version_lt "${PRIVATE_RUNNER_VERSION}" "${MIN_PRIVATE_RUNNER_VERSION}"; then
+  echo "PRIVATE_RUNNER_VERSION=${PRIVATE_RUNNER_VERSION} is too old; requires ${MIN_PRIVATE_RUNNER_VERSION}+." >&2
+  exit 1
+fi
 
 prepare_ssh_key() {
   local key_source

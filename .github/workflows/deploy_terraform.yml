@@ -30,7 +30,7 @@ jobs:
       TF_VAR_folder_id: ${{ vars.YC_FOLDER_ID }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Validate required secrets
         run: |
@@ -39,7 +39,7 @@ jobs:
           test -n "${TF_VAR_cf_token_cipher_key}" || { echo "TOKEN_CIPHER_KEY is required"; exit 1; }
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 

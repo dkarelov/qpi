@@ -355,6 +355,8 @@ Compute and networking:
 - Bot runtime: instance group (`qpi-bot-ig`), size 1, preemptible.
 - Bot public IP: `158.160.187.114`.
 - DB VM: private-only (`10.131.0.28`), non-preemptible.
+- Private runner VM: `qpi-private-runner` (`fv47djh2aqv62pq449mq`), preemptible, on-demand, private IP `10.130.0.23`.
+- Private runner public IP is ephemeral NAT and must be resolved dynamically through `yc`, not hardcoded.
 - Private subnet: `10.131.0.0/24` with NAT gateway egress.
 
 Serverless functions:
@@ -402,6 +404,8 @@ terraform -chdir=infra output
 Code-only deploy rule:
 
 - If only Python/runtime code changed, use `scripts/deploy/runtime.sh` or `scripts/deploy/function.sh <service>` instead of `terraform apply`.
+- The runner VM intentionally uses ephemeral NAT instead of a reserved static external IP because the folder hit the external static IP quota during rollout.
+- `ubuntu_2404_lts_image_id` is pinned in Terraform to avoid unrelated bot/DB VM replacements when the Ubuntu family image advances.
 
 ### 7.2 SSH and DB access
 
@@ -425,6 +429,7 @@ Rules:
 - Recreate tunnel if listener is missing before DB operations.
 - Operator workstation has `psql` available (`PostgreSQL 16.13`); prefer direct `psql` checks over ad-hoc Python probes for DB inspection, schema verification, and lock/activity checks.
 - If a missing local tool would materially improve speed, reliability, or operator clarity, ask the operator to install it instead of defaulting to a slower workaround.
+- DB VM security group allows SSH from the private runner security group specifically so `reset_remote_test_dbs.sh` can recreate disposable test DBs through the DB-admin path.
 
 ### 7.3 Schema operations
 
@@ -501,6 +506,7 @@ Rules:
 - `qpi_test` and `qpi_test_scratch` are disposable and must be recreated before DB-backed runs.
 - `scripts/dev/reset_remote_test_dbs.sh` is the canonical full-suite reprovision path from the private runner to the DB VM admin path.
 - `tests/db_integration_manifest.txt`, `tests/schema_compat_manifest.txt`, and `tests/migration_smoke_manifest.txt` are the source of truth for DB-backed test grouping.
+- `TEST_DATABASE_URL` must include the app DB user because the reset scripts recreate disposable DBs with that user as the database owner; otherwise schema apply fails with `permission denied for schema public`.
 
 Safety guardrails:
 
@@ -567,6 +573,9 @@ Workflows:
 - `.github/workflows/deploy_terraform.yml`:
   - terraform validate/plan on push,
   - apply only via explicit manual dispatch guard.
+- `.github/dependabot.yml`:
+  - weekly `github-actions` checks for workflow action references,
+  - opens reviewable PRs for action upgrades before platform deprecations become workflow noise.
 
 Private dependency handling:
 
@@ -574,6 +583,17 @@ Private dependency handling:
 - Existing `TOKEN_YC_JSON_LOGGER` is still accepted and mapped to `GH_TOKEN` by repo wrappers for backward compatibility.
 - `scripts/common/setup_private_git_auth.sh` configures git URL rewriting before `uv` operations that need the private dependency.
 - `requirements.txt` is generated from `uv.lock` and kept only as a compatibility artifact for Cloud Function/Terraform packaging.
+
+Private runner / workflow gotchas:
+
+- Repo secrets `PRIVATE_RUNNER_SSH_PRIVATE_KEY`, `DB_VM_SSH_PRIVATE_KEY`, and `BOT_VM_SSH_PRIVATE_KEY` should be stored as base64-encoded private key material. The scripts accept raw / escaped / base64 formats, but base64 is the canonical GitHub Actions format because multiline PEM secrets were brittle during rollout.
+- Deploy/bootstrap scripts configure `yc` from `YC_TOKEN` + `YC_FOLDER_ID` on every run; do not assume `yc init` or a preexisting profile on GitHub-hosted or self-hosted runners.
+- Runner-touching concurrency is scoped to runner jobs, not whole workflows. Whole-workflow concurrency caused unrelated workflows to cancel each other during rollout.
+- When debugging CI/deploy behavior, prefer `workflow_dispatch` runs one at a time on `main` instead of relying on overlapping push-triggered workflows.
+- The private runner self-updates its GitHub runner binary automatically; the first bring-up after a version change can briefly restart the runner before it comes back online.
+- Workflow action references target Node24-ready `actions/checkout@v6` and `actions/setup-python@v6`; keep the private runner on `v2.329.0` or newer for `checkout@v6` compatibility.
+- Function bundle publishing requires `zip` on the private runner. It is installed both in runner cloud-init and defensively in the deploy-functions workflow.
+- GitHub Actions `Node 20` deprecation warnings refer to GitHub-provided JavaScript actions such as `actions/checkout` / `actions/setup-python`, not to the QPI application stack.
 
 Active development rule:
 
