@@ -24,10 +24,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: qpi-private-runner
-  cancel-in-progress: false
-
 env:
   PSQLDEF_VERSION: v3.9.8
 
@@ -132,6 +128,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: determine-targets
     if: ${{ needs.determine-targets.outputs.has_targets == 'true' }}
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
     env:
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
       YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
@@ -169,6 +168,9 @@ jobs:
       - determine-targets
       - start-private-runner
     if: ${{ needs.determine-targets.outputs.has_targets == 'true' }}
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
       TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
@@ -223,6 +225,9 @@ jobs:
       - determine-targets
       - private-db-validation
     if: ${{ needs.determine-targets.outputs.has_targets == 'true' }}
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
@@ -275,6 +280,9 @@ jobs:
       - private-db-validation
       - deploy-functions
     if: ${{ always() && needs.determine-targets.outputs.has_targets == 'true' && needs.start-private-runner.result == 'success' }}
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
     env:
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
       YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}

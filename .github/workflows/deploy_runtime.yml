@@ -26,10 +26,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: qpi-private-runner
-  cancel-in-progress: false
-
 env:
   PSQLDEF_VERSION: v3.9.8
 
@@ -70,6 +66,9 @@ jobs:
   start-private-runner:
     runs-on: ubuntu-latest
     needs: lint-and-fast-tests
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
     env:
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
       YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
@@ -104,6 +103,9 @@ jobs:
   private-db-validation:
     runs-on: [self-hosted, linux, qpi-private]
     needs: start-private-runner
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
       TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
@@ -149,6 +151,9 @@ jobs:
   deploy-runtime:
     runs-on: [self-hosted, linux, qpi-private]
     needs: private-db-validation
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
@@ -202,6 +207,9 @@ jobs:
       - private-db-validation
       - deploy-runtime
     if: ${{ always() && needs.start-private-runner.result == 'success' }}
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
     env:
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
       YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}

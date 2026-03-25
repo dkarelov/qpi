@@ -8,13 +8,12 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: qpi-private-runner
-  cancel-in-progress: false
-
 jobs:
   start-private-runner:
     runs-on: ubuntu-latest
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
     env:
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
       YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
@@ -41,6 +40,9 @@ jobs:
   runner-ping:
     runs-on: [self-hosted, linux, qpi-private]
     needs: start-private-runner
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
     steps:
       - name: Ping runner
         run: |
@@ -53,6 +55,9 @@ jobs:
       - start-private-runner
       - runner-ping
     if: ${{ always() && needs.start-private-runner.result == 'success' }}
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
     env:
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
       YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
