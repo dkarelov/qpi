@@ -140,7 +140,11 @@ collect_fast_tests() {
 
 require_test_database() {
   if [[ -z "${TEST_DATABASE_URL:-}" ]]; then
-    echo "TEST_DATABASE_URL must point at qpi_test before running ${1}." >&2
+    echo "TEST_DATABASE_URL is unset." >&2
+    echo "This is normal in a plain local shell; only DB-backed suites require it." >&2
+    echo "Use scripts/dev/test.sh fast for the non-DB suite, or export a real disposable DB URL before running ${1}." >&2
+    echo "Accepted patterns: postgresql://<app-user>:<password>@127.0.0.1:15432/qpi_test or postgresql://<app-user>:<password>@10.131.0.28:5432/qpi_test." >&2
+    echo "Do not invent credentials." >&2
     exit 1
   fi
 }
@@ -154,13 +158,18 @@ run_fast() {
 run_manifest_locally() {
   local kind="$1"
   local file
+  local reset_script="${repo_root}/scripts/dev/reset_test_db.sh"
 
   require_test_database "${kind}"
   export QPI_SKIP_TEST_DB_LOCK=1
 
+  if [[ -n "${QPI_DB_VM_HOST:-}" && -z "${TEST_DATABASE_ADMIN_URL:-}" ]]; then
+    reset_script="${repo_root}/scripts/dev/reset_remote_test_dbs.sh"
+  fi
+
   while IFS= read -r file; do
     [[ -n "${file}" ]] || continue
-    "${repo_root}/scripts/dev/reset_test_db.sh"
+    "${reset_script}"
     case "${kind}" in
       migration-smoke)
         RUN_MIGRATION_SMOKE=1 run_pytest "${file}"

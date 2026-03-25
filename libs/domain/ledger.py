@@ -35,7 +35,13 @@ from libs.domain.notifications import (
     NotificationService,
 )
 
-_CANCELLATION_STATES = {"expired_2h", "wb_invalid", "returned_within_14d", "delivery_expired"}
+_CANCELLATION_STATES = {
+    "expired_2h",
+    "buyer_cancelled",
+    "wb_invalid",
+    "returned_within_14d",
+    "delivery_expired",
+}
 _WITHDRAWAL_REQUESTER_ROLES = frozenset({"buyer", "seller"})
 
 
@@ -45,6 +51,265 @@ class FinanceService:
     def __init__(self, pool: AsyncConnectionPool) -> None:
         self._pool = pool
         self._notifications = NotificationService(pool)
+
+    async def ensure_admin_user(self, *, telegram_id: int, username: str | None) -> int:
+        async def operation(conn: AsyncConnection) -> int:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT id
+                    FROM users
+                    WHERE telegram_id = %s
+                    FOR UPDATE
+                    """,
+                    (telegram_id,),
+                )
+                existing = await cur.fetchone()
+                if existing is None:
+                    await cur.execute(
+                        """
+                        INSERT INTO users (
+                            telegram_id,
+                            username,
+                            role,
+                            is_seller,
+                            is_buyer,
+                            is_admin
+                        )
+                        VALUES (%s, %s, 'admin', false, false, true)
+                        RETURNING id
+                        """,
+                        (telegram_id, username),
+                    )
+                    created = await cur.fetchone()
+                    return int(created["id"])
+                await cur.execute(
+                    """
+                    UPDATE users
+                    SET username = COALESCE(%s, username),
+                        is_admin = true,
+                        updated_at = timezone('utc', now())
+                    WHERE id = %s
+                    """,
+                    (username, existing["id"]),
+                )
+                return int(existing["id"])
+
+        return await run_in_transaction(self._pool, operation)
+
+    async def ensure_system_account_id(self, *, account_kind: str) -> int:
+        async def operation(conn: AsyncConnection) -> int:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                return await self.ensure_system_account_locked(cur, account_kind=account_kind)
+
+        return await run_in_transaction(self._pool, operation)
+
+    async def resolve_manual_deposit_target(
+        self,
+        *,
+        target_telegram_id: int,
+        account_kind: str,
+    ) -> tuple[int, int]:
+        required_role_by_account_kind = {
+            "seller_available": "seller",
+            "buyer_available": "buyer",
+        }
+        required_role = required_role_by_account_kind.get(account_kind)
+        if required_role is None:
+            raise ValueError("account_kind must be seller|buyer")
+
+        async def operation(conn: AsyncConnection) -> tuple[int, int]:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT id, role, is_seller, is_buyer, is_admin
+                    FROM users
+                    WHERE telegram_id = %s
+                    FOR UPDATE
+                    """,
+                    (target_telegram_id,),
+                )
+                user_row = await cur.fetchone()
+                if user_row is None:
+                    raise NotFoundError(f"user with telegram_id {target_telegram_id} not found")
+
+                has_required_role = False
+                if required_role == "seller":
+                    has_required_role = bool(
+                        user_row["is_seller"]
+                        or user_row["is_admin"]
+                        or user_row["role"] in {"seller", "admin"}
+                    )
+                elif required_role == "buyer":
+                    has_required_role = bool(
+                        user_row["is_buyer"]
+                        or user_row["is_admin"]
+                        or user_row["role"] in {"buyer", "admin"}
+                    )
+                if not has_required_role:
+                    raise InvalidStateError(
+                        f"user capabilities are incompatible with {account_kind}"
+                    )
+
+                account_id = await self.ensure_owner_account_locked(
+                    cur,
+                    owner_user_id=int(user_row["id"]),
+                    account_kind=account_kind,
+                )
+                return int(user_row["id"]), account_id
+
+        return await run_in_transaction(self._pool, operation)
+
+    async def ensure_owner_account_locked(
+        self,
+        cur,
+        *,
+        owner_user_id: int,
+        account_kind: str,
+    ) -> int:
+        return await self._ensure_system_or_owner_account_locked(
+            cur,
+            owner_user_id=owner_user_id,
+            account_kind=account_kind,
+        )
+
+    async def ensure_system_account_locked(self, cur, *, account_kind: str) -> int:
+        return await self._ensure_system_or_owner_account_locked(
+            cur,
+            owner_user_id=None,
+            account_kind=account_kind,
+        )
+
+    async def transfer_locked(
+        self,
+        cur,
+        *,
+        from_account_id: int,
+        to_account_id: int,
+        amount_usdt: Decimal,
+        event_type: str,
+        idempotency_key: str,
+        entity_type: str | None,
+        entity_id: int | None,
+        metadata: dict[str, Any],
+    ) -> TransferResult:
+        return await self._transfer_locked(
+            cur,
+            from_account_id=from_account_id,
+            to_account_id=to_account_id,
+            amount_usdt=amount_usdt,
+            event_type=event_type,
+            idempotency_key=idempotency_key,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            metadata=metadata,
+        )
+
+    async def upsert_hold_locked(
+        self,
+        cur,
+        *,
+        account_id: int,
+        hold_type: str,
+        status: str,
+        amount_usdt: Decimal,
+        idempotency_key: str,
+        listing_id: int | None = None,
+        assignment_id: int | None = None,
+        withdrawal_request_id: int | None = None,
+    ) -> int:
+        return await self._upsert_hold(
+            cur,
+            account_id=account_id,
+            hold_type=hold_type,
+            status=status,
+            amount_usdt=amount_usdt,
+            idempotency_key=idempotency_key,
+            listing_id=listing_id,
+            assignment_id=assignment_id,
+            withdrawal_request_id=withdrawal_request_id,
+        )
+
+    async def insert_admin_audit_locked(
+        self,
+        cur,
+        *,
+        admin_user_id: int,
+        action: str,
+        target_type: str,
+        target_id: str,
+        payload: dict[str, Any],
+        idempotency_key: str,
+    ) -> None:
+        await self._insert_admin_audit(
+            cur,
+            admin_user_id=admin_user_id,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            payload=payload,
+            idempotency_key=idempotency_key,
+        )
+
+    async def provision_system_balance_locked(
+        self,
+        cur,
+        *,
+        account_id: int,
+        amount_usdt: Decimal,
+        event_type: str,
+        idempotency_key: str,
+        metadata: dict[str, Any],
+    ) -> int:
+        normalized_amount = _normalize_amount(amount_usdt)
+        await cur.execute(
+            """
+            SELECT id
+            FROM system_balance_provisions
+            WHERE idempotency_key = %s
+            """,
+            (idempotency_key,),
+        )
+        existing = await cur.fetchone()
+        if existing is not None:
+            return int(existing["id"])
+
+        await cur.execute(
+            """
+            UPDATE accounts
+            SET current_balance_usdt = current_balance_usdt + %s,
+                updated_at = timezone('utc', now())
+            WHERE id = %s
+            RETURNING id
+            """,
+            (normalized_amount, account_id),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise NotFoundError(f"system account {account_id} not found")
+
+        await cur.execute(
+            """
+            INSERT INTO system_balance_provisions (
+                account_id,
+                amount_usdt,
+                event_type,
+                metadata_json,
+                idempotency_key
+            )
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                account_id,
+                normalized_amount,
+                event_type,
+                Json(metadata),
+                idempotency_key,
+            ),
+        )
+        created = await cur.fetchone()
+        return int(created["id"])
 
     async def lock_listing_collateral(
         self,
@@ -255,7 +520,6 @@ class FinanceService:
 
                 if assignment["status"] not in {
                     "reserved",
-                    "order_submitted",
                     "order_verified",
                     "picked_up_wait_unlock",
                 }:
@@ -882,14 +1146,23 @@ class FinanceService:
                 if target_account["owner_user_id"] != target_user_id:
                     raise InvalidStateError("target account does not belong to target user")
 
-                system_payout_account_id = await self._ensure_system_account(
+                system_payout_account_id = await self.ensure_system_account_locked(
                     cur,
                     account_kind="system_payout",
                 )
-                await self._provision_system_balance_locked(
+                await self.provision_system_balance_locked(
                     cur,
                     account_id=system_payout_account_id,
                     amount_usdt=amount,
+                    event_type="manual_deposit_credit",
+                    idempotency_key=f"{idempotency_key}:provision",
+                    metadata={
+                        "target_user_id": target_user_id,
+                        "target_account_id": target_account_id,
+                        "external_reference": normalized_reference,
+                        "tx_hash": normalized_tx_hash,
+                        "note": normalized_note,
+                    },
                 )
 
                 transfer_result = await self._transfer_locked(
@@ -1512,8 +1785,18 @@ class FinanceService:
 
         return TransferResult(entry_id=entry["id"], created=True)
 
-    async def _ensure_system_account(self, cur, *, account_kind: str) -> int:
-        account_code = f"system:{account_kind}"
+    async def _ensure_system_or_owner_account_locked(
+        self,
+        cur,
+        *,
+        owner_user_id: int | None,
+        account_kind: str,
+    ) -> int:
+        account_code = (
+            f"user:{owner_user_id}:{account_kind}"
+            if owner_user_id is not None
+            else f"system:{account_kind}"
+        )
         await cur.execute(
             """
             INSERT INTO accounts (
@@ -1521,33 +1804,20 @@ class FinanceService:
                 account_code,
                 account_kind
             )
-            VALUES (NULL, %s, %s)
+            VALUES (%s, %s, %s)
             ON CONFLICT (account_code)
             DO UPDATE SET
+                owner_user_id = EXCLUDED.owner_user_id,
                 updated_at = timezone('utc', now())
             RETURNING id
             """,
-            (account_code, account_kind),
+            (owner_user_id, account_code, account_kind),
         )
         row = await cur.fetchone()
         return row["id"]
 
-    async def _provision_system_balance_locked(
-        self,
-        cur,
-        *,
-        account_id: int,
-        amount_usdt: Decimal,
-    ) -> None:
-        await cur.execute(
-            """
-            UPDATE accounts
-            SET current_balance_usdt = current_balance_usdt + %s,
-                updated_at = timezone('utc', now())
-            WHERE id = %s
-            """,
-            (amount_usdt, account_id),
-        )
+    async def _ensure_system_account(self, cur, *, account_kind: str) -> int:
+        return await self.ensure_system_account_locked(cur, account_kind=account_kind)
 
     async def _upsert_hold(
         self,

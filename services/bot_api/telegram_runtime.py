@@ -37,6 +37,7 @@ from libs.domain.fx_rates import FxRateService
 from libs.domain.ledger import FinanceService
 from libs.domain.notifications import NotificationService
 from libs.domain.seller import SellerService
+from libs.domain.seller_workflow import SellerWorkflowService
 from libs.integrations.fx_rates import CoinGeckoUsdtRubClient
 from libs.integrations.tonapi import TonapiApiError, TonapiClient
 from libs.integrations.wb import WbPingClient
@@ -232,6 +233,7 @@ class TelegramWebhookRuntime:
             statement_timeout_ms=settings.db_statement_timeout_ms,
         )
         self._seller_service: SellerService | None = None
+        self._seller_workflow_service: SellerWorkflowService | None = None
         self._buyer_service: BuyerService | None = None
         self._finance_service: FinanceService | None = None
         self._deposit_service: DepositIntentService | None = None
@@ -355,12 +357,19 @@ class TelegramWebhookRuntime:
                 unauth_min_interval_seconds=self._settings.tonapi_unauth_min_interval_seconds,
             )
             self._payout_wallet_raw_form = None
+            seller_workflow_service = SellerWorkflowService(
+                seller_service=self._seller_service,
+                wb_public_client=self._wb_public_client,
+                token_cipher_key=self._settings.token_cipher_key,
+            )
             self._seller_processor = SellerCommandProcessor(
                 seller_service=self._seller_service,
+                seller_workflow_service=seller_workflow_service,
                 wb_ping_client=wb_ping_client,
                 token_cipher_key=self._settings.token_cipher_key,
                 bot_username=self._settings.telegram_bot_username,
             )
+            self._seller_workflow_service = seller_workflow_service
             self._buyer_processor = BuyerCommandProcessor(
                 buyer_service=self._buyer_service,
                 bot_username=self._settings.telegram_bot_username,
@@ -1494,50 +1503,11 @@ class TelegramWebhookRuntime:
         )
 
     async def _load_seller_order_counters(self, *, seller_user_id: int) -> dict[str, int]:
-        async with self._db_pool.connection() as conn:
-            async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(
-                    """
-                    SELECT
-                        COALESCE(
-                            COUNT(*) FILTER (
-                                WHERE a.status = 'reserved'
-                            ),
-                            0
-                        ) AS awaiting_order,
-                        COALESCE(
-                            COUNT(*) FILTER (
-                                WHERE a.status IN (
-                                    'order_submitted',
-                                    'order_verified'
-                                )
-                            ),
-                            0
-                        ) AS ordered,
-                        COALESCE(
-                            COUNT(*) FILTER (
-                                WHERE a.status IN (
-                                    'picked_up_wait_unlock',
-                                    'eligible_for_withdrawal',
-                                    'withdraw_pending_admin',
-                                    'withdraw_sent'
-                                )
-                            ),
-                            0
-                        ) AS picked_up
-                    FROM assignments a
-                    JOIN listings l ON l.id = a.listing_id
-                    WHERE l.seller_user_id = %s
-                      AND l.deleted_at IS NULL
-                    """,
-                    (seller_user_id,),
-                )
-                row = await cur.fetchone()
-                return {
-                    "in_progress": int(row["in_progress"]),
-                    "completed": int(row["completed"]),
-                    "picked_up": int(row["picked_up"]),
-                }
+        if self._seller_service is None:
+            return {"awaiting_order": 0, "ordered": 0, "picked_up": 0}
+        return await self._seller_service.get_seller_order_counters(
+            seller_user_id=seller_user_id
+        )
 
     async def _render_seller_shops(
         self,
@@ -2772,20 +2742,28 @@ class TelegramWebhookRuntime:
         list_page: int = 1,
     ) -> None:
         try:
-            listing = await self._seller_service.get_listing(
-                seller_user_id=seller_user_id,
-                listing_id=listing_id,
-            )
-            await self._validate_listing_product_availability(
-                seller_user_id=seller_user_id,
-                shop_id=listing.shop_id,
-                wb_product_id=listing.wb_product_id,
-            )
-            result = await self._seller_service.activate_listing(
-                seller_user_id=seller_user_id,
-                listing_id=listing_id,
-                idempotency_key=f"tg-listing-activate:{seller_user_id}:{listing_id}",
-            )
+            workflow = self._seller_workflow_service
+            if workflow is None:
+                listing = await self._seller_service.get_listing(
+                    seller_user_id=seller_user_id,
+                    listing_id=listing_id,
+                )
+                await self._validate_listing_product_availability(
+                    seller_user_id=seller_user_id,
+                    shop_id=listing.shop_id,
+                    wb_product_id=listing.wb_product_id,
+                )
+                result = await self._seller_service.activate_listing(
+                    seller_user_id=seller_user_id,
+                    listing_id=listing_id,
+                    idempotency_key=f"tg-listing-activate:{seller_user_id}:{listing_id}",
+                )
+            else:
+                result = await workflow.activate_listing(
+                    seller_user_id=seller_user_id,
+                    listing_id=listing_id,
+                    idempotency_key=f"tg-listing-activate:{seller_user_id}:{listing_id}",
+                )
         except NotFoundError:
             await self._replace_message(query_message, "Объявление не найдено.")
             return
@@ -2889,19 +2867,26 @@ class TelegramWebhookRuntime:
         list_page: int = 1,
     ) -> None:
         try:
-            listing = await self._seller_service.get_listing(
-                seller_user_id=seller_user_id,
-                listing_id=listing_id,
-            )
-            await self._validate_listing_product_availability(
-                seller_user_id=seller_user_id,
-                shop_id=listing.shop_id,
-                wb_product_id=listing.wb_product_id,
-            )
-            result = await self._seller_service.unpause_listing(
-                seller_user_id=seller_user_id,
-                listing_id=listing_id,
-            )
+            workflow = self._seller_workflow_service
+            if workflow is None:
+                listing = await self._seller_service.get_listing(
+                    seller_user_id=seller_user_id,
+                    listing_id=listing_id,
+                )
+                await self._validate_listing_product_availability(
+                    seller_user_id=seller_user_id,
+                    shop_id=listing.shop_id,
+                    wb_product_id=listing.wb_product_id,
+                )
+                result = await self._seller_service.unpause_listing(
+                    seller_user_id=seller_user_id,
+                    listing_id=listing_id,
+                )
+            else:
+                result = await workflow.unpause_listing(
+                    seller_user_id=seller_user_id,
+                    listing_id=listing_id,
+                )
         except NotFoundError:
             await self._replace_message(query_message, "Объявление не найдено.")
             return
@@ -3752,7 +3737,7 @@ class TelegramWebhookRuntime:
                     ),
                 )
                 return
-            if assignment.status not in {"reserved", "order_submitted"}:
+            if assignment.status != "reserved":
                 await self._replace_message(
                     query_message,
                     "Эту покупку уже нельзя отменить.",
@@ -4205,10 +4190,12 @@ class TelegramWebhookRuntime:
             )
             return
 
-        assignments = self._buyer_visible_assignments(
-            await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
-        )
-        if any(item.shop_slug == shop.slug for item in assignments):
+        try:
+            result = await self._buyer_service.remove_saved_shop(
+                buyer_user_id=buyer_user_id,
+                shop_id=shop_id,
+            )
+        except InvalidStateError:
             await self._replace_message(
                 query_message,
                 self._screen_text(
@@ -4241,10 +4228,13 @@ class TelegramWebhookRuntime:
             )
             return
 
-        await self._buyer_service.remove_saved_shop(
-            buyer_user_id=buyer_user_id,
-            shop_id=shop_id,
-        )
+        if not result.changed:
+            await self._render_buyer_shops_section(
+                query_message=query_message,
+                buyer_user_id=buyer_user_id,
+                notice="Магазин уже удален из списка.",
+            )
+            return
         await self._render_buyer_shops_section(
             query_message=query_message,
             buyer_user_id=buyer_user_id,
@@ -4695,7 +4685,7 @@ class TelegramWebhookRuntime:
             if item.order_id:
                 block_lines.append(f"<b>Номер заказа:</b> {html.escape(item.order_id)}")
             block_lines.append(f"<b>Статус:</b> {self._buyer_purchase_status_badge(item.status)}")
-            if item.status in {"reserved", "order_submitted"}:
+            if item.status == "reserved":
                 block_lines.append(self._buyer_task_instruction_text(item, include_title=False))
                 block_lines.append(
                     "<b>Срок заказа:</b> "
@@ -5061,48 +5051,12 @@ class TelegramWebhookRuntime:
         )
 
     async def _ensure_admin_user(self, *, telegram_id: int, username: str | None) -> int:
-        async with self._db_pool.connection() as conn:
-            async with conn.transaction():
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        """
-                        SELECT id, role, is_admin
-                        FROM users
-                        WHERE telegram_id = %s
-                        FOR UPDATE
-                        """,
-                        (telegram_id,),
-                    )
-                    existing = await cur.fetchone()
-                    if existing is None:
-                        await cur.execute(
-                            """
-                            INSERT INTO users (
-                                telegram_id,
-                                username,
-                                role,
-                                is_seller,
-                                is_buyer,
-                                is_admin
-                            )
-                            VALUES (%s, %s, 'admin', false, false, true)
-                            RETURNING id
-                            """,
-                            (telegram_id, username),
-                        )
-                        created = await cur.fetchone()
-                        return created["id"]
-                    await cur.execute(
-                        """
-                        UPDATE users
-                        SET username = COALESCE(%s, username),
-                            is_admin = true,
-                            updated_at = timezone('utc', now())
-                        WHERE id = %s
-                        """,
-                        (username, existing["id"]),
-                    )
-                    return existing["id"]
+        if self._finance_service is None:
+            raise RuntimeError("finance service is not initialized")
+        return await self._finance_service.ensure_admin_user(
+            telegram_id=telegram_id,
+            username=username,
+        )
 
     async def _render_admin_dashboard(self, *, query_message: Message | None) -> None:
         pending_withdrawals = await self._finance_service.list_pending_withdrawals(limit=1000)
@@ -5845,84 +5799,19 @@ class TelegramWebhookRuntime:
         target_telegram_id: int,
         account_kind: str,
     ) -> tuple[int, int]:
-        required_role_by_account_kind = {
-            "seller_available": "seller",
-            "buyer_available": "buyer",
-        }
-        required_role = required_role_by_account_kind.get(account_kind)
-        if required_role is None:
-            raise ValueError("account_kind must be seller|buyer")
-
-        async with self._db_pool.connection() as conn:
-            async with conn.transaction():
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        """
-                        SELECT id, role, is_seller, is_buyer, is_admin
-                        FROM users
-                        WHERE telegram_id = %s
-                        FOR UPDATE
-                        """,
-                        (target_telegram_id,),
-                    )
-                    user_row = await cur.fetchone()
-                    if user_row is None:
-                        raise NotFoundError(f"user with telegram_id {target_telegram_id} not found")
-                    has_required_role = False
-                    if required_role == "seller":
-                        has_required_role = bool(
-                            user_row["is_seller"]
-                            or user_row["is_admin"]
-                            or user_row["role"] in {"seller", "admin"}
-                        )
-                    elif required_role == "buyer":
-                        has_required_role = bool(
-                            user_row["is_buyer"]
-                            or user_row["is_admin"]
-                            or user_row["role"] in {"buyer", "admin"}
-                        )
-                    if not has_required_role:
-                        raise InvalidStateError(
-                            f"user capabilities are incompatible with {account_kind}"
-                        )
-
-                    account_code = f"user:{user_row['id']}:{account_kind}"
-                    await cur.execute(
-                        """
-                        INSERT INTO accounts (
-                            owner_user_id,
-                            account_code,
-                            account_kind
-                        )
-                        VALUES (%s, %s, %s)
-                        ON CONFLICT (account_code)
-                        DO UPDATE SET updated_at = timezone('utc', now())
-                        RETURNING id
-                        """,
-                        (user_row["id"], account_code, account_kind),
-                    )
-                    account_row = await cur.fetchone()
-                    return user_row["id"], account_row["id"]
+        if self._finance_service is None:
+            raise RuntimeError("finance service is not initialized")
+        return await self._finance_service.resolve_manual_deposit_target(
+            target_telegram_id=target_telegram_id,
+            account_kind=account_kind,
+        )
 
     async def _ensure_system_payout_account_id(self) -> int:
-        async with self._db_pool.connection() as conn:
-            async with conn.transaction():
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        """
-                        INSERT INTO accounts (
-                            owner_user_id,
-                            account_code,
-                            account_kind
-                        )
-                        VALUES (NULL, 'system:system_payout', 'system_payout')
-                        ON CONFLICT (account_code)
-                        DO UPDATE SET updated_at = timezone('utc', now())
-                        RETURNING id
-                        """
-                    )
-                    row = await cur.fetchone()
-                    return row["id"]
+        if self._finance_service is None:
+            raise RuntimeError("finance service is not initialized")
+        return await self._finance_service.ensure_system_account_id(
+            account_kind="system_payout"
+        )
 
     @staticmethod
     def _normalize_manual_deposit_account_kind(account_kind: str) -> str:
@@ -8082,13 +7971,11 @@ class TelegramWebhookRuntime:
     def _humanize_assignment_status(status: str) -> str:
         mapping = {
             "reserved": "Ожидает заказа",
-            "order_submitted": "Заказан",
             "order_verified": "Заказан",
             "picked_up_wait_unlock": "Выкуплен",
-            "eligible_for_withdrawal": "Выплачен",
-            "withdraw_pending_admin": "Выплачен",
             "withdraw_sent": "Выплачен",
             "expired_2h": "Бронь истекла",
+            "buyer_cancelled": "Покупка отменена",
             "wb_invalid": "Не подтвержден",
             "returned_within_14d": "Возвращен",
             "delivery_expired": "Срок выкупа истек",
@@ -8099,11 +7986,8 @@ class TelegramWebhookRuntime:
     def _buyer_visible_assignments(assignments):
         visible_statuses = {
             "reserved",
-            "order_submitted",
             "order_verified",
             "picked_up_wait_unlock",
-            "eligible_for_withdrawal",
-            "withdraw_pending_admin",
             "withdraw_sent",
         }
         return [item for item in assignments if item.status in visible_statuses]
@@ -8123,12 +8007,10 @@ class TelegramWebhookRuntime:
     def _buyer_dashboard_status_bucket(status: str) -> str | None:
         if status == "reserved":
             return "awaiting_order"
-        if status in {"order_submitted", "order_verified", "wb_invalid", "delivery_expired"}:
+        if status in {"order_verified", "wb_invalid", "delivery_expired"}:
             return "ordered"
         if status in {
             "picked_up_wait_unlock",
-            "eligible_for_withdrawal",
-            "withdraw_pending_admin",
             "withdraw_sent",
             "returned_within_14d",
         }:

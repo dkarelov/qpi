@@ -477,6 +477,19 @@ async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assig
             reference_price_rub=990,
             reference_price_source="manual",
         )
+        second_listing_id = await create_listing(
+            conn,
+            shop_id=shop_id,
+            seller_user_id=seller_user_id,
+            wb_product_id=552892541,
+            search_phrase="термокружка 2",
+            reward_usdt=Decimal("1.000000"),
+            slot_count=1,
+            available_slots=0,
+            status="active",
+            reference_price_rub=990,
+            reference_price_source="manual",
+        )
         buyer_available_account_id = await create_account(
             conn,
             owner_user_id=buyer_user_id,
@@ -519,6 +532,30 @@ async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assig
             assignment_id = int((await cur.fetchone())[0])
             await cur.execute(
                 """
+                INSERT INTO assignments (
+                    listing_id,
+                    buyer_user_id,
+                    wb_product_id,
+                    status,
+                    reward_usdt,
+                    reservation_expires_at,
+                    idempotency_key
+                )
+                VALUES (%s, %s, %s, 'order_submitted', %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    second_listing_id,
+                    buyer_user_id,
+                    552892541,
+                    Decimal("1.000000"),
+                    datetime.now(UTC) + timedelta(hours=2),
+                    "compat-assignment-order-submitted",
+                ),
+            )
+            order_submitted_assignment_id = int((await cur.fetchone())[0])
+            await cur.execute(
+                """
                 INSERT INTO withdrawal_requests (
                     buyer_user_id,
                     from_account_id,
@@ -550,6 +587,11 @@ async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assig
         with conn.cursor() as cur:
             cur.execute("SELECT status FROM public.assignments WHERE id = %s", (assignment_id,))
             assert cur.fetchone()[0] == "withdraw_sent"
+            cur.execute(
+                "SELECT status FROM public.assignments WHERE id = %s",
+                (order_submitted_assignment_id,),
+            )
+            assert cur.fetchone()[0] == "order_verified"
             cur.execute(
                 """
                 SELECT requester_user_id, requester_role, status

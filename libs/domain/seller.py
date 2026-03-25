@@ -13,10 +13,10 @@ from psycopg_pool import AsyncConnectionPool
 
 from libs.db.tx import run_in_transaction
 from libs.domain.errors import (
-    InsufficientFundsError,
     InvalidStateError,
     NotFoundError,
 )
+from libs.domain.ledger import FinanceService
 from libs.domain.models import (
     DeleteExecutionResult,
     DeletePreview,
@@ -33,7 +33,6 @@ from libs.domain.notifications import NotificationService
 
 _OPEN_ASSIGNMENT_STATES = (
     "reserved",
-    "order_submitted",
     "order_verified",
     "picked_up_wait_unlock",
 )
@@ -82,8 +81,14 @@ _CYRILLIC_TO_LATIN = {
 class SellerService:
     """Seller lifecycle operations implemented with plain SQL transactions."""
 
-    def __init__(self, pool: AsyncConnectionPool) -> None:
+    def __init__(
+        self,
+        pool: AsyncConnectionPool,
+        *,
+        finance_service: FinanceService | None = None,
+    ) -> None:
         self._pool = pool
+        self._finance_service = finance_service or FinanceService(pool)
         self._notifications = NotificationService(pool)
 
     async def bootstrap_seller(
@@ -883,6 +888,54 @@ class SellerService:
 
         return await run_in_transaction(self._pool, operation)
 
+    async def get_seller_order_counters(self, *, seller_user_id: int) -> dict[str, int]:
+        async def operation(conn: AsyncConnection) -> dict[str, int]:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT
+                        COALESCE(
+                            COUNT(*) FILTER (
+                                WHERE a.status = 'reserved'
+                            ),
+                            0
+                        ) AS awaiting_order,
+                        COALESCE(
+                            COUNT(*) FILTER (
+                                WHERE a.status IN (
+                                    'order_verified',
+                                    'wb_invalid',
+                                    'delivery_expired'
+                                )
+                            ),
+                            0
+                        ) AS ordered,
+                        COALESCE(
+                            COUNT(*) FILTER (
+                                WHERE a.status IN (
+                                    'picked_up_wait_unlock',
+                                    'returned_within_14d',
+                                    'withdraw_sent'
+                                )
+                            ),
+                            0
+                        ) AS picked_up
+                    FROM assignments a
+                    JOIN listings l ON l.id = a.listing_id
+                    WHERE l.seller_user_id = %s
+                      AND l.deleted_at IS NULL
+                    """,
+                    (seller_user_id,),
+                )
+                row = await cur.fetchone()
+                return {
+                    "awaiting_order": int(row["awaiting_order"]),
+                    "ordered": int(row["ordered"]),
+                    "picked_up": int(row["picked_up"]),
+                }
+
+        return await run_in_transaction(self._pool, operation, read_only=True)
+
     async def update_listing(
         self,
         *,
@@ -894,151 +947,10 @@ class SellerService:
         slot_count: int,
         idempotency_key: str,
     ) -> ListingResult:
-        normalized_display_title = display_title.strip()
-        normalized_search_phrase = search_phrase.strip()
-        normalized_reward_usdt = _normalize_amount(reward_usdt)
-        normalized_slot_count = int(slot_count)
-        if not normalized_display_title:
-            raise ValueError("display_title must not be empty")
-        if not normalized_search_phrase:
-            raise ValueError("search_phrase must not be empty")
-        if normalized_reward_usdt <= Decimal("0.000000"):
-            raise ValueError("reward_usdt must be > 0")
-        if normalized_slot_count < 1:
-            raise ValueError("slot_count must be >= 1")
-        if not idempotency_key.strip():
-            raise ValueError("idempotency_key must not be empty")
-
-        new_required_collateral = _normalize_amount(
-            normalized_reward_usdt * Decimal(normalized_slot_count) * _COLLATERAL_FEE_MULTIPLIER
+        del seller_user_id, listing_id, display_title, search_phrase, reward_usdt, slot_count, idempotency_key
+        raise InvalidStateError(
+            "listing updates are disabled; create a new listing and delete the old one"
         )
-
-        async def operation(conn: AsyncConnection) -> ListingResult:
-            async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(
-                    """
-                    SELECT
-                        id,
-                        shop_id,
-                        wb_product_id,
-                        display_title,
-                        wb_source_title,
-                        wb_subject_name,
-                        wb_brand_name,
-                        wb_vendor_code,
-                        wb_description,
-                        wb_photo_url,
-                        wb_tech_sizes_json,
-                        wb_characteristics_json,
-                        reference_price_rub,
-                        reference_price_source,
-                        reference_price_updated_at,
-                        search_phrase,
-                        status,
-                        reward_usdt,
-                        slot_count,
-                        available_slots,
-                        collateral_required_usdt,
-                        deleted_at
-                    FROM listings
-                    WHERE id = %s
-                      AND seller_user_id = %s
-                    FOR UPDATE
-                    """,
-                    (listing_id, seller_user_id),
-                )
-                listing = await cur.fetchone()
-                if listing is None:
-                    raise NotFoundError(f"listing {listing_id} not found")
-                if listing["deleted_at"] is not None:
-                    raise InvalidStateError("listing is deleted")
-
-                consumed_slots = int(listing["slot_count"]) - int(listing["available_slots"])
-                new_available_slots = normalized_slot_count - consumed_slots
-                if new_available_slots < 0:
-                    raise InvalidStateError("slot_count is below already consumed slots")
-
-                if listing["status"] in {"active", "paused"}:
-                    await self._rebalance_listing_collateral_hold(
-                        cur,
-                        seller_user_id=seller_user_id,
-                        listing_id=listing_id,
-                        target_amount_usdt=new_required_collateral,
-                        idempotency_key=idempotency_key,
-                    )
-
-                await cur.execute(
-                    """
-                    UPDATE listings
-                    SET display_title = %s,
-                        search_phrase = %s,
-                        reward_usdt = %s,
-                        slot_count = %s,
-                        available_slots = %s,
-                        collateral_required_usdt = %s,
-                        updated_at = timezone('utc', now())
-                    WHERE id = %s
-                    RETURNING
-                        id,
-                        shop_id,
-                        wb_product_id,
-                        display_title,
-                        wb_source_title,
-                        wb_subject_name,
-                        wb_brand_name,
-                        wb_vendor_code,
-                        wb_description,
-                        wb_photo_url,
-                        wb_tech_sizes_json,
-                        wb_characteristics_json,
-                        reference_price_rub,
-                        reference_price_source,
-                        reference_price_updated_at,
-                        search_phrase,
-                        status,
-                        reward_usdt,
-                        slot_count,
-                        available_slots,
-                        collateral_required_usdt,
-                        deleted_at
-                    """,
-                    (
-                        normalized_display_title,
-                        normalized_search_phrase,
-                        normalized_reward_usdt,
-                        normalized_slot_count,
-                        new_available_slots,
-                        new_required_collateral,
-                        listing_id,
-                    ),
-                )
-                row = await cur.fetchone()
-                return ListingResult(
-                    listing_id=row["id"],
-                    shop_id=row["shop_id"],
-                    wb_product_id=row["wb_product_id"],
-                    display_title=row["display_title"],
-                    wb_source_title=row["wb_source_title"],
-                    wb_subject_name=row["wb_subject_name"],
-                    wb_brand_name=row["wb_brand_name"],
-                    wb_vendor_code=row["wb_vendor_code"],
-                    wb_description=row["wb_description"],
-                    wb_photo_url=row["wb_photo_url"],
-                    wb_tech_sizes=list(row["wb_tech_sizes_json"] or []),
-                    wb_characteristics=list(row["wb_characteristics_json"] or []),
-                    reference_price_rub=row["reference_price_rub"],
-                    reference_price_source=row["reference_price_source"],
-                    reference_price_updated_at=row["reference_price_updated_at"],
-                    search_phrase=row["search_phrase"],
-                    status=row["status"],
-                    reward_usdt=row["reward_usdt"],
-                    slot_count=row["slot_count"],
-                    available_slots=row["available_slots"],
-                    collateral_required_usdt=row["collateral_required_usdt"],
-                    deleted_at=row["deleted_at"],
-                )
-
-        return await run_in_transaction(self._pool, operation)
 
     async def list_listing_collateral_views(
         self,
@@ -1093,7 +1005,6 @@ class SellerService:
                               AND ax.status = ANY(
                                     ARRAY[
                                         'reserved'::text,
-                                        'order_submitted'::text,
                                         'order_verified'::text,
                                         'picked_up_wait_unlock'::text
                                     ]
@@ -2002,45 +1913,17 @@ class SellerService:
         )
 
     async def _ensure_owner_account(self, cur, *, owner_user_id: int, account_kind: str) -> int:
-        account_code = f"user:{owner_user_id}:{account_kind}"
-        await cur.execute(
-            """
-            INSERT INTO accounts (
-                owner_user_id,
-                account_code,
-                account_kind
-            )
-            VALUES (%s, %s, %s)
-            ON CONFLICT (account_code)
-            DO UPDATE SET
-                owner_user_id = EXCLUDED.owner_user_id,
-                updated_at = timezone('utc', now())
-            RETURNING id
-            """,
-            (owner_user_id, account_code, account_kind),
+        return await self._finance_service.ensure_owner_account_locked(
+            cur,
+            owner_user_id=owner_user_id,
+            account_kind=account_kind,
         )
-        row = await cur.fetchone()
-        return row["id"]
 
     async def _ensure_system_account(self, cur, *, account_kind: str) -> int:
-        account_code = f"system:{account_kind}"
-        await cur.execute(
-            """
-            INSERT INTO accounts (
-                owner_user_id,
-                account_code,
-                account_kind
-            )
-            VALUES (NULL, %s, %s)
-            ON CONFLICT (account_code)
-            DO UPDATE SET
-                updated_at = timezone('utc', now())
-            RETURNING id
-            """,
-            (account_code, account_kind),
+        return await self._finance_service.ensure_system_account_locked(
+            cur,
+            account_kind=account_kind,
         )
-        row = await cur.fetchone()
-        return row["id"]
 
     async def _transfer_locked(
         self,
@@ -2055,104 +1938,17 @@ class SellerService:
         entity_id: int | None,
         metadata: dict[str, Any],
     ) -> TransferResult:
-        if from_account_id == to_account_id:
-            raise InvalidStateError("transfer source and destination must differ")
-
-        await cur.execute(
-            """
-            SELECT id
-            FROM ledger_entries
-            WHERE idempotency_key = %s
-            """,
-            (idempotency_key,),
+        return await self._finance_service.transfer_locked(
+            cur,
+            from_account_id=from_account_id,
+            to_account_id=to_account_id,
+            amount_usdt=amount_usdt,
+            event_type=event_type,
+            idempotency_key=idempotency_key,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            metadata=metadata,
         )
-        existing = await cur.fetchone()
-        if existing is not None:
-            return TransferResult(entry_id=existing["id"], created=False)
-
-        locked_ids = sorted([from_account_id, to_account_id])
-        await cur.execute(
-            """
-            SELECT id
-            FROM accounts
-            WHERE id = ANY(%s)
-            ORDER BY id
-            FOR UPDATE
-            """,
-            (locked_ids,),
-        )
-        accounts = await cur.fetchall()
-        if len(accounts) != 2:
-            raise NotFoundError("one or more accounts not found")
-
-        await cur.execute(
-            """
-            UPDATE accounts
-            SET current_balance_usdt = current_balance_usdt - %s,
-                updated_at = timezone('utc', now())
-            WHERE id = %s
-              AND current_balance_usdt >= %s
-            RETURNING id
-            """,
-            (amount_usdt, from_account_id, amount_usdt),
-        )
-        debited = await cur.fetchone()
-        if debited is None:
-            raise InsufficientFundsError("source account has insufficient funds")
-
-        await cur.execute(
-            """
-            UPDATE accounts
-            SET current_balance_usdt = current_balance_usdt + %s,
-                updated_at = timezone('utc', now())
-            WHERE id = %s
-            RETURNING id
-            """,
-            (amount_usdt, to_account_id),
-        )
-        credited = await cur.fetchone()
-        if credited is None:
-            raise NotFoundError("destination account not found")
-
-        await cur.execute(
-            """
-            INSERT INTO ledger_entries (
-                event_type,
-                idempotency_key,
-                entity_type,
-                entity_id,
-                metadata_json
-            )
-            VALUES (%s, %s, %s, %s, %s)
-            RETURNING id
-            """,
-            (event_type, idempotency_key, entity_type, entity_id, Json(metadata)),
-        )
-        entry = await cur.fetchone()
-
-        await cur.execute(
-            """
-            INSERT INTO ledger_postings (
-                entry_id,
-                account_id,
-                direction,
-                amount_usdt
-            )
-            VALUES
-                (%s, %s, 'debit', %s),
-                (%s, %s, 'credit', %s)
-            """,
-            (
-                entry["id"],
-                from_account_id,
-                amount_usdt,
-                entry["id"],
-                to_account_id,
-                amount_usdt,
-            ),
-        )
-
-        return TransferResult(entry_id=entry["id"], created=True)
 
     async def _upsert_hold(
         self,
@@ -2167,46 +1963,17 @@ class SellerService:
         assignment_id: int | None = None,
         withdrawal_request_id: int | None = None,
     ) -> int:
-        await cur.execute(
-            """
-            SELECT id
-            FROM balance_holds
-            WHERE idempotency_key = %s
-            """,
-            (idempotency_key,),
+        return await self._finance_service.upsert_hold_locked(
+            cur,
+            account_id=account_id,
+            hold_type=hold_type,
+            status=status,
+            amount_usdt=amount_usdt,
+            idempotency_key=idempotency_key,
+            listing_id=listing_id,
+            assignment_id=assignment_id,
+            withdrawal_request_id=withdrawal_request_id,
         )
-        existing = await cur.fetchone()
-        if existing is not None:
-            return existing["id"]
-
-        await cur.execute(
-            """
-            INSERT INTO balance_holds (
-                account_id,
-                hold_type,
-                status,
-                amount_usdt,
-                listing_id,
-                assignment_id,
-                withdrawal_request_id,
-                idempotency_key
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id
-            """,
-            (
-                account_id,
-                hold_type,
-                status,
-                amount_usdt,
-                listing_id,
-                assignment_id,
-                withdrawal_request_id,
-                idempotency_key,
-            ),
-        )
-        hold = await cur.fetchone()
-        return hold["id"]
 
 
 def _slugify(raw: str) -> str:

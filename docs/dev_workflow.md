@@ -73,6 +73,30 @@ Fast tests:
 scripts/dev/test.sh fast
 ```
 
+`TEST_DATABASE_URL` source of truth:
+
+- `scripts/dev/test.sh fast` is the only default local path that does not need a database URL.
+- DB-backed paths require a real disposable PostgreSQL target and are expected to fail fast when `TEST_DATABASE_URL` is unset.
+- In a normal local shell, `TEST_DATABASE_URL` is intentionally unset until you export it yourself. The repo does not provide or infer DB credentials.
+- The supported local bootstrap path is `scripts/dev/write_test_env.sh`, which derives the current app DB credentials from local Terraform outputs and writes a gitignored `.env.test.local`.
+- Use one of these concrete patterns:
+  - local tunnel: `postgresql://<app-user>:<password>@127.0.0.1:15432/qpi_test`
+  - private runner / DB VM: `postgresql://<app-user>:<password>@10.131.0.28:5432/qpi_test`
+- In `--mode tunnel`, the helper also writes `QPI_DB_VM_HOST` and `QPI_DB_VM_SSH_PROXY_HOST=<bot-public-ip>` so the DB reset helper can SSH to the private DB VM through the bot VM.
+- In GitHub Actions private-runner jobs, the same values come from repo secrets `TEST_DATABASE_URL` and `TEST_SCRATCH_DATABASE_URL`.
+- Do not invent credentials. If you do not have the real app DB user/password in the current environment, run `fast` only or obtain the value from the operator's secure secret source before continuing.
+- There is currently no Yandex Lockbox path for DB test credentials in this repo. Local recovery uses Terraform outputs; CI uses GitHub repo secrets.
+
+Recommended local setup:
+
+```bash
+scripts/dev/write_test_env.sh --mode tunnel
+source .env.test.local
+
+ssh -fNT -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -i ~/.ssh/id_rsa -L 127.0.0.1:15432:10.131.0.28:5432 ubuntu@158.160.187.114
+```
+
 Local shared-db path for ad-hoc work:
 
 ```bash
@@ -87,6 +111,8 @@ scripts/dev/test.sh migration-smoke
 ```
 
 The local shared-db path is useful for operator inspection and small manual iterations, but it is not the canonical CI/deploy gate.
+
+If `QPI_DB_VM_HOST` is set and `TEST_DATABASE_ADMIN_URL` is unset, `scripts/dev/test.sh integration|schema-compat|migration-smoke|all` will automatically use the DB VM SSH reset path. In workstation tunnel mode, that path now supports an SSH proxy through the bot VM via `QPI_DB_VM_SSH_PROXY_HOST`, so you do not need a separate admin DB password in the common operator setup.
 
 Cleanup when local resets fail because of stale sessions:
 

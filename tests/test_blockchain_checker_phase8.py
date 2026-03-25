@@ -350,6 +350,16 @@ async def test_blockchain_checker_happy_path_and_idempotency(
             assert intent_row["status"] == "credited"
             assert intent_row["credited_amount_usdt"] == Decimal("1.300100")
 
+            await cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM system_balance_provisions
+                WHERE event_type = 'expected_deposit_credit'
+                """
+            )
+            provision_row = await cur.fetchone()
+            assert provision_row["count"] == 1
+
 
 @pytest.mark.asyncio
 async def test_blockchain_checker_partial_and_late_go_to_manual_review(
@@ -576,10 +586,18 @@ async def test_blockchain_checker_does_not_advance_cursor_on_page_cap(
         deposit_service=deposit_service,
     )
 
-    result = await checker.run_once()
-    cursor_after = await deposit_service.get_scan_cursor(
+    first = await checker.run_once()
+    cursor_after_first = await deposit_service.get_scan_cursor(
+        source_key=f"tonapi:{shard.shard_id}:EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"
+    )
+    second = await checker.run_once()
+    cursor_after_second = await deposit_service.get_scan_cursor(
         source_key=f"tonapi:{shard.shard_id}:EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"
     )
 
-    assert result.cursor_updated_count == 0
-    assert cursor_after == 0
+    assert first.cursor_updated_count == 1
+    assert cursor_after_first.last_lt == 500
+    assert cursor_after_first.resume_before_lt == 450
+    assert second.cursor_updated_count == 1
+    assert cursor_after_second.last_lt == 500
+    assert cursor_after_second.resume_before_lt is None

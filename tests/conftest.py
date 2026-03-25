@@ -19,7 +19,10 @@ from tests.utils import (
 def test_database_url() -> str:
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
-        pytest.skip("TEST_DATABASE_URL is not set; database integration tests are skipped")
+        pytest.skip(
+            "TEST_DATABASE_URL is not set; database integration tests are skipped "
+            "(normal outside configured DB test environments)"
+        )
     assert_safe_test_database(url)
     return url
 

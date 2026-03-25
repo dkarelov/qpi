@@ -146,14 +146,15 @@ class BlockchainCheckerService:
 
     async def _ingest_shard(self, *, shard_id: int, shard_address: str) -> _IngestResult:
         source_key = f"tonapi:{shard_id}:{self._usdt_jetton_master}"
-        last_lt = await self._deposit_service.get_scan_cursor(source_key=source_key)
+        cursor = await self._deposit_service.get_scan_cursor(source_key=source_key)
+        last_lt = cursor.last_lt
         shard_raw = (await self._tonapi_client.parse_address(account_id=shard_address)).raw_form
 
         ingested_count = 0
         duplicate_count = 0
         skipped_not_incoming_count = 0
         max_lt_seen = last_lt
-        before_lt: int | None = None
+        before_lt = cursor.resume_before_lt
         scan_complete = False
 
         for _ in range(self._max_pages_per_shard):
@@ -169,7 +170,7 @@ class BlockchainCheckerService:
 
             reached_old_cursor = False
             for op in page.operations:
-                if op.lt <= last_lt:
+                if before_lt is None and op.lt <= last_lt:
                     reached_old_cursor = True
                     break
                 if op.operation != "transfer":
@@ -203,32 +204,45 @@ class BlockchainCheckerService:
 
             if reached_old_cursor:
                 scan_complete = True
+                before_lt = None
                 break
             if page.next_from is None:
                 scan_complete = True
+                before_lt = None
                 break
             before_lt = page.next_from
 
-        if scan_complete and max_lt_seen > last_lt:
-            await self._deposit_service.set_scan_cursor(source_key=source_key, last_lt=max_lt_seen)
+        next_last_lt = max(max_lt_seen, cursor.last_lt)
+        next_resume_before_lt = None if scan_complete else before_lt
+        if (
+            next_last_lt != cursor.last_lt
+            or next_resume_before_lt != cursor.resume_before_lt
+        ):
+            await self._deposit_service.set_scan_cursor(
+                source_key=source_key,
+                last_lt=next_last_lt,
+                resume_before_lt=next_resume_before_lt,
+            )
             cursor_updated = True
         else:
             cursor_updated = False
-            if not scan_complete:
-                self._logger.warning(
-                    "blockchain_checker_ingest_incomplete_page_cap",
-                    shard_id=shard_id,
-                    max_pages_per_shard=self._max_pages_per_shard,
-                    last_lt=last_lt,
-                    max_lt_seen=max_lt_seen,
-                    before_lt=before_lt,
-                )
+        if not scan_complete:
+            self._logger.warning(
+                "blockchain_checker_ingest_incomplete_page_cap",
+                shard_id=shard_id,
+                max_pages_per_shard=self._max_pages_per_shard,
+                last_lt=last_lt,
+                max_lt_seen=max_lt_seen,
+                resume_before_lt=before_lt,
+            )
 
         self._logger.info(
             "blockchain_checker_ingest_shard",
             shard_id=shard_id,
             last_lt=last_lt,
             max_lt_seen=max_lt_seen,
+            resume_before_lt=cursor.resume_before_lt,
+            next_resume_before_lt=next_resume_before_lt,
             ingested_count=ingested_count,
             duplicate_count=duplicate_count,
             skipped_not_incoming_count=skipped_not_incoming_count,

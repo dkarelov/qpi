@@ -267,6 +267,36 @@ async def test_saved_shops_are_persistent_and_ordered_by_last_opened(db_pool) ->
 
 
 @pytest.mark.asyncio
+async def test_saved_shop_removal_is_blocked_while_buyer_has_unfinished_purchase(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="saved-shop-blocked",
+        wb_product_id=7017,
+        reward_usdt=Decimal("2.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=820550, username="buyer_saved_blocked")
+
+    await buyer_service.touch_saved_shop(
+        buyer_user_id=buyer.user_id,
+        shop_id=fixture["shop_id"],
+    )
+    await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:saved-shop-blocked",
+    )
+
+    with pytest.raises(InvalidStateError, match="unfinished purchase"):
+        await buyer_service.remove_saved_shop(
+            buyer_user_id=buyer.user_id,
+            shop_id=fixture["shop_id"],
+        )
+
+
+@pytest.mark.asyncio
 async def test_saved_shops_hide_deleted_shops(db_pool) -> None:
     buyer_service = BuyerService(db_pool)
     buyer = await buyer_service.bootstrap_buyer(telegram_id=820600, username="buyer_saved_deleted")
@@ -656,7 +686,7 @@ async def test_buyer_can_cancel_reserved_assignment_and_release_funds(db_pool) -
                 (reservation.assignment_id,),
             )
             assignment = await cur.fetchone()
-            assert assignment["status"] == "expired_2h"
+            assert assignment["status"] == "buyer_cancelled"
 
             await cur.execute(
                 "SELECT available_slots FROM listings WHERE id = %s",

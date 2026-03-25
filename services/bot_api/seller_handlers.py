@@ -7,9 +7,11 @@ from libs.domain.errors import (
     DomainError,
     InsufficientFundsError,
     InvalidStateError,
+    ListingValidationError,
     NotFoundError,
 )
 from libs.domain.seller import SellerService
+from libs.domain.seller_workflow import SellerWorkflowService
 from libs.integrations.wb import WbPingClient
 from libs.security.token_cipher import encrypt_token
 
@@ -30,8 +32,10 @@ class SellerCommandProcessor:
         wb_ping_client: WbPingClient,
         token_cipher_key: str,
         bot_username: str,
+        seller_workflow_service: SellerWorkflowService | None = None,
     ) -> None:
         self._seller_service = seller_service
+        self._seller_workflow_service = seller_workflow_service
         self._wb_ping_client = wb_ping_client
         self._token_cipher_key = token_cipher_key
         self._bot_username = bot_username.lstrip("@")
@@ -239,11 +243,18 @@ class SellerCommandProcessor:
                     if len(tokens) > 1
                     else f"listing-activate:{seller_user_id}:{listing_id}"
                 )
-                result = await self._seller_service.activate_listing(
-                    seller_user_id=seller_user_id,
-                    listing_id=listing_id,
-                    idempotency_key=idempotency_key,
-                )
+                if self._seller_workflow_service is None:
+                    result = await self._seller_service.activate_listing(
+                        seller_user_id=seller_user_id,
+                        listing_id=listing_id,
+                        idempotency_key=idempotency_key,
+                    )
+                else:
+                    result = await self._seller_workflow_service.activate_listing(
+                        seller_user_id=seller_user_id,
+                        listing_id=listing_id,
+                        idempotency_key=idempotency_key,
+                    )
                 if not result.changed:
                     return SellerCommandResponse(text="Листинг уже активен.")
                 return SellerCommandResponse(text="Листинг активирован, обеспечение заблокировано.")
@@ -271,10 +282,16 @@ class SellerCommandProcessor:
                         text="Использование: /listing_unpause <listing_id>"
                     )
                 listing_id = int(args)
-                result = await self._seller_service.unpause_listing(
-                    seller_user_id=seller_user_id,
-                    listing_id=listing_id,
-                )
+                if self._seller_workflow_service is None:
+                    result = await self._seller_service.unpause_listing(
+                        seller_user_id=seller_user_id,
+                        listing_id=listing_id,
+                    )
+                else:
+                    result = await self._seller_workflow_service.unpause_listing(
+                        seller_user_id=seller_user_id,
+                        listing_id=listing_id,
+                    )
                 if not result.changed:
                     return SellerCommandResponse(text="Листинг уже активен.")
                 return SellerCommandResponse(text="Листинг снят с паузы и активен.")
@@ -329,6 +346,8 @@ class SellerCommandProcessor:
             return SellerCommandResponse(text=f"Не найдено: {exc}")
         except InsufficientFundsError:
             return SellerCommandResponse(text="Недостаточно средств для операции.")
+        except ListingValidationError as exc:
+            return SellerCommandResponse(text=str(exc))
         except InvalidStateError as exc:
             return SellerCommandResponse(text=f"Операция недоступна: {exc}")
         except DomainError as exc:

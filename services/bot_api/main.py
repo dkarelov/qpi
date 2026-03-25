@@ -7,7 +7,9 @@ from libs.config.settings import get_bot_api_settings
 from libs.db.pool import DatabasePool
 from libs.domain.buyer import BuyerService
 from libs.domain.seller import SellerService
+from libs.domain.seller_workflow import SellerWorkflowService
 from libs.integrations.wb import WbPingClient
+from libs.integrations.wb_public import WbPublicCatalogClient
 from libs.logging.setup import configure_logging, get_logger
 from services.bot_api.buyer_handlers import BuyerCommandProcessor
 from services.bot_api.seller_handlers import SellerCommandProcessor
@@ -49,8 +51,18 @@ async def run_service(
                 max_requests=settings.wb_ping_rate_limit_count,
                 window_seconds=settings.wb_ping_rate_limit_window_seconds,
             )
+            seller_workflow_service = SellerWorkflowService(
+                seller_service=seller_service,
+                wb_public_client=WbPublicCatalogClient(
+                    content_timeout_seconds=settings.wb_content_timeout_seconds,
+                    orders_timeout_seconds=settings.wb_orders_timeout_seconds,
+                    orders_lookback_days=settings.wb_orders_lookback_days,
+                ),
+                token_cipher_key=settings.token_cipher_key,
+            )
             processor = SellerCommandProcessor(
                 seller_service=seller_service,
+                seller_workflow_service=seller_workflow_service,
                 wb_ping_client=wb_ping_client,
                 token_cipher_key=settings.token_cipher_key,
                 bot_username=settings.telegram_bot_username,

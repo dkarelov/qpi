@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 
 from psycopg import AsyncConnection
@@ -22,8 +23,15 @@ from libs.domain.models import (
     SellerDepositIntentView,
 )
 from libs.domain.notifications import NotificationService
+from libs.logging.setup import EventLogger, get_logger
 
 _ACTIVE_SUFFIX_STATUSES = ("pending", "matched", "manual_review")
+
+
+@dataclass(frozen=True)
+class _ScanCursor:
+    last_lt: int
+    resume_before_lt: int | None
 
 
 class DepositIntentService:
@@ -35,6 +43,7 @@ class DepositIntentService:
         *,
         invoice_ttl_hours: int = 24,
         finance_service: FinanceService | None = None,
+        logger: EventLogger | None = None,
     ) -> None:
         if invoice_ttl_hours < 1:
             raise ValueError("invoice_ttl_hours must be >= 1")
@@ -42,6 +51,7 @@ class DepositIntentService:
         self._invoice_ttl_hours = invoice_ttl_hours
         self._finance = finance_service or FinanceService(pool)
         self._notifications = NotificationService(pool)
+        self._logger = logger or get_logger(__name__)
 
     async def ensure_default_shard(
         self,
@@ -198,6 +208,15 @@ class DepositIntentService:
                     (shard_id, list(_ACTIVE_SUFFIX_STATUSES)),
                 )
                 busy_suffixes = {int(row["suffix_code"]) for row in await cur.fetchall()}
+                remaining_suffixes = 999 - len(busy_suffixes)
+                if remaining_suffixes <= 50:
+                    self._logger.warning(
+                        "deposit_intent_suffix_pressure",
+                        shard_id=shard_id,
+                        seller_user_id=seller_user_id,
+                        active_suffixes_count=len(busy_suffixes),
+                        remaining_suffixes=remaining_suffixes,
+                    )
                 suffix_code = _allocate_suffix(busy_suffixes)
                 if suffix_code is None:
                     raise InvalidStateError("all 999 suffixes are currently occupied")
@@ -327,12 +346,12 @@ class DepositIntentService:
 
         return await run_in_transaction(self._pool, operation)
 
-    async def get_scan_cursor(self, *, source_key: str) -> int:
-        async def operation(conn: AsyncConnection) -> int:
+    async def get_scan_cursor(self, *, source_key: str) -> _ScanCursor:
+        async def operation(conn: AsyncConnection) -> _ScanCursor:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
-                    SELECT last_lt
+                    SELECT last_lt, resume_before_lt
                     FROM chain_scan_cursors
                     WHERE source_key = %s
                     """,
@@ -340,24 +359,38 @@ class DepositIntentService:
                 )
                 row = await cur.fetchone()
                 if row is None:
-                    return 0
-                return int(row["last_lt"])
+                    return _ScanCursor(last_lt=0, resume_before_lt=None)
+                return _ScanCursor(
+                    last_lt=int(row["last_lt"]),
+                    resume_before_lt=(
+                        int(row["resume_before_lt"])
+                        if row["resume_before_lt"] is not None
+                        else None
+                    ),
+                )
 
         return await run_in_transaction(self._pool, operation, read_only=True)
 
-    async def set_scan_cursor(self, *, source_key: str, last_lt: int) -> None:
+    async def set_scan_cursor(
+        self,
+        *,
+        source_key: str,
+        last_lt: int,
+        resume_before_lt: int | None = None,
+    ) -> None:
         async def operation(conn: AsyncConnection) -> None:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    INSERT INTO chain_scan_cursors (source_key, last_lt)
-                    VALUES (%s, %s)
+                    INSERT INTO chain_scan_cursors (source_key, last_lt, resume_before_lt)
+                    VALUES (%s, %s, %s)
                     ON CONFLICT (source_key)
                     DO UPDATE SET
                         last_lt = EXCLUDED.last_lt,
+                        resume_before_lt = EXCLUDED.resume_before_lt,
                         updated_at = timezone('utc', now())
                     """,
-                    (source_key, last_lt),
+                    (source_key, last_lt, resume_before_lt),
                 )
 
         await run_in_transaction(self._pool, operation)
@@ -755,16 +788,26 @@ class DepositIntentService:
                     )
 
                 amount = _normalize_amount(tx["amount_usdt"])
-                system_payout_account_id = await self._finance._ensure_system_account(
+                system_payout_account_id = await self._finance.ensure_system_account_locked(
                     cur,
                     account_kind="system_payout",
                 )
-                await self._finance._provision_system_balance_locked(
+                await self._finance.provision_system_balance_locked(
                     cur,
                     account_id=system_payout_account_id,
                     amount_usdt=amount,
+                    event_type="expected_deposit_credit",
+                    idempotency_key=f"{idempotency_key}:provision",
+                    metadata={
+                        "deposit_intent_id": deposit_intent_id,
+                        "chain_tx_id": chain_tx_id,
+                        "tx_hash": tx["tx_hash"],
+                        "seller_user_id": intent["seller_user_id"],
+                        "target_account_id": intent["target_account_id"],
+                        "amount_usdt": str(amount),
+                    },
                 )
-                transfer = await self._finance._transfer_locked(
+                transfer = await self._finance.transfer_locked(
                     cur,
                     from_account_id=system_payout_account_id,
                     to_account_id=intent["target_account_id"],
@@ -811,7 +854,7 @@ class DepositIntentService:
                 )
 
                 if admin_user_id is not None:
-                    await self._finance._insert_admin_audit(
+                    await self._finance.insert_admin_audit_locked(
                         cur,
                         admin_user_id=admin_user_id,
                         action="deposit_intent_attach_and_credit",
@@ -879,7 +922,7 @@ class DepositIntentService:
                     """,
                     (normalized_reason, deposit_intent_id),
                 )
-                await self._finance._insert_admin_audit(
+                await self._finance.insert_admin_audit_locked(
                     cur,
                     admin_user_id=admin_user_id,
                     action="deposit_intent_cancelled",
@@ -1027,25 +1070,11 @@ class DepositIntentService:
             raise NotFoundError(f"seller user {seller_user_id} not found")
 
     async def _ensure_owner_account(self, cur, *, owner_user_id: int, account_kind: str) -> int:
-        account_code = f"user:{owner_user_id}:{account_kind}"
-        await cur.execute(
-            """
-            INSERT INTO accounts (
-                owner_user_id,
-                account_code,
-                account_kind
-            )
-            VALUES (%s, %s, %s)
-            ON CONFLICT (account_code)
-            DO UPDATE SET
-                owner_user_id = EXCLUDED.owner_user_id,
-                updated_at = timezone('utc', now())
-            RETURNING id
-            """,
-            (owner_user_id, account_code, account_kind),
+        return await self._finance.ensure_owner_account_locked(
+            cur,
+            owner_user_id=owner_user_id,
+            account_kind=account_kind,
         )
-        row = await cur.fetchone()
-        return row["id"]
 
 
 def derive_suffix_code(amount_usdt: Decimal) -> int | None:

@@ -34,8 +34,15 @@ from libs.domain.models import (
 )
 from libs.domain.notifications import NotificationService
 
-_ASSIGNMENT_PAYLOAD_ALLOWED_STATES = {"reserved", "order_submitted", "order_verified"}
+_ACTIVE_ASSIGNMENT_STATES = (
+    "reserved",
+    "order_verified",
+    "picked_up_wait_unlock",
+    "withdraw_sent",
+)
+_ASSIGNMENT_PAYLOAD_ALLOWED_STATES = {"reserved", "order_verified"}
 _RESERVATION_EXPIRED_STATUS = "expired_2h"
+_BUYER_CANCELLED_STATUS = "buyer_cancelled"
 _RESERVATION_TIMEOUT_IDEMPOTENCY_PREFIX = "reservation-expire"
 _PURCHASE_PAYLOAD_VERSION = 2
 
@@ -184,7 +191,6 @@ class BuyerService:
                               AND ax.status = ANY (
                                     ARRAY[
                                         'reserved'::text,
-                                        'order_submitted'::text,
                                         'order_verified'::text,
                                         'picked_up_wait_unlock'::text,
                                         'withdraw_sent'::text
@@ -325,7 +331,6 @@ class BuyerService:
                                       AND ax.status = ANY (
                                             ARRAY[
                                                 'reserved'::text,
-                                                'order_submitted'::text,
                                                 'order_verified'::text,
                                                 'picked_up_wait_unlock'::text,
                                                 'withdraw_sent'::text
@@ -405,6 +410,27 @@ class BuyerService:
     ) -> StatusChangeResult:
         async def operation(conn: AsyncConnection) -> StatusChangeResult:
             async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT 1
+                    FROM assignments a
+                    JOIN listings l ON l.id = a.listing_id
+                    WHERE a.buyer_user_id = %s
+                      AND l.shop_id = %s
+                      AND a.status = ANY(%s)
+                    LIMIT 1
+                    """,
+                    (
+                        buyer_user_id,
+                        shop_id,
+                        ["reserved", "order_verified", "picked_up_wait_unlock"],
+                    ),
+                )
+                if await cur.fetchone() is not None:
+                    raise InvalidStateError(
+                        "saved shop cannot be removed while buyer has unfinished purchase there"
+                    )
+
                 await cur.execute(
                     """
                     DELETE FROM buyer_saved_shops
@@ -521,7 +547,7 @@ class BuyerService:
                 now_row = await cur.fetchone()
                 current_time = now_row["current_time"]
                 if (
-                    assignment["status"] in {"reserved", "order_submitted"}
+                    assignment["status"] == "reserved"
                     and assignment["reservation_expires_at"] <= current_time
                 ):
                     raise InvalidStateError("reservation window has expired")
@@ -762,9 +788,9 @@ class BuyerService:
                 if assignment is None or assignment["buyer_user_id"] != buyer_user_id:
                     raise NotFoundError(f"assignment {assignment_id} not found for buyer")
 
-                if assignment["status"] == _RESERVATION_EXPIRED_STATUS:
+                if assignment["status"] in {_RESERVATION_EXPIRED_STATUS, _BUYER_CANCELLED_STATUS}:
                     return {"changed": False}
-                if assignment["status"] not in {"reserved", "order_submitted"}:
+                if assignment["status"] != "reserved":
                     raise InvalidStateError("assignment cannot be cancelled in current state")
 
                 await cur.execute(
@@ -793,7 +819,7 @@ class BuyerService:
         )
         return await self._finance_service.cancel_assignment_reservation(
             assignment_id=assignment_id,
-            new_status=_RESERVATION_EXPIRED_STATUS,
+            new_status=_BUYER_CANCELLED_STATUS,
             seller_collateral_account_id=int(cancellation["seller_collateral_account_id"]),
             reward_reserved_account_id=reward_reserved_account_id,
             idempotency_key=idempotency_key,
@@ -912,7 +938,6 @@ class BuyerService:
                           AND a.status = ANY (
                                 ARRAY[
                                     'reserved'::text,
-                                    'order_submitted'::text,
                                     'order_verified'::text,
                                     'picked_up_wait_unlock'::text,
                                     'withdraw_sent'::text
@@ -934,51 +959,20 @@ class BuyerService:
         return await run_in_transaction(self._pool, operation)
 
     async def _ensure_system_account_id(self, *, account_kind: str) -> int:
-        async def operation(conn: AsyncConnection) -> int:
-            async with conn.cursor(row_factory=dict_row) as cur:
-                return await self._ensure_system_account(cur, account_kind=account_kind)
-
-        return await run_in_transaction(self._pool, operation)
+        return await self._finance_service.ensure_system_account_id(account_kind=account_kind)
 
     async def _ensure_owner_account(self, cur, *, owner_user_id: int, account_kind: str) -> int:
-        account_code = f"user:{owner_user_id}:{account_kind}"
-        await cur.execute(
-            """
-            INSERT INTO accounts (
-                owner_user_id,
-                account_code,
-                account_kind
-            )
-            VALUES (%s, %s, %s)
-            ON CONFLICT (account_code)
-            DO UPDATE SET
-                owner_user_id = EXCLUDED.owner_user_id,
-                updated_at = timezone('utc', now())
-            RETURNING id
-            """,
-            (owner_user_id, account_code, account_kind),
+        return await self._finance_service.ensure_owner_account_locked(
+            cur,
+            owner_user_id=owner_user_id,
+            account_kind=account_kind,
         )
-        row = await cur.fetchone()
-        return row["id"]
 
     async def _ensure_system_account(self, cur, *, account_kind: str) -> int:
-        account_code = f"system:{account_kind}"
-        await cur.execute(
-            """
-            INSERT INTO accounts (
-                owner_user_id,
-                account_code,
-                account_kind
-            )
-            VALUES (NULL, %s, %s)
-            ON CONFLICT (account_code)
-            DO UPDATE SET updated_at = timezone('utc', now())
-            RETURNING id
-            """,
-            (account_code, account_kind),
+        return await self._finance_service.ensure_system_account_locked(
+            cur,
+            account_kind=account_kind,
         )
-        row = await cur.fetchone()
-        return row["id"]
 
 
 def decode_purchase_payload(payload_base64: str) -> DecodedPurchasePayload:

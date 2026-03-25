@@ -10,7 +10,6 @@ from libs.db.psqldef import normalize_database_url
 
 _ACTIVE_ASSIGNMENT_STATUSES = (
     "reserved",
-    "order_submitted",
     "order_verified",
     "picked_up_wait_unlock",
     "withdraw_sent",
@@ -189,6 +188,41 @@ def _ensure_accounts_account_kinds(cur: psycopg.Cursor) -> None:
     )
 
 
+def _ensure_system_balance_provisions(cur: psycopg.Cursor) -> None:
+    if not _table_exists(cur, table_name="accounts"):
+        return
+    if _table_exists(cur, table_name="system_balance_provisions"):
+        return
+
+    cur.execute(
+        """
+        CREATE TABLE public.system_balance_provisions (
+            id bigserial PRIMARY KEY,
+            account_id bigint NOT NULL REFERENCES public.accounts (id),
+            amount_usdt numeric(20,6) NOT NULL CHECK (amount_usdt > 0),
+            event_type text NOT NULL,
+            metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+            idempotency_key text NOT NULL UNIQUE,
+            created_at timestamptz NOT NULL DEFAULT timezone('utc', now())
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX idx_system_balance_provisions_account_id
+        ON public.system_balance_provisions USING btree (account_id, created_at DESC)
+        """
+    )
+
+
+def _ensure_chain_scan_cursor_resume_column(cur: psycopg.Cursor) -> None:
+    if not _table_exists(cur, table_name="chain_scan_cursors"):
+        return
+    if _column_exists(cur, table_name="chain_scan_cursors", column_name="resume_before_lt"):
+        return
+    cur.execute("ALTER TABLE public.chain_scan_cursors ADD COLUMN resume_before_lt bigint")
+
+
 def _ensure_listing_metadata_columns(cur: psycopg.Cursor) -> None:
     if not _table_exists(cur, table_name="listings"):
         return
@@ -310,7 +344,8 @@ def _ensure_assignments_wb_product_id(cur: psycopg.Cursor) -> None:
     if active_index_def is not None:
         normalized_def = active_index_def.lower()
         if (
-            "eligible_for_withdrawal" in normalized_def
+            "order_submitted" in normalized_def
+            or "eligible_for_withdrawal" in normalized_def
             or "withdraw_pending_admin" in normalized_def
         ):
             cur.execute("DROP INDEX public.uq_assignments_buyer_product_active")
@@ -325,7 +360,6 @@ def _ensure_assignments_wb_product_id(cur: psycopg.Cursor) -> None:
                 status = ANY (
                     ARRAY[
                         'reserved'::text,
-                        'order_submitted'::text,
                         'order_verified'::text,
                         'picked_up_wait_unlock'::text,
                         'withdraw_sent'::text
@@ -487,6 +521,14 @@ def _normalize_withdrawal_and_assignment_statuses(cur: psycopg.Cursor) -> None:
         cur.execute(
             """
             UPDATE public.assignments
+            SET status = 'order_verified',
+                updated_at = timezone('utc', now())
+            WHERE status = 'order_submitted'
+            """
+        )
+        cur.execute(
+            """
+            UPDATE public.assignments
             SET status = 'withdraw_sent',
                 updated_at = timezone('utc', now())
             WHERE status = ANY (
@@ -555,6 +597,8 @@ def apply_runtime_schema_compatibility(database_url: str) -> None:
     with psycopg.connect(normalized_database_url) as conn:
         with conn.cursor() as cur:
             _ensure_accounts_account_kinds(cur)
+            _ensure_system_balance_provisions(cur)
+            _ensure_chain_scan_cursor_resume_column(cur)
             _ensure_user_capability_columns(cur)
             _ensure_listing_metadata_columns(cur)
             _ensure_token_invalidation_sources(cur)

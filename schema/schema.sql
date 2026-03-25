@@ -34,12 +34,29 @@ ALTER TABLE ONLY "public"."admin_audit_actions" ADD CONSTRAINT "admin_audit_acti
 
 ALTER TABLE "public"."admin_audit_actions" ADD CONSTRAINT "admin_audit_actions_idempotency_key_key" UNIQUE (idempotency_key);
 
+CREATE TABLE "public"."system_balance_provisions" (
+    "id" bigserial NOT NULL,
+    "account_id" bigint NOT NULL,
+    "amount_usdt" numeric(20,6) NOT NULL CONSTRAINT system_balance_provisions_amount_usdt_check CHECK (amount_usdt > 0::numeric),
+    "event_type" text NOT NULL,
+    "metadata_json" jsonb NOT NULL DEFAULT '{}'::jsonb,
+    "idempotency_key" text NOT NULL,
+    "created_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    CONSTRAINT system_balance_provisions_pkey PRIMARY KEY ("id")
+);
+
+CREATE INDEX idx_system_balance_provisions_account_id ON public.system_balance_provisions USING btree (account_id, created_at DESC);
+
+ALTER TABLE ONLY "public"."system_balance_provisions" ADD CONSTRAINT "system_balance_provisions_account_id_fkey" FOREIGN KEY ("account_id") REFERENCES "public"."accounts" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE "public"."system_balance_provisions" ADD CONSTRAINT "system_balance_provisions_idempotency_key_key" UNIQUE (idempotency_key);
+
 CREATE TABLE "public"."assignments" (
     "id" bigserial NOT NULL,
     "listing_id" bigint NOT NULL,
     "buyer_user_id" bigint NOT NULL,
     "wb_product_id" bigint NOT NULL,
-    "status" text NOT NULL CONSTRAINT assignments_status_check CHECK (status = ANY (ARRAY['reserved'::text, 'order_submitted'::text, 'order_verified'::text, 'picked_up_wait_unlock'::text, 'withdraw_sent'::text, 'expired_2h'::text, 'wb_invalid'::text, 'returned_within_14d'::text, 'delivery_expired'::text])),
+    "status" text NOT NULL CONSTRAINT assignments_status_check CHECK (status = ANY (ARRAY['reserved'::text, 'order_verified'::text, 'picked_up_wait_unlock'::text, 'withdraw_sent'::text, 'expired_2h'::text, 'buyer_cancelled'::text, 'wb_invalid'::text, 'returned_within_14d'::text, 'delivery_expired'::text])),
     "reward_usdt" numeric(20,6) NOT NULL CONSTRAINT assignments_reward_usdt_check CHECK (reward_usdt > 0::numeric),
     "reservation_expires_at" timestamp with time zone NOT NULL,
     "order_id" text,
@@ -68,7 +85,7 @@ CREATE INDEX idx_assignments_unlock_due ON public.assignments USING btree (unloc
 
 CREATE UNIQUE INDEX uq_assignments_order_id ON public.assignments USING btree (order_id) WHERE (order_id IS NOT NULL);
 
-CREATE UNIQUE INDEX uq_assignments_buyer_product_active ON public.assignments USING btree (buyer_user_id, wb_product_id) WHERE (status = ANY (ARRAY['reserved'::text, 'order_submitted'::text, 'order_verified'::text, 'picked_up_wait_unlock'::text, 'withdraw_sent'::text]));
+CREATE UNIQUE INDEX uq_assignments_buyer_product_active ON public.assignments USING btree (buyer_user_id, wb_product_id) WHERE (status = ANY (ARRAY['reserved'::text, 'order_verified'::text, 'picked_up_wait_unlock'::text, 'withdraw_sent'::text]));
 
 ALTER TABLE ONLY "public"."assignments" ADD CONSTRAINT "assignments_buyer_user_id_fkey" FOREIGN KEY ("buyer_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 
@@ -344,6 +361,7 @@ ALTER TABLE "public"."deposit_shards" ADD CONSTRAINT "deposit_shards_deposit_add
 CREATE TABLE "public"."chain_scan_cursors" (
     "source_key" text NOT NULL,
     "last_lt" bigint NOT NULL DEFAULT 0,
+    "resume_before_lt" bigint,
     "updated_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
     CONSTRAINT chain_scan_cursors_pkey PRIMARY KEY ("source_key")
 );

@@ -26,7 +26,10 @@ def replace_db(url: str, dbname: str) -> str:
 
 test_url = os.environ.get("TEST_DATABASE_URL", "").strip()
 if not test_url:
-    raise SystemExit("TEST_DATABASE_URL must point at qpi_test before kill-stuck-tests.sh can run.")
+    raise SystemExit(
+        "TEST_DATABASE_URL is unset. kill-stuck-tests.sh needs the same real disposable test DB URL as the DB-backed suites. "
+        "Do not invent credentials."
+    )
 
 test_url = normalize(test_url)
 parsed = urlparse(test_url)

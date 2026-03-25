@@ -28,7 +28,11 @@ def replace_db(url: str, dbname: str) -> str:
 
 test_url = os.environ.get("TEST_DATABASE_URL", "").strip()
 if not test_url:
-    raise SystemExit("TEST_DATABASE_URL must point at qpi_test before reset_remote_test_dbs.sh can run.")
+    raise SystemExit(
+        "TEST_DATABASE_URL is unset. reset_remote_test_dbs.sh needs a real disposable test DB URL, "
+        "typically postgresql://<app-user>:<password>@10.131.0.28:5432/qpi_test on the private-runner path. "
+        "Do not invent credentials."
+    )
 
 test_url = normalize(test_url)
 parsed = urlparse(test_url)
@@ -57,6 +61,8 @@ require_env() {
     exit 1
   fi
 }
+
+proxy_ssh_args=()
 
 prepare_ssh_key() {
   local key_source
@@ -104,9 +110,24 @@ quote_ident() {
 require_env "QPI_DB_VM_HOST"
 QPI_DB_VM_SSH_USER="${QPI_DB_VM_SSH_USER:-ubuntu}"
 QPI_DB_VM_SSH_PORT="${QPI_DB_VM_SSH_PORT:-22}"
+QPI_DB_VM_SSH_PROXY_HOST="${QPI_DB_VM_SSH_PROXY_HOST:-}"
+QPI_DB_VM_SSH_PROXY_USER="${QPI_DB_VM_SSH_PROXY_USER:-ubuntu}"
+QPI_DB_VM_SSH_PROXY_PORT="${QPI_DB_VM_SSH_PROXY_PORT:-22}"
 
 eval "$(resolve_db_context)"
 prepare_ssh_key
+
+if [[ -n "${QPI_DB_VM_SSH_PROXY_HOST}" ]]; then
+  proxy_command="$(
+    printf \
+      'ssh -p %q -i %q -o StrictHostKeyChecking=accept-new -W %%h:%%p %q@%q' \
+      "${QPI_DB_VM_SSH_PROXY_PORT}" \
+      "${ssh_key_path}" \
+      "${QPI_DB_VM_SSH_PROXY_USER}" \
+      "${QPI_DB_VM_SSH_PROXY_HOST}"
+  )"
+  proxy_ssh_args=(-o "ProxyCommand=${proxy_command}")
+fi
 
 test_db_ident="$(quote_ident "${TEST_DB_NAME}")"
 test_db_user_ident="$(quote_ident "${TEST_DB_USER}")"
@@ -116,6 +137,7 @@ ssh \
   -p "${QPI_DB_VM_SSH_PORT}" \
   -i "${ssh_key_path}" \
   -o StrictHostKeyChecking=accept-new \
+  "${proxy_ssh_args[@]}" \
   "${QPI_DB_VM_SSH_USER}@${QPI_DB_VM_HOST}" \
   "sudo -u postgres psql -v ON_ERROR_STOP=1 postgres <<'SQL'
 DROP DATABASE IF EXISTS ${scratch_db_ident} WITH (FORCE);

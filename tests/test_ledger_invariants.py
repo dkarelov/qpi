@@ -650,3 +650,13 @@ async def test_manual_deposit_credit_is_idempotent_and_audited(db_pool) -> None:
             )
             audit_count = await cur.fetchone()
             assert audit_count["count"] == 1
+
+            await cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM system_balance_provisions
+                WHERE event_type = 'manual_deposit_credit'
+                """
+            )
+            provision_count = await cur.fetchone()
+            assert provision_count["count"] == 1

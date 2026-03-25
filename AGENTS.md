@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-03-25 UTC
+Last updated: 2026-03-26 UTC
 
 ## 1. Documentation Policy
 
@@ -66,6 +66,7 @@ Runtime services:
 Shared layers:
 
 - `libs/domain/*`: transactional domain services (plain SQL).
+- `libs/domain/seller_workflow.py`: backend seller activation/unpause facade that performs live WB product checks before mutating listing state.
 - `libs/integrations/*`: WB/TonAPI/FX clients.
 - `libs/config/settings.py`: runtime settings contracts.
 - `libs/logging/setup.py`: YC-compatible structured logging.
@@ -139,7 +140,8 @@ Persistence and schema:
   - `[order_id, ordered_at]`, where `ordered_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
 - Verification token must be submitted within 4 hours of reservation.
 - `order_id` is globally unique (`1 order_id = 1 slot`).
-- Buyer can cancel purchase in pre-submit states (`reserved`, `order_submitted`).
+- Buyer can cancel purchase only while the assignment is still `reserved`.
+- Buyer cancellation is a distinct terminal lifecycle outcome (`buyer_cancelled`), separate from timeout expiry.
 - Validation must happen as early as possible in buyer flows and still be rechecked at final write/transfer time.
 - Buyer can have at most one active withdrawal request at a time.
 - Buyer can cancel their own withdrawal request while it is still pending admin action and then create a new one.
@@ -147,13 +149,13 @@ Persistence and schema:
 - One buyer cannot repeatedly buy the same target item:
   - duplicate reserve attempts are blocked,
   - already-bought item is not treated as a new available task.
+- Buyer cannot remove a saved shop while they still have an unfinished purchase in that shop.
 
 ### 4.3 Assignment lifecycle rules
 
 In-progress states:
 
 - `reserved`
-- `order_submitted`
 - `order_verified`
 - `picked_up_wait_unlock`
 
@@ -164,6 +166,7 @@ Completed visible state:
 Terminal/error states:
 
 - `expired_2h`
+- `buyer_cancelled`
 - `wb_invalid`
 - `returned_within_14d`
 - `delivery_expired`
@@ -171,6 +174,7 @@ Terminal/error states:
 Transitions:
 
 - `reserved -> expired_2h` after 4h without valid verification token (legacy status code name retained).
+- `reserved -> buyer_cancelled` when the buyer explicitly cancels before submitting a verification token.
 - Valid verification token transitions to `order_verified`.
 - WB event `Продажа` transitions to `picked_up_wait_unlock` and sets unlock time `pickup + 15d`.
 - WB event `Возврат` within unlock window transitions to `returned_within_14d`.
@@ -197,6 +201,7 @@ Transitions:
 - External reference for manual deposit is mandatory audit metadata and can be either:
   - free-form reason/comment,
   - tx reference (e.g. `tx:...`).
+- `system_payout` balance provisioning remains an accepted implementation shortcut for externally funded credits, but every such top-up must create an immutable audit record in `system_balance_provisions`.
 
 ### 4.5 Seller top-up auto-confirmation rules (blockchain checker)
 
@@ -463,11 +468,33 @@ uv run python -m services.blockchain_checker.main --once
 
 ### 7.5 Test runbook
 
+DB URL source of truth:
+
+- `scripts/dev/test.sh fast` does not need `TEST_DATABASE_URL` and is the default local path when no DB credentials are present.
+- `scripts/dev/test.sh integration|schema-compat|migration-smoke|all`, `scripts/dev/reset_test_db.sh`, `scripts/dev/reset_remote_test_dbs.sh`, and `scripts/dev/run_db_tests_on_runner.sh` all require a real disposable test DB URL.
+- In a plain local shell, `TEST_DATABASE_URL` is normally unset until the operator exports it intentionally. The repo does not contain or infer DB credentials automatically.
+- The supported local recovery/bootstrap path is `scripts/dev/write_test_env.sh`, which derives the current app DB credentials from local Terraform outputs and writes a gitignored `.env.test.local`.
+- Valid DB-backed patterns are:
+  - local tunnel path: `postgresql://<app-user>:<password>@127.0.0.1:15432/qpi_test`,
+  - private-runner / DB VM path: `postgresql://<app-user>:<password>@10.131.0.28:5432/qpi_test`.
+- In `--mode tunnel`, `scripts/dev/write_test_env.sh` also writes `QPI_DB_VM_HOST` plus `QPI_DB_VM_SSH_PROXY_HOST=<bot-public-ip>` so the DB reset helper can SSH to the private DB VM through the bot VM without requiring a separate DB admin password.
+- In GitHub Actions private-runner jobs, `TEST_DATABASE_URL` and `TEST_SCRATCH_DATABASE_URL` come from repo secrets instead of local shell exports.
+- Never invent DB credentials. If the concrete value is unavailable in the current environment, stop at `fast` or obtain the real app DB credentials from the operator's secure source before running DB-backed suites.
+- There is currently no Yandex Lockbox integration for DB test credentials. The existing recoverable local source is Terraform state / `terraform -chdir=infra output`, and the CI source is GitHub repo secrets.
+
 ```bash
 uv sync --frozen --extra dev
 
 # Fast local feedback (non-DB suites + deterministic harness):
 scripts/dev/test.sh fast
+
+# Write a gitignored local DB test env file from Terraform outputs:
+scripts/dev/write_test_env.sh --mode tunnel
+source .env.test.local
+
+# Create the local SSH tunnel to the remote DB VM:
+ssh -fNT -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -i ~/.ssh/id_rsa -L 127.0.0.1:15432:10.131.0.28:5432 ubuntu@158.160.187.114
 
 # Manual/local shared-db path for ad-hoc work only:
 TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
@@ -504,6 +531,8 @@ Rules:
 - `fast` is the only suite that should normally run on a GitHub-hosted runner.
 - Full DB-backed validation should run on the dedicated private self-hosted runner, not over the workstation tunnel.
 - `qpi_test` and `qpi_test_scratch` are disposable and must be recreated before DB-backed runs.
+- When `QPI_DB_VM_HOST` is set and `TEST_DATABASE_ADMIN_URL` is unset, `scripts/dev/test.sh integration|schema-compat|migration-smoke|all` automatically uses the DB VM SSH reset path instead of requiring a separate local admin DB password.
+- From a workstation, that DB VM SSH reset path requires either direct network reachability to `10.131.0.28` or an SSH proxy host. The supported tunnel-mode bootstrap now writes `QPI_DB_VM_SSH_PROXY_HOST` automatically so the reset helper can hop through the bot VM public IP.
 - `scripts/dev/reset_remote_test_dbs.sh` is the canonical full-suite reprovision path from the private runner to the DB VM admin path.
 - `tests/db_integration_manifest.txt`, `tests/schema_compat_manifest.txt`, and `tests/migration_smoke_manifest.txt` are the source of truth for DB-backed test grouping.
 - `TEST_DATABASE_URL` must include the app DB user because the reset scripts recreate disposable DBs with that user as the database owner; otherwise schema apply fails with `permission denied for schema public`.

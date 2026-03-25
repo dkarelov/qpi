@@ -136,7 +136,11 @@ class BuyerCommandProcessor:
                 assignments = await self._buyer_service.list_buyer_assignments(
                     buyer_user_id=buyer_user_id
                 )
-                assignments = [item for item in assignments if item.status != "expired_2h"]
+                assignments = [
+                    item
+                    for item in assignments
+                    if item.status not in {"expired_2h", "buyer_cancelled"}
+                ]
                 if not assignments:
                     return BuyerCommandResponse(text="У вас пока нет покупок.")
                 lines = []

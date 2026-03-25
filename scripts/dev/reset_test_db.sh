@@ -30,7 +30,11 @@ def replace_db(url: str, dbname: str) -> str:
 
 test_url = os.environ.get("TEST_DATABASE_URL", "").strip()
 if not test_url:
-    raise SystemExit("TEST_DATABASE_URL must point at qpi_test before reset_test_db.sh can run.")
+    raise SystemExit(
+        "TEST_DATABASE_URL is unset. reset_test_db.sh needs a real disposable test DB URL, "
+        "typically postgresql://<app-user>:<password>@127.0.0.1:15432/qpi_test via the local tunnel. "
+        "Do not invent credentials."
+    )
 
 test_url = normalize(test_url)
 parsed = urlparse(test_url)
