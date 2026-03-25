@@ -15,16 +15,20 @@ Required environment:
   TELEGRAM_BOT_TOKEN
   TOKEN_CIPHER_KEY
   BOT_WEBHOOK_SECRET_TOKEN
+  YC_FOLDER_ID
 
 Optional environment:
+  BOT_VM_INSTANCE_GROUP_NAME (default: qpi-bot-ig)
   BOT_VM_SSH_USER (default: ubuntu)
   BOT_VM_SSH_PORT (default: 22)
   BOT_HEALTH_PORT (default: 18080)
-  ADMIN_TELEGRAM_IDS
   BOT_VM_SSH_KEY_PATH (default: ~/.ssh/id_rsa)
   BOT_VM_SSH_PRIVATE_KEY
+  ADMIN_TELEGRAM_IDS
   GH_TOKEN or TOKEN_YC_JSON_LOGGER
   DEPLOY_BASE_SHA / DEPLOY_HEAD_SHA (for schema auto-detection)
+  QPI_ALLOW_DEPLOY_WHEN_UNHEALTHY (default: 0)
+  QPI_DEPLOY_MIN_FREE_MB (default: 2048)
 EOF
 }
 
@@ -41,14 +45,26 @@ require_env() {
   fi
 }
 
+require_command() {
+  local name="$1"
+  if ! command -v "${name}" >/dev/null 2>&1; then
+    echo "Required command not found: ${name}" >&2
+    exit 1
+  fi
+}
+
 require_env "BOT_VM_HOST"
 require_env "TELEGRAM_BOT_TOKEN"
 require_env "TOKEN_CIPHER_KEY"
 require_env "BOT_WEBHOOK_SECRET_TOKEN"
+require_env "YC_FOLDER_ID"
 
+BOT_VM_INSTANCE_GROUP_NAME="${BOT_VM_INSTANCE_GROUP_NAME:-qpi-bot-ig}"
 BOT_VM_SSH_USER="${BOT_VM_SSH_USER:-ubuntu}"
 BOT_VM_SSH_PORT="${BOT_VM_SSH_PORT:-22}"
 BOT_HEALTH_PORT="${BOT_HEALTH_PORT:-18080}"
+QPI_ALLOW_DEPLOY_WHEN_UNHEALTHY="${QPI_ALLOW_DEPLOY_WHEN_UNHEALTHY:-0}"
+QPI_DEPLOY_MIN_FREE_MB="${QPI_DEPLOY_MIN_FREE_MB:-2048}"
 
 resolve_git_token() {
   if [[ -n "${GH_TOKEN:-}" ]]; then
@@ -64,9 +80,6 @@ resolve_git_token() {
     export GH_TOKEN
   fi
 }
-
-resolve_git_token
-require_env "GH_TOKEN"
 
 detect_schema_apply() {
   case "${schema_mode}" in
@@ -123,6 +136,7 @@ prepare_ssh_key() {
       printf '%s' "${BOT_VM_SSH_PRIVATE_KEY}" | base64 -d > "${ssh_key_path}"
     fi
     sed -i 's/\r$//' "${ssh_key_path}"
+    generated_ssh_key=1
   else
     key_source="${BOT_VM_SSH_KEY_PATH:-${HOME}/.ssh/id_rsa}"
     if [[ ! -f "${key_source}" ]]; then
@@ -130,6 +144,7 @@ prepare_ssh_key() {
       exit 1
     fi
     ssh_key_path="${key_source}"
+    generated_ssh_key=0
   fi
   ssh-keygen -y -f "${ssh_key_path}" >/dev/null
 }
@@ -144,11 +159,86 @@ cleanup() {
 }
 trap cleanup EXIT
 
-generated_ssh_key=0
+yc_bot_instance_group_json() {
+  yc compute instance-group list-instances \
+    --folder-id "${YC_FOLDER_ID}" \
+    --name "${BOT_VM_INSTANCE_GROUP_NAME}" \
+    --format json
+}
+
+verify_target_vm() {
+  require_command yc
+  local resolved
+  resolved="$(
+    yc_bot_instance_group_json | python3 -c '
+import json
+import sys
+
+payload = json.load(sys.stdin)
+expected = sys.argv[1]
+
+items = payload.get("instances") or payload.get("items") or payload
+if not isinstance(items, list):
+    items = []
+
+for item in items:
+    addresses = []
+    for interface in item.get("network_interfaces", []) or item.get("networkInterfaces", []) or []:
+        primary = interface.get("primary_v4_address") or interface.get("primaryV4Address") or {}
+        addresses.append(primary.get("address"))
+        nat = primary.get("one_to_one_nat") or primary.get("oneToOneNat") or {}
+        addresses.append(nat.get("address"))
+    addresses = [address for address in addresses if address]
+    if expected in addresses:
+        print(item.get("id", "ok"))
+        break
+' "${BOT_VM_HOST}"
+  )"
+
+  if [[ -z "${resolved}" ]]; then
+    echo "BOT_VM_HOST=${BOT_VM_HOST} is not part of instance group ${BOT_VM_INSTANCE_GROUP_NAME} in folder ${YC_FOLDER_ID}." >&2
+    exit 1
+  fi
+}
+
+remote_exec() {
+  ssh \
+    -p "${BOT_VM_SSH_PORT}" \
+    -i "${ssh_key_path}" \
+    -o StrictHostKeyChecking=accept-new \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3 \
+    "${BOT_VM_SSH_USER}@${BOT_VM_HOST}" \
+    "$@"
+}
+
+remote_output() {
+  remote_exec "$@"
+}
+
+remote_preflight() {
+  before_release_target="$(remote_output "readlink -f /opt/qpi/current || true")"
+  before_service_state="$(remote_output "systemctl is-active qpi-bot.service || true")"
+  free_mb="$(remote_output "df -Pm /opt/qpi/releases | awk 'NR==2 {print \$4}'")"
+
+  if [[ -z "${free_mb}" || "${free_mb}" -lt "${QPI_DEPLOY_MIN_FREE_MB}" ]]; then
+    echo "Refusing deploy: only ${free_mb:-0} MB free under /opt/qpi/releases; need at least ${QPI_DEPLOY_MIN_FREE_MB} MB." >&2
+    exit 1
+  fi
+
+  before_health_payload="$(remote_output "curl -fsS http://127.0.0.1:${BOT_HEALTH_PORT}/healthz || true")"
+
+  if [[ "${before_service_state}" != "active" && "${QPI_ALLOW_DEPLOY_WHEN_UNHEALTHY}" != "1" ]]; then
+    echo "Refusing deploy: qpi-bot.service is '${before_service_state}'. Set QPI_ALLOW_DEPLOY_WHEN_UNHEALTHY=1 for intentional recovery deploys." >&2
+    exit 1
+  fi
+}
+
+resolve_git_token
+require_env "GH_TOKEN"
 prepare_ssh_key
-if [[ -n "${BOT_VM_SSH_PRIVATE_KEY:-}" ]]; then
-  generated_ssh_key=1
-fi
+verify_target_vm
+remote_preflight
 
 mkdir -p "${artifacts_dir}"
 release_stamp="$(date -u +%Y%m%d%H%M%S)"
@@ -204,7 +294,9 @@ scp -P "${BOT_VM_SSH_PORT}" -i "${ssh_key_path}" \
   "${rollout_env}" \
   "${BOT_VM_SSH_USER}@${BOT_VM_HOST}:/tmp/qpi-rollout.env"
 
+schema_apply_decision="skipped"
 if detect_schema_apply; then
+  schema_apply_decision="applied"
   if ! command -v psqldef >/dev/null 2>&1; then
     echo "psqldef must be installed locally before runtime deploys that apply schema." >&2
     exit 1
@@ -215,29 +307,25 @@ if detect_schema_apply; then
     "${BOT_VM_SSH_USER}@${BOT_VM_HOST}:/tmp/"
 fi
 
-ssh -p "${BOT_VM_SSH_PORT}" -i "${ssh_key_path}" \
-  "${BOT_VM_SSH_USER}@${BOT_VM_HOST}" \
+remote_exec \
   "sudo python3 /tmp/merge_bot_env.py \
     --base /etc/qpi/bot.env \
     --overrides /tmp/qpi-bot-overrides.env && \
    sudo chown root:${BOT_VM_SSH_USER} /etc/qpi/bot.env && \
    sudo chmod 0640 /etc/qpi/bot.env"
 
-if detect_schema_apply; then
-  ssh -p "${BOT_VM_SSH_PORT}" -i "${ssh_key_path}" \
-    "${BOT_VM_SSH_USER}@${BOT_VM_HOST}" \
+if [[ "${schema_apply_decision}" == "applied" ]]; then
+  remote_exec \
     "chmod +x /tmp/psqldef /tmp/remote_apply_schema.sh && \
      /tmp/remote_apply_schema.sh '${release_id}' '/tmp/$(basename "${archive_path}")'"
 fi
 
-ssh -p "${BOT_VM_SSH_PORT}" -i "${ssh_key_path}" \
-  "${BOT_VM_SSH_USER}@${BOT_VM_HOST}" \
+remote_exec \
   "set -a && source /tmp/qpi-rollout.env && set +a && \
    chmod +x /tmp/remote_rollout_bot.sh && \
    /tmp/remote_rollout_bot.sh '${release_id}' '/tmp/$(basename "${archive_path}")' '${BOT_HEALTH_PORT}'"
 
-ssh -p "${BOT_VM_SSH_PORT}" -i "${ssh_key_path}" \
-  "${BOT_VM_SSH_USER}@${BOT_VM_HOST}" \
+remote_exec \
   "set -a && source /etc/qpi/bot.env && set +a && \
    cd /opt/qpi/current && \
    ./.venv/bin/python -m services.bot_api.main \
@@ -248,3 +336,19 @@ ssh -p "${BOT_VM_SSH_PORT}" -i "${ssh_key_path}" \
      --buyer-command '/start' \
      --telegram-id 910002 \
      --telegram-username deploy_smoke_buyer"
+
+after_release_target="$(remote_output "readlink -f /opt/qpi/current || true")"
+after_service_state="$(remote_output "systemctl is-active qpi-bot.service || true")"
+after_health_payload="$(remote_output "curl -fsS http://127.0.0.1:${BOT_HEALTH_PORT}/healthz")"
+
+cat <<EOF
+release_id=${release_id}
+schema_apply=${schema_apply_decision}
+before_release=${before_release_target}
+after_release=${after_release_target}
+before_service_state=${before_service_state}
+after_service_state=${after_service_state}
+free_mb_before=${free_mb}
+before_health_payload=${before_health_payload}
+after_health_payload=${after_health_payload}
+EOF

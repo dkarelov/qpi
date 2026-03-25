@@ -7,7 +7,7 @@ lockfile="${QPI_TEST_DB_LOCKFILE:-/tmp/qpi-test-db.lock}"
 
 usage() {
   cat <<'EOF' >&2
-usage: test.sh fast|integration|migration-smoke|all
+usage: test.sh fast|integration|schema-compat|migration-smoke|all
 EOF
 }
 
@@ -40,20 +40,69 @@ with_shared_db_lock() {
   "$@"
 }
 
-require_test_database() {
-  if [[ -z "${TEST_DATABASE_URL:-}" ]]; then
-    echo "TEST_DATABASE_URL must point at qpi_test before running ${1}." >&2
+manifest_path() {
+  case "$1" in
+    integration)
+      printf '%s\n' "${repo_root}/tests/db_integration_manifest.txt"
+      ;;
+    schema-compat)
+      printf '%s\n' "${repo_root}/tests/schema_compat_manifest.txt"
+      ;;
+    migration-smoke)
+      printf '%s\n' "${repo_root}/tests/migration_smoke_manifest.txt"
+      ;;
+    *)
+      echo "Unknown manifest kind: $1" >&2
+      exit 1
+      ;;
+  esac
+}
+
+load_manifest() {
+  local path
+  path="$(manifest_path "$1")"
+  if [[ ! -f "${path}" ]]; then
+    echo "Manifest not found: ${path}" >&2
+    exit 1
+  fi
+
+  sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' "${path}"
+}
+
+collect_db_tests() {
+  {
+    load_manifest integration
+    load_manifest schema-compat
+    load_manifest migration-smoke
+  } | sort -u
+}
+
+assert_manifest_coverage() {
+  mapfile -t discovered_db_tests < <(
+    cd "${repo_root}" &&
+      rg -l '\b(db_pool|isolated_database|prepared_database|test_database_url|migration_smoke_database_url)\b' \
+        tests/test_*.py | sort
+  )
+  mapfile -t listed_db_tests < <(collect_db_tests)
+
+  local discovered listed
+  discovered="$(printf '%s\n' "${discovered_db_tests[@]}")"
+  listed="$(printf '%s\n' "${listed_db_tests[@]}")"
+
+  if [[ "${discovered}" != "${listed}" ]]; then
+    echo "DB test manifest mismatch." >&2
+    echo "Discovered DB-backed tests:" >&2
+    printf '%s\n' "${discovered_db_tests[@]}" >&2
+    echo >&2
+    echo "Manifest-listed DB-backed tests:" >&2
+    printf '%s\n' "${listed_db_tests[@]}" >&2
     exit 1
   fi
 }
 
 collect_fast_tests() {
   mapfile -t all_tests < <(cd "${repo_root}" && find tests -maxdepth 1 -name 'test_*.py' | sort)
-  mapfile -t db_tests < <(
-    cd "${repo_root}" &&
-      rg -l '\b(db_pool|isolated_database|prepared_database|test_database_url|migration_smoke_database_url)\b' \
-        tests/test_*.py | sort
-  )
+  mapfile -t db_tests < <(collect_db_tests)
 
   local candidate
   local skip
@@ -79,23 +128,66 @@ collect_fast_tests() {
   printf '%s\n' "${fast_tests[@]}"
 }
 
+require_test_database() {
+  if [[ -z "${TEST_DATABASE_URL:-}" ]]; then
+    echo "TEST_DATABASE_URL must point at qpi_test before running ${1}." >&2
+    exit 1
+  fi
+}
+
 run_fast() {
+  assert_manifest_coverage
   mapfile -t fast_tests < <(collect_fast_tests)
   run_pytest "${fast_tests[@]}"
 }
 
-run_integration() {
-  require_test_database "integration"
+run_manifest_locally() {
+  local kind="$1"
+  local file
+
+  require_test_database "${kind}"
   export QPI_SKIP_TEST_DB_LOCK=1
-  "${repo_root}/scripts/dev/reset_test_db.sh"
-  run_pytest -m "not migration_smoke"
+
+  while IFS= read -r file; do
+    [[ -n "${file}" ]] || continue
+    "${repo_root}/scripts/dev/reset_test_db.sh"
+    case "${kind}" in
+      migration-smoke)
+        RUN_MIGRATION_SMOKE=1 run_pytest "${file}"
+        ;;
+      *)
+        run_pytest "${file}"
+        ;;
+    esac
+  done < <(load_manifest "${kind}")
+}
+
+run_private_runner_manifest() {
+  "${repo_root}/scripts/dev/run_db_tests_on_runner.sh" "$1"
+}
+
+run_integration() {
+  if [[ "${QPI_USE_PRIVATE_RUNNER:-0}" == "1" ]]; then
+    run_private_runner_manifest integration
+    return
+  fi
+  run_manifest_locally integration
+}
+
+run_schema_compat() {
+  if [[ "${QPI_USE_PRIVATE_RUNNER:-0}" == "1" ]]; then
+    run_private_runner_manifest schema-compat
+    return
+  fi
+  run_manifest_locally schema-compat
 }
 
 run_migration_smoke() {
-  require_test_database "migration-smoke"
-  export QPI_SKIP_TEST_DB_LOCK=1
-  "${repo_root}/scripts/dev/reset_test_db.sh"
-  RUN_MIGRATION_SMOKE=1 run_pytest -m migration_smoke
+  if [[ "${QPI_USE_PRIVATE_RUNNER:-0}" == "1" ]]; then
+    run_private_runner_manifest migration-smoke
+    return
+  fi
+  run_manifest_locally migration-smoke
 }
 
 case "$1" in
@@ -105,12 +197,16 @@ case "$1" in
   integration)
     with_shared_db_lock run_integration
     ;;
+  schema-compat)
+    with_shared_db_lock run_schema_compat
+    ;;
   migration-smoke)
     with_shared_db_lock run_migration_smoke
     ;;
   all)
     run_fast
     with_shared_db_lock run_integration
+    with_shared_db_lock run_schema_compat
     with_shared_db_lock run_migration_smoke
     ;;
   *)

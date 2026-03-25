@@ -1,7 +1,3 @@
-data "yandex_compute_image" "ubuntu_2404_lts" {
-  family = "ubuntu-2404-lts"
-}
-
 data "yandex_vpc_network" "main" {
   folder_id = var.folder_id
   name      = var.network_name
@@ -93,6 +89,13 @@ resource "yandex_vpc_security_group" "db" {
   }
 
   ingress {
+    protocol          = "TCP"
+    description       = "SSH from private runner SG"
+    port              = 22
+    security_group_id = yandex_vpc_security_group.runner.id
+  }
+
+  ingress {
     protocol       = "TCP"
     description    = "PostgreSQL from VPC subnets (Cloud Functions connectivity)"
     port           = 5432
@@ -104,6 +107,28 @@ resource "yandex_vpc_security_group" "db" {
     content {
       protocol       = "TCP"
       description    = "OS Login SSH"
+      port           = 22
+      v4_cidr_blocks = [ingress.value]
+    }
+  }
+
+  egress {
+    protocol       = "ANY"
+    description    = "Allow all egress"
+    v4_cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "yandex_vpc_security_group" "runner" {
+  folder_id  = var.folder_id
+  name       = "${var.project}-sg-runner"
+  network_id = data.yandex_vpc_network.main.id
+
+  dynamic "ingress" {
+    for_each = toset(var.runner_bootstrap_ipv4_cidrs)
+    content {
+      protocol       = "TCP"
+      description    = "Runner SSH bootstrap"
       port           = 22
       v4_cidr_blocks = [ingress.value]
     }
@@ -195,12 +220,21 @@ locals {
     for key in var.db_ssh_public_keys : "ubuntu:${trimspace(key)}"
   ])
 
+  runner_ssh_keys_metadata = join("\n", [
+    for key in var.runner_ssh_public_keys : "ubuntu:${trimspace(key)}"
+  ])
+
   db_cloud_init = templatefile("${path.module}/cloud-init/db.yaml.tftpl", {
     postgres_version         = var.postgres_version
     db_name                  = var.db_name
     db_user                  = var.db_user
     db_password              = random_password.db_password.result
     serverless_postgres_cidr = var.serverless_postgres_cidr
+  })
+
+  runner_cloud_init = templatefile("${path.module}/cloud-init/runner.yaml.tftpl", {
+    folder_id    = var.folder_id
+    log_group_id = yandex_logging_group.main.id
   })
 
   operator_ssh_private_key_path = pathexpand(var.operator_ssh_private_key_path)
@@ -228,7 +262,7 @@ resource "yandex_compute_instance_group" "bot" {
     boot_disk {
       mode = "READ_WRITE"
       initialize_params {
-        image_id = data.yandex_compute_image.ubuntu_2404_lts.id
+        image_id = var.ubuntu_2404_lts_image_id
         type     = "network-ssd"
         size     = var.bot_disk_gb
       }
@@ -303,7 +337,7 @@ resource "yandex_compute_instance" "db" {
 
   boot_disk {
     initialize_params {
-      image_id = data.yandex_compute_image.ubuntu_2404_lts.id
+      image_id = var.ubuntu_2404_lts_image_id
       type     = "network-ssd"
       size     = var.db_disk_gb
     }
@@ -329,6 +363,54 @@ resource "yandex_compute_instance" "db" {
   labels = {
     project = var.project
     role    = "db"
+  }
+}
+
+resource "yandex_compute_instance" "runner" {
+  folder_id                 = var.folder_id
+  name                      = "${var.project}-private-runner"
+  zone                      = var.zone
+  platform_id               = var.runner_platform_id
+  allow_stopping_for_update = true
+
+  resources {
+    cores         = var.runner_cores
+    memory        = var.runner_memory_gb
+    core_fraction = 100
+  }
+
+  boot_disk {
+    initialize_params {
+      image_id = var.ubuntu_2404_lts_image_id
+      type     = "network-ssd"
+      size     = var.runner_disk_gb
+    }
+  }
+
+  network_interface {
+    subnet_id          = data.yandex_vpc_subnet.main.id
+    nat                = true
+    security_group_ids = [yandex_vpc_security_group.runner.id]
+  }
+
+  scheduling_policy {
+    preemptible = true
+  }
+
+  metadata = merge(
+    {
+      enable-oslogin     = "false"
+      serial-port-enable = "1"
+      user-data          = local.runner_cloud_init
+    },
+    length(var.runner_ssh_public_keys) > 0 ? {
+      "ssh-keys" = local.runner_ssh_keys_metadata
+    } : {}
+  )
+
+  labels = {
+    project = var.project
+    role    = "private-runner"
   }
 }
 

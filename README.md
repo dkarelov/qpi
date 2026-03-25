@@ -1,6 +1,6 @@
 # QPI Phase 7 Live Telegram Baseline
 
-This repository includes the bot runtime, Cloud Functions, plain-SQL domain layer, `psqldef` schema management, and the Telegram seller/buyer/admin UX described in [AGENTS.md](/home/darker/dkarelov/qpi/AGENTS.md).
+This repository includes the bot runtime, Cloud Functions, plain-SQL domain layer, `psqldef` schema management, the dedicated private CI/deploy runner path, and the Telegram seller/buyer/admin UX described in [AGENTS.md](/home/darker/dkarelov/qpi/AGENTS.md).
 
 ## Local Setup
 
@@ -13,71 +13,58 @@ cp .env.example .env
 
 `.venv` remains the runtime environment path, but it is managed by `uv`. `pyproject.toml` + `uv.lock` are authoritative. `requirements.txt` is generated only for Cloud Function/Terraform compatibility.
 
-## Migration Commands
+## Local Commands
+
+Fast suites:
 
 ```bash
-export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
-make migrate-plan
-make migrate-up
-make migrate-down
-make migrate-export
-```
-
-## Runtime Checks
-
-```bash
-DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi \
-uv run python -m services.bot_api.main --seller-command "/start" --telegram-id 1001 --telegram-username seller
-
-DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi \
-uv run python -m services.bot_api.main --buyer-command "/start" --telegram-id 2001 --telegram-username buyer
-
-DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi \
-TOKEN_CIPHER_KEY=<cipher-key> \
-uv run python -m services.daily_report_scrapper.main --once
-
-DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi \
-uv run python -m services.order_tracker.main --once
-
-DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi \
-uv run python -m services.blockchain_checker.main --once
-```
-
-## Test Commands
-
-The supported developer entrypoints live under `scripts/dev/`.
-
-```bash
-TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
-scripts/dev/reset_test_db.sh
-
 scripts/dev/test.sh fast
+```
 
+Shared local test DB path for ad-hoc work:
+
+```bash
 TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
 scripts/dev/test.sh integration
 
 TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
-scripts/dev/test.sh migration-smoke
+scripts/dev/test.sh schema-compat
 
 TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
-scripts/dev/test.sh all
+scripts/dev/test.sh migration-smoke
 ```
 
-`integration` and `migration-smoke` are serialized with `/tmp/qpi-test-db.lock`. If a stale session blocks resets:
+If stale local sessions block resets:
 
 ```bash
 TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
 scripts/dev/kill-stuck-tests.sh
 ```
 
-If the shared tunnel user cannot create databases, set `TEST_DATABASE_ADMIN_URL` to an admin-capable connection for the reset/cleanup scripts.
+## Private Runner DB Validation
 
-## Deploy Commands
+The canonical DB-backed path runs on the dedicated private self-hosted GitHub runner, not over the workstation tunnel.
+
+```bash
+TEST_DATABASE_URL=postgresql://<user>:<password>@10.131.0.28:5432/qpi_test \
+QPI_DB_VM_HOST=10.131.0.28 \
+scripts/dev/run_db_tests_on_runner.sh all
+```
+
+That script:
+
+- reads the checked-in DB suite manifests,
+- recreates disposable test DBs through the DB VM admin path,
+- reapplies schema before each file/batch,
+- runs ordinary integration, schema-compat, and migration smoke in isolation.
+
+## Direct Deploys
 
 Code-only runtime deploy to the bot VM:
 
 ```bash
 GH_TOKEN="$(gh auth token)" \
+YC_FOLDER_ID=<folder-id> \
 BOT_VM_HOST=<host> \
 TELEGRAM_BOT_TOKEN=<token> \
 TOKEN_CIPHER_KEY=<cipher-key> \
@@ -88,7 +75,9 @@ scripts/deploy/runtime.sh
 Code-only Cloud Function deploy:
 
 ```bash
-GH_TOKEN="$(gh auth token)" YC_TOKEN="$(yc config get token)" \
+GH_TOKEN="$(gh auth token)" \
+YC_FOLDER_ID=<folder-id> \
+YC_TOKEN="$(yc config get token)" \
 scripts/deploy/function.sh daily_report_scrapper
 ```
 
@@ -99,6 +88,17 @@ GH_TOKEN="$(gh auth token)" YC_TOKEN="$(yc config get token)" \
 terraform -chdir=infra plan
 ```
 
+Use Terraform only for intentional infra mutations. If only Python/runtime code changed, use the direct deploy wrappers.
+
+## CI / Runner Model
+
+The repository now assumes:
+
+- `fast` runs on GitHub-hosted runners,
+- DB-backed validation and code-only deploys run on a dedicated preemptible private runner VM,
+- GitHub-hosted bootstrap jobs start that VM on demand,
+- a weekly keepalive workflow starts the runner briefly and then powers it down again.
+
 ## More Detail
 
-See [docs/dev_workflow.md](/home/darker/dkarelov/qpi/docs/dev_workflow.md) for the shared test DB guardrails, deploy wrapper behavior, and troubleshooting notes.
+See [docs/dev_workflow.md](/home/darker/dkarelov/qpi/docs/dev_workflow.md) for the private runner lifecycle, DB suite manifests, deploy wrapper behavior, and troubleshooting notes.

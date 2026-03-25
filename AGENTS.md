@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-03-10 UTC
+Last updated: 2026-03-25 UTC
 
 ## 1. Documentation Policy
 
@@ -73,6 +73,7 @@ Shared layers:
 - `scripts/dev/*`: canonical local reset/test/export wrappers.
 - `scripts/deploy/runtime.sh`: canonical bot VM rollout entrypoint.
 - `scripts/deploy/function.sh`: canonical code-only Cloud Function rollout entrypoint.
+- `scripts/deploy/private_runner.sh`: canonical on-demand private runner lifecycle entrypoint for CI/deploy jobs.
 
 Persistence and schema:
 
@@ -339,6 +340,7 @@ Transitions:
 - Infrastructure mutations are Terraform-only from `infra/`.
 - Code-only Cloud Function version publishes are allowed through `scripts/deploy/function.sh`; broader infra mutations still remain Terraform-only.
 - Cloud Function packaging must be service-scoped to avoid unrelated redeploys.
+- DB-backed CI/deploy execution is designed around a dedicated private self-hosted GitHub runner VM; GitHub-hosted runners only handle fast suites and bootstrap/start-stop orchestration.
 - Bot runtime is webhook-based.
 - Expected load target: ~100 concurrent users.
 
@@ -459,31 +461,46 @@ uv run python -m services.blockchain_checker.main --once
 ```bash
 uv sync --frozen --extra dev
 
-# Shared remote-db defaults:
+# Fast local feedback (non-DB suites + deterministic harness):
+scripts/dev/test.sh fast
+
+# Manual/local shared-db path for ad-hoc work only:
 TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
 scripts/dev/reset_test_db.sh
 
-# Fast local feedback (non-shared-db suites + deterministic harness):
-scripts/dev/test.sh fast
-
-# Shared-db integration suite (serialized + reset):
+# Local ordinary DB integration against the shared test DB:
 TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
 scripts/dev/test.sh integration
 
-# Destructive migration smoke (serialized + reset to qpi_test_scratch):
+# Local schema-compat suite against the shared test DB:
+TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
+scripts/dev/test.sh schema-compat
+
+# Local destructive migration smoke (serialized + reset to qpi_test_scratch):
 TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
 scripts/dev/test.sh migration-smoke
 
-# Full ordered suite:
+# Full local ordered suite:
 TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
 scripts/dev/test.sh all
+
+# Canonical private-runner DB suite:
+TEST_DATABASE_URL=postgresql://<user>:<password>@10.131.0.28:5432/qpi_test \
+QPI_DB_VM_HOST=10.131.0.28 \
+scripts/dev/run_db_tests_on_runner.sh all
 
 # Cleanup stale shared-db sessions when resets fail:
 TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
 scripts/dev/kill-stuck-tests.sh
 ```
 
-If the default tunnel user cannot recreate the shared test DBs, provide `TEST_DATABASE_ADMIN_URL` for the reset/cleanup scripts.
+Rules:
+
+- `fast` is the only suite that should normally run on a GitHub-hosted runner.
+- Full DB-backed validation should run on the dedicated private self-hosted runner, not over the workstation tunnel.
+- `qpi_test` and `qpi_test_scratch` are disposable and must be recreated before DB-backed runs.
+- `scripts/dev/reset_remote_test_dbs.sh` is the canonical full-suite reprovision path from the private runner to the DB VM admin path.
+- `tests/db_integration_manifest.txt`, `tests/schema_compat_manifest.txt`, and `tests/migration_smoke_manifest.txt` are the source of truth for DB-backed test grouping.
 
 Safety guardrails:
 
@@ -526,18 +543,27 @@ Workflows:
 
 - `.github/workflows/ci.yml`:
   - `lint-and-fast-tests`,
-  - `integration-shared-db`,
-  - `migration-smoke`.
+  - `start-private-runner`,
+  - `private-db-validation`,
+  - `stop-private-runner`.
 - `.github/workflows/deploy_runtime.yml`:
-  - reruns lint + shared-db verification on main,
+  - reruns lint + fast tests on main,
+  - starts the dedicated private runner,
+  - runs private DB-backed validation,
   - packages current source,
-  - uploads the artifact to the bot VM,
+  - deploys runtime code from the private runner to the bot VM,
   - applies schema when required,
   - performs health verification and seller/buyer `/start` smoke.
 - `.github/workflows/deploy_functions.yml`:
   - reuses the fast suite on main,
+  - starts the dedicated private runner,
+  - runs private DB-backed validation before function publishes,
   - builds service-scoped uv-based bundles,
   - publishes only the changed Cloud Functions directly through `yc`.
+- `.github/workflows/private_runner_keepalive.yml`:
+  - weekly start of the dedicated private runner,
+  - validates runner registration / dispatch path,
+  - schedules shutdown afterward.
 - `.github/workflows/deploy_terraform.yml`:
   - terraform validate/plan on push,
   - apply only via explicit manual dispatch guard.

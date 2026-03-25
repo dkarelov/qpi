@@ -7,7 +7,12 @@ import pytest_asyncio
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from tests.utils import assert_safe_test_database, run_schema_apply, truncate_public_tables
+from tests.utils import (
+    assert_safe_test_database,
+    parse_database_url,
+    run_schema_apply,
+    truncate_public_tables,
+)
 
 
 @pytest.fixture(scope="session")
@@ -36,8 +41,12 @@ def isolated_database(prepared_database: str) -> str:
 def migration_smoke_database_url(test_database_url: str) -> str:
     if os.getenv("RUN_MIGRATION_SMOKE") != "1":
         pytest.skip("RUN_MIGRATION_SMOKE is not set to 1; migration smoke is skipped")
-    assert_safe_test_database(test_database_url, require_scratch_name=True)
-    return test_database_url
+    scratch_url = os.getenv("TEST_SCRATCH_DATABASE_URL", "").strip()
+    if not scratch_url:
+        parsed = parse_database_url(test_database_url)
+        scratch_url = test_database_url.rsplit(parsed.dbname, 1)[0] + f"{parsed.dbname}_scratch"
+    assert_safe_test_database(scratch_url, require_scratch_name=True)
+    return scratch_url
 
 
 @pytest_asyncio.fixture

@@ -36,6 +36,26 @@ output "db_private_ip" {
   value       = yandex_compute_instance.db.network_interface[0].ip_address
 }
 
+output "private_runner_instance_id" {
+  description = "ID of the dedicated private runner VM."
+  value       = yandex_compute_instance.runner.id
+}
+
+output "private_runner_instance_name" {
+  description = "Name of the dedicated private runner VM."
+  value       = yandex_compute_instance.runner.name
+}
+
+output "private_runner_public_ip" {
+  description = "Current public IP of the dedicated private runner VM."
+  value       = yandex_compute_instance.runner.network_interface[0].nat_ip_address
+}
+
+output "private_runner_private_ip" {
+  description = "Private IP of the dedicated private runner VM."
+  value       = yandex_compute_instance.runner.network_interface[0].ip_address
+}
+
 output "db_name" {
   description = "Application database name."
   value       = var.db_name

@@ -26,6 +26,12 @@ variable "network_name" {
   default     = "default"
 }
 
+variable "ubuntu_2404_lts_image_id" {
+  description = "Pinned Ubuntu 24.04 LTS image ID used for long-lived VM boot disks."
+  type        = string
+  default     = "fd883u1fsun0dqhg49jq"
+}
+
 variable "subnet_name" {
   description = "Existing subnet name in selected zone."
   type        = string
@@ -54,6 +60,18 @@ variable "db_ssh_public_keys" {
   description = "SSH public keys injected into DB VM metadata as ubuntu user authorized keys."
   type        = list(string)
   default     = []
+}
+
+variable "runner_ssh_public_keys" {
+  description = "SSH public keys injected into the private runner VM metadata as ubuntu user authorized keys."
+  type        = list(string)
+  default     = []
+}
+
+variable "runner_bootstrap_ipv4_cidrs" {
+  description = "IPv4 CIDRs allowed to SSH into the private runner VM for bootstrap/maintenance."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
 }
 
 variable "operator_ssh_private_key_path" {
@@ -112,6 +130,30 @@ variable "bot_health_port" {
     condition     = var.bot_health_port >= 1 && var.bot_health_port <= 65535
     error_message = "bot_health_port must be in range 1..65535."
   }
+}
+
+variable "runner_platform_id" {
+  description = "Hardware platform for the private runner VM."
+  type        = string
+  default     = "standard-v3"
+}
+
+variable "runner_cores" {
+  description = "vCPU count for the private runner VM."
+  type        = number
+  default     = 2
+}
+
+variable "runner_memory_gb" {
+  description = "RAM (GB) for the private runner VM."
+  type        = number
+  default     = 4
+}
+
+variable "runner_disk_gb" {
+  description = "Boot disk size (GB) for the private runner VM."
+  type        = number
+  default     = 30
 }
 
 variable "bot_app_env" {

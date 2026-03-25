@@ -14,6 +14,12 @@ usage:
   function.sh metadata <daily_report_scrapper|order_tracker|blockchain_checker>
   function.sh build <daily_report_scrapper|order_tracker|blockchain_checker>
   function.sh <daily_report_scrapper|order_tracker|blockchain_checker>
+
+Required environment for deploy:
+  YC_FOLDER_ID
+
+Required environment for build/metadata/deploy:
+  GH_TOKEN or TOKEN_YC_JSON_LOGGER
 EOF
 }
 
@@ -45,6 +51,29 @@ case "${service_name}" in
     ;;
 esac
 
+require_env() {
+  local name="$1"
+  if [[ -z "${!name:-}" ]]; then
+    echo "${name} is required." >&2
+    exit 1
+  fi
+}
+
+resolve_git_token() {
+  if [[ -n "${GH_TOKEN:-}" ]]; then
+    return
+  fi
+  if [[ -n "${TOKEN_YC_JSON_LOGGER:-}" ]]; then
+    GH_TOKEN="${TOKEN_YC_JSON_LOGGER}"
+    export GH_TOKEN
+    return
+  fi
+  if command -v gh >/dev/null 2>&1; then
+    GH_TOKEN="$(gh auth token 2>/dev/null || true)"
+    export GH_TOKEN
+  fi
+}
+
 bundle_manifest_hash() {
   (
     cd "${repo_root}"
@@ -63,6 +92,9 @@ build_bundle() {
   local bundle_path
   local requirements_path
   local staged_requirements_path
+
+  resolve_git_token
+  require_env "GH_TOKEN"
 
   manifest_hash="$(bundle_manifest_hash)"
   bundle_dir="${cache_root}/${service_name}"
@@ -111,6 +143,7 @@ latest_version_id() {
   trap 'rm -f "${versions_json}"' RETURN
 
   yc serverless function version list \
+    --folder-id "${YC_FOLDER_ID}" \
     --function-name "${function_name}" \
     --limit 20 \
     --format json > "${versions_json}"
@@ -228,22 +261,112 @@ print(json.dumps({"zip_path": sys.argv[1], "sha256": sys.argv[2]}))
 PY
 }
 
+compare_version_configs() {
+  local old_version_id="$1"
+  local new_version_id="$2"
+  local old_json
+  local new_json
+
+  old_json="$(mktemp)"
+  new_json="$(mktemp)"
+  trap 'rm -f "${old_json}" "${new_json}"' RETURN
+
+  yc serverless function version get "${old_version_id}" --format json > "${old_json}"
+  yc serverless function version get "${new_version_id}" --format json > "${new_json}"
+
+  python3 - "${old_json}" "${new_json}" <<'PY'
+import json
+import sys
+
+
+def get(obj, *names):
+    for name in names:
+        if isinstance(obj, dict) and name in obj:
+            return obj[name]
+    return None
+
+
+def normalize(path):
+    with open(path, encoding="utf-8") as fh:
+        payload = json.load(fh)
+    resources = get(payload, "resources") or {}
+    connectivity = get(payload, "connectivity") or {}
+    log_options = get(payload, "log_options", "logOptions") or {}
+    environment = get(payload, "environment") or {}
+    return {
+        "runtime": get(payload, "runtime"),
+        "entrypoint": get(payload, "entrypoint"),
+        "memory": get(resources, "memory"),
+        "timeout": get(payload, "execution_timeout", "executionTimeout"),
+        "service_account_id": get(payload, "service_account_id", "serviceAccountId"),
+        "environment": dict(sorted(environment.items())),
+        "network_id": get(connectivity, "network_id", "networkId"),
+        "log_group_id": get(log_options, "log_group_id", "logGroupId"),
+        "concurrency": get(payload, "concurrency"),
+    }
+
+
+old = normalize(sys.argv[1])
+new = normalize(sys.argv[2])
+if old != new:
+    print("Critical function config drift detected.", file=sys.stderr)
+    print("Expected:", file=sys.stderr)
+    print(json.dumps(old, ensure_ascii=True, indent=2, sort_keys=True), file=sys.stderr)
+    print("Actual:", file=sys.stderr)
+    print(json.dumps(new, ensure_ascii=True, indent=2, sort_keys=True), file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
 deploy_bundle() {
   local bundle_path
+  local bundle_size
   local version_id
   local description
+  local created_json
+  local created_version_id
   local -a create_args
 
+  resolve_git_token
+  require_env "GH_TOKEN"
+  require_env "YC_FOLDER_ID"
+
   bundle_path="$(build_bundle)"
+  bundle_size="$(wc -c < "${bundle_path}")"
   version_id="$(latest_version_id)"
   description="Direct code-only deploy $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   mapfile -d '' -t create_args < <(build_version_create_args "${version_id}")
 
+  echo "Bundle: ${bundle_path}"
+  echo "Bundle size (bytes): ${bundle_size}"
+  echo "Source live version: ${version_id}"
+
+  created_json="$(mktemp)"
+  trap 'rm -f "${created_json}"' RETURN
   yc serverless function version create \
+    --folder-id "${YC_FOLDER_ID}" \
     --function-name "${function_name}" \
     --source-path "${bundle_path}" \
     "${create_args[@]}" \
-    --description "${description}"
+    --description "${description}" \
+    --format json > "${created_json}"
+
+  created_version_id="$(
+    python3 - "${created_json}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    payload = json.load(fh)
+version_id = payload.get("id")
+if not version_id:
+    raise SystemExit("Failed to resolve created function version id from yc output.")
+print(version_id)
+PY
+  )"
+
+  echo "Created function version: ${created_version_id}"
+  compare_version_configs "${version_id}" "${created_version_id}"
 }
 
 case "${command_name}" in

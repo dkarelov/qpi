@@ -9,6 +9,12 @@ on:
       - "services/blockchain_checker/**"
       - "libs/**"
       - "scripts/**"
+      - "infra/cloud-init/runner.yaml.tftpl"
+      - "infra/main.tf"
+      - "infra/outputs.tf"
+      - "infra/terraform.tfvars"
+      - "infra/terraform.tfvars.example"
+      - "infra/variables.tf"
       - "pyproject.toml"
       - "uv.lock"
       - "requirements.txt"
@@ -17,6 +23,13 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: qpi-private-runner
+  cancel-in-progress: false
+
+env:
+  PSQLDEF_VERSION: v3.9.8
 
 jobs:
   lint-and-fast-tests:
@@ -52,12 +65,169 @@ jobs:
       - name: Fast tests
         run: scripts/dev/test.sh fast
 
-  deploy-functions:
+  determine-targets:
     runs-on: ubuntu-latest
     needs: lint-and-fast-tests
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
+      has_targets: ${{ steps.targets.outputs.has_targets }}
+      requires_migration: ${{ steps.targets.outputs.requires_migration }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine changed functions
+        id: targets
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "targets=daily_report_scrapper order_tracker blockchain_checker" >> "${GITHUB_OUTPUT}"
+            echo "has_targets=true" >> "${GITHUB_OUTPUT}"
+            echo "requires_migration=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          before="${{ github.event.before }}"
+          zero_sha="0000000000000000000000000000000000000000"
+          if [[ -z "${before}" || "${before}" == "${zero_sha}" ]]; then
+            echo "targets=daily_report_scrapper order_tracker blockchain_checker" >> "${GITHUB_OUTPUT}"
+            echo "has_targets=true" >> "${GITHUB_OUTPUT}"
+            echo "requires_migration=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          changed_files="$(git diff --name-only "${before}" "${GITHUB_SHA}")"
+          requires_migration=false
+          if printf '%s\n' "${changed_files}" | grep -Eq '^(schema/|libs/db/|infra/scripts/remote_apply_schema\.sh$)'; then
+            requires_migration=true
+          fi
+
+          if printf '%s\n' "${changed_files}" | grep -Eq '^(libs/|pyproject\.toml$|uv\.lock$|requirements\.txt$|scripts/)'; then
+            echo "targets=daily_report_scrapper order_tracker blockchain_checker" >> "${GITHUB_OUTPUT}"
+            echo "has_targets=true" >> "${GITHUB_OUTPUT}"
+            echo "requires_migration=${requires_migration}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          targets=""
+          if printf '%s\n' "${changed_files}" | grep -q '^services/daily_report_scrapper/'; then
+            targets="${targets} daily_report_scrapper"
+          fi
+          if printf '%s\n' "${changed_files}" | grep -q '^services/order_tracker/'; then
+            targets="${targets} order_tracker"
+          fi
+          if printf '%s\n' "${changed_files}" | grep -q '^services/blockchain_checker/'; then
+            targets="${targets} blockchain_checker"
+          fi
+
+          targets="${targets# }"
+          if [[ -n "${targets}" ]]; then
+            echo "has_targets=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "has_targets=false" >> "${GITHUB_OUTPUT}"
+          fi
+          echo "targets=${targets}" >> "${GITHUB_OUTPUT}"
+          echo "requires_migration=${requires_migration}" >> "${GITHUB_OUTPUT}"
+
+  start-private-runner:
+    runs-on: ubuntu-latest
+    needs: determine-targets
+    if: ${{ needs.determine-targets.outputs.has_targets == 'true' }}
+    env:
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      PRIVATE_RUNNER_INSTANCE_NAME: ${{ vars.PRIVATE_RUNNER_INSTANCE_NAME }}
+      PRIVATE_RUNNER_SSH_USER: ${{ vars.PRIVATE_RUNNER_SSH_USER }}
+      PRIVATE_RUNNER_SSH_PRIVATE_KEY: ${{ secrets.PRIVATE_RUNNER_SSH_PRIVATE_KEY }}
+      PRIVATE_RUNNER_BOOTSTRAP_TOKEN: ${{ secrets.PRIVATE_RUNNER_BOOTSTRAP_TOKEN }}
+      PRIVATE_RUNNER_REPO: ${{ github.repository }}
+      PRIVATE_RUNNER_LABELS: ${{ vars.PRIVATE_RUNNER_LABELS }}
+      PRIVATE_RUNNER_VERSION: ${{ vars.PRIVATE_RUNNER_VERSION }}
+      PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required runner secrets
+        run: |
+          test -n "${YC_TOKEN}" || { echo "YC_TOKEN is required"; exit 1; }
+          test -n "${YC_FOLDER_ID}" || { echo "YC_FOLDER_ID is required"; exit 1; }
+          test -n "${PRIVATE_RUNNER_INSTANCE_NAME}" || { echo "PRIVATE_RUNNER_INSTANCE_NAME is required"; exit 1; }
+          test -n "${PRIVATE_RUNNER_SSH_PRIVATE_KEY}" || { echo "PRIVATE_RUNNER_SSH_PRIVATE_KEY is required"; exit 1; }
+          test -n "${PRIVATE_RUNNER_BOOTSTRAP_TOKEN}" || { echo "PRIVATE_RUNNER_BOOTSTRAP_TOKEN is required"; exit 1; }
+
+      - name: Install yc CLI
+        run: |
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
+          echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
+
+      - name: Start private runner
+        run: scripts/deploy/private_runner.sh ensure-ready
+
+  private-db-validation:
+    runs-on: [self-hosted, linux, qpi-private]
+    needs:
+      - determine-targets
+      - start-private-runner
+    if: ${{ needs.determine-targets.outputs.has_targets == 'true' }}
+    env:
+      GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+      TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+      TEST_SCRATCH_DATABASE_URL: ${{ secrets.TEST_SCRATCH_DATABASE_URL }}
+      QPI_DB_VM_HOST: ${{ vars.DB_VM_HOST }}
+      QPI_DB_VM_SSH_USER: ${{ vars.DB_VM_SSH_USER }}
+      QPI_DB_VM_SSH_PRIVATE_KEY: ${{ secrets.DB_VM_SSH_PRIVATE_KEY }}
+      REQUIRES_MIGRATION: ${{ needs.determine-targets.outputs.requires_migration }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Install psqldef
+        run: |
+          curl -fsSL -o /tmp/psqldef.tar.gz \
+            "https://github.com/sqldef/sqldef/releases/download/${PSQLDEF_VERSION}/psqldef_linux_amd64.tar.gz"
+          tar -xzf /tmp/psqldef.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
+
+      - name: Configure private GitHub auth
+        run: scripts/common/setup_private_git_auth.sh
+
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: DB-backed validation
+        run: |
+          scripts/dev/run_db_tests_on_runner.sh integration
+          scripts/dev/run_db_tests_on_runner.sh schema-compat
+          if [[ "${REQUIRES_MIGRATION}" == "true" ]]; then
+            scripts/dev/run_db_tests_on_runner.sh migration-smoke
+          fi
+
+  deploy-functions:
+    runs-on: [self-hosted, linux, qpi-private]
+    needs:
+      - determine-targets
+      - private-db-validation
+    if: ${{ needs.determine-targets.outputs.has_targets == 'true' }}
     env:
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
+      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      TARGETS: ${{ needs.determine-targets.outputs.targets }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -81,47 +251,45 @@ jobs:
         run: |
           test -n "${GH_TOKEN}" || { echo "TOKEN_YC_JSON_LOGGER secret is required"; exit 1; }
           test -n "${YC_TOKEN}" || { echo "YC_TOKEN is required"; exit 1; }
+          test -n "${YC_FOLDER_ID}" || { echo "YC_FOLDER_ID is required"; exit 1; }
 
-      - name: Determine changed functions
-        id: targets
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "targets=daily_report_scrapper order_tracker blockchain_checker" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-
-          before="${{ github.event.before }}"
-          zero_sha="0000000000000000000000000000000000000000"
-          if [[ -z "${before}" || "${before}" == "${zero_sha}" ]]; then
-            echo "targets=daily_report_scrapper order_tracker blockchain_checker" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-
-          changed_files="$(git diff --name-only "${before}" "${GITHUB_SHA}")"
-          if printf '%s\n' "${changed_files}" | grep -Eq '^(libs/|pyproject\.toml$|uv\.lock$|requirements\.txt$|scripts/)'; then
-            echo "targets=daily_report_scrapper order_tracker blockchain_checker" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-
-          targets=""
-          if printf '%s\n' "${changed_files}" | grep -q '^services/daily_report_scrapper/'; then
-            targets="${targets} daily_report_scrapper"
-          fi
-          if printf '%s\n' "${changed_files}" | grep -q '^services/order_tracker/'; then
-            targets="${targets} order_tracker"
-          fi
-          if printf '%s\n' "${changed_files}" | grep -q '^services/blockchain_checker/'; then
-            targets="${targets} blockchain_checker"
-          fi
-          echo "targets=${targets# }" >> "${GITHUB_OUTPUT}"
+      - name: Configure private GitHub auth
+        run: scripts/common/setup_private_git_auth.sh
 
       - name: Deploy changed functions
         run: |
-          if [[ -z "${{ steps.targets.outputs.targets }}" ]]; then
+          if [[ -z "${TARGETS}" ]]; then
             echo "No function targets resolved."
             exit 0
           fi
 
-          for target in ${{ steps.targets.outputs.targets }}; do
+          for target in ${TARGETS}; do
             scripts/deploy/function.sh "${target}"
           done
+
+  stop-private-runner:
+    runs-on: ubuntu-latest
+    needs:
+      - determine-targets
+      - start-private-runner
+      - private-db-validation
+      - deploy-functions
+    if: ${{ always() && needs.determine-targets.outputs.has_targets == 'true' && needs.start-private-runner.result == 'success' }}
+    env:
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      PRIVATE_RUNNER_INSTANCE_NAME: ${{ vars.PRIVATE_RUNNER_INSTANCE_NAME }}
+      PRIVATE_RUNNER_SSH_USER: ${{ vars.PRIVATE_RUNNER_SSH_USER }}
+      PRIVATE_RUNNER_SSH_PRIVATE_KEY: ${{ secrets.PRIVATE_RUNNER_SSH_PRIVATE_KEY }}
+      PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install yc CLI
+        run: |
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
+          echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
+
+      - name: Schedule runner shutdown
+        run: scripts/deploy/private_runner.sh schedule-stop
