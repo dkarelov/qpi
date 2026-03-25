@@ -254,6 +254,11 @@ jobs:
           curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
           echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
 
+      - name: Install zip
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zip
+
       - name: Validate deployment auth
         run: |
           test -n "${GH_TOKEN}" || { echo "TOKEN_YC_JSON_LOGGER secret is required"; exit 1; }
