@@ -36,8 +36,11 @@ test_url = normalize(test_url)
 parsed = urlparse(test_url)
 if parsed.scheme != "postgresql" or not parsed.path.lstrip("/"):
     raise SystemExit("TEST_DATABASE_URL must use the postgresql:// scheme and include a database name.")
+if not parsed.username:
+    raise SystemExit("TEST_DATABASE_URL must include a database user.")
 
 test_db = parsed.path.lstrip("/")
+test_user = parsed.username
 scratch_url = os.environ.get("TEST_SCRATCH_DATABASE_URL", "").strip()
 scratch_url = normalize(scratch_url) if scratch_url else replace_db(test_url, f"{test_db}_scratch")
 admin_url = os.environ.get("TEST_DATABASE_ADMIN_URL", "").strip()
@@ -45,6 +48,7 @@ admin_url = normalize(admin_url) if admin_url else replace_db(test_url, "postgre
 
 print(f"TEST_DB_URL={shlex.quote(test_url)}")
 print(f"TEST_DB_NAME={shlex.quote(test_db)}")
+print(f"TEST_DB_USER={shlex.quote(test_user)}")
 print(f"SCRATCH_DB_URL={shlex.quote(scratch_url)}")
 print(f"SCRATCH_DB_NAME={shlex.quote(urlparse(scratch_url).path.lstrip('/'))}")
 print(f"ADMIN_DB_URL={shlex.quote(admin_url)}")
@@ -75,15 +79,17 @@ reset_databases() {
   eval "$(resolve_db_context)"
 
   local test_db_ident
+  local test_db_user_ident
   local scratch_db_ident
   test_db_ident="$(quote_ident "${TEST_DB_NAME}")"
+  test_db_user_ident="$(quote_ident "${TEST_DB_USER}")"
   scratch_db_ident="$(quote_ident "${SCRATCH_DB_NAME}")"
 
   psql "${ADMIN_DB_URL}" -v ON_ERROR_STOP=1 <<SQL
 DROP DATABASE IF EXISTS ${scratch_db_ident} WITH (FORCE);
 DROP DATABASE IF EXISTS ${test_db_ident} WITH (FORCE);
-CREATE DATABASE ${test_db_ident};
-CREATE DATABASE ${scratch_db_ident};
+CREATE DATABASE ${test_db_ident} OWNER ${test_db_user_ident};
+CREATE DATABASE ${scratch_db_ident} OWNER ${test_db_user_ident};
 SQL
 
   (
