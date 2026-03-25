@@ -191,9 +191,12 @@ import sys
 payload = json.load(sys.stdin)
 expected = sys.argv[1]
 
-items = payload.get("instances") or payload.get("items") or payload
-if not isinstance(items, list):
-    items = []
+if isinstance(payload, list):
+    items = payload
+else:
+    items = payload.get("instances") or payload.get("items") or []
+    if not isinstance(items, list):
+        items = []
 
 for item in items:
     addresses = []
