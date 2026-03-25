@@ -20,6 +20,7 @@ run_pytest() {
   (
     cd "${repo_root}"
     export PYTHONPATH="${repo_root}${PYTHONPATH:+:${PYTHONPATH}}"
+    export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
     uv run pytest -q -s -p pytest_asyncio.plugin "$@"
   )
 }
