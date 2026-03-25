@@ -77,12 +77,21 @@ collect_db_tests() {
   } | sort -u
 }
 
-assert_manifest_coverage() {
-  mapfile -t discovered_db_tests < <(
-    cd "${repo_root}" &&
+discover_db_backed_tests() {
+  (
+    cd "${repo_root}"
+    if command -v rg >/dev/null 2>&1; then
       rg -l '\b(db_pool|isolated_database|prepared_database|test_database_url|migration_smoke_database_url)\b' \
         tests/test_*.py | sort
+    else
+      grep -lE '\b(db_pool|isolated_database|prepared_database|test_database_url|migration_smoke_database_url)\b' \
+        tests/test_*.py | sort
+    fi
   )
+}
+
+assert_manifest_coverage() {
+  mapfile -t discovered_db_tests < <(discover_db_backed_tests)
   mapfile -t listed_db_tests < <(collect_db_tests)
 
   local discovered listed
