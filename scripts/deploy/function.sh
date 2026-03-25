@@ -59,6 +59,15 @@ require_env() {
   fi
 }
 
+configure_yc_cli() {
+  if [[ -n "${YC_TOKEN:-}" ]]; then
+    yc config set token "${YC_TOKEN}" >/dev/null
+  fi
+  if [[ -n "${YC_FOLDER_ID:-}" ]]; then
+    yc config set folder-id "${YC_FOLDER_ID}" >/dev/null
+  fi
+}
+
 resolve_git_token() {
   if [[ -n "${GH_TOKEN:-}" ]]; then
     return
@@ -330,6 +339,7 @@ deploy_bundle() {
   resolve_git_token
   require_env "GH_TOKEN"
   require_env "YC_FOLDER_ID"
+  configure_yc_cli
 
   bundle_path="$(build_bundle)"
   bundle_size="$(wc -c < "${bundle_path}")"

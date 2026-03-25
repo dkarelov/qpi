@@ -53,6 +53,15 @@ require_command() {
   fi
 }
 
+configure_yc_cli() {
+  if [[ -n "${YC_TOKEN:-}" ]]; then
+    yc config set token "${YC_TOKEN}" >/dev/null
+  fi
+  if [[ -n "${YC_FOLDER_ID:-}" ]]; then
+    yc config set folder-id "${YC_FOLDER_ID}" >/dev/null
+  fi
+}
+
 require_env "BOT_VM_HOST"
 require_env "TELEGRAM_BOT_TOKEN"
 require_env "TOKEN_CIPHER_KEY"
@@ -241,6 +250,7 @@ remote_preflight() {
 
 resolve_git_token
 require_env "GH_TOKEN"
+configure_yc_cli
 prepare_ssh_key
 verify_target_vm
 remote_preflight

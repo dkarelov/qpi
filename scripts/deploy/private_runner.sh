@@ -57,11 +57,21 @@ require_command() {
   fi
 }
 
+configure_yc_cli() {
+  if [[ -n "${YC_TOKEN:-}" ]]; then
+    yc config set token "${YC_TOKEN}" >/dev/null
+  fi
+  if [[ -n "${YC_FOLDER_ID:-}" ]]; then
+    yc config set folder-id "${YC_FOLDER_ID}" >/dev/null
+  fi
+}
+
 require_command yc
 require_command curl
 require_command python3
 require_env "YC_FOLDER_ID"
 require_env "PRIVATE_RUNNER_INSTANCE_NAME"
+configure_yc_cli
 
 PRIVATE_RUNNER_SSH_USER="${PRIVATE_RUNNER_SSH_USER:-ubuntu}"
 PRIVATE_RUNNER_SSH_PORT="${PRIVATE_RUNNER_SSH_PORT:-22}"
