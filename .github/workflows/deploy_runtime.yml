@@ -1,26 +1,6 @@
-name: Deploy Runtime
+name: Deploy Runtime (Manual)
 
 on:
-  push:
-    branches: ["main"]
-    paths:
-      - "services/bot_api/**"
-      - "libs/**"
-      - "schema/**"
-      - "scripts/**"
-      - "infra/cloud-init/runner.yaml.tftpl"
-      - "infra/main.tf"
-      - "infra/outputs.tf"
-      - "infra/terraform.tfvars"
-      - "infra/terraform.tfvars.example"
-      - "infra/variables.tf"
-      - "pyproject.toml"
-      - "uv.lock"
-      - "requirements.txt"
-      - "infra/scripts/remote_rollout_bot.sh"
-      - "infra/scripts/remote_apply_schema.sh"
-      - "infra/scripts/merge_bot_env.py"
-      - ".github/workflows/deploy_runtime.yml"
   workflow_dispatch:
 
 permissions:
@@ -39,14 +19,34 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup Python
+        id: setup-python
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+
+      - name: Cache uv downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-uv-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-uv-
 
       - name: Install uv
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Install CI lint tools
+        run: |
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+          if ! command -v actionlint >/dev/null 2>&1; then
+            scripts/dev/install_actionlint.sh "${HOME}/.local/bin"
+          fi
 
       - name: Configure private GitHub auth
         run: scripts/common/setup_private_git_auth.sh
@@ -59,6 +59,9 @@ jobs:
 
       - name: Lint
         run: uv run ruff check .
+
+      - name: Lint workflows and shell scripts
+        run: scripts/dev/check_ci_files.sh
 
       - name: Fast tests
         run: scripts/dev/test.sh fast

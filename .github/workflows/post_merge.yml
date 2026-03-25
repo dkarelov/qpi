@@ -1,6 +1,26 @@
-name: Deploy Functions (Manual)
+name: Post-Merge Deploy
 
 on:
+  push:
+    branches: ["main"]
+    paths:
+      - "services/__init__.py"
+      - "services/bot_api/**"
+      - "services/daily_report_scrapper/**"
+      - "services/order_tracker/**"
+      - "services/blockchain_checker/**"
+      - "libs/**"
+      - "schema/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "requirements.txt"
+      - "scripts/common/setup_private_git_auth.sh"
+      - "scripts/deploy/runtime.sh"
+      - "scripts/deploy/function.sh"
+      - "infra/scripts/remote_rollout_bot.sh"
+      - "infra/scripts/remote_apply_schema.sh"
+      - "infra/scripts/merge_bot_env.py"
+      - ".github/workflows/post_merge.yml"
   workflow_dispatch:
 
 permissions:
@@ -10,8 +30,44 @@ env:
   PSQLDEF_VERSION: v3.9.8
 
 jobs:
-  lint-and-fast-tests:
+  determine-changes:
     runs-on: ubuntu-latest
+    outputs:
+      needs_db_validation: ${{ steps.detect.outputs.needs_db_validation }}
+      requires_migration: ${{ steps.detect.outputs.requires_migration }}
+      has_runtime_changes: ${{ steps.detect.outputs.has_runtime_changes }}
+      has_function_targets: ${{ steps.detect.outputs.has_function_targets }}
+      function_targets: ${{ steps.detect.outputs.function_targets }}
+      needs_private_runner: ${{ steps.detect.outputs.needs_private_runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Determine changed areas
+        id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.before || '' }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          eval "$("${GITHUB_WORKSPACE}/scripts/common/detect_ci_changes.sh" \
+            --event-name "${EVENT_NAME}" \
+            --base-sha "${BASE_SHA}" \
+            --head-sha "${HEAD_SHA}")"
+          {
+            echo "needs_db_validation=${needs_db_validation}"
+            echo "requires_migration=${requires_migration}"
+            echo "has_runtime_changes=${has_runtime_changes}"
+            echo "has_function_targets=${has_function_targets}"
+            echo "function_targets=${function_targets}"
+            echo "needs_private_runner=${needs_private_runner}"
+          } >> "${GITHUB_OUTPUT}"
+
+  fast-validation:
+    runs-on: ubuntu-latest
+    needs: determine-changes
     env:
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
     steps:
@@ -57,7 +113,7 @@ jobs:
       - name: Verify generated requirements
         run: scripts/dev/export_requirements.sh --check
 
-      - name: Lint
+      - name: Lint Python
         run: uv run ruff check .
 
       - name: Lint workflows and shell scripts
@@ -66,27 +122,12 @@ jobs:
       - name: Fast tests
         run: scripts/dev/test.sh fast
 
-  determine-targets:
-    runs-on: ubuntu-latest
-    needs: lint-and-fast-tests
-    outputs:
-      targets: ${{ steps.targets.outputs.targets }}
-      has_targets: ${{ steps.targets.outputs.has_targets }}
-      requires_migration: ${{ steps.targets.outputs.requires_migration }}
-    steps:
-      - name: Resolve manual deploy targets
-        id: targets
-        run: |
-          {
-            echo "targets=daily_report_scrapper order_tracker blockchain_checker"
-            echo "has_targets=true"
-            echo "requires_migration=true"
-          } >> "${GITHUB_OUTPUT}"
-
   start-private-runner:
     runs-on: ubuntu-latest
-    needs: determine-targets
-    if: ${{ needs.determine-targets.outputs.has_targets == 'true' }}
+    needs:
+      - determine-changes
+      - fast-validation
+    if: ${{ needs.determine-changes.outputs.needs_private_runner == 'true' }}
     concurrency:
       group: qpi-private-runner
       cancel-in-progress: false
@@ -124,9 +165,9 @@ jobs:
   private-db-validation:
     runs-on: [self-hosted, linux, qpi-private]
     needs:
-      - determine-targets
+      - determine-changes
       - start-private-runner
-    if: ${{ needs.determine-targets.outputs.has_targets == 'true' }}
+    if: ${{ needs.determine-changes.outputs.needs_db_validation == 'true' }}
     concurrency:
       group: qpi-private-runner
       cancel-in-progress: false
@@ -137,7 +178,7 @@ jobs:
       QPI_DB_VM_HOST: ${{ vars.DB_VM_HOST }}
       QPI_DB_VM_SSH_USER: ${{ vars.DB_VM_SSH_USER }}
       QPI_DB_VM_SSH_PRIVATE_KEY: ${{ secrets.DB_VM_SSH_PRIVATE_KEY }}
-      REQUIRES_MIGRATION: ${{ needs.determine-targets.outputs.requires_migration }}
+      REQUIRES_MIGRATION: ${{ needs.determine-changes.outputs.requires_migration }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -147,22 +188,27 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install uv
+      - name: Ensure uv
         run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
+          export PATH="${HOME}/.local/bin:${PATH}"
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+          if ! command -v uv >/dev/null 2>&1; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+          fi
 
       - name: Install PostgreSQL client
         run: |
           sudo apt-get update
           sudo apt-get install -y postgresql-client
 
-      - name: Install psqldef
+      - name: Ensure psqldef
         run: |
-          curl -fsSL -o /tmp/psqldef.tar.gz \
-            "https://github.com/sqldef/sqldef/releases/download/${PSQLDEF_VERSION}/psqldef_linux_amd64.tar.gz"
-          tar -xzf /tmp/psqldef.tar.gz -C /tmp
-          sudo install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
+          if ! command -v psqldef >/dev/null 2>&1; then
+            curl -fsSL -o /tmp/psqldef.tar.gz \
+              "https://github.com/sqldef/sqldef/releases/download/${PSQLDEF_VERSION}/psqldef_linux_amd64.tar.gz"
+            tar -xzf /tmp/psqldef.tar.gz -C /tmp
+            sudo install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
+          fi
 
       - name: Configure private GitHub auth
         run: scripts/common/setup_private_git_auth.sh
@@ -178,12 +224,12 @@ jobs:
             scripts/dev/run_db_tests_on_runner.sh migration-smoke
           fi
 
-  deploy-functions:
+  deploy-runtime:
     runs-on: [self-hosted, linux, qpi-private]
     needs:
-      - determine-targets
+      - determine-changes
       - private-db-validation
-    if: ${{ needs.determine-targets.outputs.has_targets == 'true' }}
+    if: ${{ needs.determine-changes.outputs.has_runtime_changes == 'true' }}
     concurrency:
       group: qpi-private-runner
       cancel-in-progress: false
@@ -191,7 +237,67 @@ jobs:
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
       YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
-      TARGETS: ${{ needs.determine-targets.outputs.targets }}
+      BOT_VM_INSTANCE_GROUP_NAME: ${{ vars.BOT_VM_INSTANCE_GROUP_NAME }}
+      BOT_VM_HOST: ${{ vars.BOT_VM_HOST }}
+      BOT_VM_SSH_USER: ${{ vars.BOT_VM_SSH_USER }}
+      BOT_VM_SSH_PORT: ${{ vars.BOT_VM_SSH_PORT }}
+      BOT_HEALTH_PORT: ${{ vars.BOT_HEALTH_PORT }}
+      ADMIN_TELEGRAM_IDS: ${{ vars.ADMIN_TELEGRAM_IDS }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TOKEN_CIPHER_KEY: ${{ secrets.TOKEN_CIPHER_KEY }}
+      BOT_WEBHOOK_SECRET_TOKEN: ${{ secrets.BOT_WEBHOOK_SECRET_TOKEN }}
+      BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
+      DEPLOY_BASE_SHA: ${{ github.event.before }}
+      DEPLOY_HEAD_SHA: ${{ github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Ensure yc CLI
+        run: |
+          export PATH="${HOME}/yandex-cloud/bin:${PATH}"
+          echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
+          if ! command -v yc >/dev/null 2>&1; then
+            curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
+          fi
+
+      - name: Ensure psqldef
+        run: |
+          if ! command -v psqldef >/dev/null 2>&1; then
+            curl -fsSL -o /tmp/psqldef.tar.gz \
+              "https://github.com/sqldef/sqldef/releases/download/${PSQLDEF_VERSION}/psqldef_linux_amd64.tar.gz"
+            tar -xzf /tmp/psqldef.tar.gz -C /tmp
+            sudo install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
+          fi
+
+      - name: Validate required deployment secrets
+        run: |
+          test -n "${YC_TOKEN}" || { echo "YC_TOKEN is required"; exit 1; }
+          test -n "${YC_FOLDER_ID}" || { echo "YC_FOLDER_ID is required"; exit 1; }
+          test -n "${BOT_VM_HOST}" || { echo "BOT_VM_HOST is required"; exit 1; }
+          test -n "${BOT_VM_SSH_PRIVATE_KEY}" || { echo "BOT_VM_SSH_PRIVATE_KEY is required"; exit 1; }
+          test -n "${TELEGRAM_BOT_TOKEN}" || { echo "TELEGRAM_BOT_TOKEN is required"; exit 1; }
+          test -n "${TOKEN_CIPHER_KEY}" || { echo "TOKEN_CIPHER_KEY is required"; exit 1; }
+          test -n "${BOT_WEBHOOK_SECRET_TOKEN}" || { echo "BOT_WEBHOOK_SECRET_TOKEN is required"; exit 1; }
+          test -n "${GH_TOKEN}" || { echo "TOKEN_YC_JSON_LOGGER secret is required"; exit 1; }
+
+      - name: Deploy runtime
+        run: scripts/deploy/runtime.sh
+
+  deploy-functions:
+    runs-on: [self-hosted, linux, qpi-private]
+    needs:
+      - determine-changes
+      - private-db-validation
+    if: ${{ needs.determine-changes.outputs.has_function_targets == 'true' }}
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      TARGETS: ${{ needs.determine-changes.outputs.function_targets }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -201,20 +307,28 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install uv
+      - name: Ensure uv
         run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
+          export PATH="${HOME}/.local/bin:${PATH}"
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+          if ! command -v uv >/dev/null 2>&1; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+          fi
 
-      - name: Install yc CLI
+      - name: Ensure yc CLI
         run: |
-          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
+          export PATH="${HOME}/yandex-cloud/bin:${PATH}"
           echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
+          if ! command -v yc >/dev/null 2>&1; then
+            curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
+          fi
 
-      - name: Install zip
+      - name: Ensure zip
         run: |
-          sudo apt-get update
-          sudo apt-get install -y zip
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y zip
+          fi
 
       - name: Validate deployment auth
         run: |
@@ -227,11 +341,6 @@ jobs:
 
       - name: Deploy changed functions
         run: |
-          if [[ -z "${TARGETS}" ]]; then
-            echo "No function targets resolved."
-            exit 0
-          fi
-
           for target in ${TARGETS}; do
             scripts/deploy/function.sh "${target}"
           done
@@ -239,11 +348,11 @@ jobs:
   stop-private-runner:
     runs-on: ubuntu-latest
     needs:
-      - determine-targets
       - start-private-runner
       - private-db-validation
+      - deploy-runtime
       - deploy-functions
-    if: ${{ always() && needs.determine-targets.outputs.has_targets == 'true' && needs.start-private-runner.result == 'success' }}
+    if: ${{ always() && needs.start-private-runner.result == 'success' }}
     concurrency:
       group: qpi-private-runner
       cancel-in-progress: false

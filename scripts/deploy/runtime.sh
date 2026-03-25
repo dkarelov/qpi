@@ -29,6 +29,8 @@ Optional environment:
   DEPLOY_BASE_SHA / DEPLOY_HEAD_SHA (for schema auto-detection)
   QPI_ALLOW_DEPLOY_WHEN_UNHEALTHY (default: 0)
   QPI_DEPLOY_MIN_FREE_MB (default: 2048)
+  QPI_RUNTIME_ARTIFACT_RETENTION_COUNT (default: 10)
+  QPI_RUNTIME_ARTIFACT_RETENTION_DAYS (default: 14)
 EOF
 }
 
@@ -74,6 +76,17 @@ BOT_VM_SSH_PORT="${BOT_VM_SSH_PORT:-22}"
 BOT_HEALTH_PORT="${BOT_HEALTH_PORT:-18080}"
 QPI_ALLOW_DEPLOY_WHEN_UNHEALTHY="${QPI_ALLOW_DEPLOY_WHEN_UNHEALTHY:-0}"
 QPI_DEPLOY_MIN_FREE_MB="${QPI_DEPLOY_MIN_FREE_MB:-2048}"
+QPI_RUNTIME_ARTIFACT_RETENTION_COUNT="${QPI_RUNTIME_ARTIFACT_RETENTION_COUNT:-10}"
+QPI_RUNTIME_ARTIFACT_RETENTION_DAYS="${QPI_RUNTIME_ARTIFACT_RETENTION_DAYS:-14}"
+
+require_nonnegative_integer() {
+  local name="$1"
+  local value="$2"
+  if [[ ! "${value}" =~ ^[0-9]+$ ]]; then
+    echo "${name} must be a non-negative integer." >&2
+    exit 1
+  fi
+}
 
 resolve_git_token() {
   if [[ -n "${GH_TOKEN:-}" ]]; then
@@ -251,6 +264,28 @@ remote_preflight() {
   fi
 }
 
+prune_runtime_artifacts() {
+  require_nonnegative_integer "QPI_RUNTIME_ARTIFACT_RETENTION_COUNT" "${QPI_RUNTIME_ARTIFACT_RETENTION_COUNT}"
+  require_nonnegative_integer "QPI_RUNTIME_ARTIFACT_RETENTION_DAYS" "${QPI_RUNTIME_ARTIFACT_RETENTION_DAYS}"
+
+  mkdir -p "${artifacts_dir}"
+
+  find "${artifacts_dir}" -maxdepth 1 -type f -name 'qpi-bot-*.tar.gz' \
+    -mtime +"${QPI_RUNTIME_ARTIFACT_RETENTION_DAYS}" -delete
+
+  mapfile -t runtime_archives < <(
+    find "${artifacts_dir}" -maxdepth 1 -type f -name 'qpi-bot-*.tar.gz' -printf '%T@ %p\n' |
+      sort -nr |
+      awk '{sub(/^[^ ]+ /, ""); print}'
+  )
+
+  if (( ${#runtime_archives[@]} > QPI_RUNTIME_ARTIFACT_RETENTION_COUNT )); then
+    for archive_path in "${runtime_archives[@]:QPI_RUNTIME_ARTIFACT_RETENTION_COUNT}"; do
+      rm -f "${archive_path}"
+    done
+  fi
+}
+
 resolve_git_token
 require_env "GH_TOKEN"
 configure_yc_cli
@@ -259,6 +294,7 @@ verify_target_vm
 remote_preflight
 
 mkdir -p "${artifacts_dir}"
+prune_runtime_artifacts
 release_stamp="$(date -u +%Y%m%d%H%M%S)"
 release_sha="$(git rev-parse --short HEAD 2>/dev/null || echo manual)"
 release_id="${QPI_RELEASE_ID:-${release_stamp}-${release_sha}}"

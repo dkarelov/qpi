@@ -548,24 +548,23 @@ Runbook shortcuts:
 Workflows:
 
 - `.github/workflows/ci.yml`:
-  - `lint-and-fast-tests`,
-  - `start-private-runner`,
-  - `private-db-validation`,
-  - `stop-private-runner`.
+  - PR-focused validation workflow plus manual dispatch,
+  - runs fast tests, `actionlint`, and `shellcheck` on GitHub-hosted runners,
+  - starts the private runner only for trusted same-repo PRs / manual runs that actually need DB-backed validation,
+  - skips migration smoke unless schema-related files changed.
+- `.github/workflows/post_merge.yml`:
+  - single post-merge orchestrator for `main` pushes and manual full reruns,
+  - runs fast validation once,
+  - starts the private runner once,
+  - runs DB-backed validation once,
+  - selectively deploys runtime and/or Cloud Functions based on changed files,
+  - schedules runner shutdown afterward.
 - `.github/workflows/deploy_runtime.yml`:
-  - reruns lint + fast tests on main,
-  - starts the dedicated private runner,
-  - runs private DB-backed validation,
-  - packages current source,
-  - deploys runtime code from the private runner to the bot VM,
-  - applies schema when required,
-  - performs health verification and seller/buyer `/start` smoke.
+  - manual runtime-only deploy path,
+  - keeps the direct runtime rollout wrapper available for operator-triggered reruns/recovery.
 - `.github/workflows/deploy_functions.yml`:
-  - reuses the fast suite on main,
-  - starts the dedicated private runner,
-  - runs private DB-backed validation before function publishes,
-  - builds service-scoped uv-based bundles,
-  - publishes only the changed Cloud Functions directly through `yc`.
+  - manual function-only deploy path,
+  - keeps direct function publishes available for operator-triggered reruns/recovery.
 - `.github/workflows/private_runner_keepalive.yml`:
   - weekly start of the dedicated private runner,
   - validates runner registration / dispatch path,
@@ -588,11 +587,16 @@ Private runner / workflow gotchas:
 
 - Repo secrets `PRIVATE_RUNNER_SSH_PRIVATE_KEY`, `DB_VM_SSH_PRIVATE_KEY`, and `BOT_VM_SSH_PRIVATE_KEY` should be stored as base64-encoded private key material. The scripts accept raw / escaped / base64 formats, but base64 is the canonical GitHub Actions format because multiline PEM secrets were brittle during rollout.
 - Deploy/bootstrap scripts configure `yc` from `YC_TOKEN` + `YC_FOLDER_ID` on every run; do not assume `yc init` or a preexisting profile on GitHub-hosted or self-hosted runners.
+- GitHub-hosted validation jobs cache `~/.cache/uv` keyed by Python version and `uv.lock` to reduce repeated dependency download cost.
+- `.github/actionlint.yaml` must keep the custom `qpi-private` self-hosted runner label declared or `actionlint` will fail the validation path even when the workflows are otherwise correct.
 - Runner-touching concurrency is scoped to runner jobs, not whole workflows. Whole-workflow concurrency caused unrelated workflows to cancel each other during rollout.
 - When debugging CI/deploy behavior, prefer `workflow_dispatch` runs one at a time on `main` instead of relying on overlapping push-triggered workflows.
 - The private runner self-updates its GitHub runner binary automatically; the first bring-up after a version change can briefly restart the runner before it comes back online.
+- Runner cloud-init now preinstalls `yc`, `uv`, and `psqldef`; workflows still keep defensive fallback installs until the runner VM is reprovisioned with the updated image bootstrap.
+- The post-merge orchestrator intentionally watches deploy-relevant code/deploy-wrapper paths only; workflow-only, test-only, and `scripts/dev/**` changes validate in PR CI but do not auto-deploy on `main`.
 - Workflow action references target Node24-ready `actions/checkout@v6` and `actions/setup-python@v6`; keep the private runner on `v2.329.0` or newer for `checkout@v6` compatibility.
 - Function bundle publishing requires `zip` on the private runner. It is installed both in runner cloud-init and defensively in the deploy-functions workflow.
+- Runtime and function deploy wrappers prune old `.artifacts` outputs with retention knobs so the private runner workspace does not grow without bound.
 - GitHub Actions `Node 20` deprecation warnings refer to GitHub-provided JavaScript actions such as `actions/checkout` / `actions/setup-python`, not to the QPI application stack.
 
 Active development rule:

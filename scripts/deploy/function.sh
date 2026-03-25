@@ -4,8 +4,6 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 cache_root="${repo_root}/.artifacts/function-bundles"
-python_platform="${QPI_FUNCTION_PYTHON_PLATFORM:-x86_64-manylinux_2_17}"
-python_version="${QPI_FUNCTION_PYTHON_VERSION:-3.12}"
 
 usage() {
   cat <<'EOF' >&2
@@ -20,6 +18,10 @@ Required environment for deploy:
 
 Required environment for build/metadata/deploy:
   GH_TOKEN or TOKEN_YC_JSON_LOGGER
+
+Optional environment:
+  QPI_FUNCTION_BUNDLE_RETENTION_COUNT (default: 10)
+  QPI_FUNCTION_BUNDLE_RETENTION_DAYS (default: 14)
 EOF
 }
 
@@ -35,6 +37,9 @@ if [[ $# -ne 1 ]]; then
 fi
 
 service_name="$1"
+QPI_FUNCTION_BUNDLE_RETENTION_COUNT="${QPI_FUNCTION_BUNDLE_RETENTION_COUNT:-10}"
+QPI_FUNCTION_BUNDLE_RETENTION_DAYS="${QPI_FUNCTION_BUNDLE_RETENTION_DAYS:-14}"
+
 case "${service_name}" in
   daily_report_scrapper)
     function_name="${QPI_DAILY_REPORT_SCRAPPER_FUNCTION_NAME:-qpi-daily-report-scrapper}"
@@ -65,6 +70,15 @@ configure_yc_cli() {
   fi
   if [[ -n "${YC_FOLDER_ID:-}" ]]; then
     yc config set folder-id "${YC_FOLDER_ID}" >/dev/null
+  fi
+}
+
+require_nonnegative_integer() {
+  local name="$1"
+  local value="$2"
+  if [[ ! "${value}" =~ ^[0-9]+$ ]]; then
+    echo "${name} must be a non-negative integer." >&2
+    exit 1
   fi
 }
 
@@ -113,6 +127,7 @@ build_bundle() {
   staged_requirements_path="${stage_dir}/requirements.txt"
 
   mkdir -p "${bundle_dir}"
+  prune_bundle_dir "${bundle_dir}"
   if [[ -f "${bundle_path}" && -f "${bundle_path}.sha256" ]]; then
     printf '%s\n' "${bundle_path}"
     return
@@ -144,6 +159,47 @@ build_bundle() {
   rm -rf "${stage_dir}"
 
   printf '%s\n' "${bundle_path}"
+}
+
+prune_bundle_hash() {
+  local bundle_dir="$1"
+  local bundle_hash="$2"
+
+  rm -f \
+    "${bundle_dir}/${bundle_hash}.zip" \
+    "${bundle_dir}/${bundle_hash}.zip.sha256" \
+    "${bundle_dir}/${bundle_hash}.requirements.txt"
+  rm -rf "${bundle_dir}/stage-${bundle_hash}"
+}
+
+prune_bundle_dir() {
+  local bundle_dir="$1"
+
+  require_nonnegative_integer "QPI_FUNCTION_BUNDLE_RETENTION_COUNT" "${QPI_FUNCTION_BUNDLE_RETENTION_COUNT}"
+  require_nonnegative_integer "QPI_FUNCTION_BUNDLE_RETENTION_DAYS" "${QPI_FUNCTION_BUNDLE_RETENTION_DAYS}"
+
+  mapfile -t old_hashes < <(
+    find "${bundle_dir}" -maxdepth 1 -type f -name '*.zip' -mtime +"${QPI_FUNCTION_BUNDLE_RETENTION_DAYS}" -printf '%f\n' |
+      sed 's/\.zip$//'
+  )
+  for bundle_hash in "${old_hashes[@]}"; do
+    prune_bundle_hash "${bundle_dir}" "${bundle_hash}"
+  done
+
+  find "${bundle_dir}" -maxdepth 1 -type d -name 'stage-*' -mtime +"${QPI_FUNCTION_BUNDLE_RETENTION_DAYS}" \
+    -exec rm -rf {} +
+
+  mapfile -t live_hashes < <(
+    find "${bundle_dir}" -maxdepth 1 -type f -name '*.zip' -printf '%T@ %f\n' |
+      sort -nr |
+      awk '{sub(/^[^ ]+ /, ""); sub(/\.zip$/, ""); print}'
+  )
+
+  if (( ${#live_hashes[@]} > QPI_FUNCTION_BUNDLE_RETENTION_COUNT )); then
+    for bundle_hash in "${live_hashes[@]:QPI_FUNCTION_BUNDLE_RETENTION_COUNT}"; do
+      prune_bundle_hash "${bundle_dir}" "${bundle_hash}"
+    done
+  fi
 }
 
 latest_version_id() {

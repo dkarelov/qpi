@@ -21,10 +21,10 @@ Notes:
 
 The supported execution model is:
 
-1. `fast`
-   - local workstation or GitHub-hosted runner,
-   - no private DB,
-   - uses `scripts/dev/test.sh fast`.
+1. `pr-validation`
+   - GitHub-hosted fast path on every relevant PR,
+   - runs Python lint, fast tests, `actionlint`, and `shellcheck`,
+   - starts the private runner only for trusted same-repo PRs that need DB-backed validation.
 
 2. `db-integration`
    - dedicated private self-hosted runner,
@@ -41,10 +41,17 @@ The supported execution model is:
    - fresh `qpi_test_scratch`,
    - uses `scripts/dev/run_db_tests_on_runner.sh migration-smoke`.
 
-5. `deploy`
-   - dedicated private self-hosted runner,
-   - direct runtime/function wrappers,
-   - runner powers down afterward.
+5. `post-merge deploy`
+   - single `main`-branch orchestrator,
+   - runs fast validation once,
+   - starts the private runner once,
+   - runs DB-backed validation once,
+   - selectively deploys runtime and/or functions,
+   - powers the runner down afterward.
+
+6. `manual deploy`
+   - operator-triggered runtime-only or function-only workflows,
+   - keeps targeted rerun/recovery paths separate from the post-merge orchestrator.
 
 ## DB Suite Manifests
 
@@ -101,6 +108,7 @@ Behavior:
 - `scripts/dev/reset_remote_test_dbs.sh` recreates `qpi_test` and `qpi_test_scratch` through the DB VM admin path.
 - The disposable DBs are created with the user from `TEST_DATABASE_URL` as owner; if the URL omits the app user or points at the wrong user, schema apply will fail with `permission denied for schema public`.
 - Schema is reapplied before each file/batch.
+- Migration smoke is skipped in CI/orchestrated deploy flows unless schema-related files changed.
 - Ordinary DB integration, schema compatibility, and migration smoke are run separately.
 - The runner path does not depend on the workstation SSH tunnel.
 
@@ -146,7 +154,11 @@ Implementation notes:
 
 - bootstrap runs on GitHub-hosted runners,
 - bootstrap scripts configure `yc` from `YC_TOKEN` + `YC_FOLDER_ID` themselves; no preexisting `yc init` profile is required,
+- GitHub-hosted validation jobs cache `~/.cache/uv` keyed by Python version and `uv.lock`,
+- `.github/actionlint.yaml` must list the custom `qpi-private` runner label or `actionlint` will fail on every self-hosted workflow reference,
 - runner registration is kept warm by the weekly keepalive workflow,
+- runner cloud-init preinstalls `yc`, `uv`, and `psqldef` for steady-state self-hosted jobs,
+- the post-merge workflow intentionally ignores workflow-only, test-only, and `scripts/dev/**` changes so those validate in PR CI without causing automatic deployments on `main`,
 - the cleanup path schedules shutdown rather than treating the runner as always-on infrastructure.
 
 ## Direct Deploy Commands
@@ -168,6 +180,7 @@ The wrapper now:
 - verifies the target host against the expected YC folder / bot instance group,
 - checks remote disk/service state before rollout,
 - decides schema apply explicitly,
+- prunes old local runtime archives before creating a new one,
 - uploads the release artifact,
 - performs health plus seller/buyer `/start` smoke,
 - prints a before/after release summary.
@@ -185,6 +198,7 @@ The function wrapper now:
 
 - builds a service-scoped bundle,
 - includes the bundler script in the cache hash,
+- prunes old cached bundles before building,
 - prints bundle size,
 - creates a new version in the intended folder,
 - prints the created version id,
