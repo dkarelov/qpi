@@ -204,8 +204,8 @@ prune_bundle_dir() {
 
 latest_version_id() {
   local versions_json
+  local version_id
   versions_json="$(mktemp)"
-  trap 'rm -f "${versions_json}"' RETURN
 
   yc serverless function version list \
     --folder-id "${YC_FOLDER_ID}" \
@@ -213,7 +213,8 @@ latest_version_id() {
     --limit 20 \
     --format json > "${versions_json}"
 
-  python3 - "${versions_json}" <<'PY'
+  version_id="$(
+    python3 - "${versions_json}" <<'PY'
 import json
 import sys
 
@@ -237,17 +238,21 @@ if not version_id:
 
 print(version_id)
 PY
+  )"
+  rm -f "${versions_json}"
+  printf '%s\n' "${version_id}"
 }
 
 build_version_create_args() {
   local version_id="$1"
   local version_json
+  local args_file
 
   version_json="$(mktemp)"
-  trap 'rm -f "${version_json}"' RETURN
+  args_file="$(mktemp)"
   yc serverless function version get "${version_id}" --format json > "${version_json}"
 
-  python3 - "${version_json}" <<'PY'
+  python3 - "${version_json}" > "${args_file}" <<'PY'
 import json
 import sys
 
@@ -311,6 +316,9 @@ for arg in args:
     sys.stdout.buffer.write(arg.encode("utf-8"))
     sys.stdout.buffer.write(b"\0")
 PY
+  rm -f "${version_json}"
+  cat "${args_file}"
+  rm -f "${args_file}"
 }
 
 emit_metadata() {
@@ -331,15 +339,15 @@ compare_version_configs() {
   local new_version_id="$2"
   local old_json
   local new_json
+  local compare_status=0
 
   old_json="$(mktemp)"
   new_json="$(mktemp)"
-  trap 'rm -f "${old_json}" "${new_json}"' RETURN
 
   yc serverless function version get "${old_version_id}" --format json > "${old_json}"
   yc serverless function version get "${new_version_id}" --format json > "${new_json}"
 
-  python3 - "${old_json}" "${new_json}" <<'PY'
+  if ! python3 - "${old_json}" "${new_json}" <<'PY'
 import json
 import sys
 
@@ -381,6 +389,11 @@ if old != new:
     print(json.dumps(new, ensure_ascii=True, indent=2, sort_keys=True), file=sys.stderr)
     raise SystemExit(1)
 PY
+  then
+    compare_status=1
+  fi
+  rm -f "${old_json}" "${new_json}"
+  return "${compare_status}"
 }
 
 deploy_bundle() {
@@ -408,7 +421,6 @@ deploy_bundle() {
   echo "Source live version: ${version_id}"
 
   created_json="$(mktemp)"
-  trap 'rm -f "${created_json}"' RETURN
   yc serverless function version create \
     --folder-id "${YC_FOLDER_ID}" \
     --function-name "${function_name}" \
@@ -430,6 +442,7 @@ if not version_id:
 print(version_id)
 PY
   )"
+  rm -f "${created_json}"
 
   echo "Created function version: ${created_version_id}"
   compare_version_configs "${version_id}" "${created_version_id}"
