@@ -28,6 +28,7 @@ Optional environment:
   PRIVATE_RUNNER_SYSTEM_USER (default: github-runner)
   PRIVATE_RUNNER_INSTALL_DIR (default: /opt/actions-runner)
   PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES (default: 30)
+  PRIVATE_RUNNER_MAX_SESSION_MINUTES (default: 120)
   PRIVATE_RUNNER_VERSION (default: 2.330.0)
   MIN_PRIVATE_RUNNER_VERSION (default: 2.329.0)
   PRIVATE_RUNNER_FORCE_RECONFIGURE (default: 0)
@@ -81,6 +82,7 @@ PRIVATE_RUNNER_LABELS="${PRIVATE_RUNNER_LABELS:-qpi-private,qpi-deploy}"
 PRIVATE_RUNNER_SYSTEM_USER="${PRIVATE_RUNNER_SYSTEM_USER:-github-runner}"
 PRIVATE_RUNNER_INSTALL_DIR="${PRIVATE_RUNNER_INSTALL_DIR:-/opt/actions-runner}"
 PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES="${PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES:-30}"
+PRIVATE_RUNNER_MAX_SESSION_MINUTES="${PRIVATE_RUNNER_MAX_SESSION_MINUTES:-120}"
 PRIVATE_RUNNER_VERSION="${PRIVATE_RUNNER_VERSION:-2.330.0}"
 MIN_PRIVATE_RUNNER_VERSION="${MIN_PRIVATE_RUNNER_VERSION:-2.329.0}"
 GITHUB_API_URL="${GITHUB_API_URL:-https://api.github.com}"
@@ -406,7 +408,7 @@ wait_for_runner_online() {
 }
 
 schedule_shutdown() {
-  local minutes="${PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES}"
+  local minutes="${1:-${PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES}}"
   remote_exec "sudo shutdown -h +${minutes}"
 }
 
@@ -438,6 +440,7 @@ case "${command_name}" in
     cancel_scheduled_shutdown
     install_or_reconfigure_runner
     wait_for_runner_online
+    schedule_shutdown "${PRIVATE_RUNNER_MAX_SESSION_MINUTES}"
     print_status
     ;;
   schedule-stop)
@@ -447,7 +450,7 @@ case "${command_name}" in
     fi
     prepare_ssh_key
     wait_for_ssh
-    schedule_shutdown
+    schedule_shutdown "${PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES}"
     ;;
   stop-now)
     stop_now

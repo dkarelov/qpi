@@ -588,8 +588,10 @@ Private runner / workflow gotchas:
 - Repo secrets `PRIVATE_RUNNER_SSH_PRIVATE_KEY`, `DB_VM_SSH_PRIVATE_KEY`, and `BOT_VM_SSH_PRIVATE_KEY` should be stored as base64-encoded private key material. The scripts accept raw / escaped / base64 formats, but base64 is the canonical GitHub Actions format because multiline PEM secrets were brittle during rollout.
 - Deploy/bootstrap scripts configure `yc` from `YC_TOKEN` + `YC_FOLDER_ID` on every run; do not assume `yc init` or a preexisting profile on GitHub-hosted or self-hosted runners.
 - GitHub-hosted validation jobs cache `~/.cache/uv` keyed by Python version and `uv.lock` to reduce repeated dependency download cost.
+- Fast validation is centralized in reusable workflow `.github/workflows/_fast_validation.yml`; keep PR, post-merge, and manual deploy validation behavior aligned there instead of editing each caller separately.
 - `.github/actionlint.yaml` must keep the custom `qpi-private` self-hosted runner label declared or `actionlint` will fail the validation path even when the workflows are otherwise correct.
 - Runner-touching concurrency is scoped to runner jobs, not whole workflows. Whole-workflow concurrency caused unrelated workflows to cancel each other during rollout.
+- `.github/workflows/post_merge.yml` now uses workflow-level concurrency on `main` with stale-run cancellation; `private_runner.sh ensure-ready` sets a max-session shutdown failsafe so canceled runs do not strand the runner VM indefinitely.
 - When debugging CI/deploy behavior, prefer `workflow_dispatch` runs one at a time on `main` instead of relying on overlapping push-triggered workflows.
 - The private runner self-updates its GitHub runner binary automatically; the first bring-up after a version change can briefly restart the runner before it comes back online.
 - Runner cloud-init now preinstalls `yc`, `uv`, and `psqldef`; workflows still keep defensive fallback installs until the runner VM is reprovisioned with the updated image bootstrap.

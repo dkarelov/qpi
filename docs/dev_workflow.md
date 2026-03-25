@@ -24,6 +24,7 @@ The supported execution model is:
 1. `pr-validation`
    - GitHub-hosted fast path on every relevant PR,
    - runs Python lint, fast tests, `actionlint`, and `shellcheck`,
+   - uses shared reusable workflow `.github/workflows/_fast_validation.yml`,
    - starts the private runner only for trusted same-repo PRs that need DB-backed validation.
 
 2. `db-integration`
@@ -47,6 +48,7 @@ The supported execution model is:
    - starts the private runner once,
    - runs DB-backed validation once,
    - selectively deploys runtime and/or functions,
+   - cancels stale in-progress runs on newer `main` pushes,
    - powers the runner down afterward.
 
 6. `manual deploy`
@@ -155,10 +157,12 @@ Implementation notes:
 - bootstrap runs on GitHub-hosted runners,
 - bootstrap scripts configure `yc` from `YC_TOKEN` + `YC_FOLDER_ID` themselves; no preexisting `yc init` profile is required,
 - GitHub-hosted validation jobs cache `~/.cache/uv` keyed by Python version and `uv.lock`,
+- reusable workflow `.github/workflows/_fast_validation.yml` is the single source of truth for the GitHub-hosted fast-validation sequence,
 - `.github/actionlint.yaml` must list the custom `qpi-private` runner label or `actionlint` will fail on every self-hosted workflow reference,
 - runner registration is kept warm by the weekly keepalive workflow,
 - runner cloud-init preinstalls `yc`, `uv`, and `psqldef` for steady-state self-hosted jobs,
 - the post-merge workflow intentionally ignores workflow-only, test-only, and `scripts/dev/**` changes so those validate in PR CI without causing automatic deployments on `main`,
+- `scripts/deploy/private_runner.sh ensure-ready` schedules a max-session shutdown failsafe before jobs begin; the end-of-workflow stop path then reschedules a shorter idle shutdown,
 - the cleanup path schedules shutdown rather than treating the runner as always-on infrastructure.
 
 ## Direct Deploy Commands
