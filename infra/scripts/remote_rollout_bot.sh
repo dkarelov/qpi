@@ -33,26 +33,25 @@ sudo install -d -m 0755 "${release_dir}"
 sudo tar -xzf "${archive_path}" -C "${release_dir}"
 sudo chown -R ubuntu:ubuntu "${release_dir}"
 
-python3 -m venv "${release_dir}/.venv"
-
 ca_bundle="/etc/ssl/certs/ca-certificates.crt"
 export SSL_CERT_FILE="${SSL_CERT_FILE:-${ca_bundle}}"
 export REQUESTS_CA_BUNDLE="${REQUESTS_CA_BUNDLE:-${ca_bundle}}"
 export PIP_CERT="${PIP_CERT:-${ca_bundle}}"
+export PATH="${HOME}/.local/bin:${PATH}"
 
-if grep -q '\${TOKEN_YC_JSON_LOGGER}' "${release_dir}/requirements.txt"; then
-  if [[ -z "${TOKEN_YC_JSON_LOGGER:-}" ]]; then
-    echo "TOKEN_YC_JSON_LOGGER is required for private dependencies" >&2
-    exit 1
-  fi
+if [[ ! -x "${release_dir}/scripts/common/setup_private_git_auth.sh" ]]; then
+  echo "private git auth helper missing from release: ${release_dir}/scripts/common/setup_private_git_auth.sh" >&2
+  exit 1
 fi
 
-if [[ -n "${TOKEN_YC_JSON_LOGGER:-}" ]]; then
-  TOKEN_YC_JSON_LOGGER="${TOKEN_YC_JSON_LOGGER}" \
-    "${release_dir}/.venv/bin/pip" install -r "${release_dir}/requirements.txt"
-else
-  "${release_dir}/.venv/bin/pip" install -r "${release_dir}/requirements.txt"
+if ! command -v uv >/dev/null 2>&1; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="${HOME}/.local/bin:${PATH}"
 fi
+
+"${release_dir}/scripts/common/setup_private_git_auth.sh"
+UV_PROJECT_ENVIRONMENT="${release_dir}/.venv" \
+  uv sync --frozen --no-dev --project "${release_dir}"
 
 sudo ln -sfn "${release_dir}" "${current_link}"
 sudo chown -h ubuntu:ubuntu "${current_link}"

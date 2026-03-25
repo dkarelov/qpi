@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import psycopg
+
 from libs.db.psqldef import run_psqldef
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -35,6 +37,13 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _drop_public_schema(database_url: str) -> None:
+    with psycopg.connect(database_url, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("DROP SCHEMA IF EXISTS public CASCADE")
+            cur.execute("CREATE SCHEMA public")
+
+
 def cli(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
@@ -50,12 +59,7 @@ def cli(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "drop":
-            run_psqldef(
-                database_url,
-                mode="apply",
-                schema_file=args.empty_schema_file,
-                enable_drop=True,
-            )
+            _drop_public_schema(database_url)
             return 0
 
         export_result = run_psqldef(database_url, mode="export", capture_output=True)

@@ -6030,7 +6030,7 @@ class TelegramWebhookRuntime:
                         callback_data=build_callback(
                             flow=rendered.cta_flow,
                             action=rendered.cta_action,
-                            entity_id=rendered.cta_entity_id,
+                            entity_id=rendered.cta_entity_id or "",
                         ),
                     )
                 ]

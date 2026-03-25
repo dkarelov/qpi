@@ -1,28 +1,17 @@
 # QPI Phase 7 Live Telegram Baseline
 
-This repository includes Phase 2 foundation through Phase 7 live Telegram go-live scope:
-
-- async Python services (`services/bot_api`, `services/worker`, `services/daily_report_scrapper`, `services/order_tracker`),
-- shared libs (`libs/config`, `libs/db`, `libs/domain`, `libs/logging`, `libs/integrations`),
-- `psqldef`-based PostgreSQL schema management (`schema/schema.sql` source of truth),
-- plain SQL transactional domain logic via `psycopg3`,
-- seller domain + bot handlers (`libs/domain/seller.py`, `services/bot_api/seller_handlers.py`),
-- buyer domain + bot handlers (`libs/domain/buyer.py`, `services/bot_api/buyer_handlers.py`),
-- webhook PTB runtime with button-first seller/buyer/admin UX (`services/bot_api/telegram_runtime.py`),
-- reservation timeout + order lifecycle processor in order-tracker (`reserved` -> `expired_2h`, pickup/return/unlock flow),
-- daily report scrapper for WB `reportDetailByPeriod` ingestion (`services/daily_report_scrapper`),
-- WB integrations (`libs/integrations/wb.py`, `libs/integrations/wb_reports.py`),
-- finance/admin flows including pending withdrawal queue and manual deposits (`libs/domain/ledger.py`),
-- integration tests for schema lifecycle, finance invariants, seller flow, buyer flow, and phase 5 report ingestion.
+This repository includes the bot runtime, Cloud Functions, plain-SQL domain layer, `psqldef` schema management, and the Telegram seller/buyer/admin UX described in [AGENTS.md](/home/darker/dkarelov/qpi/AGENTS.md).
 
 ## Local Setup
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .[dev]
+export GH_TOKEN="${GH_TOKEN:-$(gh auth token)}"
+scripts/common/setup_private_git_auth.sh
+uv sync --frozen --extra dev
 cp .env.example .env
 ```
+
+`.venv` remains the runtime environment path, but it is managed by `uv`. `pyproject.toml` + `uv.lock` are authoritative. `requirements.txt` is generated only for Cloud Function/Terraform compatibility.
 
 ## Migration Commands
 
@@ -37,61 +26,79 @@ make migrate-export
 ## Runtime Checks
 
 ```bash
-qpi-bot-api --once
-qpi-worker --once
-qpi-daily-report-scrapper --once
-qpi-order-tracker --once
-```
-
-Seller command smoke check:
-
-```bash
 DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi \
-python -m services.bot_api.main --seller-command "/start" --telegram-id 1001 --telegram-username seller
-```
+uv run python -m services.bot_api.main --seller-command "/start" --telegram-id 1001 --telegram-username seller
 
-Buyer command smoke check:
-
-```bash
 DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi \
-python -m services.bot_api.main --buyer-command "/start" --telegram-id 2001 --telegram-username buyer
-```
+uv run python -m services.bot_api.main --buyer-command "/start" --telegram-id 2001 --telegram-username buyer
 
-Daily report scrapper smoke check:
-
-```bash
 DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi \
 TOKEN_CIPHER_KEY=<cipher-key> \
-python -m services.daily_report_scrapper.main --once
-```
+uv run python -m services.daily_report_scrapper.main --once
 
-Order tracker smoke check:
-
-```bash
 DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi \
-python -m services.order_tracker.main --once
+uv run python -m services.order_tracker.main --once
+
+DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi \
+uv run python -m services.blockchain_checker.main --once
 ```
 
 ## Test Commands
 
-Integration tests require a reachable dedicated test database.
-Safety rules:
-
-- `TEST_DATABASE_URL` database name must contain `test`,
-- migration smoke tests are destructive and require disposable DB name containing
-  `test` plus one of `scratch|tmp|disposable`.
-
-Main integration suite (non-destructive schema lifecycle; truncates data in test DB per test):
+The supported developer entrypoints live under `scripts/dev/`.
 
 ```bash
 TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
-pytest -q -m "not migration_smoke"
+scripts/dev/reset_test_db.sh
+
+scripts/dev/test.sh fast
+
+TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
+scripts/dev/test.sh integration
+
+TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
+scripts/dev/test.sh migration-smoke
+
+TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
+scripts/dev/test.sh all
 ```
 
-Migration smoke suite (destructive `apply/drop/apply`, opt-in):
+`integration` and `migration-smoke` are serialized with `/tmp/qpi-test-db.lock`. If a stale session blocks resets:
 
 ```bash
-RUN_MIGRATION_SMOKE=1 \
-TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test_scratch \
-pytest -q -m migration_smoke
+TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
+scripts/dev/kill-stuck-tests.sh
 ```
+
+If the shared tunnel user cannot create databases, set `TEST_DATABASE_ADMIN_URL` to an admin-capable connection for the reset/cleanup scripts.
+
+## Deploy Commands
+
+Code-only runtime deploy to the bot VM:
+
+```bash
+GH_TOKEN="$(gh auth token)" \
+BOT_VM_HOST=<host> \
+TELEGRAM_BOT_TOKEN=<token> \
+TOKEN_CIPHER_KEY=<cipher-key> \
+BOT_WEBHOOK_SECRET_TOKEN=<secret> \
+scripts/deploy/runtime.sh
+```
+
+Code-only Cloud Function deploy:
+
+```bash
+GH_TOKEN="$(gh auth token)" YC_TOKEN="$(yc config get token)" \
+scripts/deploy/function.sh daily_report_scrapper
+```
+
+Intentional infra changes still go through Terraform:
+
+```bash
+GH_TOKEN="$(gh auth token)" YC_TOKEN="$(yc config get token)" \
+terraform -chdir=infra plan
+```
+
+## More Detail
+
+See [docs/dev_workflow.md](/home/darker/dkarelov/qpi/docs/dev_workflow.md) for the shared test DB guardrails, deploy wrapper behavior, and troubleshooting notes.

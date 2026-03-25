@@ -1,0 +1,209 @@
+name: Deploy Runtime
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "services/bot_api/**"
+      - "libs/**"
+      - "schema/**"
+      - "scripts/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "requirements.txt"
+      - "infra/scripts/remote_rollout_bot.sh"
+      - "infra/scripts/remote_apply_schema.sh"
+      - "infra/scripts/merge_bot_env.py"
+      - ".github/workflows/deploy_runtime.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PSQLDEF_VERSION: v3.9.8
+
+jobs:
+  lint-and-fast-tests:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Configure private GitHub auth
+        run: scripts/common/setup_private_git_auth.sh
+
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Verify generated requirements
+        run: scripts/dev/export_requirements.sh --check
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Fast tests
+        run: scripts/dev/test.sh fast
+
+  integration-shared-db:
+    runs-on: ubuntu-latest
+    needs: lint-and-fast-tests
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/qpi_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Install psqldef
+        run: |
+          curl -fsSL -o /tmp/psqldef.tar.gz \
+            "https://github.com/sqldef/sqldef/releases/download/${PSQLDEF_VERSION}/psqldef_linux_amd64.tar.gz"
+          tar -xzf /tmp/psqldef.tar.gz -C /tmp
+          install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
+
+      - name: Configure private GitHub auth
+        run: scripts/common/setup_private_git_auth.sh
+
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Shared DB integration suite
+        run: scripts/dev/test.sh integration
+
+  migration-smoke:
+    runs-on: ubuntu-latest
+    needs: lint-and-fast-tests
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/qpi_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Install psqldef
+        run: |
+          curl -fsSL -o /tmp/psqldef.tar.gz \
+            "https://github.com/sqldef/sqldef/releases/download/${PSQLDEF_VERSION}/psqldef_linux_amd64.tar.gz"
+          tar -xzf /tmp/psqldef.tar.gz -C /tmp
+          install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
+
+      - name: Configure private GitHub auth
+        run: scripts/common/setup_private_git_auth.sh
+
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Migration smoke suite
+        run: scripts/dev/test.sh migration-smoke
+
+  deploy-runtime:
+    runs-on: ubuntu-latest
+    needs:
+      - integration-shared-db
+      - migration-smoke
+    env:
+      GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+      BOT_VM_HOST: ${{ vars.BOT_VM_HOST }}
+      BOT_VM_SSH_USER: ${{ vars.BOT_VM_SSH_USER }}
+      BOT_VM_SSH_PORT: ${{ vars.BOT_VM_SSH_PORT }}
+      BOT_HEALTH_PORT: ${{ vars.BOT_HEALTH_PORT }}
+      ADMIN_TELEGRAM_IDS: ${{ vars.ADMIN_TELEGRAM_IDS }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TOKEN_CIPHER_KEY: ${{ secrets.TOKEN_CIPHER_KEY }}
+      BOT_WEBHOOK_SECRET_TOKEN: ${{ secrets.BOT_WEBHOOK_SECRET_TOKEN }}
+      BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
+      DEPLOY_BASE_SHA: ${{ github.event.before }}
+      DEPLOY_HEAD_SHA: ${{ github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install psqldef
+        run: |
+          curl -fsSL -o /tmp/psqldef.tar.gz \
+            "https://github.com/sqldef/sqldef/releases/download/${PSQLDEF_VERSION}/psqldef_linux_amd64.tar.gz"
+          tar -xzf /tmp/psqldef.tar.gz -C /tmp
+          install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
+
+      - name: Validate required deployment secrets
+        run: |
+          test -n "${BOT_VM_HOST}" || { echo "BOT_VM_HOST variable is required"; exit 1; }
+          test -n "${BOT_VM_SSH_PRIVATE_KEY}" || { echo "BOT_VM_SSH_PRIVATE_KEY is required"; exit 1; }
+          test -n "${TELEGRAM_BOT_TOKEN}" || { echo "TELEGRAM_BOT_TOKEN is required"; exit 1; }
+          test -n "${TOKEN_CIPHER_KEY}" || { echo "TOKEN_CIPHER_KEY is required"; exit 1; }
+          test -n "${BOT_WEBHOOK_SECRET_TOKEN}" || { echo "BOT_WEBHOOK_SECRET_TOKEN is required"; exit 1; }
+          test -n "${GH_TOKEN}" || { echo "TOKEN_YC_JSON_LOGGER secret is required"; exit 1; }
+
+      - name: Deploy runtime
+        run: scripts/deploy/runtime.sh

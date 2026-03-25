@@ -1,5 +1,58 @@
-psycopg[binary]>=3.2,<4.0
-psycopg-pool>=3.2,<4.0
-pydantic-settings>=2.7,<3.0
-python-telegram-bot[webhooks]>=21.10,<22.0
-git+https://x-access-token:${TOKEN_YC_JSON_LOGGER}@github.com/e-comet/yc_json_logger.git
+# Generated from uv.lock by scripts/dev/export_requirements.sh.
+# Non-authoritative: update pyproject.toml and uv.lock, then re-export.
+annotated-types==0.7.0
+    # via pydantic
+anyio==4.12.1
+    # via httpx
+certifi==2026.2.25
+    # via
+    #   httpcore
+    #   httpx
+h11==0.16.0
+    # via httpcore
+httpcore==1.0.9
+    # via httpx
+httpx==0.28.1
+    # via python-telegram-bot
+idna==3.11
+    # via
+    #   anyio
+    #   httpx
+psycopg==3.3.3
+    # via qpi
+psycopg-binary==3.3.3 ; implementation_name != 'pypy'
+    # via psycopg
+psycopg-pool==3.3.0
+    # via qpi
+pydantic==2.12.5
+    # via pydantic-settings
+pydantic-core==2.41.5
+    # via pydantic
+pydantic-settings==2.13.1
+    # via qpi
+python-dotenv==1.2.1
+    # via pydantic-settings
+python-json-logger==2.0.7
+    # via yc-json-logger
+python-telegram-bot==21.11.1
+    # via qpi
+structlog==25.5.0
+    # via qpi
+tornado==6.5.4
+    # via python-telegram-bot
+typing-extensions==4.15.0
+    # via
+    #   anyio
+    #   psycopg
+    #   psycopg-pool
+    #   pydantic
+    #   pydantic-core
+    #   typing-inspection
+typing-inspection==0.4.2
+    # via
+    #   pydantic
+    #   pydantic-settings
+tzdata==2025.3 ; sys_platform == 'win32'
+    # via psycopg
+yc-json-logger @ git+https://github.com/e-comet/yc_json_logger.git@882b8a6880d7726f03db145d4d6935a0b26294df
+    # via qpi

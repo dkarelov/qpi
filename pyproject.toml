@@ -13,6 +13,7 @@ dependencies = [
   "pydantic-settings>=2.7,<3.0",
   "structlog>=25.1,<26.0",
   "python-telegram-bot[webhooks]>=21.10,<22.0",
+  "yc_json_logger @ git+https://github.com/e-comet/yc_json_logger.git@882b8a6880d7726f03db145d4d6935a0b26294df",
 ]
 
 [project.optional-dependencies]
@@ -43,7 +44,7 @@ markers = [
 ]
 
 [tool.ruff]
-line-length = 100
+line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint]

@@ -1,0 +1,127 @@
+name: Deploy Functions
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "services/daily_report_scrapper/**"
+      - "services/order_tracker/**"
+      - "services/blockchain_checker/**"
+      - "libs/**"
+      - "scripts/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "requirements.txt"
+      - ".github/workflows/deploy_functions.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-fast-tests:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Configure private GitHub auth
+        run: scripts/common/setup_private_git_auth.sh
+
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Verify generated requirements
+        run: scripts/dev/export_requirements.sh --check
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Fast tests
+        run: scripts/dev/test.sh fast
+
+  deploy-functions:
+    runs-on: ubuntu-latest
+    needs: lint-and-fast-tests
+    env:
+      GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Install yc CLI
+        run: |
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
+          echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
+
+      - name: Validate deployment auth
+        run: |
+          test -n "${GH_TOKEN}" || { echo "TOKEN_YC_JSON_LOGGER secret is required"; exit 1; }
+          test -n "${YC_TOKEN}" || { echo "YC_TOKEN is required"; exit 1; }
+
+      - name: Determine changed functions
+        id: targets
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "targets=daily_report_scrapper order_tracker blockchain_checker" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          before="${{ github.event.before }}"
+          zero_sha="0000000000000000000000000000000000000000"
+          if [[ -z "${before}" || "${before}" == "${zero_sha}" ]]; then
+            echo "targets=daily_report_scrapper order_tracker blockchain_checker" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          changed_files="$(git diff --name-only "${before}" "${GITHUB_SHA}")"
+          if printf '%s\n' "${changed_files}" | grep -Eq '^(libs/|pyproject\.toml$|uv\.lock$|requirements\.txt$|scripts/)'; then
+            echo "targets=daily_report_scrapper order_tracker blockchain_checker" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          targets=""
+          if printf '%s\n' "${changed_files}" | grep -q '^services/daily_report_scrapper/'; then
+            targets="${targets} daily_report_scrapper"
+          fi
+          if printf '%s\n' "${changed_files}" | grep -q '^services/order_tracker/'; then
+            targets="${targets} order_tracker"
+          fi
+          if printf '%s\n' "${changed_files}" | grep -q '^services/blockchain_checker/'; then
+            targets="${targets} blockchain_checker"
+          fi
+          echo "targets=${targets# }" >> "${GITHUB_OUTPUT}"
+
+      - name: Deploy changed functions
+        run: |
+          if [[ -z "${{ steps.targets.outputs.targets }}" ]]; then
+            echo "No function targets resolved."
+            exit 0
+          fi
+
+          for target in ${{ steps.targets.outputs.targets }}; do
+            scripts/deploy/function.sh "${target}"
+          done

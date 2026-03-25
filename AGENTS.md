@@ -70,6 +70,9 @@ Shared layers:
 - `libs/config/settings.py`: runtime settings contracts.
 - `libs/logging/setup.py`: YC-compatible structured logging.
 - `libs/db/*`: pool and schema tooling.
+- `scripts/dev/*`: canonical local reset/test/export wrappers.
+- `scripts/deploy/runtime.sh`: canonical bot VM rollout entrypoint.
+- `scripts/deploy/function.sh`: canonical code-only Cloud Function rollout entrypoint.
 
 Persistence and schema:
 
@@ -329,10 +332,12 @@ Transitions:
 ## 5. Technical Constraints and Invariants
 
 - Python-only services.
+- Dependency and environment management are `uv`-based; `.venv` remains the runtime path, but `uv.lock` is the source of truth.
+- `requirements.txt` is generated from `uv.lock` for Cloud Function/Terraform compatibility and is never hand-edited.
 - DB access: `psycopg3` + plain SQL only (no ORM).
 - Schema changes only through `schema/schema.sql` + `psqldef`.
 - Infrastructure mutations are Terraform-only from `infra/`.
-- `yc` CLI is read-only for checks/debugging.
+- Code-only Cloud Function version publishes are allowed through `scripts/deploy/function.sh`; broader infra mutations still remain Terraform-only.
 - Cloud Function packaging must be service-scoped to avoid unrelated redeploys.
 - Bot runtime is webhook-based.
 - Expected load target: ~100 concurrent users.
@@ -375,18 +380,26 @@ Operational note:
 ### 7.1 Terraform
 
 ```bash
+uv sync --frozen --extra dev
+
 terraform -chdir=infra init
 terraform -chdir=infra fmt
 terraform -chdir=infra validate
 
+GH_TOKEN="${GH_TOKEN:-$(gh auth token)}" \
 TF_VAR_cf_token_cipher_key="<cipher-key>" YC_TOKEN="$(yc config get token)" \
-  infra/scripts/with_private_requirements.sh -- terraform -chdir=infra plan
+terraform -chdir=infra plan
 
+GH_TOKEN="${GH_TOKEN:-$(gh auth token)}" \
 TF_VAR_cf_token_cipher_key="<cipher-key>" YC_TOKEN="$(yc config get token)" \
-  infra/scripts/with_private_requirements.sh -- terraform -chdir=infra apply
+terraform -chdir=infra apply
 
 terraform -chdir=infra output
 ```
+
+Code-only deploy rule:
+
+- If only Python/runtime code changed, use `scripts/deploy/runtime.sh` or `scripts/deploy/function.sh <service>` instead of `terraform apply`.
 
 ### 7.2 SSH and DB access
 
@@ -415,11 +428,11 @@ Rules:
 
 ```bash
 export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
-python -m libs.db.runtime_schema_compat apply
-python -m libs.db.schema_cli plan
-python -m libs.db.schema_cli apply
-python -m libs.db.schema_cli drop
-python -m libs.db.schema_cli export
+uv run python -m libs.db.runtime_schema_compat apply
+uv run python -m libs.db.schema_cli plan
+uv run python -m libs.db.schema_cli apply
+uv run python -m libs.db.schema_cli drop
+uv run python -m libs.db.schema_cli export
 ```
 
 Rule:
@@ -434,31 +447,43 @@ Rule:
 
 ```bash
 export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
-python -m services.bot_api.main --seller-command "/start" --telegram-id 10001 --telegram-username seller
-python -m services.bot_api.main --buyer-command "/start" --telegram-id 10002 --telegram-username buyer
-python -m services.daily_report_scrapper.main --once
-python -m services.order_tracker.main --once
-python -m services.blockchain_checker.main --once
+uv run python -m services.bot_api.main --seller-command "/start" --telegram-id 10001 --telegram-username seller
+uv run python -m services.bot_api.main --buyer-command "/start" --telegram-id 10002 --telegram-username buyer
+uv run python -m services.daily_report_scrapper.main --once
+uv run python -m services.order_tracker.main --once
+uv run python -m services.blockchain_checker.main --once
 ```
 
 ### 7.5 Test runbook
 
 ```bash
-# Shared venv for test tooling is expected at /home/darker/venv
-# (includes pytest-asyncio and other dev dependencies).
+uv sync --frozen --extra dev
 
-# Main integration suite:
+# Shared remote-db defaults:
 TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
-pytest -q -m "not migration_smoke"
+scripts/dev/reset_test_db.sh
 
-# Destructive migration smoke:
-RUN_MIGRATION_SMOKE=1 \
-TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test_scratch \
-pytest -q -m migration_smoke
+# Fast local feedback (non-shared-db suites + deterministic harness):
+scripts/dev/test.sh fast
 
-# Telegram-emulated deterministic E2E suite:
-PYTHONPATH=. uv run pytest -q tests/test_phase10_e2e_harness.py
+# Shared-db integration suite (serialized + reset):
+TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
+scripts/dev/test.sh integration
+
+# Destructive migration smoke (serialized + reset to qpi_test_scratch):
+TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
+scripts/dev/test.sh migration-smoke
+
+# Full ordered suite:
+TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
+scripts/dev/test.sh all
+
+# Cleanup stale shared-db sessions when resets fail:
+TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
+scripts/dev/kill-stuck-tests.sh
 ```
+
+If the default tunnel user cannot recreate the shared test DBs, provide `TEST_DATABASE_ADMIN_URL` for the reset/cleanup scripts.
 
 Safety guardrails:
 
@@ -499,27 +524,30 @@ Runbook shortcuts:
 
 Workflows:
 
-- `.github/workflows/deploy_bot.yml`:
-  - lint + tests,
-  - schema drift regression against a PostgreSQL CI service,
-  - detects whether schema-related files changed before deciding to run production schema steps,
-  - when needed, uploads `psqldef` + schema runner to the bot VM and executes runtime compatibility + declarative schema apply there over the private DB path before rollout,
-  - package bot artifact,
-  - rollout to bot VM,
-  - health verification,
-  - post-deploy seller/buyer `/start` runtime smoke.
+- `.github/workflows/ci.yml`:
+  - `lint-and-fast-tests`,
+  - `integration-shared-db`,
+  - `migration-smoke`.
+- `.github/workflows/deploy_runtime.yml`:
+  - reruns lint + shared-db verification on main,
+  - packages current source,
+  - uploads the artifact to the bot VM,
+  - applies schema when required,
+  - performs health verification and seller/buyer `/start` smoke.
+- `.github/workflows/deploy_functions.yml`:
+  - reuses the fast suite on main,
+  - builds service-scoped uv-based bundles,
+  - publishes only the changed Cloud Functions directly through `yc`.
 - `.github/workflows/deploy_terraform.yml`:
   - terraform validate/plan on push,
   - apply only via explicit manual dispatch guard.
-- `.github/workflows/phase10_e2e.yml`:
-  - deterministic Telegram-emulated E2E suite,
-  - uploads JUnit artifact.
 
 Private dependency handling:
 
-- `requirements.txt` contains private dependency placeholder for `yc_json_logger` token.
-- Use `infra/scripts/with_private_requirements.sh` for Terraform commands.
-- Bot rollout script requires `TOKEN_YC_JSON_LOGGER` in rollout environment.
+- `GH_TOKEN` is the canonical auth variable for private GitHub dependencies.
+- Existing `TOKEN_YC_JSON_LOGGER` is still accepted and mapped to `GH_TOKEN` by repo wrappers for backward compatibility.
+- `scripts/common/setup_private_git_auth.sh` configures git URL rewriting before `uv` operations that need the private dependency.
+- `requirements.txt` is generated from `uv.lock` and kept only as a compatibility artifact for Cloud Function/Terraform packaging.
 
 Active development rule:
 

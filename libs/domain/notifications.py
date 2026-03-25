@@ -125,7 +125,7 @@ class NotificationService:
                 recipient_scope,
                 event_type,
                 dedupe_key,
-                Json(payload_json),
+                Json(_json_compatible(payload_json)),
                 OUTBOX_STATUS_PENDING,
             ),
         )
@@ -1077,6 +1077,18 @@ def _format_datetime_msk(value: str | None) -> str:
 
 def _normalize_amount(amount: Decimal) -> Decimal:
     return amount.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+
+
+def _json_compatible(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(_normalize_amount(value))
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, list):
+        return [_json_compatible(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_compatible(item) for key, item in value.items()}
+    return value
 
 
 def _token_invalidation_reason(source: str | None) -> str:

@@ -5,11 +5,8 @@ on:
     branches: ["main"]
     paths:
       - "infra/**"
-      - "services/**"
-      - "libs/**"
-      - "schema/**"
-      - "requirements.txt"
-      - "pyproject.toml"
+      - "scripts/deploy/function.sh"
+      - "scripts/common/setup_private_git_auth.sh"
       - ".github/workflows/deploy_terraform.yml"
   workflow_dispatch:
     inputs:
@@ -23,11 +20,11 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
+  terraform-plan:
     runs-on: ubuntu-latest
     env:
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
-      TOKEN_YC_JSON_LOGGER: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+      GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
       TF_VAR_cf_token_cipher_key: ${{ secrets.TOKEN_CIPHER_KEY }}
       TF_VAR_tonapi_api_key: ${{ secrets.TONAPI_API_KEY }}
       TF_VAR_folder_id: ${{ vars.YC_FOLDER_ID }}
@@ -38,8 +35,18 @@ jobs:
       - name: Validate required secrets
         run: |
           test -n "${YC_TOKEN}" || { echo "YC_TOKEN is required"; exit 1; }
-          test -n "${TOKEN_YC_JSON_LOGGER}" || { echo "TOKEN_YC_JSON_LOGGER is required"; exit 1; }
+          test -n "${GH_TOKEN}" || { echo "TOKEN_YC_JSON_LOGGER secret is required for private GitHub packages"; exit 1; }
           test -n "${TF_VAR_cf_token_cipher_key}" || { echo "TOKEN_CIPHER_KEY is required"; exit 1; }
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -52,8 +59,7 @@ jobs:
 
       - name: Terraform Plan
         run: |
-          infra/scripts/with_private_requirements.sh -- \
-            terraform -chdir=infra plan -input=false -no-color
+          terraform -chdir=infra plan -input=false -no-color
 
       - name: Guard apply without shared CI state
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply == 'true' }}
@@ -67,5 +73,4 @@ jobs:
       - name: Terraform Apply
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply == 'true' }}
         run: |
-          infra/scripts/with_private_requirements.sh -- \
-            terraform -chdir=infra apply -input=false -auto-approve -no-color
+          terraform -chdir=infra apply -input=false -auto-approve -no-color

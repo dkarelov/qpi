@@ -18,67 +18,27 @@ locals {
     yandex_compute_instance.db.network_interface[0].ip_address,
     var.db_name,
   )
-
-  cf_common_package_excludes = [
-    ".git",
-    ".github",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".venv",
-    "infra",
-    "qpi.egg-info",
-    "tests",
-    "__pycache__",
-    "**/__pycache__",
-    "**/__pycache__/*",
-    "*.pyc",
-    "**/*.pyc",
-    "AGENTS.md",
-    "PLAN.md",
-    "README.md",
-    ".env.example",
-    ".gitignore",
-    "Makefile",
-    "services/bot_api",
-    "services/worker",
-  ]
-
-  daily_report_scrapper_package_excludes = concat(local.cf_common_package_excludes, [
-    "services/order_tracker",
-    "services/blockchain_checker",
-  ])
-
-  order_tracker_package_excludes = concat(local.cf_common_package_excludes, [
-    "services/daily_report_scrapper",
-    "services/blockchain_checker",
-  ])
-
-  blockchain_checker_package_excludes = concat(local.cf_common_package_excludes, [
-    "services/daily_report_scrapper",
-    "services/order_tracker",
-  ])
 }
 
-data "archive_file" "daily_report_scrapper_source" {
-  type        = "zip"
-  source_dir  = "${path.module}/.."
-  output_path = "${path.module}/.terraform/daily-report-scrapper-source.zip"
-  excludes    = local.daily_report_scrapper_package_excludes
+data "external" "daily_report_scrapper_bundle" {
+  program = ["bash", "${path.module}/../scripts/deploy/function.sh", "metadata", "daily_report_scrapper"]
+  query = {
+    service = "daily_report_scrapper"
+  }
 }
 
-data "archive_file" "order_tracker_source" {
-  type        = "zip"
-  source_dir  = "${path.module}/.."
-  output_path = "${path.module}/.terraform/order-tracker-source.zip"
-  excludes    = local.order_tracker_package_excludes
+data "external" "order_tracker_bundle" {
+  program = ["bash", "${path.module}/../scripts/deploy/function.sh", "metadata", "order_tracker"]
+  query = {
+    service = "order_tracker"
+  }
 }
 
-data "archive_file" "blockchain_checker_source" {
-  type        = "zip"
-  source_dir  = "${path.module}/.."
-  output_path = "${path.module}/.terraform/blockchain-checker-source.zip"
-  excludes    = local.blockchain_checker_package_excludes
+data "external" "blockchain_checker_bundle" {
+  program = ["bash", "${path.module}/../scripts/deploy/function.sh", "metadata", "blockchain_checker"]
+  query = {
+    service = "blockchain_checker"
+  }
 }
 
 resource "yandex_function" "daily_report_scrapper" {
@@ -90,10 +50,10 @@ resource "yandex_function" "daily_report_scrapper" {
   memory             = var.cf_memory_mb
   execution_timeout  = var.cf_execution_timeout
   service_account_id = yandex_iam_service_account.bot_vm.id
-  user_hash          = data.archive_file.daily_report_scrapper_source.output_base64sha256
+  user_hash          = data.external.daily_report_scrapper_bundle.result.sha256
 
   content {
-    zip_filename = data.archive_file.daily_report_scrapper_source.output_path
+    zip_filename = data.external.daily_report_scrapper_bundle.result.zip_path
   }
 
   connectivity {
@@ -151,10 +111,10 @@ resource "yandex_function" "order_tracker" {
   memory             = var.cf_memory_mb
   execution_timeout  = var.cf_execution_timeout
   service_account_id = yandex_iam_service_account.bot_vm.id
-  user_hash          = data.archive_file.order_tracker_source.output_base64sha256
+  user_hash          = data.external.order_tracker_bundle.result.sha256
 
   content {
-    zip_filename = data.archive_file.order_tracker_source.output_path
+    zip_filename = data.external.order_tracker_bundle.result.zip_path
   }
 
   connectivity {
@@ -211,10 +171,10 @@ resource "yandex_function" "blockchain_checker" {
   memory             = var.cf_memory_mb
   execution_timeout  = var.cf_execution_timeout
   service_account_id = yandex_iam_service_account.bot_vm.id
-  user_hash          = data.archive_file.blockchain_checker_source.output_base64sha256
+  user_hash          = data.external.blockchain_checker_bundle.result.sha256
 
   content {
-    zip_filename = data.archive_file.blockchain_checker_source.output_path
+    zip_filename = data.external.blockchain_checker_bundle.result.zip_path
   }
 
   connectivity {

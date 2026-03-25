@@ -21,7 +21,8 @@ def test_database_url() -> str:
 
 @pytest.fixture(scope="session")
 def prepared_database(test_database_url: str) -> str:
-    run_schema_apply(test_database_url)
+    if os.getenv("QPI_SKIP_TEST_SCHEMA_APPLY") != "1":
+        run_schema_apply(test_database_url)
     return test_database_url
 
 

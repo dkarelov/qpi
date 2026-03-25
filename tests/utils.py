@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 import psycopg
 from psycopg import sql
+from psycopg.errors import DeadlockDetected
 
 from libs.db.psqldef import run_psqldef
 from libs.db.runtime_schema_compat import apply_runtime_schema_compatibility
@@ -78,36 +79,48 @@ def run_runtime_schema_compat_apply(database_url: str) -> None:
 
 
 def run_schema_drop(database_url: str) -> None:
-    run_psqldef(
-        database_url,
-        mode="apply",
-        schema_file=EMPTY_SCHEMA_FILE,
-        enable_drop=True,
-    )
+    reset_public_schema(database_url)
 
 
 def truncate_public_tables(database_url: str) -> None:
     with psycopg.connect(database_url, autocommit=True) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT tablename
-                FROM pg_tables
-                WHERE schemaname = 'public'
-                ORDER BY tablename
-                """
-            )
-            table_names = [row[0] for row in cur.fetchall()]
-            if not table_names:
-                return
+            for attempt in range(1, 4):
+                cur.execute(
+                    """
+                    SELECT pg_terminate_backend(pid)
+                    FROM pg_stat_activity
+                    WHERE datname = current_database()
+                      AND pid <> pg_backend_pid()
+                      AND usename = current_user
+                    """
+                )
+                cur.execute(
+                    """
+                    SELECT tablename
+                    FROM pg_tables
+                    WHERE schemaname = 'public'
+                    ORDER BY tablename
+                    """
+                )
+                table_names = [row[0] for row in cur.fetchall()]
+                if not table_names:
+                    return
 
-            qualified_tables = sql.SQL(", ").join(
-                sql.SQL("{}.{}").format(sql.Identifier("public"), sql.Identifier(name))
-                for name in table_names
-            )
-            cur.execute(
-                sql.SQL("TRUNCATE TABLE {} RESTART IDENTITY CASCADE").format(qualified_tables)
-            )
+                qualified_tables = sql.SQL(", ").join(
+                    sql.SQL("{}.{}").format(sql.Identifier("public"), sql.Identifier(name))
+                    for name in table_names
+                )
+                try:
+                    cur.execute(
+                        sql.SQL("TRUNCATE TABLE {} RESTART IDENTITY CASCADE").format(
+                            qualified_tables
+                        )
+                    )
+                    return
+                except DeadlockDetected:
+                    if attempt >= 3:
+                        raise
 
 
 def table_exists(database_url: str, table_name: str) -> bool:

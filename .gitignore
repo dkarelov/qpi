@@ -207,6 +207,7 @@ marimo/_lsp/
 __marimo__/
 
 # Terraform local state (infra)
+.artifacts/
 infra/.terraform/
 infra/.terraform.lock.hcl
 infra/terraform.tfstate
