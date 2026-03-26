@@ -14,6 +14,13 @@ resource "yandex_vpc_security_group" "support_bot" {
   network_id = data.yandex_vpc_network.main.id
 
   ingress {
+    protocol       = "TCP"
+    description    = "SSH health checks for the private-only support-bot instance group"
+    port           = 22
+    v4_cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
     protocol          = "TCP"
     description       = "SSH from private runner SG"
     port              = 22
@@ -114,4 +121,3 @@ resource "yandex_compute_instance_group" "support_bot" {
     }
   }
 }
-
