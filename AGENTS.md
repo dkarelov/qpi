@@ -712,6 +712,7 @@ Active development rule:
 - During the active development phase, completed runtime/code changes must be verified with the relevant repo test/build/lint steps first, then committed and pushed by default unless the operator explicitly says not to push.
 - If the operator does not explicitly opt out, treat `commit + push + verification summary` as part of finishing the task, not as optional follow-up.
 - Deploy completed changes by default unless the operator explicitly says not to deploy.
+- When a deploy is expected, do not stop at a successful push or workflow trigger: verify the live target state after rollout (service health, active release/image, and at least one relevant smoke check) before considering the task complete.
 - If a deployment fails, treat fixing the deployment path as part of completing the task instead of stopping after the failed rollout.
 
 ## 9. Security and Accepted MVP Risks
