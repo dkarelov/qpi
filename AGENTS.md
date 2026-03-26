@@ -12,6 +12,12 @@ Last updated: 2026-03-26 UTC
 - deployed infrastructure state,
 - runbooks and safeguards.
 
+Current repo scope:
+
+- qpi marketplace runtime (Python + PostgreSQL),
+- companion support-bot runtime (Node/TypeScript + MongoDB) under `apps/support-bot`,
+- shared Terraform, runner, and deploy conventions.
+
 Documentation rules:
 
 - Keep `AGENTS.md` aligned with actual code and Terraform state.
@@ -40,7 +46,7 @@ Actors:
 
 In scope:
 
-- Single Telegram bot (`python-telegram-bot`) with role-based UX.
+- Single Telegram marketplace bot (`python-telegram-bot`) with role-based UX.
 - Russian UX text.
 - WB token validation and report-based order lifecycle tracking.
 - Ledger in USDT.
@@ -53,6 +59,14 @@ Out of scope (MVP):
 - Advanced custody model (multisig/HSM/KMS-backed wallet signing).
 - Full automatic reconciliation for all inbound/outbound wallet flows.
 
+Companion support-bot (current decision boundary):
+
+- separate operational surface from the marketplace bot,
+- isolated runtime, VM, and MongoDB state,
+- Telegram-only in V1,
+- Russian UX text,
+- no Signal, web chat, LLM, or backup automation in V1.
+
 ## 3. Implemented System Components
 
 Runtime services:
@@ -62,6 +76,7 @@ Runtime services:
 - `services/order_tracker`: Cloud Function, 5-minute assignment lifecycle orchestrator.
 - `services/blockchain_checker`: Cloud Function, 5-minute seller collateral top-up matcher.
 - `services/worker`: placeholder runtime (legacy/no critical ownership).
+- `apps/support-bot/*`: companion private-only long-polling support desk stack with vendored upstream app, local Docker/compose overlay, and dedicated deploy workflow.
 
 Shared layers:
 
@@ -74,12 +89,14 @@ Shared layers:
 - `scripts/dev/*`: canonical local reset/test/export wrappers.
 - `scripts/deploy/runtime.sh`: canonical bot VM rollout entrypoint.
 - `scripts/deploy/function.sh`: canonical code-only Cloud Function rollout entrypoint.
+- `scripts/deploy/support_bot.sh`: canonical support-bot image rollout entrypoint.
 - `scripts/deploy/private_runner.sh`: canonical on-demand private runner lifecycle entrypoint for CI/deploy jobs.
 
 Persistence and schema:
 
 - PostgreSQL + `psqldef`.
 - `schema/schema.sql` is the only schema source of truth.
+- Support bot MongoDB state lives on the support-bot VM boot disk under `/var/lib/support-bot/mongodb`.
 
 ## 4. Functional Requirements and Rules
 
@@ -337,16 +354,17 @@ Transitions:
 
 ## 5. Technical Constraints and Invariants
 
-- Python-only services.
-- Dependency and environment management are `uv`-based; `.venv` remains the runtime path, but `uv.lock` is the source of truth.
+- Marketplace services remain Python-only. The companion support-bot runtime is Node/TypeScript and isolated under `apps/support-bot`.
+- Marketplace dependency and environment management are `uv`-based; `.venv` remains the runtime path, but `uv.lock` is the source of truth.
+- Support-bot dependency management is `npm` + upstream `package-lock.json`, with Node 24 as the qpi target version.
 - `requirements.txt` is generated from `uv.lock` for Cloud Function/Terraform compatibility and is never hand-edited.
 - DB access: `psycopg3` + plain SQL only (no ORM).
 - Schema changes only through `schema/schema.sql` + `psqldef`.
 - Infrastructure mutations are Terraform-only from `infra/`.
-- Code-only Cloud Function version publishes are allowed through `scripts/deploy/function.sh`; broader infra mutations still remain Terraform-only.
+- Code-only deploy entrypoints are `scripts/deploy/runtime.sh`, `scripts/deploy/function.sh`, and `scripts/deploy/support_bot.sh`; broader infra mutations still remain Terraform-only.
 - Cloud Function packaging must be service-scoped to avoid unrelated redeploys.
 - DB-backed CI/deploy execution is designed around a dedicated private self-hosted GitHub runner VM; GitHub-hosted runners only handle fast suites and bootstrap/start-stop orchestration.
-- Bot runtime is webhook-based.
+- Marketplace bot runtime is webhook-based. Companion support-bot runtime uses long polling and remains private-only.
 - Expected load target: ~100 concurrent users.
 
 ## 6. Infrastructure State (Current)
@@ -359,6 +377,7 @@ Compute and networking:
 
 - Bot runtime: instance group (`qpi-bot-ig`), size 1, preemptible.
 - Bot public IP: `158.160.187.114`.
+- Support bot runtime: Terraform-defined private-only instance group (`qpi-support-bot-ig`), size 1, preemptible; resolve live IDs with `terraform -chdir=infra output` after apply.
 - DB VM: private-only (`10.131.0.28`), non-preemptible.
 - Private runner VM: `qpi-private-runner` (`fv47djh2aqv62pq449mq`), preemptible, on-demand, private IP `10.130.0.23`.
 - Private runner public IP is ephemeral NAT and must be resolved dynamically through `yc`, not hardcoded.
@@ -408,7 +427,8 @@ terraform -chdir=infra output
 
 Code-only deploy rule:
 
-- If only Python/runtime code changed, use `scripts/deploy/runtime.sh` or `scripts/deploy/function.sh <service>` instead of `terraform apply`.
+- If only marketplace Python/runtime code changed, use `scripts/deploy/runtime.sh` or `scripts/deploy/function.sh <service>` instead of `terraform apply`.
+- If only support-bot app/runtime code changed, use the support-bot deploy workflow or `scripts/deploy/support_bot.sh` instead of `terraform apply`.
 - The runner VM intentionally uses ephemeral NAT instead of a reserved static external IP because the folder hit the external static IP quota during rollout.
 - `ubuntu_2404_lts_image_id` is pinned in Terraform to avoid unrelated bot/DB VM replacements when the Ubuntu family image advances.
 
@@ -418,6 +438,13 @@ Code-only deploy rule:
 yc compute instance-group list-instances --name qpi-bot-ig --folder-id b1gmeblqlrrvm912n1uq
 ssh -i ~/.ssh/id_rsa ubuntu@158.160.187.114
 ssh -o ProxyCommand="ssh -i ~/.ssh/id_rsa -W %h:%p ubuntu@158.160.187.114" -i ~/.ssh/id_rsa ubuntu@10.131.0.28
+```
+
+Support-bot private-only access:
+
+```bash
+yc compute instance-group list-instances --name qpi-support-bot-ig --folder-id b1gmeblqlrrvm912n1uq
+ssh -o ProxyCommand="ssh -i ~/.ssh/id_rsa -W %h:%p ubuntu@158.160.187.114" -i ~/.ssh/id_rsa ubuntu@<support-bot-private-ip>
 ```
 
 DB tunnel (default session policy):
@@ -435,6 +462,7 @@ Rules:
 - Operator workstation has `psql` available (`PostgreSQL 16.13`); prefer direct `psql` checks over ad-hoc Python probes for DB inspection, schema verification, and lock/activity checks.
 - If a missing local tool would materially improve speed, reliability, or operator clarity, ask the operator to install it instead of defaulting to a slower workaround.
 - DB VM security group allows SSH from the private runner security group specifically so `reset_remote_test_dbs.sh` can recreate disposable test DBs through the DB-admin path.
+- Support-bot security group allows SSH from the private runner SG and the qpi bot SG; there is no direct public SSH path for the support-bot VM.
 
 ### 7.3 Schema operations
 
@@ -464,6 +492,16 @@ uv run python -m services.bot_api.main --buyer-command "/start" --telegram-id 10
 uv run python -m services.daily_report_scrapper.main --once
 uv run python -m services.order_tracker.main --once
 uv run python -m services.blockchain_checker.main --once
+```
+
+Support-bot local validation:
+
+```bash
+cd apps/support-bot/upstream
+npm ci
+npm run build
+npm test
+docker compose -f ../compose.dev.yml up -d
 ```
 
 ### 7.5 Test runbook
@@ -580,7 +618,8 @@ Workflows:
   - PR-focused validation workflow plus manual dispatch,
   - runs fast tests, `actionlint`, and `shellcheck` on GitHub-hosted runners,
   - starts the private runner only for trusted same-repo PRs / manual runs that actually need DB-backed validation,
-  - skips migration smoke unless schema-related files changed.
+  - skips migration smoke unless schema-related files changed,
+  - intentionally ignores support-bot-only paths so companion Node changes do not trigger qpi DB validation.
 - `.github/workflows/post_merge.yml`:
   - single post-merge orchestrator for `main` pushes and manual full reruns,
   - runs fast validation once,
@@ -594,6 +633,14 @@ Workflows:
 - `.github/workflows/deploy_functions.yml`:
   - manual function-only deploy path,
   - keeps direct function publishes available for operator-triggered reruns/recovery.
+- `.github/workflows/support_bot_ci.yml`:
+  - support-bot PR/manual workflow,
+  - runs Node 24 build/test plus production image build,
+  - also runs repo workflow/shell lint so support-bot workflow/script changes are validated without triggering qpi DB suites.
+- `.github/workflows/support_bot_deploy.yml`:
+  - support-bot `main` auto-deploy plus manual dispatch,
+  - builds the image on GitHub-hosted runners,
+  - reuses the existing private runner only for private-network deployment into the support-bot instance group.
 - `.github/workflows/private_runner_keepalive.yml`:
   - weekly start of the dedicated private runner,
   - validates runner registration / dispatch path,

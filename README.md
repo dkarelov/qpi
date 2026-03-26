@@ -1,6 +1,6 @@
 # QPI Phase 7 Live Telegram Baseline
 
-This repository includes the bot runtime, Cloud Functions, plain-SQL domain layer, `psqldef` schema management, the dedicated private CI/deploy runner path, and the Telegram seller/buyer/admin UX described in [AGENTS.md](/home/darker/dkarelov/qpi/AGENTS.md).
+This repository includes the marketplace bot runtime, Cloud Functions, plain-SQL domain layer, `psqldef` schema management, the dedicated private CI/deploy runner path, the vendored companion support-bot app under [apps/support-bot](/home/darker/dkarelov/qpi/apps/support-bot), and the operational rules described in [AGENTS.md](/home/darker/dkarelov/qpi/AGENTS.md).
 
 ## Local Setup
 
@@ -12,6 +12,12 @@ cp .env.example .env
 ```
 
 `.venv` remains the runtime environment path, but it is managed by `uv`. `pyproject.toml` + `uv.lock` are authoritative. `requirements.txt` is generated only for Cloud Function/Terraform compatibility.
+
+Companion support-bot local prerequisites:
+
+- upgrade local NodeSource to `node_24.x`,
+- verify `docker compose version`,
+- verify `mongosh --version`.
 
 ## Local Commands
 
@@ -39,6 +45,21 @@ If stale local sessions block resets:
 ```bash
 TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
 scripts/dev/kill-stuck-tests.sh
+```
+
+Support-bot validation:
+
+```bash
+cd apps/support-bot/upstream
+npm ci
+npm run build
+npm test
+```
+
+Local Mongo for support-bot:
+
+```bash
+docker compose -f apps/support-bot/compose.dev.yml up -d
 ```
 
 ## Private Runner DB Validation
@@ -90,12 +111,16 @@ terraform -chdir=infra plan
 
 Use Terraform only for intentional infra mutations. If only Python/runtime code changed, use the direct deploy wrappers.
 
+Support-bot deploys use the dedicated support-bot workflow or `scripts/deploy/support_bot.sh` from a runner/private-network context; they do not go through the marketplace runtime wrapper.
+
 ## CI / Runner Model
 
 The repository now assumes:
 
 - `fast` runs on GitHub-hosted runners,
 - DB-backed validation and code-only deploys run on a dedicated preemptible private runner VM,
+- support-bot CI runs on GitHub-hosted runners with Node 24,
+- support-bot auto-deploys reuse the same private runner but stay isolated from qpi Python workflows,
 - GitHub-hosted bootstrap jobs start that VM on demand,
 - a weekly keepalive workflow starts the runner briefly and then powers it down again.
 

@@ -1,0 +1,60 @@
+name: Support Bot CI
+
+on:
+  pull_request:
+    paths:
+      - "apps/support-bot/**"
+      - "infra/support_bot*.tf"
+      - "infra/cloud-init/support_bot.yaml.tftpl"
+      - "infra/scripts/remote_rollout_support_bot.sh"
+      - "scripts/deploy/support_bot.sh"
+      - ".github/workflows/support_bot_ci.yml"
+      - ".github/workflows/support_bot_deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  support-bot-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: apps/support-bot/upstream/package-lock.json
+
+      - name: Install CI lint tools
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+          if ! command -v actionlint >/dev/null 2>&1; then
+            scripts/dev/install_actionlint.sh "${HOME}/.local/bin"
+            echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+          fi
+
+      - name: Install dependencies
+        working-directory: apps/support-bot/upstream
+        run: npm ci
+
+      - name: Build upstream app
+        working-directory: apps/support-bot/upstream
+        run: npm run build
+
+      - name: Run upstream tests
+        working-directory: apps/support-bot/upstream
+        run: npm test
+
+      - name: Validate workflow and shell files
+        run: scripts/dev/check_ci_files.sh
+
+      - name: Build production image
+        run: docker build -f apps/support-bot/Dockerfile -t qpi-support-bot-ci:${{ github.sha }} apps/support-bot
+

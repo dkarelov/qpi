@@ -1,0 +1,54 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - jq
+write_files:
+  - path: /etc/systemd/system/support-bot.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=qpi Support Bot Docker Compose Stack
+      Requires=docker.service
+      After=docker.service network-online.target
+      Wants=network-online.target
+      ConditionPathExists=/opt/support-bot/current/compose.prod.yml
+      ConditionPathExists=/etc/support-bot/config.yaml
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      WorkingDirectory=/opt/support-bot/current
+      ExecStart=/usr/bin/docker compose --project-directory /opt/support-bot/current -f /opt/support-bot/current/compose.prod.yml up -d --remove-orphans
+      ExecStop=/usr/bin/docker compose --project-directory /opt/support-bot/current -f /opt/support-bot/current/compose.prod.yml down
+      TimeoutStartSec=300
+
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - |
+    set -euxo pipefail
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+      | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $${UBUNTU_CODENAME}) stable" \
+      > /etc/apt/sources.list.d/docker.list
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    systemctl enable --now docker
+    install -d -m 0755 /opt/support-bot
+    install -d -m 0755 /opt/support-bot/releases
+    install -d -m 0755 /opt/support-bot/current
+    install -d -m 0755 /etc/support-bot
+    install -d -m 0755 /var/lib/support-bot
+    install -d -m 0755 /var/lib/support-bot/mongodb
+    chown -R ubuntu:ubuntu /opt/support-bot
+    systemctl daemon-reload
+    systemctl enable support-bot.service
+

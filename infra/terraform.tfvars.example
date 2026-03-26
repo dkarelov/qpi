@@ -18,10 +18,17 @@ runner_ssh_public_keys = [
   "ssh-rsa AAAA... user@example.com",
 ]
 
+# Inject SSH public keys for key-based access to the private-only support-bot VM.
+support_bot_ssh_public_keys = [
+  "ssh-rsa AAAA... user@example.com",
+]
+
 # Optional overrides
 # project      = "qpi"
 # private_subnet_cidr = "10.131.0.0/24"
 # bot_memory_gb = 2
+# support_bot_instance_group_name = "qpi-support-bot-ig"
+# support_bot_memory_gb = 2
 # runner_memory_gb = 4
 # runner_bootstrap_ipv4_cidrs = ["0.0.0.0/0"]
 # bot_webhook_port = 8443

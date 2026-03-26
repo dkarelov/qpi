@@ -1,0 +1,179 @@
+name: Support Bot Deploy
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "apps/support-bot/**"
+      - "infra/support_bot*.tf"
+      - "infra/cloud-init/support_bot.yaml.tftpl"
+      - "infra/scripts/remote_rollout_support_bot.sh"
+      - "scripts/deploy/support_bot.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: apps/support-bot/upstream/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/support-bot/upstream
+        run: npm ci
+
+      - name: Build upstream app
+        working-directory: apps/support-bot/upstream
+        run: npm run build
+
+      - name: Run upstream tests
+        working-directory: apps/support-bot/upstream
+        run: npm test
+
+      - name: Set image metadata
+        id: meta
+        run: |
+          {
+            echo "image_tag=qpi-support-bot:${GITHUB_SHA}"
+            echo "artifact_name=support-bot-image-${GITHUB_SHA}.tar"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Build production image
+        run: docker build -f apps/support-bot/Dockerfile -t "${{ steps.meta.outputs.image_tag }}" apps/support-bot
+
+      - name: Save image archive
+        run: docker save -o "${RUNNER_TEMP}/${{ steps.meta.outputs.artifact_name }}" "${{ steps.meta.outputs.image_tag }}"
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: support-bot-image
+          path: ${{ runner.temp }}/${{ steps.meta.outputs.artifact_name }}
+          if-no-files-found: error
+
+  start-private-runner:
+    runs-on: ubuntu-latest
+    needs: build-image
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
+    env:
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      PRIVATE_RUNNER_INSTANCE_NAME: ${{ vars.PRIVATE_RUNNER_INSTANCE_NAME }}
+      PRIVATE_RUNNER_SSH_USER: ${{ vars.PRIVATE_RUNNER_SSH_USER }}
+      PRIVATE_RUNNER_SSH_PRIVATE_KEY: ${{ secrets.PRIVATE_RUNNER_SSH_PRIVATE_KEY }}
+      PRIVATE_RUNNER_BOOTSTRAP_TOKEN: ${{ secrets.PRIVATE_RUNNER_BOOTSTRAP_TOKEN }}
+      PRIVATE_RUNNER_REPO: ${{ github.repository }}
+      PRIVATE_RUNNER_LABELS: ${{ vars.PRIVATE_RUNNER_LABELS }}
+      PRIVATE_RUNNER_VERSION: ${{ vars.PRIVATE_RUNNER_VERSION }}
+      PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Validate required runner secrets
+        run: |
+          test -n "${YC_TOKEN}" || { echo "YC_TOKEN is required"; exit 1; }
+          test -n "${YC_FOLDER_ID}" || { echo "YC_FOLDER_ID is required"; exit 1; }
+          test -n "${PRIVATE_RUNNER_INSTANCE_NAME}" || { echo "PRIVATE_RUNNER_INSTANCE_NAME is required"; exit 1; }
+          test -n "${PRIVATE_RUNNER_SSH_PRIVATE_KEY}" || { echo "PRIVATE_RUNNER_SSH_PRIVATE_KEY is required"; exit 1; }
+          test -n "${PRIVATE_RUNNER_BOOTSTRAP_TOKEN}" || { echo "PRIVATE_RUNNER_BOOTSTRAP_TOKEN is required"; exit 1; }
+
+      - name: Install yc CLI
+        run: |
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
+          echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
+
+      - name: Start private runner
+        run: scripts/deploy/private_runner.sh ensure-ready
+
+  deploy-support-bot:
+    runs-on: [self-hosted, linux, qpi-private]
+    needs:
+      - build-image
+      - start-private-runner
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
+    env:
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      SUPPORT_BOT_INSTANCE_GROUP_NAME: ${{ vars.SUPPORT_BOT_INSTANCE_GROUP_NAME }}
+      SUPPORT_BOT_VM_SSH_USER: ${{ vars.SUPPORT_BOT_VM_SSH_USER }}
+      SUPPORT_BOT_TELEGRAM_BOT_TOKEN: ${{ secrets.SUPPORT_BOT_TELEGRAM_BOT_TOKEN }}
+      SUPPORT_BOT_STAFFCHAT_ID: ${{ vars.SUPPORT_BOT_STAFFCHAT_ID }}
+      SUPPORT_BOT_OWNER_ID: ${{ vars.SUPPORT_BOT_OWNER_ID }}
+      SUPPORT_BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.SUPPORT_BOT_VM_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install yc CLI
+        run: |
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
+          echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: support-bot-image
+          path: ${{ runner.temp }}/support-bot-image
+
+      - name: Validate required deploy settings
+        run: |
+          test -n "${YC_TOKEN}" || { echo "YC_TOKEN is required"; exit 1; }
+          test -n "${YC_FOLDER_ID}" || { echo "YC_FOLDER_ID is required"; exit 1; }
+          test -n "${SUPPORT_BOT_INSTANCE_GROUP_NAME}" || { echo "SUPPORT_BOT_INSTANCE_GROUP_NAME is required"; exit 1; }
+          test -n "${SUPPORT_BOT_VM_SSH_PRIVATE_KEY}" || { echo "SUPPORT_BOT_VM_SSH_PRIVATE_KEY is required"; exit 1; }
+          test -n "${SUPPORT_BOT_TELEGRAM_BOT_TOKEN}" || { echo "SUPPORT_BOT_TELEGRAM_BOT_TOKEN is required"; exit 1; }
+          test -n "${SUPPORT_BOT_STAFFCHAT_ID}" || { echo "SUPPORT_BOT_STAFFCHAT_ID is required"; exit 1; }
+          test -n "${SUPPORT_BOT_OWNER_ID}" || { echo "SUPPORT_BOT_OWNER_ID is required"; exit 1; }
+
+      - name: Deploy support bot
+        run: |
+          scripts/deploy/support_bot.sh \
+            "${RUNNER_TEMP}/support-bot-image/${{ needs.build-image.outputs.artifact_name }}" \
+            "${{ needs.build-image.outputs.image_tag }}"
+
+  stop-private-runner:
+    runs-on: ubuntu-latest
+    needs:
+      - build-image
+      - start-private-runner
+      - deploy-support-bot
+    if: ${{ always() && needs.start-private-runner.result == 'success' }}
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
+    env:
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      PRIVATE_RUNNER_INSTANCE_NAME: ${{ vars.PRIVATE_RUNNER_INSTANCE_NAME }}
+      PRIVATE_RUNNER_SSH_USER: ${{ vars.PRIVATE_RUNNER_SSH_USER }}
+      PRIVATE_RUNNER_SSH_PRIVATE_KEY: ${{ secrets.PRIVATE_RUNNER_SSH_PRIVATE_KEY }}
+      PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install yc CLI
+        run: |
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
+          echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
+
+      - name: Schedule runner shutdown
+        run: scripts/deploy/private_runner.sh schedule-stop

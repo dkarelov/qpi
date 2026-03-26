@@ -1,0 +1,84 @@
+bot_token: '__SUPPORT_BOT_TELEGRAM_BOT_TOKEN__'
+staffchat_id: '__SUPPORT_BOT_STAFFCHAT_ID__'
+staffchat_type: 'telegram'
+staffchat_parse_mode: 'MarkdownV2'
+owner_id: '__SUPPORT_BOT_OWNER_ID__'
+
+spam_cant_msg: 5
+spam_time: 300000
+mongodb_uri: 'mongodb://mongodb:27017/support'
+
+parse_mode: 'Markdown'
+allow_private: false
+direct_reply: false
+auto_close_tickets: true
+anonymous_tickets: true
+anonymous_replies: true
+show_auto_replied: false
+show_user_ticket: true
+autoreply_confirmation: true
+clean_replies: false
+pass_start: false
+
+signal_enabled: false
+signal_number: ''
+signal_host: 'localhost:40153'
+
+web_server: false
+web_server_port: 8080
+
+dev_mode: false
+
+language:
+  startCommandText: 'Здравствуйте. Опишите ваш вопрос одним сообщением, и команда поддержки ответит вам в этом чате.'
+  faqCommandText: 'Если вопрос связан с текущей покупкой, укажите номер заказа и кратко опишите проблему.'
+  helpCommandText: "*Доступные команды:* /help /faq /id"
+  helpCommandStaffText: "*Доступные команды:*\n/start - Краткая справка\n/faq - Частые вопросы\n/open - *Сотрудники* Показать открытые обращения\n/reopen - *Сотрудники* Переоткрыть обращение\n/close - *Сотрудники* Закрыть обращение ответом\n/clear - *Сотрудники* Закрыть все обращения\n/ban - *Сотрудники* Заблокировать пользователя\n/unban - *Сотрудники* Разблокировать пользователя"
+  confirmationMessage: 'Спасибо. Мы получили ваше сообщение и ответим в этом чате.'
+  blockedSpam: 'Вы отправили слишком много сообщений подряд. Пожалуйста, подождите ответа команды поддержки.'
+  ticket: 'Обращение'
+  closed: 'закрыто'
+  acceptedBy: 'взято в работу'
+  dear: 'Здравствуйте'
+  regards: 'С уважением,'
+  from: 'от'
+  language: 'Язык'
+  msg_sent: 'Сообщение отправлено пользователю'
+  file_sent: 'Файл отправлен пользователю'
+  usr_with_ticket: 'Пользователь с обращением'
+  banned: 'заблокирован'
+  replyPrivate: 'Ответить в личном чате'
+  services: 'Выберите нужный раздел'
+  customer: 'пользователь'
+  msgForwarding: 'Ваши сообщения будут переадресованы в команду поддержки: '
+  back: 'Назад'
+  whatSubCategory: 'Уточните категорию обращения'
+  prvChatEnded: 'Личный чат завершен.'
+  prvChatOpened: 'Открыт личный чат с пользователем.'
+  prvChatEnd: 'Завершить личный чат'
+  prvChatOpenedCustomer: 'Личный чат открыт'
+  instructionsSent: 'Инструкции отправлены вам в личный чат.'
+  openTickets: 'Открытые обращения'
+  support: 'Поддержка'
+  prvChatOnly: 'Эта команда доступна только в личном чате.'
+  ticketClosed: 'Ваше обращение закрыто. При необходимости вы можете написать снова.'
+  links: 'Полезные ссылки'
+  textFirst: 'Пожалуйста, сначала отправьте текст сообщения, а затем приложите изображение или файл.'
+  ticketClosedError: 'Нельзя ответить на уже закрытое обращение.'
+  automatedReply: 'Это автоматический ответ.'
+  automatedReplyAuthor: 'Поддержка qpi'
+  doesntHelp: 'Это не помогло'
+  automatedReplySent: 'Автоматический ответ отправлен пользователю.'
+  ticketReopened: 'Обращение переоткрыто.'
+  yourTicketId: 'Номер вашего обращения'
+  regardsGroup: 'Команда qpi'
+
+autoreply: []
+categories: []
+
+use_llm: false
+llm_api_key: ''
+llm_base_url: ''
+llm_model: ''
+llm_knowledge: ''
+

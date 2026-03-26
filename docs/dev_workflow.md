@@ -16,6 +16,7 @@ Notes:
 - `.venv` remains the runtime environment path, but `uv` manages it.
 - `requirements.txt` is generated from `uv.lock` and is only kept for Cloud Function/Terraform compatibility.
 - If `GH_TOKEN` is unavailable, repo wrappers also accept `TOKEN_YC_JSON_LOGGER` and map it automatically.
+- Companion support-bot work uses Node 24 plus Docker Compose; see `apps/support-bot/README.local.md` for the local overlay commands.
 
 ## Execution Split
 
@@ -54,6 +55,19 @@ The supported execution model is:
 6. `manual deploy`
    - operator-triggered runtime-only or function-only workflows,
    - keeps targeted rerun/recovery paths separate from the post-merge orchestrator.
+
+7. `support-bot ci`
+   - GitHub-hosted Node 24 workflow for `apps/support-bot/**`,
+   - runs upstream `npm ci`, `npm run build`, `npm test`,
+   - builds the production support-bot image,
+   - also lints repository workflow/shell files.
+
+8. `support-bot deploy`
+   - dedicated `main`-branch and manual workflow,
+   - builds the image on GitHub-hosted runners,
+   - starts the same private runner,
+   - deploys the image artifact into the private-only support-bot instance group,
+   - shuts the runner down afterward.
 
 ## DB Suite Manifests
 
@@ -246,6 +260,12 @@ terraform -chdir=infra plan
 ```
 
 Use Terraform only for intentional infra changes. If only Python/runtime code changed, use the direct deploy wrappers instead.
+
+Support-bot deploys:
+
+- `scripts/deploy/support_bot.sh` is the canonical support-bot rollout wrapper.
+- The wrapper expects to run where the support-bot instance group's private IP is reachable, which in CI means the private runner.
+- The support-bot workflow builds the image in GitHub Actions and loads it onto the VM; the VM does not build the image locally.
 
 ## Troubleshooting
 

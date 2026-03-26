@@ -1,0 +1,26 @@
+services:
+  supportbot:
+    image: ${SUPPORT_BOT_IMAGE}
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    volumes:
+      - /etc/support-bot/config.yaml:/bot/config/config.yaml:ro
+
+  mongodb:
+    image: mongo:8.0
+    restart: unless-stopped
+    volumes:
+      - /var/lib/support-bot/mongodb:/data/db
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mongosh --quiet --eval \"db.adminCommand({ ping: 1 }).ok\" mongodb://127.0.0.1:27017/admin | grep 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
