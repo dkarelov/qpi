@@ -117,7 +117,7 @@ jobs:
       SUPPORT_BOT_TELEGRAM_BOT_TOKEN: ${{ secrets.SUPPORT_BOT_TELEGRAM_BOT_TOKEN }}
       SUPPORT_BOT_STAFFCHAT_ID: ${{ vars.SUPPORT_BOT_STAFFCHAT_ID }}
       SUPPORT_BOT_OWNER_ID: ${{ vars.SUPPORT_BOT_OWNER_ID }}
-      SUPPORT_BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.SUPPORT_BOT_VM_SSH_PRIVATE_KEY }}
+      SUPPORT_BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
