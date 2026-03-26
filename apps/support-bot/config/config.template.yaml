@@ -17,7 +17,7 @@ anonymous_replies: true
 show_auto_replied: false
 show_user_ticket: true
 autoreply_confirmation: true
-clean_replies: false
+clean_replies: true
 pass_start: false
 
 signal_enabled: false
@@ -81,4 +81,3 @@ llm_api_key: ''
 llm_base_url: ''
 llm_model: ''
 llm_knowledge: ''
-

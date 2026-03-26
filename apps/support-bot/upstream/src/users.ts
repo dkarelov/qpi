@@ -30,7 +30,7 @@ function formatMessageAsTicket(
   }
   return `${config.language.ticket} #T${ticket
     .toString()
-    .padStart(6, '0')} ${config.language.from} ${name} ${config.language.language}: ${ctx.message.from.language_code} ${ctx.session.groupTag}\n\n${esc(
+    .padStart(6, '0')} ${config.language.from} ${name} ${ctx.session.groupTag}\n\n${esc(
       ctx.message.text,
     )}\n\n${autoReplyInfo ? `*${autoReplyInfo}*` : ''}`;
 }
