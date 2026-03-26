@@ -137,8 +137,12 @@ describe('Users Module', () => {
         status: 'open',
         category: 'general',
       };
-      
-      mockGetTicketByUserId.mockResolvedValue(mockTicket);
+
+      mockGetTicketByUserId
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(mockTicket)
+        .mockResolvedValueOnce(mockTicket);
+      mockAdd.mockResolvedValue(1);
       mockSendMessage.mockResolvedValue('msg_id_123');
 
       await users.chat(ctx, { id: 'chat123' });
@@ -146,6 +150,7 @@ describe('Users Module', () => {
       expect(cache.userId).toBe('user123');
       expect(cache.ticketStatus['user123']).toBe(true);
       expect(cache.ticketSent['user123']).toBe(0);
+      expect(mockAdd).toHaveBeenCalledWith('user123', 'open', 'general', 'telegram');
       
       // Should send confirmation message
       expect(mockSendMessage).toHaveBeenCalledWith(

@@ -166,6 +166,21 @@ async function processTicket(
   }
 };
 
+async function ensureOpenTicket(ctx: Context, userId: string | number): Promise<ISupportee> {
+  let ticket = await db.getTicketByUserId(userId, ctx.session.groupCategory);
+  if (ticket) {
+    return ticket;
+  }
+
+  await db.add(userId, 'open', ctx.session.groupCategory, ctx.messenger);
+  ticket = await db.getTicketByUserId(userId, ctx.session.groupCategory);
+  if (!ticket) {
+    throw new Error(`Failed to create or load ticket for user ${userId}`);
+  }
+
+  return ticket;
+}
+
 /**
  * Handles ticket processing with spam protection.
  *
@@ -187,8 +202,8 @@ async function chat(ctx: Context, chat: { id: string }) {
 
   // If no ticket has been sent yet, fetch from DB and set up spam timer
   if (cache.ticketSent[cache.userId] === undefined) {
-    const ticket = await db.getTicketByUserId(chat.id, ctx.session.groupCategory);
-    processTicket(ticket, ctx, chat.id, autoReplyInfo);
+    const ticket = await ensureOpenTicket(ctx, cache.userId);
+    await processTicket(ticket, ctx, chat.id, autoReplyInfo);
 
     // Prevent multiple notifications for a period defined by spam_time
     setTimeout(() => {
@@ -197,7 +212,7 @@ async function chat(ctx: Context, chat: { id: string }) {
     cache.ticketSent[cache.userId] = 0;
   } else if (cache.ticketSent[cache.userId] < config.spam_cant_msg) {
     cache.ticketSent[cache.userId]++;
-    const ticket = await db.getTicketByUserId(cache.userId, ctx.session.groupCategory);
+    const ticket = await ensureOpenTicket(ctx, cache.userId);
     sendMessage(
       config.staffchat_id,
       config.staffchat_type,
@@ -224,7 +239,7 @@ async function chat(ctx: Context, chat: { id: string }) {
   }
 
   // Log the ticket message for debugging
-  const ticket = await db.getTicketByUserId(cache.userId, ctx.session.groupCategory)
+  const ticket = await ensureOpenTicket(ctx, cache.userId);
   log.info(
     formatMessageAsTicket(
       ticket.ticketId,

@@ -69,9 +69,9 @@ export async function ticketHandler(bot: Addon, ctx: Context): Promise<ISupporte
   if (chat.type === 'private') {
     const ticket = await db.getTicketByUserId(message.from.id, session.groupCategory)
     if (!ticket) {
-      db.add(message.from.id, 'open', session.groupCategory, messenger);
+      await db.add(message.from.id, 'open', session.groupCategory, messenger);
     }
-    users.chat(ctx, message.chat);
+    await users.chat(ctx, message.chat);
     return ticket;
   }
 
