@@ -5,17 +5,27 @@ import json
 from decimal import Decimal
 
 from libs.config.settings import BotApiSettings
+from libs.domain.public_refs import (
+    build_support_deep_link,
+    format_assignment_ref,
+    format_chain_tx_ref,
+    format_deposit_ref,
+    format_listing_ref,
+    format_shop_ref,
+    format_withdrawal_ref,
+)
 from services.bot_api.callback_data import build_callback
 from services.bot_api.telegram_runtime import TelegramWebhookRuntime
 
 
-def _build_runtime() -> TelegramWebhookRuntime:
+def _build_runtime(*, support_bot_username: str | None = "qpilka_support_bot") -> TelegramWebhookRuntime:
     settings = BotApiSettings.model_validate(
         {
             "DATABASE_URL": "postgresql://user:pass@127.0.0.1:5432/qpi_test",
             "TOKEN_CIPHER_KEY": "test-key",
             "ADMIN_TELEGRAM_IDS": [1],
             "DISPLAY_RUB_PER_USDT": "100",
+            "SUPPORT_BOT_USERNAME": support_bot_username,
         }
     )
     return TelegramWebhookRuntime(settings=settings)
@@ -139,6 +149,7 @@ def test_seller_balance_menu_uses_transactions_label() -> None:
     labels_set = set(labels)
 
     assert "🧾 Транзакции" in labels_set
+    assert "🆘 Поддержка" in labels_set
     assert "↩️ Назад" in labels_set
     assert "🧾 Мои пополнения / Проверить" not in labels_set
 
@@ -285,13 +296,13 @@ def test_wallet_link_builder_uses_ton_transfer_with_usdt_jetton_and_micro_units(
     link = runtime._build_ton_usdt_wallet_link(
         destination_address="UQTESTADDRESS",
         expected_amount_usdt=Decimal("1.200100"),
-        text="QPI deposit #91",
+        text="QPI deposit D91",
     )
 
     assert link.startswith("ton://transfer/UQTESTADDRESS?")
     assert "jetton=EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs" in link
     assert "amount=1200100" in link
-    assert "text=QPI+deposit+%2391" in link
+    assert "text=QPI+deposit+D91" in link
 
 
 def test_telegram_wallet_link_builder_uses_wallet_start_url() -> None:
@@ -300,10 +311,45 @@ def test_telegram_wallet_link_builder_uses_wallet_start_url() -> None:
     assert runtime._build_telegram_wallet_open_link() == "https://t.me/wallet/start"
 
 
+def test_public_ref_formatters_use_short_prefixed_ids() -> None:
+    assert format_shop_ref(11) == "S11"
+    assert format_listing_ref(21) == "L21"
+    assert format_assignment_ref(31) == "P31"
+    assert format_withdrawal_ref(77) == "W77"
+    assert format_deposit_ref(91) == "D91"
+    assert format_chain_tx_ref(11) == "TX11"
+
+
 def test_copyable_code_helper_wraps_value_in_html_code() -> None:
     runtime = _build_runtime()
 
     assert runtime._format_copyable_code("UQ_TEST") == "<code>UQ_TEST</code>"
+
+
+def test_support_link_builder_uses_support_bot_and_context_fallback() -> None:
+    runtime = _build_runtime()
+
+    assert (
+        runtime._build_support_link(
+            role="buyer",
+            topic="purchase",
+            refs=["P31", "L21", "S11"],
+        )
+        == "https://t.me/qpilka_support_bot?start=buyer_purchase_P31_L21_S11"
+    )
+    assert build_support_deep_link(
+        bot_username="qpilka_support_bot",
+        role="seller",
+        topic="listing",
+        refs=["L" + "1" * 80],
+    ) == "https://t.me/qpilka_support_bot?start=seller_generic"
+
+
+def test_support_buttons_are_hidden_when_support_bot_username_is_missing() -> None:
+    runtime = _build_runtime(support_bot_username=None)
+
+    assert "🆘 Поддержка" not in set(_flatten_labels(runtime._seller_menu_markup()))
+    assert "🆘 Поддержка" not in set(_flatten_labels(runtime._buyer_menu_markup()))
 
 
 def test_seller_listing_detail_markup_hides_edit_button_when_activation_is_blocked() -> None:
@@ -311,6 +357,7 @@ def test_seller_listing_detail_markup_hides_edit_button_when_activation_is_block
 
     markup = runtime._seller_listing_detail_markup(
         listing_id=21,
+        shop_id=11,
         status="draft",
         list_page=1,
         can_activate=False,

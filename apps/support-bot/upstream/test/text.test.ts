@@ -97,6 +97,7 @@ describe('Text Module', () => {
     },
     messenger: Messenger.TELEGRAM,
     session: {
+      pendingSupportContext: null,
       lastContactDate: 0,
       admin: isAdmin,
       mode: mode,

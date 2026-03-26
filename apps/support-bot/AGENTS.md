@@ -39,6 +39,9 @@ Last updated: 2026-03-26 UTC
 - `clean_replies: true` is the qpi default, so staff replies are sent as plain message text without greeting/signature wrappers.
 - `auto_close_tickets: true` is the qpi default, so a successful staff reply removes the ticket from `/open`.
 - Ticket headers sent to staff do not include Telegram `language_code`; that field was removed because it reflects Telegram client metadata, not the actual message language.
+- Marketplace deep links use `/start` payloads shaped as `<role>_<topic>[_<ref>...]`, for example `seller_listing_L21_S11` or `buyer_purchase_P31_L21_S11`.
+- Support tickets persist optional marketplace context (`role`, `topic`, `refs`, `label`) and the latest deep-link context wins for the current open ticket.
+- Staff ticket headers must show ticket number, requester `telegram_id`, requester username when available, role, and attached marketplace refs.
 - A normal private Telegram group works for `staffchat_id`; a supergroup is not required for the current Telegram-only flow.
 - The editable runtime template is `apps/support-bot/config/config.template.yaml`; the rendered production copy lives on the VM at `/etc/support-bot/config.yaml`.
 

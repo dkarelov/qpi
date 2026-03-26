@@ -34,6 +34,7 @@ support_bot_ssh_public_keys = [
 # bot_webhook_port = 8443
 # bot_health_port = 18080
 # telegram_bot_username = "qpi_marketplace_bot"
+# support_bot_username = "qpilka_support_bot"
 # bot_admin_telegram_ids = [10001, 10002]
 # db_name      = "qpi"
 # db_user      = "qpi"

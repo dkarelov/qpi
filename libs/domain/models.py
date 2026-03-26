@@ -197,6 +197,7 @@ class BuyerAssignmentView:
     reservation_expires_at: datetime
     order_id: str | None
     ordered_at: datetime | None
+    shop_id: int | None = None
     shop_title: str | None = None
     display_title: str | None = None
     wb_source_title: str | None = None

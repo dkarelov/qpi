@@ -3,6 +3,7 @@ const mockSendMessage = jest.fn();
 const mockReply = jest.fn();
 const mockGetTicketByUserId = jest.fn();
 const mockAdd = jest.fn();
+const mockAddIdAndName = jest.fn();
 
 jest.mock('../src/middleware', () => ({
   sendMessage: mockSendMessage,
@@ -12,6 +13,11 @@ jest.mock('../src/middleware', () => ({
 jest.mock('../src/db', () => ({
   getTicketByUserId: mockGetTicketByUserId,
   add: mockAdd,
+  addIdAndName: mockAddIdAndName,
+}));
+
+jest.mock('../src/users', () => ({
+  formatMessageAsTicket: jest.fn(() => 'Formatted ticket'),
 }));
 
 jest.mock('../src/cache', () => ({
@@ -73,6 +79,7 @@ describe('Files Module', () => {
     },
     messenger: Messenger.TELEGRAM,
     session: {
+      pendingSupportContext: null,
       lastContactDate: 0,
       admin: false,
       mode: null,

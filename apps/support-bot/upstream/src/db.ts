@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import cache from './cache';
-import { Messenger } from './interfaces';
+import { Messenger, SupportContext } from './interfaces';
 import * as log from 'fancy-log'
 
 const MONGO_URI = cache.config.mongodb_uri || process.env.MONGO_URI || 'mongodb://localhost:27017/support';
@@ -12,6 +12,8 @@ export interface ISupportee extends mongoose.Document {
   userid: string;
   internalIds: Array<number> | null;
   name: string | null;
+  username: string | null;
+  context: SupportContext | null;
   messenger: Messenger;
   status: string;
   category: string | null;
@@ -22,6 +24,8 @@ export const SupporteeSchema = new mongoose.Schema<ISupportee>({
   userid: { type: String, required: true },
   internalIds: { type: [Number], required: false },
   name: { type: String, required: false },
+  username: { type: String, required: false },
+  context: { type: mongoose.Schema.Types.Mixed, required: false },
   messenger: { type: String, required: true },
   status: { type: String, default: 'open' },
   category: { type: String, default: null },
@@ -140,20 +144,20 @@ export const reopen = async (userid: any, category: string, messenger: string) =
 
 export const addIdAndName = async (
   ticketId: string | number,
-  internalId: string,
+  internalId: string | null | undefined,
   name: string | null,
+  username: string | null = null,
+  context: SupportContext | null = null,
 ) => {
-  if (!internalId) {
-    return null;
-  }
-  const internalIdNum = parseInt(internalId);
   const query = {
     ticketId: ticketId,
   };
-  const update = {
-    $addToSet: { internalIds: internalIdNum },
-    $set: { name },
+  const update: Record<string, any> = {
+    $set: { name, username, context },
   };
+  if (internalId) {
+    update.$addToSet = { internalIds: parseInt(internalId) };
+  }
   return await Supportee.findOneAndUpdate(query, update, {
     new: true,
     upsert: true,

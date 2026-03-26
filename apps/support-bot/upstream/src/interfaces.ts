@@ -7,10 +7,18 @@ export interface ModeData {
   category: string;
 }
 
+export interface SupportContext {
+  role: string;
+  topic: string;
+  refs: string[];
+  label: string;
+}
+
 export interface SessionData {
   admin: boolean | null;
   mode: string | null;
   modeData: ModeData;
+  pendingSupportContext: SupportContext | null;
   lastContactDate: number;
   groupCategory: string | null;
   groupTag: string;
@@ -254,5 +262,4 @@ export enum Messenger {
   SIGNAL = 'signal',
   WEB = 'web',
 }
-
 

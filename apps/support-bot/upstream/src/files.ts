@@ -3,6 +3,7 @@ import cache from './cache';
 import * as middleware from './middleware';
 import { Addon, Context, ModeData } from './interfaces';
 import { ISupportee } from './db';
+import { formatMessageAsTicket } from './users';
 
 /**
  * Generates the reply markup for a private reply.
@@ -71,9 +72,7 @@ async function fileHandler(type: string, bot: Addon, ctx: Context) {
     return;
   }
 
-  let captionText = `${config.language.ticket} #T${ticket.id
-    .toString()
-    .padStart(6, '0')} ${userInfo}\n${message.caption || ''}`;
+  let captionText = formatMessageAsTicket(ticket, ctx, undefined, message.caption || '');
   if (session.admin && userInfo === undefined) {
     receiverId = ticket.userid;
     captionText = message.caption || '';
@@ -162,7 +161,13 @@ async function fileHandler(type: string, bot: Addon, ctx: Context) {
       }
       break;
   }
-  db.addIdAndName(ticket.ticketId, messageId, ctx.message.from.first_name);
+  db.addIdAndName(
+    ticket.ticketId,
+    messageId,
+    ctx.message.from.first_name,
+    ctx.message.from.username,
+    ticket.context || null,
+  );
 
   // Send confirmation message if enabled
   if (!config.autoreply_confirmation) return;
@@ -219,8 +224,7 @@ async function forwardFile(ctx: Context) {
 function forwardHandler(ctx: Context) {
   if (ctx.chat.type === 'private') {
     cache.userId = ctx.message.from.id;
-    const userInfo = `${cache.config.language.from} ${ctx.message.from.first_name} ${cache.config.language.language}: ${ctx.message.from.language_code}\n\n`;
-    return userInfo;
+    return `${cache.config.language.from} ${ctx.message.from.first_name}`;
   } else {
     return undefined;
   }

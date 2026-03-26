@@ -4,6 +4,7 @@ import * as inline from './inline';
 import * as files from './files';
 import * as text from './text';
 import cache from './cache';
+import { extractStartPayload, formatSupportContextSummary, parseSupportContextPayload } from './supportContext';
 import * as log from 'fancy-log'
 
 export function registerCommonHandlers(addon: any, keys?: any) {
@@ -61,7 +62,13 @@ export function registerCommonHandlers(addon: any, keys?: any) {
   if (cache.config.pass_start === false) {
     addon.command('start', (ctx: any) => {
       if (ctx.chat.type === 'private') {
-        middleware.reply(ctx, cache.config.language.startCommandText);
+        const supportContext = parseSupportContextPayload(extractStartPayload(ctx.message?.text));
+        ctx.session.pendingSupportContext = supportContext;
+        const contextSummary = formatSupportContextSummary(supportContext);
+        const startText = contextSummary
+          ? `${contextSummary}\n\n${cache.config.language.startCommandText}`
+          : cache.config.language.startCommandText;
+        middleware.reply(ctx, startText);
         if (cache.config.categories && cache.config.categories.length > 0) {
           // For Telegram, use inline keyboard keys if available.
           if (addon.platform === 'telegram' && keys) {

@@ -67,7 +67,9 @@ Companion support-bot (current decision boundary):
 - Russian UX text,
 - no Signal, web chat, LLM, or backup automation in V1,
 - normal private Telegram group is accepted for `staffchat_id`; supergroup is optional,
-- default qpi support-bot template ships with `clean_replies=true` and `auto_close_tickets=true`.
+- default qpi support-bot template ships with `clean_replies=true` and `auto_close_tickets=true`,
+- marketplace buyer/seller screens may deep-link into the support bot when `SUPPORT_BOT_USERNAME` is configured,
+- support-bot tickets are one shared queue and carry actor/entity context from the marketplace bot instead of role-based routing.
 
 ## 3. Implemented System Components
 
@@ -279,7 +281,16 @@ Transitions:
   - main content blocks separated by empty lines,
   - optional italic note at the bottom only when it adds non-obvious next steps or issue guidance.
 - Button labels include emoji/icon prefix.
+- Marketplace support entry uses Telegram URL buttons into the companion support-bot; if `SUPPORT_BOT_USERNAME` is unset, those buttons are hidden rather than degraded into broken links.
 - Each role opens with dashboard + section navigation.
+- Public support references are short prefixed ids based on existing numeric primary keys:
+  - shop: `S<shop_id>`,
+  - listing: `L<listing_id>`,
+  - purchase/assignment: `P<assignment_id>`,
+  - withdrawal: `W<withdrawal_request_id>`,
+  - seller deposit invoice: `D<deposit_intent_id>`,
+  - admin incoming chain tx: `TX<chain_tx_id>`.
+- Shop title, shop slug, WB article, order number, and tx hash remain useful secondary references, but titles/slugs are not the primary support identifier because titles are ambiguous and the slug changes on rename.
 - Seller UX:
   - `Объявления`, `Магазины`, `Баланс` are top sections,
   - seller dashboard order counters use the same buckets as buyer dashboard: `ожидают заказа`, `заказаны`, `выкуплены`,
@@ -294,6 +305,7 @@ Transitions:
   - the rest of the WB data lives inside collapsed `Параметры`, `Описание`, and `Характеристики` sections,
   - if collateral is insufficient, the note explains that balance top-up is required before activation.
 - Seller balance screen shows `Свободно для новых объявлений`, `Уже выделено под объявления`, and `В процессе вывода`; `Всего` is not shown there, and activation shortfall is shown only when funds are insufficient.
+- Seller shop/listing cards, seller top-up invoices/history, and seller withdrawal blocks show copyable public support refs.
 - Seller balance screen offers:
   - `➕ Пополнить`,
   - `💸 Вывести все доступное`,
@@ -321,6 +333,7 @@ Transitions:
   - buyer section title is `Покупки`, not `Задания`,
   - active listing CTA uses `Купить`,
   - shops section uses a numbered, paginated saved-shop list with number buttons, no `Открыть последний магазин`, and no `Открыть магазин по коду` button,
+  - saved-shop rows, buyer listing cards, purchase blocks, and withdrawal blocks show copyable public support refs,
   - each saved shop row shows a red/green circle and `(объявлений: N)`, where green means at least one active buyer-visible listing for that buyer and red means none,
   - buyer shop catalog uses a numbered, paginated listing list; number buttons open the detail card, and the catalog itself does not show direct `Просмотр` / `Купить` buttons,
   - buyer can remove a shop only from their own saved-shop list, and removal is blocked while that shop has an unfinished buyer purchase,
@@ -367,6 +380,7 @@ Transitions:
 - Cloud Function packaging must be service-scoped to avoid unrelated redeploys.
 - DB-backed CI/deploy execution is designed around a dedicated private self-hosted GitHub runner VM; GitHub-hosted runners only handle fast suites and bootstrap/start-stop orchestration.
 - Marketplace bot runtime is webhook-based. Companion support-bot runtime uses long polling and remains private-only.
+- `SUPPORT_BOT_USERNAME` is an optional marketplace bot runtime env var; when set, seller/buyer screens can build deep links into the support-bot using the public ref contract above.
 - Expected load target: ~100 concurrent users.
 
 ## 6. Infrastructure State (Current)
@@ -695,7 +709,9 @@ Private runner / workflow gotchas:
 
 Active development rule:
 
-- During the active development phase, completed runtime/code changes should be committed, pushed, and deployed by default unless the operator explicitly says not to deploy.
+- During the active development phase, completed runtime/code changes must be verified with the relevant repo test/build/lint steps first, then committed and pushed by default unless the operator explicitly says not to push.
+- If the operator does not explicitly opt out, treat `commit + push + verification summary` as part of finishing the task, not as optional follow-up.
+- Deploy completed changes by default unless the operator explicitly says not to deploy.
 - If a deployment fails, treat fixing the deployment path as part of completing the task instead of stopping after the failed rollout.
 
 ## 9. Security and Accepted MVP Risks

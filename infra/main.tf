@@ -200,6 +200,7 @@ locals {
     bot_webhook_secret_token = var.bot_webhook_secret_token
     bot_health_port          = var.bot_health_port
     telegram_bot_username    = var.telegram_bot_username
+    support_bot_username     = var.support_bot_username
     token_cipher_key         = var.cf_token_cipher_key
     bot_admin_telegram_ids_csv = join(
       ",",

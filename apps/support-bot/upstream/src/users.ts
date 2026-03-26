@@ -1,9 +1,10 @@
-import { Context, Messenger, ParseMode } from './interfaces';
+import { Context, ParseMode, SupportContext } from './interfaces';
 import cache from './cache';
 import * as llm from './addons/llm';
 import * as db from './db';
 import { strictEscape as esc, reply, sendMessage } from './middleware';
 import { ISupportee } from './db';
+import { formatSupportContextSummary, formatSupportRoleLabel } from './supportContext';
 import * as log from 'fancy-log'
 
 const TIME_BETWEEN_CONFIRMATION_MESSAGES = 86400000; // 24 hours
@@ -19,20 +20,42 @@ const TIME_BETWEEN_CONFIRMATION_MESSAGES = 86400000; // 24 hours
  * @returns The formatted ticket message.
  */
 function formatMessageAsTicket(
-  ticket: { toString: () => string },
+  ticket: ISupportee | { toString: () => string },
   ctx: Context,
   autoReplyInfo?: any,
+  messageText?: string,
 ): string {
   const { config, userId } = cache;
   var name = `[${esc(ctx.message.from.first_name,)}](tg://user?id=${userId})`;
   if (config.anonymous_tickets || config.staffchat_parse_mode === ParseMode.PLAINTEXT) {
     name = ctx.message.from.first_name;
   }
-  return `${config.language.ticket} #T${ticket
+  const ticketId = typeof (ticket as any).ticketId !== 'undefined'
+    ? (ticket as ISupportee).ticketId
+    : ticket.toString();
+  const username = ctx.message.from.username || (ticket as ISupportee).username || '';
+  const context = resolveSupportContext(ctx, ticket as ISupportee);
+  const metadataLines = [
+    `Telegram ID: ${esc(ctx.message.from.id.toString())}`,
+    `Username: ${esc(username ? '@' + username.replace(/^@/, '') : '-')}`,
+  ];
+  if (context) {
+    metadataLines.push(`Роль: ${esc(formatSupportRoleLabel(context.role))}`);
+    metadataLines.push(`Контекст: ${esc(context.label)}`);
+    if (context.refs.length > 0) {
+      metadataLines.push(`Коды: ${esc(context.refs.join(', '))}`);
+    }
+  }
+  const body = messageText !== undefined ? messageText : ctx.message.text;
+  return `${config.language.ticket} #T${ticketId
     .toString()
     .padStart(6, '0')} ${config.language.from} ${name} ${ctx.session.groupTag}\n\n${esc(
-      ctx.message.text,
-    )}\n\n${autoReplyInfo ? `*${autoReplyInfo}*` : ''}`;
+      metadataLines.join('\n'),
+    )}\n\n${esc(body || '')}\n\n${autoReplyInfo ? `*${autoReplyInfo}*` : ''}`;
+}
+
+function resolveSupportContext(ctx: Context, ticket?: ISupportee | null): SupportContext | null {
+  return ctx.session.pendingSupportContext || ticket?.context || null;
 }
 
 /**
@@ -98,6 +121,7 @@ async function processTicket(
   autoReplyInfo?: string,
 ) {
   const { config } = cache;
+  const supportContext = resolveSupportContext(ctx, ticket);
   // Send confirmation if applicable
   if (
     !autoReplyInfo &&
@@ -111,6 +135,9 @@ async function processTicket(
       '\n' +
       (config.show_user_ticket
         ? `${config.language.ticket} #T${ticket.ticketId.toString().padStart(6, '0')}`
+        : '') +
+      (formatSupportContextSummary(supportContext)
+        ? `\n${formatSupportContextSummary(supportContext)}`
         : '');
     sendMessage(chatId, ticket.messenger, confirmationMsg);
   }
@@ -120,12 +147,18 @@ async function processTicket(
     config.staffchat_id,
     config.staffchat_type,
     formatMessageAsTicket(
-      ticket.ticketId,
+      ticket,
       ctx,
       autoReplyInfo,
     ),
   );
-  db.addIdAndName(ticket.ticketId, messageId, ctx.message.from.first_name);
+  db.addIdAndName(
+    ticket.ticketId,
+    messageId,
+    ctx.message.from.first_name,
+    ctx.message.from.username,
+    supportContext,
+  );
 
   // If group flag is set and not the admin chat, forward to group chat
   if (ctx.session.group && ctx.session.group !== config.staffchat_id) {
@@ -157,7 +190,7 @@ async function processTicket(
       ctx.session.group,
       ticket.messenger,
       formatMessageAsTicket(
-        ticket.ticketId,
+        ticket,
         ctx,
         autoReplyInfo,
       ),
@@ -217,7 +250,7 @@ async function chat(ctx: Context, chat: { id: string }) {
       config.staffchat_id,
       config.staffchat_type,
       formatMessageAsTicket(
-        ticket.ticketId,
+        ticket,
         ctx,
         autoReplyInfo,
       ),
@@ -227,7 +260,7 @@ async function chat(ctx: Context, chat: { id: string }) {
         ctx.session.group,
         ticket.messenger,
         formatMessageAsTicket(
-          ticket.ticketId,
+          ticket,
           ctx,
           autoReplyInfo,
         ),
@@ -242,11 +275,11 @@ async function chat(ctx: Context, chat: { id: string }) {
   const ticket = await ensureOpenTicket(ctx, cache.userId);
   log.info(
     formatMessageAsTicket(
-      ticket.ticketId,
+      ticket,
       ctx,
       autoReplyInfo,
     ),
   );
 }
 
-export { chat };
+export { chat, formatMessageAsTicket };

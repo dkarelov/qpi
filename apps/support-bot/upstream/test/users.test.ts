@@ -22,6 +22,7 @@ jest.mock('../src/cache', () => ({
     language: {
       confirmationMessage: 'Thank you for contacting us.',
       ticket: 'Ticket',
+      from: 'from',
       automatedReplySent: 'Automated reply sent',
       blockedSpam: 'You are sending too many messages',
     },
@@ -97,6 +98,7 @@ describe('Users Module', () => {
       },
       messenger: Messenger.TELEGRAM,
       session: {
+        pendingSupportContext: null,
         lastContactDate: 0,
         admin: false,
         mode: null,
@@ -130,9 +132,17 @@ describe('Users Module', () => {
 
     it('should process new ticket for first-time user', async () => {
       const ctx = createMockContext('I need help with my account');
+      ctx.session.pendingSupportContext = {
+        role: 'buyer',
+        topic: 'purchase',
+        refs: ['P31', 'L21', 'S11'],
+        label: 'покупатель · покупка · P31, L21, S11',
+      };
       const mockTicket = {
         ticketId: 1001,
         userid: 'user123',
+        username: 'john_doe',
+        context: ctx.session.pendingSupportContext,
         messenger: 'telegram',
         status: 'open',
         category: 'general',
@@ -165,6 +175,23 @@ describe('Users Module', () => {
         'telegram',
         expect.stringContaining('#T001001')
       );
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        'staff123',
+        'telegram',
+        expect.stringContaining('Telegram ID: user123')
+      );
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        'staff123',
+        'telegram',
+        expect.stringContaining('Коды: P31, L21, S11')
+      );
+      expect(mockAddIdAndName).toHaveBeenCalledWith(
+        1001,
+        'msg_id_123',
+        'John',
+        'john_doe',
+        ctx.session.pendingSupportContext,
+      );
     });
 
     it('should handle spam protection for repeated messages', async () => {
@@ -172,6 +199,8 @@ describe('Users Module', () => {
       const mockTicket = {
         ticketId: 1002,
         userid: 'user123',
+        username: 'john_doe',
+        context: null,
         messenger: 'telegram',
         status: 'open',
         category: 'general',
@@ -220,6 +249,8 @@ describe('Users Module', () => {
       const mockTicket = {
         ticketId: 1003,
         userid: 'user123',
+        username: 'john_doe',
+        context: null,
         messenger: 'telegram',
         status: 'open',
         category: 'general',
@@ -252,6 +283,8 @@ describe('Users Module', () => {
       const mockTicket = {
         ticketId: 1004,
         userid: 'user123',
+        username: 'john_doe',
+        context: null,
         messenger: 'telegram',
         status: 'open',
         category: 'general',
@@ -275,6 +308,8 @@ describe('Users Module', () => {
       const mockTicket = {
         ticketId: 1005,
         userid: 'user123',
+        username: 'john_doe',
+        context: null,
         messenger: 'telegram',
         status: 'open',
         category: 'general',

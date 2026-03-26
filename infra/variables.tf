@@ -174,6 +174,12 @@ variable "telegram_bot_username" {
   default     = "qpi_marketplace_bot"
 }
 
+variable "support_bot_username" {
+  description = "Telegram support-bot username used for marketplace deep links."
+  type        = string
+  default     = ""
+}
+
 variable "bot_webhook_secret_token" {
   description = "Webhook secret token written to bot runtime env file."
   type        = string

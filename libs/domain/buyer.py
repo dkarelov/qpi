@@ -720,6 +720,7 @@ class BuyerService:
                         l.wb_tech_sizes_json,
                         l.wb_characteristics_json,
                         l.search_phrase,
+                        s.id AS shop_id,
                         s.slug AS shop_slug,
                         s.title AS shop_title,
                         bo.ordered_at
@@ -737,6 +738,7 @@ class BuyerService:
                     BuyerAssignmentView(
                         assignment_id=row["id"],
                         listing_id=row["listing_id"],
+                        shop_id=row["shop_id"],
                         shop_slug=row["shop_slug"],
                         shop_title=row["shop_title"],
                         wb_product_id=row["wb_product_id"],

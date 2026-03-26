@@ -41,6 +41,7 @@ const fakectx: Context = {
     type: 'private',
   },
   session: {
+    pendingSupportContext: null,
     group: '',
     groupTag: '',
     groupCategory: null

@@ -43,6 +43,7 @@ class TelegramAddon implements Addon {
       admin: null,
       modeData: {} as any,
       mode: null,
+      pendingSupportContext: null,
       lastContactDate: null,
       groupCategory: null,
       groupTag: '',

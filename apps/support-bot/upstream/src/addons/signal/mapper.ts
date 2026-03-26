@@ -62,6 +62,7 @@ export function mapSignalMessageToContext(signalMsg: SignalMessage): Context {
       },
       chat: chat,
       session: {
+        pendingSupportContext: null,
         group: '',
         groupTag: '',
         groupCategory: null,

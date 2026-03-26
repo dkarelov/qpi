@@ -26,6 +26,7 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
             "TOKEN_CIPHER_KEY": "phase10-test-key",
             "ADMIN_TELEGRAM_IDS": admin_ids or [9001],
             "TELEGRAM_BOT_USERNAME": "qpilka_bot",
+            "SUPPORT_BOT_USERNAME": "qpilka_support_bot",
             "DISPLAY_RUB_PER_USDT": "100",
             "SELLER_COLLATERAL_SHARD_KEY": "mvp-1",
             "SELLER_COLLATERAL_INVOICE_TTL_HOURS": 24,
@@ -674,7 +675,7 @@ async def test_phase10_e2e_seller_balance_shows_active_request_and_hides_new_act
     assert "<b>Свободно для новых объявлений:</b> $4.0" in text
     assert "<b>Уже выделено под объявления:</b> $2.5" in text
     assert "<b>В процессе вывода:</b> $1.0" in text
-    assert "Активная заявка #88" in text
+    assert "Активная заявка W88" in text
     assert "<b>Всего:</b>" not in text
     assert "💸 Вывести все доступное" not in labels
     assert "✍️ Указать сумму вручную" not in labels
@@ -802,10 +803,10 @@ async def test_phase10_e2e_seller_transactions_history_shows_topups_and_withdraw
     events = await harness.callback(flow="seller", action="topup_history")
     text = "\n".join(_event_texts(events))
 
-    assert "Вывод #88" in text
+    assert "Вывод W88" in text
     assert "<b>Статус:</b> 🔴 Отклонено" in text
     assert "<b>Комментарий:</b> Неверный адрес" in text
-    assert "<b>Пополнение</b>" in text
+    assert "<b>Счет D91</b>" in text
     assert "<b>Зачислено:</b> 1.2001 USDT" in text
 
 
@@ -1349,7 +1350,7 @@ async def test_phase10_e2e_buyer_balance_shows_active_request_and_cancel() -> No
     for event in events:
         labels.extend(_markup_labels(event))
 
-    assert "Активная заявка #77" in text
+    assert "Активная заявка W77" in text
     assert "UQ-test-wallet" in text
     assert "💸 Вывести все доступное" not in labels
     assert "✍️ Указать сумму вручную" not in labels
@@ -1457,7 +1458,7 @@ async def test_phase10_e2e_buyer_withdraw_history_shows_timestamps_and_note() ->
     events = await harness.callback(flow="buyer", action="withdraw_history")
     text = "\n".join(_event_texts(events))
 
-    assert "Вывод #77" in text
+    assert "Вывод W77" in text
     assert "<b>Создана:</b> 02.03.2026 15:00 MSK" in text
     assert "<b>Обработана:</b> 02.03.2026 15:05 MSK" in text
     assert "<b>Комментарий:</b> Неверный адрес" in text
@@ -1545,7 +1546,7 @@ async def test_phase10_e2e_admin_withdrawal_flow() -> None:
     assert any("<b>Выводы в очереди:</b>" in text for text in _event_texts(open_admin_events))
 
     detail_events = await harness.callback(flow="admin", action="withdrawal_detail", entity_id="77")
-    assert any("<b>Заявка #77</b>" in text for text in _event_texts(detail_events))
+    assert any("<b>Заявка W77</b>" in text for text in _event_texts(detail_events))
     assert any("<b>Роль:</b> Покупатель" in text for text in _event_texts(detail_events))
 
     prompt_sent_events = await harness.callback(
@@ -1554,7 +1555,7 @@ async def test_phase10_e2e_admin_withdrawal_flow() -> None:
         entity_id="77",
     )
     assert any(
-        "Введите хэш перевода для заявки #77." in text for text in _event_texts(prompt_sent_events)
+        "Введите хэш перевода для заявки W77." in text for text in _event_texts(prompt_sent_events)
     )
 
     sent_events = await harness.text("0xabc")
@@ -1663,19 +1664,19 @@ async def test_phase10_e2e_admin_deposit_exceptions_flow() -> None:
 
     attach_prompt = await harness.callback(flow="admin", action="deposit_attach_prompt")
     assert any(
-        "Введите: <id_транзакции> <id_счета>." in text for text in _event_texts(attach_prompt)
+        "Введите: <код_транзакции> <код_счета>." in text for text in _event_texts(attach_prompt)
     )
 
-    attach_result = await harness.text("11 22")
+    attach_result = await harness.text("TX11 D22")
     assert any(
         "Платеж привязан к счету и зачислен." in text for text in _event_texts(attach_result)
     )
 
     cancel_prompt = await harness.callback(flow="admin", action="deposit_cancel_prompt")
-    assert any("Введите: <id_счета> <причина>." in text for text in _event_texts(cancel_prompt))
+    assert any("Введите: <код_счета> <причина>." in text for text in _event_texts(cancel_prompt))
 
-    cancel_result = await harness.text("22 late_payment")
-    assert any("Счет #22 отменен." in text for text in _event_texts(cancel_result))
+    cancel_result = await harness.text("D22 late_payment")
+    assert any("Счет D22 отменен." in text for text in _event_texts(cancel_result))
 
     deps.deposit.credit_intent_from_chain_tx.assert_awaited_once()
     deps.deposit.cancel_deposit_intent.assert_awaited_once()

@@ -94,3 +94,10 @@ Formatting logic that consumes those template values:
 - staff reply formatting to user: `apps/support-bot/upstream/src/staff.ts`
 - `/start` and `/faq` handlers: `apps/support-bot/upstream/src/handlers.ts`
 - `/help`, `/open`, `/close`, `/reopen`: `apps/support-bot/upstream/src/commands.ts`
+
+qpi-specific upstream patches currently in use:
+
+- `/start` parses marketplace support context payloads such as `seller_listing_L21_S11`.
+- ticket documents persist optional `username` and structured marketplace `context`.
+- staff-facing ticket headers include requester `telegram_id`, username, role, and marketplace refs.
+- file captions forwarded to staff reuse the same ticket-header formatting as text messages.

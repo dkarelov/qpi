@@ -51,6 +51,7 @@ class BotApiSettings(BaseAppSettings):
 
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_bot_username: str = Field(default="qpi_marketplace_bot", alias="TELEGRAM_BOT_USERNAME")
+    support_bot_username: str | None = Field(default=None, alias="SUPPORT_BOT_USERNAME")
     token_cipher_key: str = Field(default="dev-insecure-key", alias="TOKEN_CIPHER_KEY")
     webhook_base_url: str | None = Field(default=None, alias="WEBHOOK_BASE_URL")
     webhook_listen_host: str = Field(default="0.0.0.0", alias="WEBHOOK_LISTEN_HOST")
@@ -161,6 +162,16 @@ class BotApiSettings(BaseAppSettings):
             return None
         if isinstance(value, str):
             normalized = value.strip()
+            return normalized or None
+        return value
+
+    @field_validator("support_bot_username", mode="before")
+    @classmethod
+    def normalize_optional_support_bot_username(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip().lstrip("@")
             return normalized or None
         return value
 
