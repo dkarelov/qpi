@@ -25,19 +25,21 @@ write_files:
       github-runner ALL=(ALL) NOPASSWD:ALL
 runcmd:
   - |
-    set -euxo pipefail
-    export PSQLDEF_VERSION="v3.9.8"
-    install -m 0755 -d /etc/qpi
-    if ! id -u github-runner >/dev/null 2>&1; then
-      useradd --create-home --shell /bin/bash github-runner
-    fi
-    install -m 0755 -d /opt/actions-runner
-    install -m 0755 -d /srv/qpi-runner
-    chown -R github-runner:github-runner /opt/actions-runner /srv/qpi-runner
-    curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i /opt/yandex-cloud -n
-    ln -sf /opt/yandex-cloud/bin/yc /usr/local/bin/yc
-    curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL=/usr/local/bin sh
-    curl -fsSL -o /tmp/psqldef.tar.gz \
-      "https://github.com/sqldef/sqldef/releases/download/v$${PSQLDEF_VERSION#v}/psqldef_linux_amd64.tar.gz"
-    tar -xzf /tmp/psqldef.tar.gz -C /tmp
-    install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
+    bash -lc '
+      set -euxo pipefail
+      export PSQLDEF_VERSION="v3.9.8"
+      install -m 0755 -d /etc/qpi
+      if ! id -u github-runner >/dev/null 2>&1; then
+        useradd --create-home --shell /bin/bash github-runner
+      fi
+      install -m 0755 -d /opt/actions-runner
+      install -m 0755 -d /srv/qpi-runner
+      chown -R github-runner:github-runner /opt/actions-runner /srv/qpi-runner
+      curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i /opt/yandex-cloud -n
+      ln -sf /opt/yandex-cloud/bin/yc /usr/local/bin/yc
+      curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL=/usr/local/bin sh
+      curl -fsSL -o /tmp/psqldef.tar.gz \
+        "https://github.com/sqldef/sqldef/releases/download/v$${PSQLDEF_VERSION#v}/psqldef_linux_amd64.tar.gz"
+      tar -xzf /tmp/psqldef.tar.gz -C /tmp
+      install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
+    '

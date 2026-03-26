@@ -22,6 +22,9 @@ SSH auth:
 Optional environment:
   SUPPORT_BOT_VM_SSH_USER (default: ubuntu)
   SUPPORT_BOT_VM_SSH_PORT (default: 22)
+  SUPPORT_BOT_VM_SSH_PROXY_HOST
+  SUPPORT_BOT_VM_SSH_PROXY_USER (default: ubuntu)
+  SUPPORT_BOT_VM_SSH_PROXY_PORT (default: 22)
   YC_TOKEN
   SUPPORT_BOT_ARTIFACT_RETENTION_COUNT (default: 10)
   SUPPORT_BOT_ARTIFACT_RETENTION_DAYS (default: 14)
@@ -134,12 +137,9 @@ resolve_support_bot_host() {
 }
 
 remote_exec() {
+  # shellcheck disable=SC2029
   ssh \
-    -p "${SUPPORT_BOT_VM_SSH_PORT}" \
-    -i "${ssh_key_path}" \
-    -o StrictHostKeyChecking=accept-new \
-    -o ServerAliveInterval=30 \
-    -o ServerAliveCountMax=3 \
+    "${ssh_args[@]}" \
     "${SUPPORT_BOT_VM_SSH_USER}@${support_bot_host}" \
     "$@"
 }
@@ -187,6 +187,8 @@ require_env "SUPPORT_BOT_OWNER_ID"
 
 SUPPORT_BOT_VM_SSH_USER="${SUPPORT_BOT_VM_SSH_USER:-ubuntu}"
 SUPPORT_BOT_VM_SSH_PORT="${SUPPORT_BOT_VM_SSH_PORT:-22}"
+SUPPORT_BOT_VM_SSH_PROXY_USER="${SUPPORT_BOT_VM_SSH_PROXY_USER:-ubuntu}"
+SUPPORT_BOT_VM_SSH_PROXY_PORT="${SUPPORT_BOT_VM_SSH_PROXY_PORT:-22}"
 SUPPORT_BOT_ARTIFACT_RETENTION_COUNT="${SUPPORT_BOT_ARTIFACT_RETENTION_COUNT:-10}"
 SUPPORT_BOT_ARTIFACT_RETENTION_DAYS="${SUPPORT_BOT_ARTIFACT_RETENTION_DAYS:-14}"
 
@@ -197,6 +199,27 @@ support_bot_host="$(resolve_support_bot_host)"
 if [[ -z "${support_bot_host}" ]]; then
   echo "Failed to resolve a private IP for ${SUPPORT_BOT_INSTANCE_GROUP_NAME}." >&2
   exit 1
+fi
+
+ssh_args=(
+  -p "${SUPPORT_BOT_VM_SSH_PORT}"
+  -i "${ssh_key_path}"
+  -o StrictHostKeyChecking=accept-new
+  -o ServerAliveInterval=30
+  -o ServerAliveCountMax=3
+)
+scp_args=(
+  -P "${SUPPORT_BOT_VM_SSH_PORT}"
+  -i "${ssh_key_path}"
+  -o StrictHostKeyChecking=accept-new
+  -o ServerAliveInterval=30
+  -o ServerAliveCountMax=3
+)
+
+if [[ -n "${SUPPORT_BOT_VM_SSH_PROXY_HOST:-}" ]]; then
+  proxy_command="ssh -p ${SUPPORT_BOT_VM_SSH_PROXY_PORT} -i ${ssh_key_path} -o StrictHostKeyChecking=accept-new -W %h:%p ${SUPPORT_BOT_VM_SSH_PROXY_USER}@${SUPPORT_BOT_VM_SSH_PROXY_HOST}"
+  ssh_args+=(-o "ProxyCommand=${proxy_command}")
+  scp_args+=(-o "ProxyCommand=${proxy_command}")
 fi
 
 mkdir -p "${artifacts_dir}"
@@ -225,17 +248,13 @@ sed \
   -e "s/__SUPPORT_BOT_OWNER_ID__/$(escape_sed_replacement "${SUPPORT_BOT_OWNER_ID}")/g" \
   "${repo_root}/apps/support-bot/config/config.template.yaml" > "${rendered_config}"
 
-install -m 0700 -d "${HOME}/.ssh"
-touch "${HOME}/.ssh/known_hosts"
-ssh-keyscan -p "${SUPPORT_BOT_VM_SSH_PORT}" "${support_bot_host}" >> "${HOME}/.ssh/known_hosts" 2>/dev/null
-
-scp -P "${SUPPORT_BOT_VM_SSH_PORT}" -i "${ssh_key_path}" \
+scp "${scp_args[@]}" \
   "${release_archive}" \
   "${image_archive}" \
   "${repo_root}/infra/scripts/remote_rollout_support_bot.sh" \
   "${SUPPORT_BOT_VM_SSH_USER}@${support_bot_host}:/tmp/"
 
-scp -P "${SUPPORT_BOT_VM_SSH_PORT}" -i "${ssh_key_path}" \
+scp "${scp_args[@]}" \
   "${rendered_config}" \
   "${SUPPORT_BOT_VM_SSH_USER}@${support_bot_host}:/tmp/support-bot-config.yaml"
 

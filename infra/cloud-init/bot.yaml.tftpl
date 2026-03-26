@@ -74,30 +74,32 @@ write_files:
       WantedBy=multi-user.target
 runcmd:
   - |
-    set -euxo pipefail
-    install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-      | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    chmod a+r /etc/apt/keyrings/docker.gpg
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $${UBUNTU_CODENAME}) stable" \
-      > /etc/apt/sources.list.d/docker.list
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y \
-      docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-    systemctl enable --now docker
-    install -m 0755 -d /opt/qpi
-    install -m 0755 -d /opt/qpi/releases
-    install -m 0755 -d /opt/qpi/current
-    if [ ! -f /etc/qpi/webhook.crt ] || [ ! -f /etc/qpi/webhook.key ]; then
-      openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
-        -keyout /etc/qpi/webhook.key \
-        -out /etc/qpi/webhook.crt \
-        -days 3650 \
-        -subj "/CN=${bot_public_ip}" \
-        -addext "subjectAltName=IP:${bot_public_ip}"
-      chmod 0640 /etc/qpi/webhook.key /etc/qpi/webhook.crt
-      chown root:ubuntu /etc/qpi/webhook.key /etc/qpi/webhook.crt
-    fi
-    chown -R ubuntu:ubuntu /opt/qpi
-    systemctl daemon-reload
-    systemctl enable qpi-bot.service
+    bash -lc '
+      set -euxo pipefail
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      chmod a+r /etc/apt/keyrings/docker.gpg
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $${UBUNTU_CODENAME}) stable" \
+        > /etc/apt/sources.list.d/docker.list
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      systemctl enable --now docker
+      install -m 0755 -d /opt/qpi
+      install -m 0755 -d /opt/qpi/releases
+      install -m 0755 -d /opt/qpi/current
+      if [ ! -f /etc/qpi/webhook.crt ] || [ ! -f /etc/qpi/webhook.key ]; then
+        openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
+          -keyout /etc/qpi/webhook.key \
+          -out /etc/qpi/webhook.crt \
+          -days 3650 \
+          -subj "/CN=${bot_public_ip}" \
+          -addext "subjectAltName=IP:${bot_public_ip}"
+        chmod 0640 /etc/qpi/webhook.key /etc/qpi/webhook.crt
+        chown root:ubuntu /etc/qpi/webhook.key /etc/qpi/webhook.crt
+      fi
+      chown -R ubuntu:ubuntu /opt/qpi
+      systemctl daemon-reload
+      systemctl enable qpi-bot.service
+    '

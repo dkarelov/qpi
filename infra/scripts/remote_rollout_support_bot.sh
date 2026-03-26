@@ -21,6 +21,7 @@ previous_target="$(readlink -f "${current_link}" || true)"
 
 rollback() {
   if [[ -n "${previous_target}" && -d "${previous_target}" ]]; then
+    sudo rm -rf "${current_link}"
     sudo ln -sfn "${previous_target}" "${current_link}"
     sudo chown -h ubuntu:ubuntu "${current_link}" || true
     sudo systemctl restart support-bot.service || true
@@ -36,6 +37,7 @@ sudo chown -R ubuntu:ubuntu "${release_dir}"
 
 sudo sh -c "docker load -i '${image_archive_path}' > /tmp/support-bot-docker-load.log"
 
+sudo rm -rf "${current_link}"
 sudo ln -sfn "${release_dir}" "${current_link}"
 sudo chown -h ubuntu:ubuntu "${current_link}"
 sudo systemctl daemon-reload
