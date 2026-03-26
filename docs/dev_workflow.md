@@ -265,7 +265,10 @@ Support-bot deploys:
 
 - `scripts/deploy/support_bot.sh` is the canonical support-bot rollout wrapper.
 - The wrapper expects to run where the support-bot instance group's private IP is reachable, which in CI means the private runner.
+- For workstation/manual use, set `SUPPORT_BOT_VM_SSH_PROXY_HOST=<qpi-bot-public-ip>` so the wrapper can proxy through the always-on qpi bot VM.
 - The support-bot workflow builds the image in GitHub Actions and loads it onto the VM; the VM does not build the image locally.
+- The support-bot release path expects `/opt/support-bot/current` to be a symlink owned by the deploy wrapper, not a pre-created directory.
+- Support-bot cloud-init `runcmd` sections that use `pipefail` must execute through `bash -lc`, not default `sh`.
 
 ## Troubleshooting
 

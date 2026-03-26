@@ -65,7 +65,9 @@ Companion support-bot (current decision boundary):
 - isolated runtime, VM, and MongoDB state,
 - Telegram-only in V1,
 - Russian UX text,
-- no Signal, web chat, LLM, or backup automation in V1.
+- no Signal, web chat, LLM, or backup automation in V1,
+- normal private Telegram group is accepted for `staffchat_id`; supergroup is optional,
+- default qpi support-bot template ships with `clean_replies=true` and `auto_close_tickets=true`.
 
 ## 3. Implemented System Components
 
@@ -447,6 +449,13 @@ yc compute instance-group list-instances --name qpi-support-bot-ig --folder-id b
 ssh -o ProxyCommand="ssh -i ~/.ssh/id_rsa -W %h:%p ubuntu@158.160.187.114" -i ~/.ssh/id_rsa ubuntu@<support-bot-private-ip>
 ```
 
+Manual support-bot deploy via workstation bastion:
+
+```bash
+SUPPORT_BOT_VM_SSH_PROXY_HOST=158.160.187.114 \
+scripts/deploy/support_bot.sh <image-archive> <image-tag>
+```
+
 DB tunnel (default session policy):
 
 ```bash
@@ -463,6 +472,7 @@ Rules:
 - If a missing local tool would materially improve speed, reliability, or operator clarity, ask the operator to install it instead of defaulting to a slower workaround.
 - DB VM security group allows SSH from the private runner security group specifically so `reset_remote_test_dbs.sh` can recreate disposable test DBs through the DB-admin path.
 - Support-bot security group allows SSH from the private runner SG and the qpi bot SG; there is no direct public SSH path for the support-bot VM.
+- Support-bot security group also keeps TCP/22 open to `0.0.0.0/0` for Yandex instance-group SSH health checks; that does not create direct public access because the VM has no public IP.
 
 ### 7.3 Schema operations
 
@@ -503,6 +513,12 @@ npm run build
 npm test
 docker compose -f ../compose.dev.yml up -d
 ```
+
+Support-bot live behavior defaults:
+
+- `clean_replies=true`: user-facing staff replies are plain message bodies without greeting/signature wrappers.
+- `auto_close_tickets=true`: a successful staff reply closes the ticket, so `/open` will no longer list it.
+- Staff-facing ticket headers omit Telegram `language_code`; it is Telegram client metadata, not actual message-language detection.
 
 ### 7.5 Test runbook
 
