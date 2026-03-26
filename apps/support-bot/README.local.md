@@ -54,6 +54,7 @@ This directory contains the qpi-owned overlay around the vendored upstream Teleg
 ## Operational gotchas
 
 - The support-bot VM is private-only. Manual workstation deploys must set `SUPPORT_BOT_VM_SSH_PROXY_HOST=<qpi-bot-public-ip>` so `scripts/deploy/support_bot.sh` can use the qpi bot VM as a bastion.
+- The GitHub Actions support-bot deploy job currently reuses the `BOT_VM_SSH_PRIVATE_KEY` secret. If the deploy step fails with `Failed to decode ... private key`, fix the workflow/secret wiring first; the app payload itself may be fine.
 - `/opt/support-bot/current` is a deploy-managed symlink. Do not create it as a normal directory in cloud-init or by hand.
 - The support-bot security group allows TCP/22 from `0.0.0.0/0` only because Yandex instance-group health checks hit SSH from outside the runner/bot security groups; the VM still has no public IP.
 - Cloud-init `runcmd` sections that need `pipefail` must execute through `bash -lc`, not plain `sh`, or Docker/bootstrap installation will fail.
@@ -62,6 +63,16 @@ This directory contains the qpi-owned overlay around the vendored upstream Teleg
   - `auto_close_tickets: true`
   - `clean_replies: true`
   - no Telegram `language_code` field in the staff-facing ticket header
+- If `support-bot.service` fails with `supportbot is missing dependency mongodb`, recover with compose-level sequencing instead of repeated blind restarts:
+  - `docker compose ... up -d mongodb`
+  - wait until `current-mongodb-1` is healthy
+  - `docker compose ... up -d supportbot`
+- Avoid overlapping manual image builds on the support-bot VM. Multiple remote `docker build` attempts against the same checkout can contend on containerd refs and stall the rollout.
+- Live verification after deploy should always include:
+  - `readlink -f /opt/support-bot/current`
+  - `systemctl is-active support-bot.service`
+  - `sudo docker inspect -f '{{.Config.Image}}' current-supportbot-1`
+  - `sudo docker compose --project-directory /opt/support-bot/current -f /opt/support-bot/current/compose.prod.yml exec -T mongodb mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' mongodb://127.0.0.1:27017/admin`
 
 ## Editable template surface
 

@@ -470,6 +470,17 @@ SUPPORT_BOT_VM_SSH_PROXY_HOST=158.160.187.114 \
 scripts/deploy/support_bot.sh <image-archive> <image-tag>
 ```
 
+Support-bot live verification:
+
+```bash
+ssh -o ProxyCommand="ssh -i ~/.ssh/id_rsa -W %h:%p ubuntu@158.160.187.114" -i ~/.ssh/id_rsa ubuntu@<support-bot-private-ip>
+readlink -f /opt/support-bot/current
+systemctl is-active support-bot.service
+sudo docker inspect -f '{{.Config.Image}}' current-supportbot-1
+sudo docker compose --project-directory /opt/support-bot/current -f /opt/support-bot/current/compose.prod.yml \
+  exec -T mongodb mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' mongodb://127.0.0.1:27017/admin
+```
+
 DB tunnel (default session policy):
 
 ```bash
@@ -487,6 +498,8 @@ Rules:
 - DB VM security group allows SSH from the private runner security group specifically so `reset_remote_test_dbs.sh` can recreate disposable test DBs through the DB-admin path.
 - Support-bot security group allows SSH from the private runner SG and the qpi bot SG; there is no direct public SSH path for the support-bot VM.
 - Support-bot security group also keeps TCP/22 open to `0.0.0.0/0` for Yandex instance-group SSH health checks; that does not create direct public access because the VM has no public IP.
+- `scripts/deploy/runtime.sh` expects `BOT_WEBHOOK_SECRET_TOKEN` in the caller environment even though the live bot env file stores the value under `WEBHOOK_SECRET_TOKEN`; map the name explicitly when reusing values from `/etc/qpi/bot.env`.
+- The support-bot deploy workflow currently reuses `BOT_VM_SSH_PRIVATE_KEY`; keep that secret valid for both bot and support-bot VM access unless a separate support-bot key is intentionally introduced and verified.
 
 ### 7.3 Schema operations
 
@@ -533,6 +546,8 @@ Support-bot live behavior defaults:
 - `clean_replies=true`: user-facing staff replies are plain message bodies without greeting/signature wrappers.
 - `auto_close_tickets=true`: a successful staff reply closes the ticket, so `/open` will no longer list it.
 - Staff-facing ticket headers omit Telegram `language_code`; it is Telegram client metadata, not actual message-language detection.
+- If `support-bot.service` fails during startup with `supportbot is missing dependency mongodb`, recover by starting `mongodb` first, waiting for a healthy container, then starting `supportbot`, and only then reconciling the systemd unit.
+- Avoid overlapping ad-hoc support-bot image builds on the VM. Concurrent remote `docker build` attempts can contend on containerd refs and stall or wedge the rollout until stale build processes are killed.
 
 ### 7.5 Test runbook
 

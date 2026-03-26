@@ -31,6 +31,7 @@ Last updated: 2026-03-26 UTC
 - The runtime is private-only and long-polls Telegram, so there is no webhook or public listener.
 - Production deploys are expected to run from the existing private runner workflow, not from the workstation.
 - Manual workstation deploys to the private-only VM must set `SUPPORT_BOT_VM_SSH_PROXY_HOST=<qpi-bot-public-ip>` so SSH/scp can hop through the always-on qpi bot VM.
+- The GitHub Actions support-bot deploy path currently reuses the `BOT_VM_SSH_PRIVATE_KEY` secret; if the workflow fails with `Failed to decode ... private key`, fix the secret wiring before debugging the app payload.
 - `/opt/support-bot/current` is a symlink managed by the deploy wrapper; it must never be pre-created as a real directory.
 - The support-bot security group intentionally allows TCP/22 from `0.0.0.0/0` for instance-group health checks, but the VM still has no public IP, so there is no direct public SSH path.
 
@@ -44,6 +45,13 @@ Last updated: 2026-03-26 UTC
 - Staff ticket headers must show ticket number, requester `telegram_id`, requester username when available, role, and attached marketplace refs.
 - A normal private Telegram group works for `staffchat_id`; a supergroup is not required for the current Telegram-only flow.
 - The editable runtime template is `apps/support-bot/config/config.template.yaml`; the rendered production copy lives on the VM at `/etc/support-bot/config.yaml`.
+- Live verification after deploy should confirm:
+  - `readlink -f /opt/support-bot/current`,
+  - `systemctl is-active support-bot.service`,
+  - `sudo docker inspect -f '{{.Config.Image}}' current-supportbot-1`,
+  - Mongo ping inside the compose stack.
+- If `support-bot.service` fails with `supportbot is missing dependency mongodb`, start `mongodb`, wait for health, then start `supportbot`; afterwards re-run `systemctl start support-bot.service` only as reconciliation.
+- Avoid concurrent manual remote builds on the support-bot VM. Kill stale rollout/build processes before retrying, or Docker/BuildKit can deadlock on containerd ref locks.
 
 ## Upstream update policy
 
