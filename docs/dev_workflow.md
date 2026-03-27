@@ -201,7 +201,7 @@ Implementation notes:
 - `.github/actionlint.yaml` must list the custom `qpi-private` runner label or `actionlint` will fail on every self-hosted workflow reference,
 - runner registration is kept warm by the weekly keepalive workflow,
 - runner cloud-init preinstalls `yc`, `uv`, and `psqldef` for steady-state self-hosted jobs,
-- the post-merge workflow intentionally ignores workflow-only, test-only, and `scripts/dev/**` changes so those validate in PR CI without causing automatic deployments on `main`,
+- the post-merge workflow intentionally ignores docs-only (`AGENTS.md`, `docs/**`), workflow-only, test-only, and `scripts/dev/**` changes so those validate in PR CI without causing automatic deployments on `main`,
 - `scripts/deploy/private_runner.sh ensure-ready` schedules a max-session shutdown failsafe before jobs begin; the end-of-workflow stop path then reschedules a shorter idle shutdown,
 - the cleanup path schedules shutdown rather than treating the runner as always-on infrastructure.
 
