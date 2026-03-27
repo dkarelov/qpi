@@ -50,6 +50,7 @@ def test_seller_menu_is_tree_structured() -> None:
     assert "🏬 Магазины" in labels_set
     assert "📦 Объявления" in labels_set
     assert "💰 Баланс" in labels_set
+    assert "📘 Инструкция" in labels_set
     assert "➕ Создать магазин" not in labels_set
     assert "➕ Создать объявление" not in labels_set
     assert "➕ Пополнить" not in labels_set
@@ -72,6 +73,7 @@ def test_buyer_menu_is_dashboard_sections() -> None:
     assert "🏪 Магазины" in labels_set
     assert "📋 Покупки" in labels_set
     assert "💳 Баланс и вывод" in labels_set
+    assert "📘 Инструкция" in labels_set
 
 
 def test_admin_menu_is_dashboard_sections() -> None:
@@ -119,6 +121,7 @@ def test_seller_shop_detail_menu_is_structured() -> None:
     assert "✏️ Переименовать" in labels_set
     assert "🗑 Удалить" in labels_set
     assert "↩️ К списку магазинов" in labels_set
+    assert "📘 Про магазины" in labels_set
     assert "🧭 Дашборд продавца" not in labels_set
 
 
@@ -142,15 +145,15 @@ def test_shop_create_button_starts_with_token_step() -> None:
     )
 
 
-def test_seller_balance_menu_uses_transactions_label() -> None:
+def test_seller_balance_menu_uses_transactions_and_kb_labels() -> None:
     runtime = _build_runtime()
 
     labels = _flatten_labels(runtime._seller_balance_menu_markup())
     labels_set = set(labels)
 
     assert "🧾 Транзакции" in labels_set
-    assert "🆘 Поддержка" in labels_set
     assert "↩️ Назад" in labels_set
+    assert "📘 Про баланс и вывод" in labels_set
     assert "🧾 Мои пополнения / Проверить" not in labels_set
 
 
@@ -163,12 +166,12 @@ def test_money_formatter_uses_usdt_with_approx_rub() -> None:
     assert runtime._format_usdt(Decimal("1.234567"), precise=True) == "$1.234567"
 
 
-def test_buyer_cashback_formatter_uses_summary_usdt() -> None:
+def test_buyer_cashback_formatter_uses_approx_rub() -> None:
     runtime = _build_runtime()
 
-    assert runtime._format_buyer_listing_cashback(Decimal("1.29")) == "$1.3 (~129 ₽)"
-    assert runtime._format_buyer_listing_cashback(Decimal("1.20")) == "$1.2 (~120 ₽)"
-    assert runtime._format_buyer_listing_cashback(Decimal("0")) == "$0.0"
+    assert runtime._format_buyer_listing_cashback(Decimal("1.29")) == "~129 ₽"
+    assert runtime._format_buyer_listing_cashback(Decimal("1.20")) == "~120 ₽"
+    assert runtime._format_buyer_listing_cashback(Decimal("0")) == "~0 ₽"
 
 
 def test_buyer_listing_token_contains_search_phrase_product_count_and_brand() -> None:
@@ -226,6 +229,17 @@ def test_screen_text_places_cta_after_title_and_separates_lines() -> None:
     assert text.startswith("<b>Экран</b>\n\n<i>Сделайте следующий шаг.</i>")
     assert "Первый блок\nВторой блок" in text
     assert text.endswith("<i>Подсказка внизу.</i>")
+
+
+def test_screen_text_supports_ref_suffix_outside_bold_title() -> None:
+    runtime = _build_runtime()
+
+    text = runtime._screen_text(
+        title="Магазин",
+        title_suffix_html=" · <code>S4</code>",
+    )
+
+    assert text == "<b>🏪 Магазин</b> · <code>S4</code>"
 
 
 def test_listing_created_prompt_activation_explains_activation_effect() -> None:
@@ -357,7 +371,6 @@ def test_seller_listing_detail_markup_hides_edit_button_when_activation_is_block
 
     markup = runtime._seller_listing_detail_markup(
         listing_id=21,
-        shop_id=11,
         status="draft",
         list_page=1,
         can_activate=False,

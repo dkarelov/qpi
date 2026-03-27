@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-03-26 UTC
+Last updated: 2026-03-27 UTC
 
 ## 1. Documentation Policy
 
@@ -24,6 +24,12 @@ Documentation rules:
 - Record only current behavior and active decisions.
 - Do not keep phase-by-phase history or superseded evolution notes here.
 - Keep details that affect delivery/operations; omit minor refactors that are obvious from git history and code.
+- During active development, the default completion path after implementation is:
+  - commit the finished work,
+  - push the current branch,
+  - verify the triggered workflows pass,
+  - confirm the resulting state is working as expected.
+- Only skip commit/push/workflow validation when the operator explicitly asks to stop before that stage.
 
 Glossary for Telegram UX:
 
@@ -281,8 +287,9 @@ Transitions:
   - main content blocks separated by empty lines,
   - optional italic note at the bottom only when it adds non-obvious next steps or issue guidance.
 - Button labels include emoji/icon prefix.
-- Marketplace support entry uses Telegram URL buttons into the companion support-bot; if `SUPPORT_BOT_USERNAME` is unset, those buttons are hidden rather than degraded into broken links.
+- Marketplace support entry uses Telegram URL buttons into the companion support-bot only on seller/buyer main dashboards; if `SUPPORT_BOT_USERNAME` is unset, those buttons are hidden rather than degraded into broken links.
 - Each role opens with dashboard + section navigation.
+- Seller/buyer dashboards include `📘 Инструкция`; section/detail screens use role-specific `📘 Про ...` knowledge-base buttons instead of support shortcuts.
 - Public support references are short prefixed ids based on existing numeric primary keys:
   - shop: `S<shop_id>`,
   - listing: `L<listing_id>`,
@@ -291,6 +298,7 @@ Transitions:
   - seller deposit invoice: `D<deposit_intent_id>`,
   - admin incoming chain tx: `TX<chain_tx_id>`.
 - Shop title, shop slug, WB article, order number, and tx hash remain useful secondary references, but titles/slugs are not the primary support identifier because titles are ambiguous and the slug changes on rename.
+- Buyer/seller entity refs are shown subtly in screen or block titles (for example `Магазин ... · S4`) instead of separate `Код ...` body rows.
 - Seller UX:
   - `Объявления`, `Магазины`, `Баланс` are top sections,
   - seller dashboard order counters use the same buckets as buyer dashboard: `ожидают заказа`, `заказаны`, `выкуплены`,
@@ -305,7 +313,7 @@ Transitions:
   - the rest of the WB data lives inside collapsed `Параметры`, `Описание`, and `Характеристики` sections,
   - if collateral is insufficient, the note explains that balance top-up is required before activation.
 - Seller balance screen shows `Свободно для новых объявлений`, `Уже выделено под объявления`, and `В процессе вывода`; `Всего` is not shown there, and activation shortfall is shown only when funds are insufficient.
-- Seller shop/listing cards, seller top-up invoices/history, and seller withdrawal blocks show copyable public support refs.
+- Seller shop/listing cards, seller top-up invoices/history, and seller withdrawal blocks keep copyable public refs in their titles/headers.
 - Seller balance screen offers:
   - `➕ Пополнить`,
   - `💸 Вывести все доступное`,
@@ -333,15 +341,16 @@ Transitions:
   - buyer section title is `Покупки`, not `Задания`,
   - active listing CTA uses `Купить`,
   - shops section uses a numbered, paginated saved-shop list with number buttons, no `Открыть последний магазин`, and no `Открыть магазин по коду` button,
-  - saved-shop rows, buyer listing cards, purchase blocks, and withdrawal blocks show copyable public support refs,
   - each saved shop row shows a red/green circle and `(объявлений: N)`, where green means at least one active buyer-visible listing for that buyer and red means none,
   - buyer shop catalog uses a numbered, paginated listing list; number buttons open the detail card, and the catalog itself does not show direct `Просмотр` / `Купить` buttons,
   - buyer can remove a shop only from their own saved-shop list, and removal is blocked while that shop has an unfinished buyer purchase,
   - if a shop has no other buyer-visible listings but the buyer already has an active purchase there, the shop screen shows a `Покупки` shortcut instead of a dead end,
   - purchase list uses store title (not slug), shows in-progress and paid purchases, and shows fields in order: `Товар`, `Магазин`, `Кэшбэк`, optional `Номер заказа`, `Статус`,
+  - buyer purchase/withdraw blocks and concrete shop/listing screens keep copyable public refs in titles/headers instead of separate `Код ...` lines,
   - purchase status line includes color markers: red for `Ожидает заказа`, yellow for `Заказан`, green for `Выкуплен` / `Выплачен`,
   - dashboard purchase counters are grouped as `ожидают заказа`, `заказаны`, `выкуплены`,
-  - buyer dashboard `Баланс` equals withdrawable amount only,
+  - buyer dashboard `Баланс` equals withdrawable amount only and is shown as approximate RUB,
+  - buyer non-withdrawal screens show cashback/balance primarily as approximate RUB; exact USDT remains visible on withdrawal-specific screens and prompts,
   - buyer balance screen shows only `Доступно для вывода` and `В процессе вывода`,
   - if the buyer already has an active withdrawal request, new withdrawal actions are hidden and the screen shows that request plus a cancel action,
   - buyer withdrawal history is full paginated history with `<` / `>` navigation, timestamps, comments, and tx hash when available,
@@ -358,6 +367,7 @@ Transitions:
 - Ledger currency: USDT.
 - UI summary format for mixed display:
   - `$USDT (~RUB ₽)`.
+- Buyer-facing marketplace summaries outside withdrawal-specific flows prefer approximate RUB (`~RUB ₽`) while keeping USDT as the underlying ledger currency.
 - Rounding:
   - USDT summary: 1 decimal,
   - USDT precise operations: 6 decimals,

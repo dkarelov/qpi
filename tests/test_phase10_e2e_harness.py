@@ -488,7 +488,7 @@ async def test_phase10_e2e_seller_listing_create_and_activate_flow() -> None:
     assert any("Создание объявления для магазина" in text for text in _event_texts(prompt_events))
 
     preview_events = await harness.text('552892532 100 5 "бумага а4 для принтера"')
-    assert any("<b>Проверьте объявление</b>" in text for text in _event_texts(preview_events))
+    assert any("Проверьте объявление" in text for text in _event_texts(preview_events))
     assert any(
         "Название для покупателей:</b> Бумага A4 для принтера" in text
         for text in _event_texts(preview_events)
@@ -675,7 +675,7 @@ async def test_phase10_e2e_seller_balance_shows_active_request_and_hides_new_act
     assert "<b>Свободно для новых объявлений:</b> $4.0" in text
     assert "<b>Уже выделено под объявления:</b> $2.5" in text
     assert "<b>В процессе вывода:</b> $1.0" in text
-    assert "Активная заявка W88" in text
+    assert "<b>Активная заявка</b> · <code>W88</code>" in text
     assert "<b>Всего:</b>" not in text
     assert "💸 Вывести все доступное" not in labels
     assert "✍️ Указать сумму вручную" not in labels
@@ -711,7 +711,7 @@ async def test_phase10_e2e_seller_can_cancel_pending_withdrawal() -> None:
         action="withdraw_cancel_prompt",
         entity_id="77",
     )
-    assert any("<b>Отмена вывода</b>" in text for text in _event_texts(prompt_events))
+    assert any("Отмена вывода" in text for text in _event_texts(prompt_events))
 
     confirm_events = await harness.callback(
         flow="seller",
@@ -803,10 +803,10 @@ async def test_phase10_e2e_seller_transactions_history_shows_topups_and_withdraw
     events = await harness.callback(flow="seller", action="topup_history")
     text = "\n".join(_event_texts(events))
 
-    assert "Вывод W88" in text
+    assert "<b>Вывод</b> · <code>W88</code>" in text
     assert "<b>Статус:</b> 🔴 Отклонено" in text
     assert "<b>Комментарий:</b> Неверный адрес" in text
-    assert "<b>Счет D91</b>" in text
+    assert "<b>Счет на пополнение</b> · <code>D91</code>" in text
     assert "<b>Зачислено:</b> 1.2001 USDT" in text
 
 
@@ -840,7 +840,7 @@ async def test_phase10_e2e_buyer_deeplink_reserve_submit_payload_flow() -> None:
         query_id="reserve-1",
     )
     reserve_text = "\n".join(_event_texts(reserve_events))
-    assert "<b>Покупка создана</b>" in reserve_text
+    assert "Покупка создана" in reserve_text
     assert any("Ввести токен-подтверждение" in _markup_labels(event) for event in reserve_events)
 
     submit_prompt_events = await harness.callback(
@@ -1153,7 +1153,7 @@ async def test_phase10_e2e_same_telegram_user_can_open_seller_and_buyer_dashboar
 
     assert any("<b>Магазины:</b>" in text for text in _event_texts(seller_events))
     assert any("<b>Покупки:</b>" in text for text in _event_texts(buyer_events))
-    assert any("<b>Баланс:</b> $5.0" in text for text in _event_texts(buyer_events))
+    assert any("<b>Баланс:</b> ~500 ₽" in text for text in _event_texts(buyer_events))
     assert not any("<b>На выводе:</b>" in text for text in _event_texts(buyer_events))
     deps.seller.bootstrap_seller.assert_awaited()
     deps.buyer.bootstrap_buyer.assert_awaited()
@@ -1188,7 +1188,7 @@ async def test_phase10_e2e_buyer_cancel_task_flow() -> None:
         action="assignment_cancel_prompt",
         entity_id="31",
     )
-    assert any("<b>Отмена покупки</b>" in text for text in _event_texts(prompt_events))
+    assert any("Отмена покупки" in text for text in _event_texts(prompt_events))
 
     confirm_events = await harness.callback(
         flow="buyer",
@@ -1279,7 +1279,7 @@ async def test_phase10_e2e_buyer_purchases_screen_uses_shop_title_and_hides_expi
     text = "\n".join(_event_texts(events))
     first_block = text.split("<b>Товар:</b> Термокружка", maxsplit=1)[0]
 
-    assert "<b>Покупки</b>" in text
+    assert "<b>📋 Покупки</b>" in text
     assert "<b>Магазин:</b> Тушенка" in text
     assert "<b>Магазин:</b> Термокружки" in text
     assert "<b>Магазин:</b> Выплаченные" in text
@@ -1292,7 +1292,7 @@ async def test_phase10_e2e_buyer_purchases_screen_uses_shop_title_and_hides_expi
     assert first_block.index("<b>Кэшбэк:</b>") < first_block.index(
         "<b>Статус:</b> 🔴 Ожидает заказа"
     )
-    assert "\n\n<b>Товар:</b> Термокружка" in text
+    assert "\n\n<b>Покупка</b> · <code>P32</code>" in text
     assert text.count("<b>Статус:</b> 🟢 Выплачен") >= 2
 
 
@@ -1313,8 +1313,8 @@ async def test_phase10_e2e_buyer_balance_hides_withdraw_actions_when_zero() -> N
         labels.extend(_markup_labels(event))
     text = "\n".join(_event_texts(events))
 
-    assert "<b>Доступно для вывода:</b> $0.0" in text
-    assert "<b>В процессе вывода:</b> $0.0" in text
+    assert "<b>Доступно для вывода:</b> ~0 ₽" in text
+    assert "<b>В процессе вывода:</b> ~0 ₽" in text
     assert "💸 Вывести все доступное" not in labels
     assert "✍️ Указать сумму вручную" not in labels
     assert "🧾 Транзакции" in labels
@@ -1350,7 +1350,7 @@ async def test_phase10_e2e_buyer_balance_shows_active_request_and_cancel() -> No
     for event in events:
         labels.extend(_markup_labels(event))
 
-    assert "Активная заявка W77" in text
+    assert "<b>Активная заявка</b> · <code>W77</code>" in text
     assert "UQ-test-wallet" in text
     assert "💸 Вывести все доступное" not in labels
     assert "✍️ Указать сумму вручную" not in labels
@@ -1380,7 +1380,7 @@ async def test_phase10_e2e_buyer_can_cancel_pending_withdrawal() -> None:
         action="withdraw_cancel_prompt",
         entity_id="77",
     )
-    assert any("<b>Отмена вывода</b>" in text for text in _event_texts(prompt_events))
+    assert any("Отмена вывода" in text for text in _event_texts(prompt_events))
 
     confirm_events = await harness.callback(
         flow="buyer",
@@ -1458,7 +1458,7 @@ async def test_phase10_e2e_buyer_withdraw_history_shows_timestamps_and_note() ->
     events = await harness.callback(flow="buyer", action="withdraw_history")
     text = "\n".join(_event_texts(events))
 
-    assert "Вывод W77" in text
+    assert "<b>Вывод</b> · <code>W77</code>" in text
     assert "<b>Создана:</b> 02.03.2026 15:00 MSK" in text
     assert "<b>Обработана:</b> 02.03.2026 15:05 MSK" in text
     assert "<b>Комментарий:</b> Неверный адрес" in text
