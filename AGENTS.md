@@ -727,6 +727,9 @@ Private runner / workflow gotchas:
 - The private runner self-updates its GitHub runner binary automatically; the first bring-up after a version change can briefly restart the runner before it comes back online.
 - Runner cloud-init now preinstalls `yc`, `uv`, and `psqldef`; workflows still keep defensive fallback installs until the runner VM is reprovisioned with the updated image bootstrap.
 - The post-merge orchestrator intentionally watches deploy-relevant code/deploy-wrapper paths only; workflow-only, test-only, and `scripts/dev/**` changes validate in PR CI but do not auto-deploy on `main`.
+- `gh run watch <run-id> --exit-status` is the preferred operator check after a push, but `start-private-runner` and `stop-private-runner` can sit in progress for a while during VM boot/shutdown; do not treat that alone as a failure unless the job times out or subsequent status turns red.
+- `gh run view <run-id> --job <job-id> --log` does not stream in-progress job output; for live inspection use `gh run watch` or `gh run view <run-id> --json jobs,status,conclusion,url` and look at step states instead.
+- In `post_merge`, a job line like `deploy-functions in 0s` means the job was intentionally skipped because no function targets changed; it is not an error condition.
 - Workflow action references target Node24-ready `actions/checkout@v6` and `actions/setup-python@v6`; keep the private runner on `v2.329.0` or newer for `checkout@v6` compatibility.
 - Function bundle publishing requires `zip` on the private runner. It is installed both in runner cloud-init and defensively in the deploy-functions workflow.
 - Runtime and function deploy wrappers prune old `.artifacts` outputs with retention knobs so the private runner workspace does not grow without bound.
