@@ -288,6 +288,7 @@ Transitions:
   - optional italic note at the bottom only when it adds non-obvious next steps or issue guidance.
 - Button labels include emoji/icon prefix.
 - Marketplace support entry uses Telegram URL buttons into the companion support-bot on the seller main dashboard and inside the buyer `📘 Инструкция` screen; if `SUPPORT_BOT_USERNAME` is unset, those buttons are hidden rather than degraded into broken links.
+- Buyer support must stay deeper than the first dashboard screen: do not reintroduce a support shortcut on the buyer main cabinet when the intent is to route confused users through manuals/FAQ first.
 - Each role opens with dashboard + section navigation.
 - Seller/buyer dashboards include `📘 Инструкция`; section/detail screens use role-specific `📘 Про ...` knowledge-base buttons instead of support shortcuts.
 - Public support references are short prefixed ids based on existing numeric primary keys:
@@ -729,8 +730,10 @@ Private runner / workflow gotchas:
 - The post-merge orchestrator intentionally watches deploy-relevant code/deploy-wrapper paths only; docs-only (`AGENTS.md`, `docs/**`), workflow-only, test-only, and `scripts/dev/**` changes validate in PR CI but do not auto-deploy on `main`.
 - `gh run watch <run-id> --exit-status` is the preferred operator check after a push, but `start-private-runner` and `stop-private-runner` can sit in progress for a while during VM boot/shutdown; do not treat that alone as a failure unless the job times out or subsequent status turns red.
 - `gh run view <run-id> --job <job-id> --log` does not stream in-progress job output; for live inspection use `gh run watch` or `gh run view <run-id> --json jobs,status,conclusion,url` and look at step states instead.
+- `gh variable` has no `get` subcommand. Use `gh variable list`, `gh variable set`, or `gh api` when verifying repo-level workflow vars such as `SUPPORT_BOT_USERNAME`.
 - In `post_merge`, a job line like `deploy-functions in 0s` means the job was intentionally skipped because no function targets changed; it is not an error condition.
 - Runtime deploys merge explicit env overrides into `/etc/qpi/bot.env`; if `SUPPORT_BOT_USERNAME` is not passed through the workflow env, a deploy will silently blank the support deep-link config.
+- After fixing workflow/env propagation for an optional runtime feature, verify the live target directly (`/etc/qpi/bot.env`, service health, and one relevant UX path) instead of trusting the workflow green status alone.
 - Workflow action references target Node24-ready `actions/checkout@v6` and `actions/setup-python@v6`; keep the private runner on `v2.329.0` or newer for `checkout@v6` compatibility.
 - Function bundle publishing requires `zip` on the private runner. It is installed both in runner cloud-init and defensively in the deploy-functions workflow.
 - Runtime and function deploy wrappers prune old `.artifacts` outputs with retention knobs so the private runner workspace does not grow without bound.

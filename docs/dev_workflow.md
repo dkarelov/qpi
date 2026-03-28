@@ -286,8 +286,10 @@ Private runner bootstrap:
 - If a workflow is waiting behind another run unexpectedly, inspect runner-job concurrency first. Runner-touching concurrency is intentionally serialized; overlapping push-triggered workflows can delay or cancel each other. For debugging, use `workflow_dispatch` one workflow at a time.
 - After pushing to `main`, prefer `gh run watch <run-id> --exit-status` to follow the post-merge orchestrator end to end. Treat long `start-private-runner` / `stop-private-runner` stages as normal VM lifecycle time unless they actually fail or time out.
 - `gh run view <run-id> --job <job-id> --log` only works after the job completes. While a job is still running, inspect `gh run view <run-id> --json jobs,status,conclusion,url` or keep `gh run watch` open.
+- `gh variable` has no `get` command. For repo workflow vars, inspect with `gh variable list` (or `gh api`) and update with `gh variable set`.
 - In the post-merge workflow, a line such as `deploy-functions in 0s` means the function deploy job was skipped because no target functions changed.
 - `scripts/deploy/runtime.sh` always writes `SUPPORT_BOT_USERNAME=${SUPPORT_BOT_USERNAME:-}` into the runtime overrides file. Keep `SUPPORT_BOT_USERNAME` wired through `post_merge` and `deploy_runtime`, otherwise runtime deploys will erase support deep links from `/etc/qpi/bot.env`.
+- When a runtime feature depends on an optional env var, finish the rollout by checking the live `/etc/qpi/bot.env` (or equivalent env source) and one user-visible behavior, not just the workflow result.
 
 DB reset failures:
 
