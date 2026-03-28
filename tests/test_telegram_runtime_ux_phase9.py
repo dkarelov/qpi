@@ -74,6 +74,7 @@ def test_buyer_menu_is_dashboard_sections() -> None:
     assert "📋 Покупки" in labels_set
     assert "💳 Баланс и вывод" in labels_set
     assert "📘 Инструкция" in labels_set
+    assert "🆘 Поддержка" not in labels_set
 
 
 def test_admin_menu_is_dashboard_sections() -> None:
@@ -363,6 +364,13 @@ def test_support_buttons_are_hidden_when_support_bot_username_is_missing() -> No
     runtime = _build_runtime(support_bot_username=None)
 
     assert "🆘 Поддержка" not in set(_flatten_labels(runtime._seller_menu_markup()))
+    assert "🆘 Поддержка" not in set(_flatten_labels(runtime._buyer_menu_markup()))
+
+
+def test_seller_dashboard_keeps_support_but_buyer_dashboard_hides_it() -> None:
+    runtime = _build_runtime()
+
+    assert "🆘 Поддержка" in set(_flatten_labels(runtime._seller_menu_markup()))
     assert "🆘 Поддержка" not in set(_flatten_labels(runtime._buyer_menu_markup()))
 
 

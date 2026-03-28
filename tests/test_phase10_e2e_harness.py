@@ -900,6 +900,26 @@ async def test_phase10_e2e_buyer_shops_screen_uses_numbered_shop_list() -> None:
 
 
 @pytest.mark.asyncio
+async def test_phase10_e2e_buyer_support_button_is_inside_instruction() -> None:
+    runtime, deps = _build_runtime()
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    dashboard_events = await harness.callback(flow="buyer", action="menu")
+    dashboard_labels = []
+    for event in dashboard_events:
+        dashboard_labels.extend(_markup_labels(event))
+    assert "🆘 Поддержка" not in dashboard_labels
+
+    guide_events = await harness.callback(flow="buyer", action="kb_guide")
+    guide_labels = []
+    for event in guide_events:
+        guide_labels.extend(_markup_labels(event))
+
+    assert any("Инструкция покупателя" in text for text in _event_texts(guide_events))
+    assert "🆘 Поддержка" in guide_labels
+
+
+@pytest.mark.asyncio
 async def test_phase10_e2e_buyer_shop_screen_shows_purchases_button_when_no_other_listings(
 ) -> None:
     runtime, deps = _build_runtime()

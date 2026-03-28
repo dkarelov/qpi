@@ -287,6 +287,7 @@ Private runner bootstrap:
 - After pushing to `main`, prefer `gh run watch <run-id> --exit-status` to follow the post-merge orchestrator end to end. Treat long `start-private-runner` / `stop-private-runner` stages as normal VM lifecycle time unless they actually fail or time out.
 - `gh run view <run-id> --job <job-id> --log` only works after the job completes. While a job is still running, inspect `gh run view <run-id> --json jobs,status,conclusion,url` or keep `gh run watch` open.
 - In the post-merge workflow, a line such as `deploy-functions in 0s` means the function deploy job was skipped because no target functions changed.
+- `scripts/deploy/runtime.sh` always writes `SUPPORT_BOT_USERNAME=${SUPPORT_BOT_USERNAME:-}` into the runtime overrides file. Keep `SUPPORT_BOT_USERNAME` wired through `post_merge` and `deploy_runtime`, otherwise runtime deploys will erase support deep links from `/etc/qpi/bot.env`.
 
 DB reset failures:
 

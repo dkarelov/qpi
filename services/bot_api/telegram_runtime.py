@@ -4368,21 +4368,23 @@ class TelegramWebhookRuntime:
                 ],
                 separate_blocks=True,
             )
-            markup = InlineKeyboardMarkup(
+            keyboard_rows = [
                 [
-                    [
-                        self._knowledge_button(role=_ROLE_BUYER, topic="shops"),
-                        self._knowledge_button(role=_ROLE_BUYER, topic="purchases"),
-                    ],
-                    [self._knowledge_button(role=_ROLE_BUYER, topic="balance")],
-                    [
-                        InlineKeyboardButton(
-                            text="↩️ Назад",
-                            callback_data=build_callback(flow=_ROLE_BUYER, action="menu"),
-                        )
-                    ],
-                ]
-            )
+                    self._knowledge_button(role=_ROLE_BUYER, topic="shops"),
+                    self._knowledge_button(role=_ROLE_BUYER, topic="purchases"),
+                ],
+                [self._knowledge_button(role=_ROLE_BUYER, topic="balance")],
+                [
+                    InlineKeyboardButton(
+                        text="↩️ Назад",
+                        callback_data=build_callback(flow=_ROLE_BUYER, action="menu"),
+                    )
+                ],
+            ]
+            support_button = self._build_support_button(role=_ROLE_BUYER)
+            if support_button is not None:
+                keyboard_rows.append([support_button])
+            markup = InlineKeyboardMarkup(keyboard_rows)
         elif topic == "shops":
             text = self._screen_text(
                 title="Про магазины",
@@ -9322,9 +9324,6 @@ class TelegramWebhookRuntime:
             ],
             [self._knowledge_button(role=_ROLE_BUYER, topic="guide")],
         ]
-        support_button = self._build_support_button(role=_ROLE_BUYER)
-        if support_button is not None:
-            keyboard.append([support_button])
         return InlineKeyboardMarkup(keyboard)
 
     def _admin_menu_markup(self) -> InlineKeyboardMarkup:
