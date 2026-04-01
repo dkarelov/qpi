@@ -21,6 +21,17 @@ def _base_env(tmp_path: Path) -> dict[str, str]:
 
     _write_stub(stub_bin, "uv", "#!/usr/bin/env bash\nexit 0\n")
     _write_stub(stub_bin, "ssh", "#!/usr/bin/env bash\nexit 0\n")
+    _write_stub(
+        stub_bin,
+        "rg",
+        (
+            "#!/usr/bin/env bash\n"
+            "python3 -c 'import re, sys; "
+            "pattern = sys.argv[1]; "
+            "data = sys.stdin.read(); "
+            "raise SystemExit(0 if re.search(pattern, data) else 1)' \"$1\"\n"
+        ),
+    )
 
     env = os.environ.copy()
     env["PATH"] = f"{stub_bin}:{env['PATH']}"
