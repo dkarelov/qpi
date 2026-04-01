@@ -47,6 +47,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       needs_db_validation: ${{ steps.detect.outputs.needs_db_validation }}
+      db_validation_mode: ${{ steps.detect.outputs.db_validation_mode }}
+      db_validation_targets: ${{ steps.detect.outputs.db_validation_targets }}
       requires_migration: ${{ steps.detect.outputs.requires_migration }}
       needs_private_runner: ${{ steps.detect.outputs.needs_private_runner }}
     steps:
@@ -68,6 +70,8 @@ jobs:
             --head-sha "${HEAD_SHA}")"
           {
             echo "needs_db_validation=${needs_db_validation}"
+            echo "db_validation_mode=${db_validation_mode}"
+            echo "db_validation_targets=${db_validation_targets}"
             echo "requires_migration=${requires_migration}"
             echo "needs_private_runner=${needs_private_runner}"
           } >> "${GITHUB_OUTPUT}"
@@ -141,6 +145,8 @@ jobs:
       QPI_DB_VM_HOST: ${{ vars.DB_VM_HOST }}
       QPI_DB_VM_SSH_USER: ${{ vars.DB_VM_SSH_USER }}
       QPI_DB_VM_SSH_PRIVATE_KEY: ${{ secrets.DB_VM_SSH_PRIVATE_KEY }}
+      DB_VALIDATION_MODE: ${{ needs.determine-changes.outputs.db_validation_mode }}
+      DB_VALIDATION_TARGETS: ${{ needs.determine-changes.outputs.db_validation_targets }}
       REQUIRES_MIGRATION: ${{ needs.determine-changes.outputs.requires_migration }}
     steps:
       - name: Checkout
@@ -187,10 +193,16 @@ jobs:
 
       - name: DB-backed validation
         run: |
-          scripts/dev/run_db_tests_on_runner.sh integration
-          scripts/dev/run_db_tests_on_runner.sh schema-compat
-          if [[ "${REQUIRES_MIGRATION}" == "true" ]]; then
-            scripts/dev/run_db_tests_on_runner.sh migration-smoke
+          if [[ "${DB_VALIDATION_MODE}" == "targeted" ]]; then
+            test -n "${DB_VALIDATION_TARGETS}" || { echo "DB_VALIDATION_TARGETS is required for targeted mode"; exit 1; }
+            # shellcheck disable=SC2086
+            scripts/dev/run_db_tests_on_runner.sh targeted ${DB_VALIDATION_TARGETS}
+          else
+            scripts/dev/run_db_tests_on_runner.sh integration
+            scripts/dev/run_db_tests_on_runner.sh schema-compat
+            if [[ "${REQUIRES_MIGRATION}" == "true" ]]; then
+              scripts/dev/run_db_tests_on_runner.sh migration-smoke
+            fi
           fi
 
   stop-private-runner:

@@ -1,0 +1,278 @@
+{
+  "groups": [
+    {
+      "name": "validation_infra_full",
+      "trigger_globs": [
+        "scripts/common/detect_ci_changes.sh",
+        "scripts/dev/test.sh",
+        "scripts/dev/run_db_tests_on_runner.sh",
+        "scripts/dev/reset_test_db.sh",
+        "scripts/dev/reset_remote_test_dbs.sh",
+        "scripts/dev/write_test_env.sh",
+        "scripts/dev/test_doctor.sh",
+        "scripts/dev/validation_groups.json",
+        ".github/actionlint.yaml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/post_merge.yml",
+        ".github/workflows/_fast_validation.yml",
+        ".github/workflows/deploy_runtime.yml",
+        ".github/workflows/deploy_functions.yml",
+        "libs/devtools/*"
+      ],
+      "fast_pytest_targets": [
+        "tests/test_validation_selection.py",
+        "tests/test_test_doctor.py"
+      ],
+      "db_pytest_targets": [],
+      "full_db_validation": true,
+      "requires_migration": false,
+      "has_runtime_changes": false,
+      "function_targets": []
+    },
+    {
+      "name": "schema_full",
+      "trigger_globs": [
+        "schema/*",
+        "libs/db/*",
+        "infra/scripts/remote_apply_schema.sh"
+      ],
+      "fast_pytest_targets": [],
+      "db_pytest_targets": [],
+      "full_db_validation": true,
+      "requires_migration": true,
+      "has_runtime_changes": true,
+      "function_targets": [
+        "daily_report_scrapper",
+        "order_tracker",
+        "blockchain_checker"
+      ]
+    },
+    {
+      "name": "shared_core_full",
+      "trigger_globs": [
+        "services/__init__.py",
+        "pyproject.toml",
+        "uv.lock",
+        "requirements.txt",
+        "libs/config/*",
+        "libs/logging/*",
+        "scripts/common/setup_private_git_auth.sh"
+      ],
+      "fast_pytest_targets": [],
+      "db_pytest_targets": [],
+      "full_db_validation": true,
+      "requires_migration": false,
+      "has_runtime_changes": true,
+      "function_targets": [
+        "daily_report_scrapper",
+        "order_tracker",
+        "blockchain_checker"
+      ]
+    },
+    {
+      "name": "shared_domain_full",
+      "trigger_globs": [
+        "libs/domain/models.py"
+      ],
+      "fast_pytest_targets": [],
+      "db_pytest_targets": [],
+      "full_db_validation": true,
+      "requires_migration": false,
+      "has_runtime_changes": true,
+      "function_targets": [
+        "daily_report_scrapper",
+        "order_tracker",
+        "blockchain_checker"
+      ]
+    },
+    {
+      "name": "runtime_deploy_full",
+      "trigger_globs": [
+        "scripts/deploy/runtime.sh",
+        "infra/scripts/remote_rollout_bot.sh",
+        "infra/scripts/merge_bot_env.py"
+      ],
+      "fast_pytest_targets": [],
+      "db_pytest_targets": [],
+      "full_db_validation": true,
+      "requires_migration": false,
+      "has_runtime_changes": true,
+      "function_targets": []
+    },
+    {
+      "name": "function_deploy_full",
+      "trigger_globs": [
+        "scripts/deploy/function.sh"
+      ],
+      "fast_pytest_targets": [],
+      "db_pytest_targets": [],
+      "full_db_validation": true,
+      "requires_migration": false,
+      "has_runtime_changes": false,
+      "function_targets": [
+        "daily_report_scrapper",
+        "order_tracker",
+        "blockchain_checker"
+      ]
+    },
+    {
+      "name": "marketplace_runtime",
+      "trigger_globs": [
+        "services/bot_api/*",
+        "libs/domain/buyer.py",
+        "libs/domain/seller.py",
+        "libs/domain/seller_workflow.py",
+        "libs/domain/fx_rates.py",
+        "libs/domain/public_refs.py",
+        "libs/domain/errors.py",
+        "libs/domain/ledger.py",
+        "libs/domain/notifications.py",
+        "libs/integrations/wb.py",
+        "libs/integrations/wb_public.py",
+        "libs/integrations/fx_rates.py",
+        "libs/domain/deposit_intents.py",
+        "libs/integrations/tonapi.py"
+      ],
+      "fast_pytest_targets": [
+        "tests/test_bot_callback_contract.py",
+        "tests/test_phase10_e2e_harness.py",
+        "tests/test_telegram_error_handler.py",
+        "tests/test_telegram_runtime_ux_phase9.py",
+        "tests/test_tonapi_client.py",
+        "tests/test_wb_ping.py",
+        "tests/test_wb_public.py"
+      ],
+      "db_pytest_targets": [
+        "tests/test_buyer_phase4.py",
+        "tests/test_ledger_invariants.py",
+        "tests/test_notifications.py",
+        "tests/test_reservation_concurrency.py",
+        "tests/test_seller_phase3.py"
+      ],
+      "full_db_validation": false,
+      "requires_migration": false,
+      "has_runtime_changes": true,
+      "function_targets": []
+    },
+    {
+      "name": "daily_report",
+      "trigger_globs": [
+        "services/daily_report_scrapper/*",
+        "libs/domain/daily_report.py",
+        "libs/integrations/wb_reports.py"
+      ],
+      "fast_pytest_targets": [
+        "tests/test_wb_reports_client.py"
+      ],
+      "db_pytest_targets": [
+        "tests/test_daily_report_phase5.py"
+      ],
+      "full_db_validation": false,
+      "requires_migration": false,
+      "has_runtime_changes": false,
+      "function_targets": [
+        "daily_report_scrapper"
+      ]
+    },
+    {
+      "name": "daily_report_shared_seller",
+      "trigger_globs": [
+        "libs/domain/seller.py"
+      ],
+      "fast_pytest_targets": [
+        "tests/test_wb_reports_client.py"
+      ],
+      "db_pytest_targets": [
+        "tests/test_daily_report_phase5.py",
+        "tests/test_seller_phase3.py"
+      ],
+      "full_db_validation": false,
+      "requires_migration": false,
+      "has_runtime_changes": false,
+      "function_targets": [
+        "daily_report_scrapper"
+      ]
+    },
+    {
+      "name": "order_tracker",
+      "trigger_globs": [
+        "services/order_tracker/*",
+        "libs/domain/order_tracker.py"
+      ],
+      "fast_pytest_targets": [],
+      "db_pytest_targets": [
+        "tests/test_notifications.py",
+        "tests/test_order_tracker_phase6.py"
+      ],
+      "full_db_validation": false,
+      "requires_migration": false,
+      "has_runtime_changes": false,
+      "function_targets": [
+        "order_tracker"
+      ]
+    },
+    {
+      "name": "order_tracker_shared",
+      "trigger_globs": [
+        "libs/domain/buyer.py",
+        "libs/domain/errors.py",
+        "libs/domain/ledger.py",
+        "libs/domain/notifications.py"
+      ],
+      "fast_pytest_targets": [],
+      "db_pytest_targets": [
+        "tests/test_ledger_invariants.py",
+        "tests/test_notifications.py",
+        "tests/test_order_tracker_phase6.py",
+        "tests/test_reservation_concurrency.py"
+      ],
+      "full_db_validation": false,
+      "requires_migration": false,
+      "has_runtime_changes": false,
+      "function_targets": [
+        "order_tracker"
+      ]
+    },
+    {
+      "name": "blockchain_checker",
+      "trigger_globs": [
+        "services/blockchain_checker/*",
+        "libs/domain/blockchain_checker.py"
+      ],
+      "fast_pytest_targets": [
+        "tests/test_tonapi_client.py"
+      ],
+      "db_pytest_targets": [
+        "tests/test_blockchain_checker_phase8.py"
+      ],
+      "full_db_validation": false,
+      "requires_migration": false,
+      "has_runtime_changes": false,
+      "function_targets": [
+        "blockchain_checker"
+      ]
+    },
+    {
+      "name": "blockchain_shared",
+      "trigger_globs": [
+        "libs/domain/deposit_intents.py",
+        "libs/domain/errors.py",
+        "libs/domain/ledger.py",
+        "libs/integrations/tonapi.py"
+      ],
+      "fast_pytest_targets": [
+        "tests/test_tonapi_client.py"
+      ],
+      "db_pytest_targets": [
+        "tests/test_blockchain_checker_phase8.py",
+        "tests/test_ledger_invariants.py"
+      ],
+      "full_db_validation": false,
+      "requires_migration": false,
+      "has_runtime_changes": false,
+      "function_targets": [
+        "blockchain_checker"
+      ]
+    }
+  ]
+}

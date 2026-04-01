@@ -3,13 +3,14 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF' >&2
-usage: detect_ci_changes.sh --event-name <event> [--base-sha <sha>] [--head-sha <sha>]
+usage: detect_ci_changes.sh --event-name <event> [--base-sha <sha>] [--head-sha <sha>] [--force-full-validation]
 EOF
 }
 
 event_name=""
 base_sha=""
 head_sha=""
+force_full_validation=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -25,6 +26,10 @@ while [[ $# -gt 0 ]]; do
       head_sha="${2:-}"
       shift 2
       ;;
+    --force-full-validation)
+      force_full_validation=1
+      shift
+      ;;
     *)
       usage
       exit 1
@@ -37,29 +42,15 @@ if [[ -z "${event_name}" ]]; then
   exit 1
 fi
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/../.." && pwd)"
+
 require_command() {
   local name="$1"
   if ! command -v "${name}" >/dev/null 2>&1; then
     echo "Required command not found: ${name}" >&2
     exit 1
   fi
-}
-
-require_command git
-
-matches_any() {
-  local candidate="$1"
-  shift
-  local pattern
-  for pattern in "$@"; do
-    # shellcheck disable=SC2254
-    case "${candidate}" in
-      ${pattern})
-        return 0
-        ;;
-    esac
-  done
-  return 1
 }
 
 emit_output() {
@@ -69,6 +60,8 @@ emit_output() {
   local function_targets="$4"
   local has_function_targets="$5"
   local needs_private_runner="$6"
+  local db_validation_mode="$7"
+  local db_validation_targets="$8"
 
   printf 'needs_db_validation=%q\n' "${needs_db_validation}"
   printf 'requires_migration=%q\n' "${requires_migration}"
@@ -76,134 +69,79 @@ emit_output() {
   printf 'function_targets=%q\n' "${function_targets}"
   printf 'has_function_targets=%q\n' "${has_function_targets}"
   printf 'needs_private_runner=%q\n' "${needs_private_runner}"
+  printf 'db_validation_mode=%q\n' "${db_validation_mode}"
+  printf 'db_validation_targets=%q\n' "${db_validation_targets}"
 }
 
-all_function_targets="daily_report_scrapper order_tracker blockchain_checker"
+emit_full_output() {
+  emit_output \
+    "true" \
+    "true" \
+    "true" \
+    "daily_report_scrapper order_tracker blockchain_checker" \
+    "true" \
+    "true" \
+    "full" \
+    ""
+}
 
-if [[ "${event_name}" == "workflow_dispatch" ]]; then
-  emit_output "true" "true" "true" "${all_function_targets}" "true" "true"
+resolve_selection_from_paths() {
+  (
+    cd "${repo_root}"
+    export PYTHONPATH="${repo_root}${PYTHONPATH:+:${PYTHONPATH}}"
+    python3 -m libs.devtools.validation_selection \
+      --repo-root "${repo_root}" \
+      --format shell \
+      --paths "$@"
+  )
+}
+
+require_command git
+require_command python3
+
+db_pytest_targets=""
+
+if [[ "${force_full_validation}" -eq 1 ]]; then
+  emit_full_output
   exit 0
 fi
 
-if [[ -z "${base_sha}" || -z "${head_sha}" || "${base_sha}" == "0000000000000000000000000000000000000000" ]]; then
-  emit_output "true" "true" "true" "${all_function_targets}" "true" "true"
+if [[ -z "${head_sha}" ]]; then
+  if git rev-parse HEAD >/dev/null 2>&1; then
+    head_sha="$(git rev-parse HEAD)"
+  fi
+fi
+
+if [[ -z "${base_sha}" || "${base_sha}" == "0000000000000000000000000000000000000000" ]]; then
+  if [[ -n "${head_sha}" ]] && git cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
+    base_sha="$(git rev-parse "${head_sha}^" 2>/dev/null || true)"
+  fi
+fi
+
+if [[ -z "${base_sha}" || -z "${head_sha}" ]]; then
+  emit_full_output
   exit 0
 fi
 
 if ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null || ! git cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
-  emit_output "true" "true" "true" "${all_function_targets}" "true" "true"
+  emit_full_output
   exit 0
 fi
 
-db_patterns=(
-  "services/*"
-  "libs/*"
-  "tests/*"
-  "schema/*"
-  "pyproject.toml"
-  "uv.lock"
-  "requirements.txt"
-  "scripts/dev/*"
-)
-
-migration_patterns=(
-  "schema/*"
-  "libs/db/*"
-  "infra/scripts/remote_apply_schema.sh"
-)
-
-runtime_patterns=(
-  "services/__init__.py"
-  "services/bot_api/*"
-  "libs/*"
-  "schema/*"
-  "pyproject.toml"
-  "uv.lock"
-  "requirements.txt"
-  "scripts/common/setup_private_git_auth.sh"
-  "scripts/deploy/runtime.sh"
-  "infra/scripts/remote_apply_schema.sh"
-  "infra/scripts/remote_rollout_bot.sh"
-  "infra/scripts/merge_bot_env.py"
-)
-
-function_all_patterns=(
-  "services/__init__.py"
-  "libs/*"
-  "pyproject.toml"
-  "uv.lock"
-  "requirements.txt"
-  "scripts/common/setup_private_git_auth.sh"
-  "scripts/deploy/function.sh"
-)
-
-needs_db_validation="false"
-requires_migration="false"
-has_runtime_changes="false"
-has_function_targets="false"
-function_targets=""
-
-declare -A function_target_map=(
-  ["daily_report_scrapper"]=0
-  ["order_tracker"]=0
-  ["blockchain_checker"]=0
-)
-
-while IFS= read -r changed_file; do
-  [[ -n "${changed_file}" ]] || continue
-
-  if matches_any "${changed_file}" "${migration_patterns[@]}"; then
-    requires_migration="true"
-  fi
-
-  if matches_any "${changed_file}" "${runtime_patterns[@]}"; then
-    has_runtime_changes="true"
-    needs_db_validation="true"
-  fi
-
-  if matches_any "${changed_file}" "${function_all_patterns[@]}"; then
-    function_target_map["daily_report_scrapper"]=1
-    function_target_map["order_tracker"]=1
-    function_target_map["blockchain_checker"]=1
-    needs_db_validation="true"
-  fi
-
-  if matches_any "${changed_file}" "${db_patterns[@]}"; then
-    needs_db_validation="true"
-  fi
-
-  if [[ "${changed_file}" == services/daily_report_scrapper/* ]]; then
-    function_target_map["daily_report_scrapper"]=1
-    needs_db_validation="true"
-  fi
-
-  if [[ "${changed_file}" == services/order_tracker/* ]]; then
-    function_target_map["order_tracker"]=1
-    needs_db_validation="true"
-  fi
-
-  if [[ "${changed_file}" == services/blockchain_checker/* ]]; then
-    function_target_map["blockchain_checker"]=1
-    needs_db_validation="true"
-  fi
-done < <(git diff --name-only "${base_sha}" "${head_sha}")
-
-for target in daily_report_scrapper order_tracker blockchain_checker; do
-  if [[ "${function_target_map[${target}]}" -eq 1 ]]; then
-    if [[ -n "${function_targets}" ]]; then
-      function_targets="${function_targets} "
-    fi
-    function_targets="${function_targets}${target}"
-  fi
-done
-
-if [[ -n "${function_targets}" ]]; then
-  has_function_targets="true"
+mapfile -t changed_files < <(git diff --name-only "${base_sha}" "${head_sha}")
+if [[ "${#changed_files[@]}" -eq 0 ]]; then
+  emit_output "false" "false" "false" "" "false" "false" "none" ""
+  exit 0
 fi
 
-needs_private_runner="false"
-if [[ "${needs_db_validation}" == "true" || "${has_runtime_changes}" == "true" || "${has_function_targets}" == "true" ]]; then
-  needs_private_runner="true"
-fi
+eval "$(resolve_selection_from_paths "${changed_files[@]}")"
 
-emit_output "${needs_db_validation}" "${requires_migration}" "${has_runtime_changes}" "${function_targets}" "${has_function_targets}" "${needs_private_runner}"
+emit_output \
+  "${needs_db_validation}" \
+  "${requires_migration}" \
+  "${has_runtime_changes}" \
+  "${function_targets}" \
+  "${has_function_targets}" \
+  "${needs_private_runner}" \
+  "${db_validation_mode}" \
+  "${db_pytest_targets}"
