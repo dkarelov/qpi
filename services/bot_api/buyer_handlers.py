@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import ROUND_HALF_UP, Decimal
 
 from libs.domain.buyer import BuyerService
 from libs.domain.errors import (
@@ -22,9 +23,16 @@ class BuyerCommandResponse:
 class BuyerCommandProcessor:
     """Minimal buyer command handlers; transport layer can call this from Telegram adapters."""
 
-    def __init__(self, *, buyer_service: BuyerService, bot_username: str) -> None:
+    def __init__(
+        self,
+        *,
+        buyer_service: BuyerService,
+        bot_username: str,
+        display_rub_per_usdt: Decimal,
+    ) -> None:
         self._buyer_service = buyer_service
         self._bot_username = bot_username.lstrip("@")
+        self._display_rub_per_usdt = display_rub_per_usdt
 
     async def handle(
         self,
@@ -154,7 +162,8 @@ class BuyerCommandProcessor:
                         f"{assignment.assignment_id} | shop={shop_name} | "
                         f"listing={assignment.listing_id} | "
                         f"товар=\"{display_title}\" | "
-                        f"status={assignment.status} | кэшбэк={assignment.reward_usdt} USDT | "
+                        f"status={assignment.status} | "
+                        f"кэшбэк={self._format_buyer_reward(assignment.reward_usdt)} | "
                         f"order_id={assignment.order_id or '-'}"
                     )
                 return BuyerCommandResponse(text="Мои покупки:\n" + "\n".join(lines))
@@ -206,7 +215,8 @@ class BuyerCommandProcessor:
             display_title = (item.display_title or item.search_phrase).strip()
             lines.append(
                 f"{item.listing_id} | товар=\"{display_title}\" | "
-                f"поиск=\"{item.search_phrase}\" | кэшбэк={item.reward_usdt} USDT | "
+                f"поиск=\"{item.search_phrase}\" | "
+                f"кэшбэк={self._format_buyer_reward(item.reward_usdt)} | "
                 f"slots={item.available_slots}/{item.slot_count}"
             )
         return BuyerCommandResponse(
@@ -218,3 +228,10 @@ class BuyerCommandProcessor:
                 + "\n\nЧтобы занять слот: /reserve <listing_id>"
             )
         )
+
+    def _format_buyer_reward(self, reward_usdt: Decimal) -> str:
+        rub = (reward_usdt * self._display_rub_per_usdt).quantize(
+            Decimal("1"),
+            rounding=ROUND_HALF_UP,
+        )
+        return f"~{rub:.0f} ₽"

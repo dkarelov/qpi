@@ -352,6 +352,7 @@ Transitions:
   - dashboard purchase counters are grouped as `ожидают заказа`, `заказаны`, `выкуплены`,
   - buyer dashboard `Баланс` equals withdrawable amount only and is shown as approximate RUB,
   - buyer non-withdrawal screens show cashback/balance primarily as approximate RUB; exact USDT remains visible on withdrawal-specific screens and prompts,
+  - buyer non-withdrawal notifications follow the same rule as screens: approximate RUB only; exact USDT is reserved for withdrawal-specific buyer flows,
   - buyer balance screen shows only `Доступно для вывода` and `В процессе вывода`,
   - if the buyer already has an active withdrawal request, new withdrawal actions are hidden and the screen shows that request plus a cancel action,
   - buyer withdrawal history is full paginated history with `<` / `>` navigation, timestamps, comments, and tx hash when available,
@@ -369,6 +370,7 @@ Transitions:
 - UI summary format for mixed display:
   - `$USDT (~RUB ₽)`.
 - Buyer-facing marketplace summaries outside withdrawal-specific flows prefer approximate RUB (`~RUB ₽`) while keeping USDT as the underlying ledger currency.
+- Buyer-facing notifications follow the same rule: non-withdrawal notifications show approximate RUB, while withdrawal-specific notifications may use exact USDT.
 - Rounding:
   - USDT summary: 1 decimal,
   - USDT precise operations: 6 decimals,

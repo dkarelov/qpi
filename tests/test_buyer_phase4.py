@@ -1026,6 +1026,7 @@ async def test_buyer_command_processor_smoke_flow(db_pool) -> None:
     processor = BuyerCommandProcessor(
         buyer_service=buyer_service,
         bot_username="qpi_marketplace_bot",
+        display_rub_per_usdt=Decimal("100"),
     )
 
     start_response = await processor.handle(
@@ -1037,6 +1038,8 @@ async def test_buyer_command_processor_smoke_flow(db_pool) -> None:
     assert str(fixture["listing_id"]) in start_response.text
     assert "wb_product_id=" not in start_response.text
     assert 'товар="' in start_response.text
+    assert "~600 ₽" in start_response.text
+    assert "USDT" not in start_response.text
 
     reserve_response = await processor.handle(
         telegram_id=880001,
@@ -1067,3 +1070,5 @@ async def test_buyer_command_processor_smoke_flow(db_pool) -> None:
     assert "order_verified" in orders_response.text
     assert "wb_product_id=" not in orders_response.text
     assert 'товар="' in orders_response.text
+    assert "~600 ₽" in orders_response.text
+    assert "USDT" not in orders_response.text

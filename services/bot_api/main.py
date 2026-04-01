@@ -86,6 +86,7 @@ async def run_service(
             processor = BuyerCommandProcessor(
                 buyer_service=buyer_service,
                 bot_username=settings.telegram_bot_username,
+                display_rub_per_usdt=settings.display_rub_per_usdt,
             )
             response = await processor.handle(
                 telegram_id=telegram_id,

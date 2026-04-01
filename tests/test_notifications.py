@@ -11,9 +11,11 @@ from libs.domain.buyer import BuyerService
 from libs.domain.ledger import FinanceService
 from libs.domain.models import NotificationOutboxItem
 from libs.domain.notifications import (
+    EVENT_ASSIGNMENT_EARLY_PAYOUT_LISTING_DELETE_BUYER,
     EVENT_ASSIGNMENT_RESERVATION_EXPIRED_BUYER,
     EVENT_ASSIGNMENT_REWARD_UNLOCKED_BUYER,
     EVENT_ASSIGNMENT_REWARD_UNLOCKED_SELLER,
+    EVENT_MANUAL_BALANCE_CREDIT_TARGET,
     EVENT_SELLER_TOKEN_INVALIDATED,
     EVENT_WITHDRAW_CREATED_ADMIN,
     OUTBOX_STATUS_SENT,
@@ -101,6 +103,106 @@ def test_render_seller_token_invalidated_notification_uses_neutral_unauthorized_
     assert "WB отозвал токен" not in rendered.text
     assert rendered.cta_flow == "seller"
     assert rendered.cta_action == "shop_open"
+
+
+@pytest.mark.parametrize(
+    ("event_type", "payload_json", "expected_amount"),
+    [
+        (
+            EVENT_ASSIGNMENT_REWARD_UNLOCKED_BUYER,
+            {
+                "assignment_id": 1,
+                "listing_id": 2,
+                "shop_id": 3,
+                "display_title": "Товар",
+                "shop_title": "Магазин",
+                "reward_usdt": "2.538393",
+            },
+            "~254 ₽",
+        ),
+        (
+            EVENT_ASSIGNMENT_EARLY_PAYOUT_LISTING_DELETE_BUYER,
+            {
+                "assignment_id": 1,
+                "listing_id": 2,
+                "shop_id": 3,
+                "shop_title": "Магазин",
+                "item_count": 2,
+                "total_reward_usdt": "5.500000",
+            },
+            "~550 ₽",
+        ),
+        (
+            EVENT_MANUAL_BALANCE_CREDIT_TARGET,
+            {
+                "recipient_role": "buyer",
+                "amount_usdt": "3.000000",
+            },
+            "~300 ₽",
+        ),
+    ],
+)
+def test_render_buyer_notifications_show_approx_rub_amounts(
+    event_type: str,
+    payload_json: dict[str, object],
+    expected_amount: str,
+) -> None:
+    service = NotificationService(pool=None)  # type: ignore[arg-type]
+
+    rendered = service.render(
+        NotificationOutboxItem(
+            notification_id=3,
+            recipient_telegram_id=1,
+            recipient_scope="buyer",
+            event_type=event_type,
+            dedupe_key=f"buyer:{event_type}",
+            payload_json=payload_json,
+            status="pending",
+            attempt_count=0,
+            next_attempt_at=datetime.now(tz=UTC),
+            last_error=None,
+            sent_at=None,
+            created_at=datetime.now(tz=UTC),
+            updated_at=datetime.now(tz=UTC),
+        ),
+        display_rub_per_usdt=Decimal("100"),
+    )
+
+    assert expected_amount in rendered.text
+    assert "USDT" not in rendered.text
+
+
+def test_render_seller_reward_unlock_notification_keeps_exact_usdt_amount() -> None:
+    service = NotificationService(pool=None)  # type: ignore[arg-type]
+
+    rendered = service.render(
+        NotificationOutboxItem(
+            notification_id=4,
+            recipient_telegram_id=2,
+            recipient_scope="seller",
+            event_type=EVENT_ASSIGNMENT_REWARD_UNLOCKED_SELLER,
+            dedupe_key="seller:reward_unlocked",
+            payload_json={
+                "assignment_id": 1,
+                "listing_id": 2,
+                "shop_id": 3,
+                "display_title": "Товар",
+                "shop_title": "Магазин",
+                "reward_usdt": "2.538393",
+            },
+            status="pending",
+            attempt_count=0,
+            next_attempt_at=datetime.now(tz=UTC),
+            last_error=None,
+            sent_at=None,
+            created_at=datetime.now(tz=UTC),
+            updated_at=datetime.now(tz=UTC),
+        ),
+        display_rub_per_usdt=Decimal("100"),
+    )
+
+    assert "2.538393 USDT" in rendered.text
+    assert "~254 ₽" not in rendered.text
 
 
 async def _prepare_assignment(
@@ -425,3 +527,57 @@ async def test_runtime_dispatch_sends_and_marks_notification_sent(
             row = await cur.fetchone()
 
     assert row["status"] == OUTBOX_STATUS_SENT
+
+
+@pytest.mark.asyncio
+async def test_runtime_dispatch_formats_buyer_reward_notification_in_rub(
+    db_pool, isolated_database: str
+) -> None:
+    runtime = _build_runtime(isolated_database)
+    runtime._notification_service = NotificationService(db_pool)
+    transport = FakeTransport()
+    bot = FakeBot(transport=transport)
+
+    (
+        _,
+        finance_service,
+        assignment_id,
+        _,
+        reward_reserved_account_id,
+        buyer_available_account_id,
+        _,
+    ) = await _prepare_assignment(
+        db_pool,
+        seller_telegram_id=9401,
+        buyer_telegram_id=9402,
+        reward_usdt=Decimal("2.538393"),
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE assignments
+                    SET status = 'picked_up_wait_unlock',
+                        unlock_at = timezone('utc', now()) - interval '1 minute'
+                    WHERE id = %s
+                    """,
+                    (assignment_id,),
+                )
+
+    result = await finance_service.unlock_assignment_reward(
+        assignment_id=assignment_id,
+        buyer_available_account_id=buyer_available_account_id,
+        reward_reserved_account_id=reward_reserved_account_id,
+        idempotency_key="unlock-notify-rub",
+    )
+    assert result.changed is True
+
+    await runtime._dispatch_notifications_once(bot=bot)
+
+    buyer_events = [event for event in transport.find("bot_send") if event.chat_id == 9402]
+    assert len(buyer_events) == 1
+    assert "Кэшбэк зачислен" in (buyer_events[0].text or "")
+    assert "~254 ₽" in (buyer_events[0].text or "")
+    assert "USDT" not in (buyer_events[0].text or "")

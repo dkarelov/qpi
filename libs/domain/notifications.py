@@ -640,7 +640,12 @@ class NotificationService:
 
         await run_in_transaction(self._pool, operation)
 
-    def render(self, item: NotificationOutboxItem) -> RenderedTelegramNotification:
+    def render(
+        self,
+        item: NotificationOutboxItem,
+        *,
+        display_rub_per_usdt: Decimal | None = None,
+    ) -> RenderedTelegramNotification:
         payload = item.payload_json
         event_type = item.event_type
         if event_type == EVENT_ASSIGNMENT_RESERVATION_EXPIRED_BUYER:
@@ -729,12 +734,17 @@ class NotificationService:
             EVENT_ASSIGNMENT_REWARD_UNLOCKED_SELLER,
         }:
             heading = "Кэшбэк зачислен" if item.recipient_scope == "buyer" else "Кэшбэк выплачен"
+            amount_text = (
+                _format_rub_approx(payload["reward_usdt"], rub_per_usdt=display_rub_per_usdt)
+                if item.recipient_scope == "buyer"
+                else f"{_format_usdt_value(payload['reward_usdt'])} USDT"
+            )
             return RenderedTelegramNotification(
                 text=(
                     f"<b>{heading}</b>\n\n"
                     f"<b>Товар:</b> {html.escape(payload['display_title'])}\n"
                     f"<b>Магазин:</b> {html.escape(payload['shop_title'])}\n"
-                    f"<b>Сумма:</b> {_format_usdt_value(payload['reward_usdt'])} USDT"
+                    f"<b>Сумма:</b> {amount_text}"
                 ),
                 parse_mode="HTML",
                 cta_text="💰 Баланс" if item.recipient_scope == "buyer" else "📦 Объявления",
@@ -759,7 +769,8 @@ class NotificationService:
                     f"Продавец удалил {entity}, связанный с вашими покупками.\n"
                     f"<b>Магазин:</b> {html.escape(payload['shop_title'])}\n"
                     f"<b>Покупок:</b> {int(payload['item_count'])}\n"
-                    f"<b>Сумма:</b> {_format_usdt_value(payload['total_reward_usdt'])} USDT"
+                    "<b>Сумма:</b> "
+                    f"{_format_rub_approx(payload['total_reward_usdt'], rub_per_usdt=display_rub_per_usdt)}"
                 ),
                 parse_mode="HTML",
                 cta_text="💰 Баланс",
@@ -927,10 +938,15 @@ class NotificationService:
                 cta_entity_id=None,
             )
         if event_type == EVENT_MANUAL_BALANCE_CREDIT_TARGET:
+            amount_text = (
+                _format_rub_approx(payload["amount_usdt"], rub_per_usdt=display_rub_per_usdt)
+                if payload.get("recipient_role") == "buyer"
+                else f"{_format_usdt_value(payload['amount_usdt'])} USDT"
+            )
             return RenderedTelegramNotification(
                 text=(
                     "<b>Баланс пополнен</b>\n\n"
-                    f"<b>Сумма:</b> {_format_usdt_value(payload['amount_usdt'])} USDT"
+                    f"<b>Сумма:</b> {amount_text}"
                 ),
                 parse_mode="HTML",
                 cta_text="💰 Баланс",
@@ -1063,6 +1079,17 @@ def _format_usdt_value(value: str | Decimal) -> str:
     amount = _normalize_amount(Decimal(str(value)))
     text = format(amount, "f")
     return text.rstrip("0").rstrip(".")
+
+
+def _format_rub_approx(value: str | Decimal, *, rub_per_usdt: Decimal | None) -> str:
+    amount = _normalize_amount(Decimal(str(value)))
+    if rub_per_usdt is None:
+        return f"{_format_usdt_value(amount)} USDT"
+    rub = (amount * Decimal(str(rub_per_usdt))).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    text = format(rub, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return f"~{text} ₽"
 
 
 def _format_datetime_msk(value: str | None) -> str:

@@ -385,6 +385,7 @@ class TelegramWebhookRuntime:
             self._buyer_processor = BuyerCommandProcessor(
                 buyer_service=self._buyer_service,
                 bot_username=self._settings.telegram_bot_username,
+                display_rub_per_usdt=self._settings.display_rub_per_usdt,
             )
             await self._notification_service.sync_admin_users(
                 telegram_ids=self._settings.admin_telegram_ids,
@@ -6281,12 +6282,16 @@ class TelegramWebhookRuntime:
     async def _dispatch_notifications_once(self, *, bot) -> None:
         if self._notification_service is None:
             return
+        await self._refresh_display_rub_per_usdt()
         items = await self._notification_service.claim_pending(
             limit=_NOTIFICATION_DISPATCH_BATCH_SIZE
         )
         for item in items:
             try:
-                rendered = self._notification_service.render(item)
+                rendered = self._notification_service.render(
+                    item,
+                    display_rub_per_usdt=self._display_rub_per_usdt,
+                )
                 await bot.send_message(
                     chat_id=item.recipient_telegram_id,
                     text=rendered.text,
