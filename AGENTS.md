@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-03-27 UTC
+Last updated: 2026-04-02 UTC
 
 ## 1. Documentation Policy
 
@@ -506,6 +506,7 @@ Rules:
 
 - Keep tunnel active during active development sessions.
 - Recreate tunnel if listener is missing before DB operations.
+- Before any local DB-backed test run, verify the listener first with `ss -ltnp | rg ':15432\\b'`; a missing tunnel can look like a hung pytest/psqldef run instead of failing fast.
 - Operator workstation has `psql` available (`PostgreSQL 16.13`); prefer direct `psql` checks over ad-hoc Python probes for DB inspection, schema verification, and lock/activity checks.
 - If a missing local tool would materially improve speed, reliability, or operator clarity, ask the operator to install it instead of defaulting to a slower workaround.
 - DB VM security group allows SSH from the private runner security group specifically so `reset_remote_test_dbs.sh` can recreate disposable test DBs through the DB-admin path.
@@ -626,6 +627,9 @@ Rules:
 
 - `fast` is the only suite that should normally run on a GitHub-hosted runner.
 - Full DB-backed validation should run on the dedicated private self-hosted runner, not over the workstation tunnel.
+- For small UI / copy / formatting changes, start with `scripts/dev/test.sh fast` plus the narrow affected pytest files before using `integration` or `all`.
+- `scripts/dev/test.sh all` is an expensive reprovision path: it recreates disposable DBs, reapplies schema, and runs unrelated DB manifests. Do not use it as the first local check for a narrowly scoped UX fix.
+- If repeated local DB-backed runs are needed in one session, pre-create the tunnel and `.env.test.local` first; that removes the slowest avoidable local setup churn.
 - `qpi_test` and `qpi_test_scratch` are disposable and must be recreated before DB-backed runs.
 - When `QPI_DB_VM_HOST` is set and `TEST_DATABASE_ADMIN_URL` is unset, `scripts/dev/test.sh integration|schema-compat|migration-smoke|all` automatically uses the DB VM SSH reset path instead of requiring a separate local admin DB password.
 - From a workstation, that DB VM SSH reset path requires either direct network reachability to `10.131.0.28` or an SSH proxy host. The supported tunnel-mode bootstrap now writes `QPI_DB_VM_SSH_PROXY_HOST` automatically so the reset helper can hop through the bot VM public IP.
@@ -731,6 +735,7 @@ Private runner / workflow gotchas:
 - Runner cloud-init now preinstalls `yc`, `uv`, and `psqldef`; workflows still keep defensive fallback installs until the runner VM is reprovisioned with the updated image bootstrap.
 - The post-merge orchestrator intentionally watches deploy-relevant code/deploy-wrapper paths only; docs-only (`AGENTS.md`, `docs/**`), workflow-only, test-only, and `scripts/dev/**` changes validate in PR CI but do not auto-deploy on `main`.
 - `gh run watch <run-id> --exit-status` is the preferred operator check after a push, but `start-private-runner` and `stop-private-runner` can sit in progress for a while during VM boot/shutdown; do not treat that alone as a failure unless the job times out or subsequent status turns red.
+- A code push to `main` can still take several extra minutes after local work is finished because `post_merge` serially waits for fast validation, private runner boot, DB-backed validation, selective deploy jobs, and runner shutdown.
 - `gh run view <run-id> --job <job-id> --log` does not stream in-progress job output; for live inspection use `gh run watch` or `gh run view <run-id> --json jobs,status,conclusion,url` and look at step states instead.
 - `gh variable` has no `get` subcommand. Use `gh variable list`, `gh variable set`, or `gh api` when verifying repo-level workflow vars such as `SUPPORT_BOT_USERNAME`.
 - In `post_merge`, a job line like `deploy-functions in 0s` means the job was intentionally skipped because no function targets changed; it is not an error condition.
@@ -746,6 +751,7 @@ Active development rule:
 - During the active development phase, completed runtime/code changes must be verified with the relevant repo test/build/lint steps first, then committed and pushed by default unless the operator explicitly says not to push.
 - If the operator does not explicitly opt out, treat `commit + push + verification summary` as part of finishing the task, not as optional follow-up.
 - Deploy completed changes by default unless the operator explicitly says not to deploy.
+- When the expected code diff is small but the default finish path is expensive, call that out before starting the push/deploy stage so the operator can choose between `local verification only` and `full rollout`.
 - When a deploy is expected, do not stop at a successful push or workflow trigger: verify the live target state after rollout (service health, active release/image, and at least one relevant smoke check) before considering the task complete.
 - If a deployment fails, treat fixing the deployment path as part of completing the task instead of stopping after the failed rollout.
 
