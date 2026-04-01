@@ -101,11 +101,6 @@ require_command python3
 
 db_pytest_targets=""
 
-if [[ "${force_full_validation}" -eq 1 ]]; then
-  emit_full_output
-  exit 0
-fi
-
 if [[ -z "${head_sha}" ]]; then
   if git rev-parse HEAD >/dev/null 2>&1; then
     head_sha="$(git rev-parse HEAD)"
@@ -130,11 +125,23 @@ fi
 
 mapfile -t changed_files < <(git diff --name-only "${base_sha}" "${head_sha}")
 if [[ "${#changed_files[@]}" -eq 0 ]]; then
-  emit_output "false" "false" "false" "" "false" "false" "none" ""
+  if [[ "${force_full_validation}" -eq 1 ]]; then
+    emit_output "true" "true" "false" "" "false" "true" "full" ""
+  else
+    emit_output "false" "false" "false" "" "false" "false" "none" ""
+  fi
   exit 0
 fi
 
 eval "$(resolve_selection_from_paths "${changed_files[@]}")"
+
+if [[ "${force_full_validation}" -eq 1 ]]; then
+  needs_db_validation="true"
+  requires_migration="true"
+  needs_private_runner="true"
+  db_validation_mode="full"
+  db_pytest_targets=""
+fi
 
 emit_output \
   "${needs_db_validation}" \
