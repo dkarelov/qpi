@@ -126,6 +126,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
       - name: Install yc CLI
         run: |
           curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
@@ -148,6 +158,12 @@ jobs:
           test -n "${TOKEN_CIPHER_KEY}" || { echo "TOKEN_CIPHER_KEY is required"; exit 1; }
           test -n "${BOT_WEBHOOK_SECRET_TOKEN}" || { echo "BOT_WEBHOOK_SECRET_TOKEN is required"; exit 1; }
           test -n "${GH_TOKEN}" || { echo "TOKEN_YC_JSON_LOGGER secret is required"; exit 1; }
+
+      - name: Configure private GitHub auth
+        run: scripts/common/setup_private_git_auth.sh
+
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
 
       - name: Deploy runtime
         run: scripts/deploy/runtime.sh
