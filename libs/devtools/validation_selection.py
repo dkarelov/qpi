@@ -157,7 +157,7 @@ def resolve_validation_selection(
     db_validation_mode = "full" if full_db_validation else ("targeted" if db_targets else "none")
     needs_db_validation = db_validation_mode != "none"
     has_function_targets = bool(function_targets)
-    needs_private_runner = needs_db_validation or has_runtime_changes or has_function_targets
+    needs_private_runner = needs_db_validation
 
     return ValidationSelection(
         selected_groups=tuple(sorted(selected_group_names)),

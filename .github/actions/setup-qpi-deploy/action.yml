@@ -1,0 +1,94 @@
+name: Setup QPI Deploy Environment
+description: Install shared Python/deploy prerequisites for QPI workflows.
+
+inputs:
+  python-version:
+    description: Python version to install when setup-python is enabled.
+    default: "3.12"
+  setup-python:
+    description: Whether to install Python with actions/setup-python.
+    default: "true"
+  install-uv:
+    description: Whether to ensure uv is installed.
+    default: "true"
+  install-yc:
+    description: Whether to ensure the Yandex Cloud CLI is installed.
+    default: "false"
+  install-psqldef:
+    description: Whether to ensure psqldef is installed.
+    default: "false"
+  install-postgresql-client:
+    description: Whether to install the PostgreSQL client package.
+    default: "false"
+  install-zip:
+    description: Whether to install zip.
+    default: "false"
+  configure-private-git-auth:
+    description: Whether to configure private GitHub dependency auth.
+    default: "false"
+  psqldef-version:
+    description: psqldef release version to install.
+    default: "v3.9.8"
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Python
+      if: ${{ inputs.setup-python == 'true' }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Ensure uv
+      if: ${{ inputs.install-uv == 'true' }}
+      shell: bash
+      run: |
+        export PATH="${HOME}/.local/bin:${PATH}"
+        echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+        if ! command -v uv >/dev/null 2>&1; then
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+        fi
+
+    - name: Ensure yc CLI
+      if: ${{ inputs.install-yc == 'true' }}
+      shell: bash
+      run: |
+        export PATH="${HOME}/yandex-cloud/bin:${PATH}"
+        echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
+        if ! command -v yc >/dev/null 2>&1; then
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
+        fi
+
+    - name: Ensure PostgreSQL client
+      if: ${{ inputs.install-postgresql-client == 'true' }}
+      shell: bash
+      run: |
+        if ! command -v psql >/dev/null 2>&1; then
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+        fi
+
+    - name: Ensure psqldef
+      if: ${{ inputs.install-psqldef == 'true' }}
+      shell: bash
+      run: |
+        if ! command -v psqldef >/dev/null 2>&1; then
+          curl -fsSL -o /tmp/psqldef.tar.gz \
+            "https://github.com/sqldef/sqldef/releases/download/${{ inputs.psqldef-version }}/psqldef_linux_amd64.tar.gz"
+          tar -xzf /tmp/psqldef.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
+        fi
+
+    - name: Ensure zip
+      if: ${{ inputs.install-zip == 'true' }}
+      shell: bash
+      run: |
+        if ! command -v zip >/dev/null 2>&1; then
+          sudo apt-get update
+          sudo apt-get install -y zip
+        fi
+
+    - name: Configure private GitHub auth
+      if: ${{ inputs.configure-private-git-auth == 'true' }}
+      shell: bash
+      run: "${GITHUB_WORKSPACE}/scripts/common/setup_private_git_auth.sh"

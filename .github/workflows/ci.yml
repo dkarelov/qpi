@@ -28,6 +28,7 @@ on:
       - "requirements.txt"
       - "Makefile"
       - ".github/actionlint.yaml"
+      - ".github/actions/**"
       - ".github/workflows/ci.yml"
       - ".github/workflows/_fast_validation.yml"
       - ".github/workflows/post_merge.yml"
@@ -105,10 +106,16 @@ jobs:
       PRIVATE_RUNNER_REPO: ${{ github.repository }}
       PRIVATE_RUNNER_LABELS: ${{ vars.PRIVATE_RUNNER_LABELS }}
       PRIVATE_RUNNER_VERSION: ${{ vars.PRIVATE_RUNNER_VERSION }}
-      PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Setup shared bootstrap
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          setup-python: "false"
+          install-uv: "false"
+          install-yc: "true"
 
       - name: Validate required runner secrets
         run: |
@@ -117,11 +124,6 @@ jobs:
           test -n "${PRIVATE_RUNNER_INSTANCE_NAME}" || { echo "PRIVATE_RUNNER_INSTANCE_NAME is required"; exit 1; }
           test -n "${PRIVATE_RUNNER_SSH_PRIVATE_KEY}" || { echo "PRIVATE_RUNNER_SSH_PRIVATE_KEY is required"; exit 1; }
           test -n "${PRIVATE_RUNNER_BOOTSTRAP_TOKEN}" || { echo "PRIVATE_RUNNER_BOOTSTRAP_TOKEN is required"; exit 1; }
-
-      - name: Install yc CLI
-        run: |
-          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
-          echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
 
       - name: Start private runner
         run: scripts/deploy/private_runner.sh ensure-ready
@@ -153,35 +155,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
+      - name: Setup shared bootstrap
+        uses: ./.github/actions/setup-qpi-deploy
         with:
-          python-version: "3.12"
-
-      - name: Ensure uv
-        run: |
-          export PATH="${HOME}/.local/bin:${PATH}"
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
-          if ! command -v uv >/dev/null 2>&1; then
-            curl -LsSf https://astral.sh/uv/install.sh | sh
-          fi
-
-      - name: Install PostgreSQL client
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client
-
-      - name: Ensure psqldef
-        run: |
-          if ! command -v psqldef >/dev/null 2>&1; then
-            curl -fsSL -o /tmp/psqldef.tar.gz \
-              "https://github.com/sqldef/sqldef/releases/download/${PSQLDEF_VERSION}/psqldef_linux_amd64.tar.gz"
-            tar -xzf /tmp/psqldef.tar.gz -C /tmp
-            sudo install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
-          fi
-
-      - name: Configure private GitHub auth
-        run: scripts/common/setup_private_git_auth.sh
+          install-postgresql-client: "true"
+          install-psqldef: "true"
+          configure-private-git-auth: "true"
+          psqldef-version: ${{ env.PSQLDEF_VERSION }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
@@ -221,15 +201,16 @@ jobs:
       PRIVATE_RUNNER_INSTANCE_NAME: ${{ vars.PRIVATE_RUNNER_INSTANCE_NAME }}
       PRIVATE_RUNNER_SSH_USER: ${{ vars.PRIVATE_RUNNER_SSH_USER }}
       PRIVATE_RUNNER_SSH_PRIVATE_KEY: ${{ secrets.PRIVATE_RUNNER_SSH_PRIVATE_KEY }}
-      PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install yc CLI
-        run: |
-          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
-          echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
+      - name: Setup shared bootstrap
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          setup-python: "false"
+          install-uv: "false"
+          install-yc: "true"
 
       - name: Schedule runner shutdown
         run: scripts/deploy/private_runner.sh schedule-stop

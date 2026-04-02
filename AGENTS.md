@@ -652,7 +652,8 @@ Rules:
 - If repeated local DB-backed runs are needed in one session, pre-create the tunnel and `.env.test.local` first; that removes the slowest avoidable local setup churn.
 - `integration` and `schema-compat` now reset the disposable DB once per manifest run, not once per file; local and private-runner DB runs rely on per-test truncation for isolation after that reset.
 - `affected` still reprovisions the disposable DBs before DB-backed pytest targets; the speedup comes from a smaller selected test set, not from skipping DB recreation.
-- `qpi_test` and `qpi_test_scratch` are disposable and must be recreated before DB-backed runs.
+- `qpi_test_template` is the reusable clean template DB for disposable test runs.
+- `qpi_test` and `qpi_test_scratch` are disposable clones of `qpi_test_template`; the reset helpers rebuild the template only when schema / DB-tooling inputs change.
 - When `QPI_DB_VM_HOST` is set and `TEST_DATABASE_ADMIN_URL` is unset, `scripts/dev/test.sh integration|schema-compat|migration-smoke|all` automatically uses the DB VM SSH reset path instead of requiring a separate local admin DB password.
 - From a workstation, that DB VM SSH reset path requires either direct network reachability to `10.131.0.28` or an SSH proxy host. The supported tunnel-mode bootstrap now writes `QPI_DB_VM_SSH_PROXY_HOST` automatically so the reset helper can hop through the bot VM public IP.
 - `scripts/dev/reset_remote_test_dbs.sh` is the canonical full-suite reprovision path from the private runner to the DB VM admin path.
@@ -707,17 +708,20 @@ Workflows:
 - `.github/workflows/post_merge.yml`:
   - single post-merge orchestrator for `main` pushes and manual reruns,
   - runs fast validation once,
-  - starts the private runner once,
+  - starts the private runner only when DB-backed validation is required,
   - runs targeted or full DB-backed validation once depending on changed files,
-  - selectively deploys runtime and/or Cloud Functions based on changed files,
+  - runs runtime and Cloud Function deploy jobs on GitHub-hosted runners after validation succeeds,
   - `workflow_dispatch` supports `full_validation=true` to force the old all-up DB validation path,
   - schedules runner shutdown afterward.
 - `.github/workflows/deploy_runtime.yml`:
-  - manual runtime-only deploy path,
-  - keeps the direct runtime rollout wrapper available for operator-triggered reruns/recovery.
+  - manual runtime deploy path with two modes,
+  - `auto` resolves to `hotfix` only for SHAs already on `main` with a successful push-event `post_merge` run for that exact SHA,
+  - `hotfix` skips repeated validation and runs deploy-only rollout plus the existing post-deploy smoke checks from a GitHub-hosted runner,
+  - `release-grade` keeps fast validation plus full DB-backed validation before rollout.
 - `.github/workflows/deploy_functions.yml`:
   - manual function-only deploy path,
-  - keeps direct function publishes available for operator-triggered reruns/recovery.
+  - keeps release-grade DB-backed validation on the private runner,
+  - runs the final function publish step on a GitHub-hosted runner after validation.
 - `.github/workflows/support_bot_ci.yml`:
   - support-bot PR/manual workflow,
   - runs Node 24 build/test plus production image build,
@@ -748,6 +752,7 @@ Private runner / workflow gotchas:
 
 - Repo secrets `PRIVATE_RUNNER_SSH_PRIVATE_KEY`, `DB_VM_SSH_PRIVATE_KEY`, and `BOT_VM_SSH_PRIVATE_KEY` should be stored as base64-encoded private key material. The scripts accept raw / escaped / base64 formats, but base64 is the canonical GitHub Actions format because multiline PEM secrets were brittle during rollout.
 - Deploy/bootstrap scripts configure `yc` from `YC_TOKEN` + `YC_FOLDER_ID` on every run; do not assume `yc init` or a preexisting profile on GitHub-hosted or self-hosted runners.
+- Shared deploy/bootstrap setup now lives in `.github/actions/setup-qpi-deploy`; use it for runtime/function deploy jobs instead of reintroducing per-workflow tool-install snippets.
 - GitHub-hosted validation jobs cache `~/.cache/uv` keyed by Python version and `uv.lock` to reduce repeated dependency download cost.
 - Fast validation is centralized in reusable workflow `.github/workflows/_fast_validation.yml`; keep PR, post-merge, and manual deploy validation behavior aligned there instead of editing each caller separately.
 - `.github/actionlint.yaml` must keep the custom `qpi-private` self-hosted runner label declared or `actionlint` will fail the validation path even when the workflows are otherwise correct.
@@ -756,6 +761,7 @@ Private runner / workflow gotchas:
 - When debugging CI/deploy behavior, prefer `workflow_dispatch` runs one at a time on `main` instead of relying on overlapping push-triggered workflows.
 - The private runner self-updates its GitHub runner binary automatically; the first bring-up after a version change can briefly restart the runner before it comes back online.
 - Runner cloud-init now preinstalls `yc`, `uv`, and `psqldef`; workflows still keep defensive fallback installs until the runner VM is reprovisioned with the updated image bootstrap.
+- `private_runner.sh` now defaults to a 60-minute idle shutdown window so one development session can reuse the same warm runner across repeated DB-validation cycles.
 - The post-merge orchestrator still skips docs-only (`AGENTS.md`, `docs/**`) and pure test-only changes on `main`, but validation-orchestration changes (`detect_ci_changes`, targeted-validation manifest/scripts, workflow selectors) now trigger post-merge validation without forcing runtime/function deploys.
 - `detect_ci_changes` and `scripts/dev/test.sh affected` share the same checked-in validation manifest; keep local targeted validation and CI/post-merge selection aligned there instead of duplicating trigger logic.
 - Validation-orchestration changes can still boot the private runner and run DB-backed validation on `main`; that is intentional because selector changes must be verified end to end against the private-runner path.
@@ -768,7 +774,7 @@ Private runner / workflow gotchas:
 - Runtime deploys merge explicit env overrides into `/etc/qpi/bot.env`; if `SUPPORT_BOT_USERNAME` is not passed through the workflow env, a deploy will silently blank the support deep-link config.
 - After fixing workflow/env propagation for an optional runtime feature, verify the live target directly (`/etc/qpi/bot.env`, service health, and one relevant UX path) instead of trusting the workflow green status alone.
 - Workflow action references target Node24-ready `actions/checkout@v6` and `actions/setup-python@v6`; keep the private runner on `v2.329.0` or newer for `checkout@v6` compatibility.
-- Function bundle publishing requires `zip` on the private runner. It is installed both in runner cloud-init and defensively in the deploy-functions workflow.
+- Function bundle publishing requires `zip`; it is installed both in runner cloud-init and defensively in the GitHub-hosted deploy-functions workflow.
 - Runtime and function deploy wrappers prune old `.artifacts` outputs with retention knobs so the private runner workspace does not grow without bound.
 - GitHub Actions `Node 20` deprecation warnings refer to GitHub-provided JavaScript actions such as `actions/checkout` / `actions/setup-python`, not to the QPI application stack.
 

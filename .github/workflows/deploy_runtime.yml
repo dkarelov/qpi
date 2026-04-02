@@ -2,21 +2,97 @@ name: Deploy Runtime (Manual)
 
 on:
   workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit SHA to deploy (defaults to the workflow ref SHA)"
+        required: false
+        type: string
+      validation_mode:
+        description: "Deploy validation policy"
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - release-grade
 
 permissions:
   contents: read
+  actions: read
 
 env:
   PSQLDEF_VERSION: v3.9.8
 
 jobs:
+  resolve-target:
+    runs-on: ubuntu-latest
+    outputs:
+      target_sha: ${{ steps.resolve.outputs.target_sha }}
+      deploy_mode: ${{ steps.resolve.outputs.deploy_mode }}
+      on_main: ${{ steps.resolve.outputs.on_main }}
+      green_post_merge: ${{ steps.resolve.outputs.green_post_merge }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve target SHA and deploy mode
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA_INPUT: ${{ inputs.sha }}
+          VALIDATION_MODE: ${{ inputs.validation_mode }}
+        run: |
+          target_sha="${TARGET_SHA_INPUT:-${GITHUB_SHA}}"
+          if ! git cat-file -e "${target_sha}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=2 origin "${target_sha}"
+          fi
+          target_sha="$(git rev-parse "${target_sha}^{commit}")"
+          git fetch --no-tags origin main --depth=1
+
+          on_main=false
+          if git merge-base --is-ancestor "${target_sha}" origin/main; then
+            on_main=true
+          fi
+
+          green_post_merge=false
+          if [[ "${on_main}" == "true" ]]; then
+            run_count="$(
+              gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/post_merge.yml/runs?event=push&branch=main&status=success&head_sha=${target_sha}&per_page=1" \
+                --jq '.total_count'
+            )"
+            if [[ "${run_count}" =~ ^[1-9][0-9]*$ ]]; then
+              green_post_merge=true
+            fi
+          fi
+
+          deploy_mode="release-grade"
+          if [[ "${VALIDATION_MODE}" == "auto" && "${on_main}" == "true" && "${green_post_merge}" == "true" ]]; then
+            deploy_mode="hotfix"
+          fi
+
+          {
+            echo "target_sha=${target_sha}"
+            echo "deploy_mode=${deploy_mode}"
+            echo "on_main=${on_main}"
+            echo "green_post_merge=${green_post_merge}"
+          } >> "${GITHUB_OUTPUT}"
+
   lint-and-fast-tests:
+    needs: resolve-target
+    if: ${{ needs.resolve-target.outputs.deploy_mode == 'release-grade' }}
     uses: ./.github/workflows/_fast_validation.yml
+    with:
+      checkout_ref: ${{ needs.resolve-target.outputs.target_sha }}
     secrets: inherit
 
   start-private-runner:
     runs-on: ubuntu-latest
-    needs: lint-and-fast-tests
+    needs:
+      - resolve-target
+      - lint-and-fast-tests
+    if: ${{ needs.resolve-target.outputs.deploy_mode == 'release-grade' }}
     concurrency:
       group: qpi-private-runner
       cancel-in-progress: false
@@ -30,10 +106,16 @@ jobs:
       PRIVATE_RUNNER_REPO: ${{ github.repository }}
       PRIVATE_RUNNER_LABELS: ${{ vars.PRIVATE_RUNNER_LABELS }}
       PRIVATE_RUNNER_VERSION: ${{ vars.PRIVATE_RUNNER_VERSION }}
-      PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Setup shared bootstrap
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          setup-python: "false"
+          install-uv: "false"
+          install-yc: "true"
 
       - name: Validate required runner secrets
         run: |
@@ -43,17 +125,15 @@ jobs:
           test -n "${PRIVATE_RUNNER_SSH_PRIVATE_KEY}" || { echo "PRIVATE_RUNNER_SSH_PRIVATE_KEY is required"; exit 1; }
           test -n "${PRIVATE_RUNNER_BOOTSTRAP_TOKEN}" || { echo "PRIVATE_RUNNER_BOOTSTRAP_TOKEN is required"; exit 1; }
 
-      - name: Install yc CLI
-        run: |
-          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
-          echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
-
       - name: Start private runner
         run: scripts/deploy/private_runner.sh ensure-ready
 
   private-db-validation:
     runs-on: [self-hosted, linux, qpi-private]
-    needs: start-private-runner
+    needs:
+      - resolve-target
+      - start-private-runner
+    if: ${{ needs.resolve-target.outputs.deploy_mode == 'release-grade' }}
     concurrency:
       group: qpi-private-runner
       cancel-in-progress: false
@@ -67,31 +147,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Setup Python
-        uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          ref: ${{ needs.resolve-target.outputs.target_sha }}
 
-      - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
-
-      - name: Install PostgreSQL client
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client
-
-      - name: Install psqldef
-        run: |
-          curl -fsSL -o /tmp/psqldef.tar.gz \
-            "https://github.com/sqldef/sqldef/releases/download/${PSQLDEF_VERSION}/psqldef_linux_amd64.tar.gz"
-          tar -xzf /tmp/psqldef.tar.gz -C /tmp
-          sudo install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
-
-      - name: Configure private GitHub auth
-        run: scripts/common/setup_private_git_auth.sh
+      - name: Setup shared bootstrap
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          install-postgresql-client: "true"
+          install-psqldef: "true"
+          configure-private-git-auth: "true"
+          psqldef-version: ${{ env.PSQLDEF_VERSION }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
@@ -99,12 +164,10 @@ jobs:
       - name: DB-backed validation
         run: scripts/dev/run_db_tests_on_runner.sh all
 
-  deploy-runtime:
-    runs-on: [self-hosted, linux, qpi-private]
-    needs: private-db-validation
-    concurrency:
-      group: qpi-private-runner
-      cancel-in-progress: false
+  deploy-runtime-hotfix:
+    runs-on: ubuntu-latest
+    needs: resolve-target
+    if: ${{ needs.resolve-target.outputs.deploy_mode == 'hotfix' }}
     env:
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
@@ -120,33 +183,20 @@ jobs:
       TOKEN_CIPHER_KEY: ${{ secrets.TOKEN_CIPHER_KEY }}
       BOT_WEBHOOK_SECRET_TOKEN: ${{ secrets.BOT_WEBHOOK_SECRET_TOKEN }}
       BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
-      DEPLOY_BASE_SHA: ${{ github.event.before }}
-      DEPLOY_HEAD_SHA: ${{ github.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Setup Python
-        uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          ref: ${{ needs.resolve-target.outputs.target_sha }}
+          fetch-depth: 2
 
-      - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
-
-      - name: Install yc CLI
-        run: |
-          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
-          echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
-
-      - name: Install psqldef
-        run: |
-          curl -fsSL -o /tmp/psqldef.tar.gz \
-            "https://github.com/sqldef/sqldef/releases/download/${PSQLDEF_VERSION}/psqldef_linux_amd64.tar.gz"
-          tar -xzf /tmp/psqldef.tar.gz -C /tmp
-          sudo install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
+      - name: Setup shared bootstrap
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          install-yc: "true"
+          install-psqldef: "true"
+          configure-private-git-auth: "true"
+          psqldef-version: ${{ env.PSQLDEF_VERSION }}
 
       - name: Validate required deployment secrets
         run: |
@@ -159,8 +209,58 @@ jobs:
           test -n "${BOT_WEBHOOK_SECRET_TOKEN}" || { echo "BOT_WEBHOOK_SECRET_TOKEN is required"; exit 1; }
           test -n "${GH_TOKEN}" || { echo "TOKEN_YC_JSON_LOGGER secret is required"; exit 1; }
 
-      - name: Configure private GitHub auth
-        run: scripts/common/setup_private_git_auth.sh
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Deploy runtime
+        run: scripts/deploy/runtime.sh
+
+  deploy-runtime-release:
+    runs-on: ubuntu-latest
+    needs:
+      - resolve-target
+      - private-db-validation
+    if: ${{ needs.resolve-target.outputs.deploy_mode == 'release-grade' }}
+    env:
+      GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      BOT_VM_INSTANCE_GROUP_NAME: ${{ vars.BOT_VM_INSTANCE_GROUP_NAME }}
+      BOT_VM_HOST: ${{ vars.BOT_VM_HOST }}
+      BOT_VM_SSH_USER: ${{ vars.BOT_VM_SSH_USER }}
+      BOT_VM_SSH_PORT: ${{ vars.BOT_VM_SSH_PORT }}
+      BOT_HEALTH_PORT: ${{ vars.BOT_HEALTH_PORT }}
+      ADMIN_TELEGRAM_IDS: ${{ vars.ADMIN_TELEGRAM_IDS }}
+      SUPPORT_BOT_USERNAME: ${{ vars.SUPPORT_BOT_USERNAME }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TOKEN_CIPHER_KEY: ${{ secrets.TOKEN_CIPHER_KEY }}
+      BOT_WEBHOOK_SECRET_TOKEN: ${{ secrets.BOT_WEBHOOK_SECRET_TOKEN }}
+      BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve-target.outputs.target_sha }}
+          fetch-depth: 2
+
+      - name: Setup shared bootstrap
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          install-yc: "true"
+          install-psqldef: "true"
+          configure-private-git-auth: "true"
+          psqldef-version: ${{ env.PSQLDEF_VERSION }}
+
+      - name: Validate required deployment secrets
+        run: |
+          test -n "${YC_TOKEN}" || { echo "YC_TOKEN is required"; exit 1; }
+          test -n "${YC_FOLDER_ID}" || { echo "YC_FOLDER_ID is required"; exit 1; }
+          test -n "${BOT_VM_HOST}" || { echo "BOT_VM_HOST is required"; exit 1; }
+          test -n "${BOT_VM_SSH_PRIVATE_KEY}" || { echo "BOT_VM_SSH_PRIVATE_KEY is required"; exit 1; }
+          test -n "${TELEGRAM_BOT_TOKEN}" || { echo "TELEGRAM_BOT_TOKEN is required"; exit 1; }
+          test -n "${TOKEN_CIPHER_KEY}" || { echo "TOKEN_CIPHER_KEY is required"; exit 1; }
+          test -n "${BOT_WEBHOOK_SECRET_TOKEN}" || { echo "BOT_WEBHOOK_SECRET_TOKEN is required"; exit 1; }
+          test -n "${GH_TOKEN}" || { echo "TOKEN_YC_JSON_LOGGER secret is required"; exit 1; }
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
@@ -173,7 +273,7 @@ jobs:
     needs:
       - start-private-runner
       - private-db-validation
-      - deploy-runtime
+      - deploy-runtime-release
     if: ${{ always() && needs.start-private-runner.result == 'success' }}
     concurrency:
       group: qpi-private-runner
@@ -184,15 +284,16 @@ jobs:
       PRIVATE_RUNNER_INSTANCE_NAME: ${{ vars.PRIVATE_RUNNER_INSTANCE_NAME }}
       PRIVATE_RUNNER_SSH_USER: ${{ vars.PRIVATE_RUNNER_SSH_USER }}
       PRIVATE_RUNNER_SSH_PRIVATE_KEY: ${{ secrets.PRIVATE_RUNNER_SSH_PRIVATE_KEY }}
-      PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install yc CLI
-        run: |
-          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
-          echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
+      - name: Setup shared bootstrap
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          setup-python: "false"
+          install-uv: "false"
+          install-yc: "true"
 
       - name: Schedule runner shutdown
         run: scripts/deploy/private_runner.sh schedule-stop

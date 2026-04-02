@@ -32,6 +32,7 @@ def test_bot_runtime_and_notifications_change_selects_targeted_runtime_and_order
     assert "tests/test_buyer_phase4.py" in selection.db_pytest_targets
     assert "tests/test_order_tracker_phase6.py" in selection.db_pytest_targets
     assert "tests/test_telegram_runtime_ux_phase9.py" in selection.fast_pytest_targets
+    assert selection.needs_private_runner is True
 
 
 def test_blockchain_checker_change_targets_only_blockchain_function() -> None:
@@ -43,6 +44,7 @@ def test_blockchain_checker_change_targets_only_blockchain_function() -> None:
     assert selection.has_runtime_changes is False
     assert selection.db_pytest_targets == ("tests/test_blockchain_checker_phase8.py",)
     assert selection.fast_pytest_targets == ("tests/test_tonapi_client.py",)
+    assert selection.needs_private_runner is True
 
 
 def test_schema_change_escalates_to_full_validation_and_migration() -> None:
@@ -57,6 +59,7 @@ def test_schema_change_escalates_to_full_validation_and_migration() -> None:
         "daily_report_scrapper",
         "order_tracker",
     )
+    assert selection.needs_private_runner is True
 
 
 def test_validation_infra_change_forces_full_validation_without_deploy_targets() -> None:
@@ -66,6 +69,7 @@ def test_validation_infra_change_forces_full_validation_without_deploy_targets()
     assert selection.db_validation_mode == "full"
     assert selection.has_runtime_changes is False
     assert selection.function_targets == ()
+    assert selection.needs_private_runner is True
 
 
 def test_fast_test_path_is_selected_directly() -> None:
@@ -73,6 +77,7 @@ def test_fast_test_path_is_selected_directly() -> None:
 
     assert selection.db_validation_mode == "none"
     assert selection.fast_pytest_targets == ("tests/test_telegram_runtime_ux_phase9.py",)
+    assert selection.needs_private_runner is False
 
 
 def test_migration_smoke_test_path_escalates_to_full_validation() -> None:
@@ -81,3 +86,4 @@ def test_migration_smoke_test_path_escalates_to_full_validation() -> None:
     assert selection.full_db_validation is True
     assert selection.requires_migration is True
     assert selection.db_validation_mode == "full"
+    assert selection.needs_private_runner is True

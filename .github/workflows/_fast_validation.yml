@@ -2,6 +2,11 @@ name: Fast Validation
 
 on:
   workflow_call:
+    inputs:
+      checkout_ref:
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -14,6 +19,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
 
       - name: Setup Python
         id: setup-python
