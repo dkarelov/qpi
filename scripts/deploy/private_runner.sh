@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/../.." && pwd)"
+
 usage() {
   cat <<'EOF' >&2
 usage:
@@ -306,6 +309,44 @@ cancel_scheduled_shutdown() {
   remote_exec "sudo shutdown -c >/dev/null 2>&1 || true"
 }
 
+autoshutdown_env_content() {
+  cat <<EOF
+QPI_PRIVATE_RUNNER_IDLE_MINUTES=${PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES}
+QPI_PRIVATE_RUNNER_RUNNER_DIR=${PRIVATE_RUNNER_INSTALL_DIR}
+QPI_PRIVATE_RUNNER_RUNNER_USER=${PRIVATE_RUNNER_SYSTEM_USER}
+QPI_PRIVATE_RUNNER_STATE_DIR=/var/lib/qpi-private-runner
+EOF
+}
+
+autoshutdown_service_content() {
+  cat <<'EOF'
+[Unit]
+Description=QPI private runner idle shutdown check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/qpi-private-runner-autoshutdown idle-check
+EOF
+}
+
+autoshutdown_timer_content() {
+  cat <<'EOF'
+[Unit]
+Description=Run QPI private runner idle shutdown checks
+
+[Timer]
+OnBootSec=1m
+OnUnitActiveSec=1m
+Persistent=true
+Unit=qpi-private-runner-autoshutdown.service
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
 install_or_reconfigure_runner() {
   require_env "PRIVATE_RUNNER_REPO"
   require_env "PRIVATE_RUNNER_BOOTSTRAP_TOKEN"
@@ -394,6 +435,57 @@ fi
 REMOTE
 }
 
+install_or_refresh_autoshutdown_controller() {
+  require_command base64
+
+  local script_b64
+  local env_b64
+  local service_b64
+  local timer_b64
+  local remote_command
+
+  script_b64="$(base64 < "${repo_root}/scripts/deploy/private_runner_autoshutdown.sh" | tr -d '\n')"
+  env_b64="$(autoshutdown_env_content | base64 | tr -d '\n')"
+  service_b64="$(autoshutdown_service_content | base64 | tr -d '\n')"
+  timer_b64="$(autoshutdown_timer_content | base64 | tr -d '\n')"
+
+  remote_command="$(
+    printf \
+      'SCRIPT_B64=%q ENV_B64=%q SERVICE_B64=%q TIMER_B64=%q bash -s' \
+      "${script_b64}" \
+      "${env_b64}" \
+      "${service_b64}" \
+      "${timer_b64}"
+  )"
+
+  remote_exec "${remote_command}" <<'REMOTE'
+set -euo pipefail
+
+sudo install -d -m 0755 /etc/qpi /var/lib/qpi-private-runner
+printf '%s' "${SCRIPT_B64}" | base64 -d | sudo tee /usr/local/bin/qpi-private-runner-autoshutdown >/dev/null
+printf '%s' "${ENV_B64}" | base64 -d | sudo tee /etc/qpi/private-runner-autoshutdown.env >/dev/null
+printf '%s' "${SERVICE_B64}" | base64 -d | sudo tee /etc/systemd/system/qpi-private-runner-autoshutdown.service >/dev/null
+printf '%s' "${TIMER_B64}" | base64 -d | sudo tee /etc/systemd/system/qpi-private-runner-autoshutdown.timer >/dev/null
+
+sudo chmod 0755 /usr/local/bin/qpi-private-runner-autoshutdown
+sudo chmod 0644 /etc/qpi/private-runner-autoshutdown.env
+sudo chmod 0644 /etc/systemd/system/qpi-private-runner-autoshutdown.service
+sudo chmod 0644 /etc/systemd/system/qpi-private-runner-autoshutdown.timer
+sudo chown root:root \
+  /usr/local/bin/qpi-private-runner-autoshutdown \
+  /etc/qpi/private-runner-autoshutdown.env \
+  /etc/systemd/system/qpi-private-runner-autoshutdown.service \
+  /etc/systemd/system/qpi-private-runner-autoshutdown.timer
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now qpi-private-runner-autoshutdown.timer
+REMOTE
+}
+
+autoshutdown_heartbeat() {
+  remote_exec "sudo /usr/local/bin/qpi-private-runner-autoshutdown heartbeat"
+}
+
 wait_for_runner_online() {
   local deadline=$((SECONDS + 600))
   while [[ "${SECONDS}" -lt "${deadline}" ]]; do
@@ -439,7 +531,9 @@ case "${command_name}" in
     wait_for_ssh
     cancel_scheduled_shutdown
     install_or_reconfigure_runner
+    install_or_refresh_autoshutdown_controller
     wait_for_runner_online
+    autoshutdown_heartbeat
     schedule_shutdown "${PRIVATE_RUNNER_MAX_SESSION_MINUTES}"
     print_status
     ;;

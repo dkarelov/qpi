@@ -47,30 +47,3 @@ jobs:
         run: |
           echo "Runner ping on $(hostname)"
           uptime
-
-  stop-private-runner:
-    runs-on: ubuntu-latest
-    needs:
-      - start-private-runner
-      - runner-ping
-    if: ${{ always() && needs.start-private-runner.result == 'success' }}
-    concurrency:
-      group: qpi-private-runner
-      cancel-in-progress: false
-    env:
-      YC_TOKEN: ${{ secrets.YC_TOKEN }}
-      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
-      PRIVATE_RUNNER_INSTANCE_NAME: ${{ vars.PRIVATE_RUNNER_INSTANCE_NAME }}
-      PRIVATE_RUNNER_SSH_USER: ${{ vars.PRIVATE_RUNNER_SSH_USER }}
-      PRIVATE_RUNNER_SSH_PRIVATE_KEY: ${{ secrets.PRIVATE_RUNNER_SSH_PRIVATE_KEY }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install yc CLI
-        run: |
-          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
-          echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
-
-      - name: Schedule runner shutdown
-        run: scripts/deploy/private_runner.sh schedule-stop

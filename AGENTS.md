@@ -711,8 +711,7 @@ Workflows:
   - starts the private runner only when DB-backed validation is required,
   - runs targeted or full DB-backed validation once depending on changed files,
   - runs runtime and Cloud Function deploy jobs on GitHub-hosted runners after validation succeeds,
-  - `workflow_dispatch` supports `full_validation=true` to force the old all-up DB validation path,
-  - schedules runner shutdown afterward.
+  - `workflow_dispatch` supports `full_validation=true` to force the old all-up DB validation path.
 - `.github/workflows/deploy_runtime.yml`:
   - manual runtime deploy path with two modes,
   - `auto` resolves to `hotfix` only for SHAs already on `main` with a successful push-event `post_merge` run for that exact SHA,
@@ -733,8 +732,7 @@ Workflows:
   - reuses the existing private runner only for private-network deployment into the support-bot instance group.
 - `.github/workflows/private_runner_keepalive.yml`:
   - weekly start of the dedicated private runner,
-  - validates runner registration / dispatch path,
-  - schedules shutdown afterward.
+  - validates runner registration / dispatch path.
 - `.github/workflows/deploy_terraform.yml`:
   - terraform validate/plan on push,
   - apply only via explicit manual dispatch guard.
@@ -763,12 +761,14 @@ Private runner / workflow gotchas:
 - When debugging CI/deploy behavior, prefer `workflow_dispatch` runs one at a time on `main` instead of relying on overlapping push-triggered workflows.
 - The private runner self-updates its GitHub runner binary automatically; the first bring-up after a version change can briefly restart the runner before it comes back online.
 - Runner cloud-init now preinstalls `yc`, `uv`, and `psqldef`; workflows still keep defensive fallback installs until the runner VM is reprovisioned with the updated image bootstrap.
-- `private_runner.sh` now defaults to a 60-minute idle shutdown window so one development session can reuse the same warm runner across repeated DB-validation cycles.
+- `private_runner.sh ensure-ready` now installs and refreshes the runner-local `qpi-private-runner-autoshutdown.timer` controller on the VM, then heartbeats it after the runner reports online.
+- The private runner now powers itself off locally after 60 minutes without active `Runner.Worker` processes or interactive SSH sessions; workflows no longer SSH back in just to schedule idle shutdown.
+- `private_runner.sh` still sets a 120-minute `shutdown -h +...` max-session failsafe on each `ensure-ready` call so canceled or wedged workflows cannot strand the VM indefinitely.
 - The post-merge orchestrator still skips docs-only (`AGENTS.md`, `docs/**`) and pure test-only changes on `main`, but validation-orchestration changes (`detect_ci_changes`, targeted-validation manifest/scripts, workflow selectors) now trigger post-merge validation without forcing runtime/function deploys.
 - `detect_ci_changes` and `scripts/dev/test.sh affected` share the same checked-in validation manifest; keep local targeted validation and CI/post-merge selection aligned there instead of duplicating trigger logic.
 - Validation-orchestration changes can still boot the private runner and run DB-backed validation on `main`; that is intentional because selector changes must be verified end to end against the private-runner path.
-- `gh run watch <run-id> --exit-status` is the preferred operator check after a push, but `start-private-runner` and `stop-private-runner` can sit in progress for a while during VM boot/shutdown; do not treat that alone as a failure unless the job times out or subsequent status turns red.
-- A code push to `main` can still take several extra minutes after local work is finished because `post_merge` serially waits for fast validation, private runner boot, DB-backed validation, selective deploy jobs, and runner shutdown.
+- `gh run watch <run-id> --exit-status` is the preferred operator check after a push, but `start-private-runner` can sit in progress for a while during VM boot and runner registration; do not treat that alone as a failure unless the job times out or subsequent status turns red.
+- A code push to `main` can still take several extra minutes after local work is finished because `post_merge` serially waits for fast validation, private runner boot, DB-backed validation, and the selective deploy jobs; the runner now idles out locally afterward instead of spending a separate workflow tail on shutdown scheduling.
 - `gh run view <run-id> --job <job-id> --log` does not stream in-progress job output; for live inspection use `gh run watch` or `gh run view <run-id> --json jobs,status,conclusion,url` and look at step states instead.
 - `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs` currently returns plain text from the blob backend, not a zip archive; if `gh run view --job --log` is sparse, fetch that endpoint directly and grep the text instead of trying to unzip it.
 - `gh variable` has no `get` subcommand. Use `gh variable list`, `gh variable set`, or `gh api` when verifying repo-level workflow vars such as `SUPPORT_BOT_USERNAME`.

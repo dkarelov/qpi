@@ -147,31 +147,3 @@ jobs:
           scripts/deploy/support_bot.sh \
             "${RUNNER_TEMP}/support-bot-image/${{ needs.build-image.outputs.artifact_name }}" \
             "${{ needs.build-image.outputs.image_tag }}"
-
-  stop-private-runner:
-    runs-on: ubuntu-latest
-    needs:
-      - build-image
-      - start-private-runner
-      - deploy-support-bot
-    if: ${{ always() && needs.start-private-runner.result == 'success' }}
-    concurrency:
-      group: qpi-private-runner
-      cancel-in-progress: false
-    env:
-      YC_TOKEN: ${{ secrets.YC_TOKEN }}
-      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
-      PRIVATE_RUNNER_INSTANCE_NAME: ${{ vars.PRIVATE_RUNNER_INSTANCE_NAME }}
-      PRIVATE_RUNNER_SSH_USER: ${{ vars.PRIVATE_RUNNER_SSH_USER }}
-      PRIVATE_RUNNER_SSH_PRIVATE_KEY: ${{ secrets.PRIVATE_RUNNER_SSH_PRIVATE_KEY }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install yc CLI
-        run: |
-          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
-          echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
-
-      - name: Schedule runner shutdown
-        run: scripts/deploy/private_runner.sh schedule-stop

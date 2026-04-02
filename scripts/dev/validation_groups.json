@@ -4,6 +4,8 @@
       "name": "validation_infra_full",
       "trigger_globs": [
         "scripts/common/detect_ci_changes.sh",
+        "scripts/deploy/private_runner.sh",
+        "scripts/deploy/private_runner_autoshutdown.sh",
         "scripts/dev/test.sh",
         "scripts/dev/run_db_tests_on_runner.sh",
         "scripts/dev/reset_test_db.sh",
@@ -12,6 +14,7 @@
         "scripts/dev/write_test_env.sh",
         "scripts/dev/test_doctor.sh",
         "scripts/dev/validation_groups.json",
+        "infra/cloud-init/runner.yaml.tftpl",
         ".github/actionlint.yaml",
         ".github/actions/**",
         ".github/workflows/ci.yml",
@@ -19,6 +22,8 @@
         ".github/workflows/_fast_validation.yml",
         ".github/workflows/deploy_runtime.yml",
         ".github/workflows/deploy_functions.yml",
+        ".github/workflows/private_runner_keepalive.yml",
+        ".github/workflows/support_bot_deploy.yml",
         "libs/devtools/*"
       ],
       "fast_pytest_targets": [
