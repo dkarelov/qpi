@@ -717,7 +717,8 @@ Workflows:
   - manual runtime deploy path with two modes,
   - `auto` resolves to `hotfix` only for SHAs already on `main` with a successful push-event `post_merge` run for that exact SHA,
   - `hotfix` skips repeated validation and runs deploy-only rollout plus the existing post-deploy smoke checks from a GitHub-hosted runner,
-  - `release-grade` keeps fast validation plus full DB-backed validation before rollout.
+  - `release-grade` keeps fast validation plus full DB-backed validation before rollout,
+  - the target SHA is checked out directly in the workflow, so operator reruns are no longer limited to `HEAD`.
 - `.github/workflows/deploy_functions.yml`:
   - manual function-only deploy path,
   - keeps release-grade DB-backed validation on the private runner,
@@ -755,6 +756,7 @@ Private runner / workflow gotchas:
 - Shared deploy/bootstrap setup now lives in `.github/actions/setup-qpi-deploy`; use it for runtime/function deploy jobs instead of reintroducing per-workflow tool-install snippets.
 - GitHub-hosted validation jobs cache `~/.cache/uv` keyed by Python version and `uv.lock` to reduce repeated dependency download cost.
 - Fast validation is centralized in reusable workflow `.github/workflows/_fast_validation.yml`; keep PR, post-merge, and manual deploy validation behavior aligned there instead of editing each caller separately.
+- When sourcing a shared shell helper from `scripts/**`, keep the `# shellcheck source=...` hint repo-relative (for example `scripts/dev/test_db_template_lib.sh`), not workstation-absolute; CI shellcheck runs against the checked-out repo tree and will fail on local absolute paths even when the script itself works.
 - `.github/actionlint.yaml` must keep the custom `qpi-private` self-hosted runner label declared or `actionlint` will fail the validation path even when the workflows are otherwise correct.
 - Runner-touching concurrency is scoped to runner jobs, not whole workflows. Whole-workflow concurrency caused unrelated workflows to cancel each other during rollout.
 - `.github/workflows/post_merge.yml` now uses workflow-level concurrency on `main` with stale-run cancellation; `private_runner.sh ensure-ready` sets a max-session shutdown failsafe so canceled runs do not strand the runner VM indefinitely.
@@ -768,8 +770,10 @@ Private runner / workflow gotchas:
 - `gh run watch <run-id> --exit-status` is the preferred operator check after a push, but `start-private-runner` and `stop-private-runner` can sit in progress for a while during VM boot/shutdown; do not treat that alone as a failure unless the job times out or subsequent status turns red.
 - A code push to `main` can still take several extra minutes after local work is finished because `post_merge` serially waits for fast validation, private runner boot, DB-backed validation, selective deploy jobs, and runner shutdown.
 - `gh run view <run-id> --job <job-id> --log` does not stream in-progress job output; for live inspection use `gh run watch` or `gh run view <run-id> --json jobs,status,conclusion,url` and look at step states instead.
+- `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs` currently returns plain text from the blob backend, not a zip archive; if `gh run view --job --log` is sparse, fetch that endpoint directly and grep the text instead of trying to unzip it.
 - `gh variable` has no `get` subcommand. Use `gh variable list`, `gh variable set`, or `gh api` when verifying repo-level workflow vars such as `SUPPORT_BOT_USERNAME`.
 - In `post_merge`, a job line like `deploy-functions in 0s` means the job was intentionally skipped because no function targets changed; it is not an error condition.
+- In the current optimized path, a successful `post_merge` run will often spend most of its time in `start-private-runner`, `private-db-validation`, and the final deploy scripts; fast validation now completes well before those phases, so a long-running deploy stage is expected and not by itself a regression.
 - In manual `post_merge` reruns, `full_validation=true` forces the full DB validation path but does not invent deploy targets; runtime/function deploy jobs still follow the resolved change/deploy target set and may remain skipped.
 - Runtime deploys merge explicit env overrides into `/etc/qpi/bot.env`; if `SUPPORT_BOT_USERNAME` is not passed through the workflow env, a deploy will silently blank the support deep-link config.
 - After fixing workflow/env propagation for an optional runtime feature, verify the live target directly (`/etc/qpi/bot.env`, service health, and one relevant UX path) instead of trusting the workflow green status alone.
