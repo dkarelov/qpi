@@ -530,6 +530,7 @@ Rule:
 
 - Any bot release that starts reading new DB columns must apply schema before the bot process is restarted.
 - For production-like legacy drift, run `python -m libs.db.runtime_schema_compat apply` before declarative `schema_cli apply`.
+- `runtime_schema_compat` must also relax legacy `withdrawal_requests.buyer_user_id` drift before startup so buyer and seller withdrawal creation stays writable even when an older DB shape still carries that obsolete compatibility column.
 - Operator-driven production schema apply remains the SSH-tunnel path to `127.0.0.1:15432`.
 - CI production deploys run `runtime_schema_compat` + `schema_cli apply` on the bot VM itself against the private DB URL from `/etc/qpi/bot.env`, with `psqldef` uploaded to the VM for the run.
 - CI skips production schema apply entirely when no schema-related files changed (`schema/**`, `libs/db/**`, deployment schema runner).

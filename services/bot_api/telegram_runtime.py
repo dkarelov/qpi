@@ -7345,6 +7345,19 @@ class TelegramWebhookRuntime:
                     reply_markup=self._seller_menu_markup(),
                 )
                 return
+            except Exception:
+                self._logger.exception(
+                    "seller_withdraw_request_create_failed",
+                    seller_user_id=seller.user_id,
+                    telegram_update_id=update.update_id,
+                    amount_usdt=str(amount),
+                )
+                self._clear_prompt(context)
+                await message.reply_text(
+                    "Техническая ошибка при создании заявки на вывод. Баланс не изменен.",
+                    reply_markup=self._seller_menu_markup(),
+                )
+                return
 
             self._clear_prompt(context)
             reply = "Заявка на вывод создана.\nСтатус: на проверке у администратора."
@@ -7695,6 +7708,19 @@ class TelegramWebhookRuntime:
                         "У вас уже есть активная заявка на вывод. "
                         "Откройте баланс и отмените ее, если нужно создать новую."
                     ),
+                    reply_markup=self._buyer_menu_markup(),
+                )
+                return
+            except Exception:
+                self._logger.exception(
+                    "buyer_withdraw_request_create_failed",
+                    buyer_user_id=buyer.user_id,
+                    telegram_update_id=update.update_id,
+                    amount_usdt=str(amount),
+                )
+                self._clear_prompt(context)
+                await message.reply_text(
+                    "Техническая ошибка при создании заявки на вывод. Баланс не изменен.",
                     reply_markup=self._buyer_menu_markup(),
                 )
                 return

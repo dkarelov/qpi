@@ -416,6 +416,12 @@ def _ensure_withdrawal_request_requester_columns(cur: psycopg.Cursor) -> None:
             WHERE buyer_user_id IS NOT NULL
             """
         )
+        cur.execute(
+            """
+            ALTER TABLE public.withdrawal_requests
+                ALTER COLUMN buyer_user_id DROP NOT NULL
+            """
+        )
 
     cur.execute(
         """

@@ -735,31 +735,47 @@ class FinanceService:
                     },
                 )
 
+                insert_columns = [
+                    "requester_user_id",
+                    "requester_role",
+                    "from_account_id",
+                    "to_account_id",
+                    "amount_usdt",
+                    "status",
+                    "payout_address",
+                    "idempotency_key",
+                ]
+                insert_values: list[Any] = [
+                    requester_user_id,
+                    normalized_requester_role,
+                    from_account_id,
+                    pending_account_id,
+                    amount,
+                    "withdraw_pending_admin",
+                    payout_address,
+                    idempotency_key,
+                ]
+                if await _public_column_exists(
+                    cur,
+                    table_name="withdrawal_requests",
+                    column_name="buyer_user_id",
+                ):
+                    # Keep legacy schemas writable until the obsolete compatibility column
+                    # is removed everywhere. The real requester identity still lives in the
+                    # requester_* columns and remains the source of truth.
+                    insert_columns.insert(0, "buyer_user_id")
+                    insert_values.insert(0, requester_user_id)
+
                 try:
                     await cur.execute(
-                        """
+                        f"""
                         INSERT INTO withdrawal_requests (
-                            requester_user_id,
-                            requester_role,
-                            from_account_id,
-                            to_account_id,
-                            amount_usdt,
-                            status,
-                            payout_address,
-                            idempotency_key
+                            {", ".join(insert_columns)}
                         )
-                        VALUES (%s, %s, %s, %s, %s, 'withdraw_pending_admin', %s, %s)
+                        VALUES ({", ".join(["%s"] * len(insert_values))})
                         RETURNING id
                         """,
-                        (
-                            requester_user_id,
-                            normalized_requester_role,
-                            from_account_id,
-                            pending_account_id,
-                            amount,
-                            payout_address,
-                            idempotency_key,
-                        ),
+                        tuple(insert_values),
                     )
                 except UniqueViolation as exc:
                     constraint_name = exc.diag.constraint_name if exc.diag is not None else None
@@ -1919,3 +1935,17 @@ def _normalize_requester_role(requester_role: str) -> str:
     if normalized not in _WITHDRAWAL_REQUESTER_ROLES:
         raise ValueError("requester_role must be buyer|seller")
     return normalized
+
+
+async def _public_column_exists(cur, *, table_name: str, column_name: str) -> bool:
+    await cur.execute(
+        """
+        SELECT 1 AS present
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = %s
+          AND column_name = %s
+        """,
+        (table_name, column_name),
+    )
+    return await cur.fetchone() is not None

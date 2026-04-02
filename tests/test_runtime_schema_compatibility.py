@@ -11,6 +11,7 @@ import pytest
 
 from libs.config.settings import BotApiSettings
 from libs.domain.buyer import BuyerService
+from libs.domain.ledger import FinanceService
 from libs.domain.seller import SellerService
 from services.bot_api.telegram_runtime import TelegramWebhookRuntime
 from tests.helpers import create_account, create_listing, create_shop, create_user
@@ -610,6 +611,16 @@ async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assig
             assert cur.fetchone()[0] == "uq_withdrawal_requests_requester_active"
             cur.execute(
                 """
+                SELECT is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'withdrawal_requests'
+                  AND column_name = 'buyer_user_id'
+                """
+            )
+            assert cur.fetchone()[0] == "YES"
+            cur.execute(
+                """
                 SELECT pg_get_constraintdef(c.oid)
                 FROM pg_constraint c
                 JOIN pg_class t ON t.oid = c.conrelid
@@ -620,3 +631,106 @@ async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assig
                 """
             )
             assert "seller_withdraw_pending" in cur.fetchone()[0]
+
+
+@pytest.mark.asyncio
+async def test_create_withdrawal_request_stays_compatible_with_legacy_buyer_user_id_column(
+    isolated_database: str,
+    db_pool,
+) -> None:
+    with psycopg.connect(isolated_database, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                ALTER TABLE public.withdrawal_requests
+                    ADD COLUMN IF NOT EXISTS buyer_user_id bigint
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE public.withdrawal_requests
+                    ALTER COLUMN buyer_user_id SET NOT NULL
+                """
+            )
+
+    run_runtime_schema_compat_apply(isolated_database)
+
+    async with await psycopg.AsyncConnection.connect(isolated_database) as conn:
+        buyer_user_id = await create_user(
+            conn,
+            telegram_id=993101,
+            role="buyer",
+            username="compat_insert_buyer",
+        )
+        seller_user_id = await create_user(
+            conn,
+            telegram_id=993102,
+            role="seller",
+            username="compat_insert_seller",
+        )
+        buyer_available_account_id = await create_account(
+            conn,
+            owner_user_id=buyer_user_id,
+            account_code=f"user:{buyer_user_id}:buyer_available",
+            account_kind="buyer_available",
+            balance=Decimal("5.000000"),
+        )
+        buyer_pending_account_id = await create_account(
+            conn,
+            owner_user_id=buyer_user_id,
+            account_code=f"user:{buyer_user_id}:buyer_withdraw_pending",
+            account_kind="buyer_withdraw_pending",
+            balance=Decimal("0.000000"),
+        )
+        seller_available_account_id = await create_account(
+            conn,
+            owner_user_id=seller_user_id,
+            account_code=f"user:{seller_user_id}:seller_available",
+            account_kind="seller_available",
+            balance=Decimal("7.000000"),
+        )
+        seller_pending_account_id = await create_account(
+            conn,
+            owner_user_id=seller_user_id,
+            account_code=f"user:{seller_user_id}:seller_withdraw_pending",
+            account_kind="seller_withdraw_pending",
+            balance=Decimal("0.000000"),
+        )
+        await conn.commit()
+
+    service = FinanceService(db_pool)
+    buyer_request = await service.create_withdrawal_request(
+        requester_user_id=buyer_user_id,
+        requester_role="buyer",
+        from_account_id=buyer_available_account_id,
+        pending_account_id=buyer_pending_account_id,
+        amount_usdt=Decimal("2.500000"),
+        payout_address="UQ_COMPAT_BUYER",
+        idempotency_key="compat-buyer-withdraw",
+    )
+    seller_request = await service.create_withdrawal_request(
+        requester_user_id=seller_user_id,
+        requester_role="seller",
+        from_account_id=seller_available_account_id,
+        pending_account_id=seller_pending_account_id,
+        amount_usdt=Decimal("3.500000"),
+        payout_address="UQ_COMPAT_SELLER",
+        idempotency_key="compat-seller-withdraw",
+    )
+
+    assert buyer_request.created is True
+    assert seller_request.created is True
+
+    with psycopg.connect(isolated_database, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT requester_role, requester_user_id, buyer_user_id
+                FROM public.withdrawal_requests
+                ORDER BY id ASC
+                """
+            )
+            assert cur.fetchall() == [
+                ("buyer", buyer_user_id, buyer_user_id),
+                ("seller", seller_user_id, seller_user_id),
+            ]

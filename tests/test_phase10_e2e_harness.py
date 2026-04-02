@@ -1455,6 +1455,29 @@ async def test_phase10_e2e_buyer_withdraw_request_submits_request() -> None:
 
 
 @pytest.mark.asyncio
+async def test_phase10_e2e_buyer_withdraw_request_handles_unexpected_create_failure() -> None:
+    runtime, deps = _build_runtime()
+    deps.finance.get_buyer_balance_snapshot = AsyncMock(
+        return_value=_ns(
+            buyer_available_usdt=Decimal("1.500000"),
+            buyer_withdraw_pending_usdt=Decimal("0.000000"),
+        )
+    )
+    deps.finance.create_withdrawal_request = AsyncMock(side_effect=RuntimeError("boom"))
+    runtime._tonapi_client.parse_address = AsyncMock(return_value=_ns(raw_form="0:buyer-wallet"))
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    await harness.callback(flow="buyer", action="withdraw_prompt_amount")
+    await harness.text("1.5")
+    events = await harness.text("UQ-buyer-wallet")
+
+    assert any(
+        "Техническая ошибка при создании заявки на вывод. Баланс не изменен." in text
+        for text in _event_texts(events)
+    )
+
+
+@pytest.mark.asyncio
 async def test_phase10_e2e_buyer_withdraw_history_shows_timestamps_and_note() -> None:
     runtime, deps = _build_runtime()
     deps.finance.count_buyer_withdrawal_history = AsyncMock(return_value=1)
