@@ -34,7 +34,8 @@
       "trigger_globs": [
         "schema/*",
         "libs/db/*",
-        "infra/scripts/remote_apply_schema.sh"
+        "infra/scripts/remote_apply_schema.sh",
+        "scripts/deploy/schema_remote.sh"
       ],
       "fast_pytest_targets": [],
       "db_pytest_targets": [],

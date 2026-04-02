@@ -74,6 +74,26 @@ def run_schema_apply(database_url: str) -> None:
     run_psqldef(database_url, mode="apply", schema_file=SCHEMA_FILE)
 
 
+def run_schema_cleanup_plan(database_url: str) -> str:
+    result = run_psqldef(
+        database_url,
+        mode="dry-run",
+        schema_file=SCHEMA_FILE,
+        enable_drop=True,
+        capture_output=True,
+    )
+    return result.stdout
+
+
+def run_schema_cleanup_apply(database_url: str) -> None:
+    run_psqldef(
+        database_url,
+        mode="apply",
+        schema_file=SCHEMA_FILE,
+        enable_drop=True,
+    )
+
+
 def run_runtime_schema_compat_apply(database_url: str) -> None:
     apply_runtime_schema_compatibility(database_url)
 

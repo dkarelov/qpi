@@ -11,6 +11,7 @@ on:
       - "scripts/common/detect_ci_changes.sh"
       - "scripts/deploy/runtime.sh"
       - "scripts/deploy/function.sh"
+      - "scripts/deploy/schema_remote.sh"
       - "scripts/deploy/private_runner.sh"
       - "scripts/dev/**"
       - "infra/cloud-init/runner.yaml.tftpl"

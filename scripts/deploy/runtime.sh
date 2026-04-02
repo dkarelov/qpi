@@ -140,7 +140,7 @@ detect_schema_apply() {
     return 0
   fi
 
-  if printf '%s\n' "${diff_target}" | grep -Eq '^(schema/|libs/db/|infra/scripts/remote_apply_schema\.sh$)'; then
+  if printf '%s\n' "${diff_target}" | grep -Eq '^(schema/|libs/db/|scripts/deploy/schema_remote\.sh$)'; then
     return 0
   fi
   return 1
@@ -350,17 +350,9 @@ scp -P "${BOT_VM_SSH_PORT}" -i "${ssh_key_path}" \
   "${rollout_env}" \
   "${BOT_VM_SSH_USER}@${BOT_VM_HOST}:/tmp/qpi-rollout.env"
 
-schema_apply_decision="skipped"
+schema_apply_decision="asserted-clean"
 if detect_schema_apply; then
   schema_apply_decision="applied"
-  if ! command -v psqldef >/dev/null 2>&1; then
-    echo "psqldef must be installed locally before runtime deploys that apply schema." >&2
-    exit 1
-  fi
-  scp -P "${BOT_VM_SSH_PORT}" -i "${ssh_key_path}" \
-    "$(command -v psqldef)" \
-    "${repo_root}/infra/scripts/remote_apply_schema.sh" \
-    "${BOT_VM_SSH_USER}@${BOT_VM_HOST}:/tmp/"
 fi
 
 remote_exec \
@@ -371,9 +363,19 @@ remote_exec \
    sudo chmod 0640 /etc/qpi/bot.env"
 
 if [[ "${schema_apply_decision}" == "applied" ]]; then
-  remote_exec \
-    "chmod +x /tmp/psqldef /tmp/remote_apply_schema.sh && \
-     /tmp/remote_apply_schema.sh '${release_id}' '/tmp/$(basename "${archive_path}")'"
+  BOT_VM_HOST="${BOT_VM_HOST}" \
+  BOT_VM_SSH_USER="${BOT_VM_SSH_USER}" \
+  BOT_VM_SSH_PORT="${BOT_VM_SSH_PORT}" \
+  BOT_VM_SSH_PRIVATE_KEY="${BOT_VM_SSH_PRIVATE_KEY:-}" \
+  BOT_VM_SSH_KEY_PATH="${BOT_VM_SSH_KEY_PATH:-}" \
+  "${repo_root}/scripts/deploy/schema_remote.sh" apply
+else
+  BOT_VM_HOST="${BOT_VM_HOST}" \
+  BOT_VM_SSH_USER="${BOT_VM_SSH_USER}" \
+  BOT_VM_SSH_PORT="${BOT_VM_SSH_PORT}" \
+  BOT_VM_SSH_PRIVATE_KEY="${BOT_VM_SSH_PRIVATE_KEY:-}" \
+  BOT_VM_SSH_KEY_PATH="${BOT_VM_SSH_KEY_PATH:-}" \
+  "${repo_root}/scripts/deploy/schema_remote.sh" assert-clean
 fi
 
 remote_exec \

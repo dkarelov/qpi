@@ -15,11 +15,16 @@ usage:
 
 Required environment for deploy:
   YC_FOLDER_ID
+  BOT_VM_HOST
 
 Required environment for build/metadata/deploy:
   GH_TOKEN or TOKEN_YC_JSON_LOGGER
 
 Optional environment:
+  BOT_VM_SSH_USER (default: ubuntu)
+  BOT_VM_SSH_PORT (default: 22)
+  BOT_VM_SSH_KEY_PATH (default: ~/.ssh/id_rsa)
+  BOT_VM_SSH_PRIVATE_KEY
   QPI_FUNCTION_BUNDLE_RETENTION_COUNT (default: 10)
   QPI_FUNCTION_BUNDLE_RETENTION_DAYS (default: 14)
 EOF
@@ -408,7 +413,15 @@ deploy_bundle() {
   resolve_git_token
   require_env "GH_TOKEN"
   require_env "YC_FOLDER_ID"
+  require_env "BOT_VM_HOST"
   configure_yc_cli
+
+  BOT_VM_HOST="${BOT_VM_HOST}" \
+  BOT_VM_SSH_USER="${BOT_VM_SSH_USER:-ubuntu}" \
+  BOT_VM_SSH_PORT="${BOT_VM_SSH_PORT:-22}" \
+  BOT_VM_SSH_PRIVATE_KEY="${BOT_VM_SSH_PRIVATE_KEY:-}" \
+  BOT_VM_SSH_KEY_PATH="${BOT_VM_SSH_KEY_PATH:-}" \
+  "${repo_root}/scripts/deploy/schema_remote.sh" assert-clean
 
   bundle_path="$(build_bundle)"
   bundle_size="$(wc -c < "${bundle_path}")"

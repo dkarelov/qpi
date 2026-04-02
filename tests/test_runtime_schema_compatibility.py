@@ -11,11 +11,15 @@ import pytest
 
 from libs.config.settings import BotApiSettings
 from libs.domain.buyer import BuyerService
-from libs.domain.ledger import FinanceService
 from libs.domain.seller import SellerService
 from services.bot_api.telegram_runtime import TelegramWebhookRuntime
 from tests.helpers import create_account, create_listing, create_shop, create_user
-from tests.utils import run_runtime_schema_compat_apply, run_schema_apply
+from tests.utils import (
+    run_runtime_schema_compat_apply,
+    run_schema_apply,
+    run_schema_cleanup_apply,
+    run_schema_cleanup_plan,
+)
 
 
 def _build_runtime() -> TelegramWebhookRuntime:
@@ -634,9 +638,8 @@ async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assig
 
 
 @pytest.mark.asyncio
-async def test_create_withdrawal_request_stays_compatible_with_legacy_buyer_user_id_column(
+async def test_schema_cleanup_apply_drops_obsolete_legacy_columns(
     isolated_database: str,
-    db_pool,
 ) -> None:
     with psycopg.connect(isolated_database, autocommit=True) as conn:
         with conn.cursor() as cur:
@@ -652,85 +655,50 @@ async def test_create_withdrawal_request_stays_compatible_with_legacy_buyer_user
                     ALTER COLUMN buyer_user_id SET NOT NULL
                 """
             )
+            cur.execute(
+                """
+                ALTER TABLE public.wb_report_rows
+                    ADD COLUMN IF NOT EXISTS srid text
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE public.wb_report_rows
+                    ALTER COLUMN srid SET NOT NULL
+                """
+            )
+
+    cleanup_plan = run_schema_cleanup_plan(isolated_database)
+    assert 'ALTER TABLE "public"."wb_report_rows" DROP COLUMN "srid";' in cleanup_plan
+    assert 'ALTER TABLE "public"."withdrawal_requests" DROP COLUMN "buyer_user_id";' in cleanup_plan
 
     run_runtime_schema_compat_apply(isolated_database)
+    run_schema_cleanup_apply(isolated_database)
+    run_schema_apply(isolated_database)
 
-    async with await psycopg.AsyncConnection.connect(isolated_database) as conn:
-        buyer_user_id = await create_user(
-            conn,
-            telegram_id=993101,
-            role="buyer",
-            username="compat_insert_buyer",
-        )
-        seller_user_id = await create_user(
-            conn,
-            telegram_id=993102,
-            role="seller",
-            username="compat_insert_seller",
-        )
-        buyer_available_account_id = await create_account(
-            conn,
-            owner_user_id=buyer_user_id,
-            account_code=f"user:{buyer_user_id}:buyer_available",
-            account_kind="buyer_available",
-            balance=Decimal("5.000000"),
-        )
-        buyer_pending_account_id = await create_account(
-            conn,
-            owner_user_id=buyer_user_id,
-            account_code=f"user:{buyer_user_id}:buyer_withdraw_pending",
-            account_kind="buyer_withdraw_pending",
-            balance=Decimal("0.000000"),
-        )
-        seller_available_account_id = await create_account(
-            conn,
-            owner_user_id=seller_user_id,
-            account_code=f"user:{seller_user_id}:seller_available",
-            account_kind="seller_available",
-            balance=Decimal("7.000000"),
-        )
-        seller_pending_account_id = await create_account(
-            conn,
-            owner_user_id=seller_user_id,
-            account_code=f"user:{seller_user_id}:seller_withdraw_pending",
-            account_kind="seller_withdraw_pending",
-            balance=Decimal("0.000000"),
-        )
-        await conn.commit()
-
-    service = FinanceService(db_pool)
-    buyer_request = await service.create_withdrawal_request(
-        requester_user_id=buyer_user_id,
-        requester_role="buyer",
-        from_account_id=buyer_available_account_id,
-        pending_account_id=buyer_pending_account_id,
-        amount_usdt=Decimal("2.500000"),
-        payout_address="UQ_COMPAT_BUYER",
-        idempotency_key="compat-buyer-withdraw",
-    )
-    seller_request = await service.create_withdrawal_request(
-        requester_user_id=seller_user_id,
-        requester_role="seller",
-        from_account_id=seller_available_account_id,
-        pending_account_id=seller_pending_account_id,
-        amount_usdt=Decimal("3.500000"),
-        payout_address="UQ_COMPAT_SELLER",
-        idempotency_key="compat-seller-withdraw",
-    )
-
-    assert buyer_request.created is True
-    assert seller_request.created is True
+    cleanup_plan_after_apply = run_schema_cleanup_plan(isolated_database)
+    assert cleanup_plan_after_apply.strip() == "-- Nothing is modified --"
 
     with psycopg.connect(isolated_database, autocommit=True) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT requester_role, requester_user_id, buyer_user_id
-                FROM public.withdrawal_requests
-                ORDER BY id ASC
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'withdrawal_requests'
                 """
             )
-            assert cur.fetchall() == [
-                ("buyer", buyer_user_id, buyer_user_id),
-                ("seller", seller_user_id, seller_user_id),
-            ]
+            withdrawal_columns = {row[0] for row in cur.fetchall()}
+            assert "buyer_user_id" not in withdrawal_columns
+
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'wb_report_rows'
+                """
+            )
+            report_columns = {row[0] for row in cur.fetchall()}
+            assert "srid" not in report_columns

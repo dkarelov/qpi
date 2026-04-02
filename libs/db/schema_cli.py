@@ -13,6 +13,7 @@ from libs.db.psqldef import run_psqldef
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SCHEMA_FILE = PROJECT_ROOT / "schema" / "schema.sql"
 DEFAULT_EMPTY_SCHEMA_FILE = PROJECT_ROOT / "schema" / "empty.sql"
+_PSQLDEF_CLEAN_OUTPUT = "-- Nothing is modified --"
 
 
 def _resolve_database_url(explicit_url: str | None) -> str:
@@ -29,7 +30,10 @@ def _resolve_database_url(explicit_url: str | None) -> str:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage QPI schema with psqldef")
-    parser.add_argument("command", choices=["plan", "apply", "drop", "export"])
+    parser.add_argument(
+        "command",
+        choices=["plan", "apply", "cleanup-plan", "cleanup-apply", "assert-clean", "drop", "export"],
+    )
     parser.add_argument("--database-url", default=None)
     parser.add_argument("--schema-file", type=Path, default=DEFAULT_SCHEMA_FILE)
     parser.add_argument("--empty-schema-file", type=Path, default=DEFAULT_EMPTY_SCHEMA_FILE)
@@ -42,6 +46,25 @@ def _drop_public_schema(database_url: str) -> None:
         with conn.cursor() as cur:
             cur.execute("DROP SCHEMA IF EXISTS public CASCADE")
             cur.execute("CREATE SCHEMA public")
+
+
+def _run_cleanup_plan(
+    database_url: str,
+    *,
+    schema_file: Path,
+) -> subprocess.CompletedProcess[str]:
+    return run_psqldef(
+        database_url,
+        mode="dry-run",
+        schema_file=schema_file,
+        enable_drop=True,
+        capture_output=True,
+    )
+
+
+def _cleanup_plan_is_clean(output: str) -> bool:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines == [_PSQLDEF_CLEAN_OUTPUT]
 
 
 def cli(argv: list[str] | None = None) -> int:
@@ -57,6 +80,31 @@ def cli(argv: list[str] | None = None) -> int:
         if args.command == "apply":
             run_psqldef(database_url, mode="apply", schema_file=args.schema_file)
             return 0
+
+        if args.command == "cleanup-plan":
+            cleanup_result = _run_cleanup_plan(database_url, schema_file=args.schema_file)
+            sys.stdout.write(cleanup_result.stdout)
+            return 0
+
+        if args.command == "cleanup-apply":
+            run_psqldef(
+                database_url,
+                mode="apply",
+                schema_file=args.schema_file,
+                enable_drop=True,
+            )
+            return 0
+
+        if args.command == "assert-clean":
+            cleanup_result = _run_cleanup_plan(database_url, schema_file=args.schema_file)
+            sys.stdout.write(cleanup_result.stdout)
+            if _cleanup_plan_is_clean(cleanup_result.stdout):
+                return 0
+            print(
+                "Schema drift detected. Run `python -m libs.db.schema_cli cleanup-apply` first.",
+                file=sys.stderr,
+            )
+            return 3
 
         if args.command == "drop":
             _drop_public_schema(database_url)

@@ -99,6 +99,7 @@ Shared layers:
 - `scripts/dev/*`: canonical local reset/test/export wrappers.
 - `scripts/deploy/runtime.sh`: canonical bot VM rollout entrypoint.
 - `scripts/deploy/function.sh`: canonical code-only Cloud Function rollout entrypoint.
+- `scripts/deploy/schema_remote.sh`: canonical production-schema cleanup/assert/apply entrypoint over the bot-VM bastion.
 - `scripts/deploy/support_bot.sh`: canonical support-bot image rollout entrypoint.
 - `scripts/deploy/private_runner.sh`: canonical on-demand private runner lifecycle entrypoint for CI/deploy jobs.
 
@@ -522,6 +523,9 @@ export DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi
 uv run python -m libs.db.runtime_schema_compat apply
 uv run python -m libs.db.schema_cli plan
 uv run python -m libs.db.schema_cli apply
+uv run python -m libs.db.schema_cli cleanup-plan
+uv run python -m libs.db.schema_cli cleanup-apply
+uv run python -m libs.db.schema_cli assert-clean
 uv run python -m libs.db.schema_cli drop
 uv run python -m libs.db.schema_cli export
 ```
@@ -529,10 +533,11 @@ uv run python -m libs.db.schema_cli export
 Rule:
 
 - Any bot release that starts reading new DB columns must apply schema before the bot process is restarted.
-- For production-like legacy drift, run `python -m libs.db.runtime_schema_compat apply` before declarative `schema_cli apply`.
-- `runtime_schema_compat` must also relax legacy `withdrawal_requests.buyer_user_id` drift before startup so buyer and seller withdrawal creation stays writable even when an older DB shape still carries that obsolete compatibility column.
+- For production-like legacy drift, run `python -m libs.db.runtime_schema_compat apply` before declarative `schema_cli apply`, and use `schema_cli cleanup-apply` to drop obsolete objects after the additive migration step has backfilled live data.
+- Long-lived environments are expected to match `schema/schema.sql` exactly after cleanup; obsolete columns such as `withdrawal_requests.buyer_user_id` and `wb_report_rows.srid` are migration-only artifacts and must not remain in runtime-supported schemas.
 - Operator-driven production schema apply remains the SSH-tunnel path to `127.0.0.1:15432`.
-- CI production deploys run `runtime_schema_compat` + `schema_cli apply` on the bot VM itself against the private DB URL from `/etc/qpi/bot.env`, with `psqldef` uploaded to the VM for the run.
+- `scripts/deploy/schema_remote.sh` is the canonical production path for `cleanup-plan`, `cleanup-apply`, `apply`, and `assert-clean` against the live DB through the bot-VM SSH bastion.
+- CI/runtime/function deploys must assert that production schema cleanup drift is empty before code rollout; if drift remains, deployment stops until cleanup is applied.
 - CI skips production schema apply entirely when no schema-related files changed (`schema/**`, `libs/db/**`, deployment schema runner).
 
 ### 7.4 Runtime smoke checks

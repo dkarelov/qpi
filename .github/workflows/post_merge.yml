@@ -25,6 +25,7 @@ on:
       - "scripts/dev/validation_groups.json"
       - "scripts/deploy/runtime.sh"
       - "scripts/deploy/function.sh"
+      - "scripts/deploy/schema_remote.sh"
       - "infra/scripts/remote_rollout_bot.sh"
       - "infra/scripts/remote_apply_schema.sh"
       - "infra/scripts/merge_bot_env.py"
@@ -287,6 +288,10 @@ jobs:
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
       YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      BOT_VM_HOST: ${{ vars.BOT_VM_HOST }}
+      BOT_VM_SSH_USER: ${{ vars.BOT_VM_SSH_USER }}
+      BOT_VM_SSH_PORT: ${{ vars.BOT_VM_SSH_PORT }}
+      BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
       TARGETS: ${{ needs.determine-changes.outputs.function_targets }}
     steps:
       - name: Checkout
@@ -325,6 +330,8 @@ jobs:
           test -n "${GH_TOKEN}" || { echo "TOKEN_YC_JSON_LOGGER secret is required"; exit 1; }
           test -n "${YC_TOKEN}" || { echo "YC_TOKEN is required"; exit 1; }
           test -n "${YC_FOLDER_ID}" || { echo "YC_FOLDER_ID is required"; exit 1; }
+          test -n "${BOT_VM_HOST}" || { echo "BOT_VM_HOST is required"; exit 1; }
+          test -n "${BOT_VM_SSH_PRIVATE_KEY}" || { echo "BOT_VM_SSH_PRIVATE_KEY is required"; exit 1; }
 
       - name: Configure private GitHub auth
         run: scripts/common/setup_private_git_auth.sh
