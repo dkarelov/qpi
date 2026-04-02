@@ -640,10 +640,12 @@ Rules:
 - Full DB-backed validation should run on the dedicated private self-hosted runner, not over the workstation tunnel.
 - For small UI / copy / formatting changes, start with `scripts/dev/test.sh fast` plus the narrow affected pytest files before using `integration` or `all`.
 - `doctor` is the mandatory preflight before local DB-backed validation; it checks `.env.test.local`, the `127.0.0.1:15432` tunnel when relevant, and `psql` reachability.
+- `doctor`, `affected`, and the local DB-backed suite wrappers auto-load the default `.env.test.local` when `TEST_DATABASE_URL` is still unset; a separate manual `source .env.test.local` is still fine but no longer strictly required for the default file path.
 - `affected` uses `scripts/dev/validation_groups.json` as the source of truth for local targeted validation; update that manifest when service ownership or test coverage boundaries change.
 - `scripts/dev/test.sh all` is an expensive reprovision path: it recreates disposable DBs, reapplies schema, and runs unrelated DB manifests. Do not use it as the first local check for a narrowly scoped UX fix.
 - If repeated local DB-backed runs are needed in one session, pre-create the tunnel and `.env.test.local` first; that removes the slowest avoidable local setup churn.
 - `integration` and `schema-compat` now reset the disposable DB once per manifest run, not once per file; local and private-runner DB runs rely on per-test truncation for isolation after that reset.
+- `affected` still reprovisions the disposable DBs before DB-backed pytest targets; the speedup comes from a smaller selected test set, not from skipping DB recreation.
 - `qpi_test` and `qpi_test_scratch` are disposable and must be recreated before DB-backed runs.
 - When `QPI_DB_VM_HOST` is set and `TEST_DATABASE_ADMIN_URL` is unset, `scripts/dev/test.sh integration|schema-compat|migration-smoke|all` automatically uses the DB VM SSH reset path instead of requiring a separate local admin DB password.
 - From a workstation, that DB VM SSH reset path requires either direct network reachability to `10.131.0.28` or an SSH proxy host. The supported tunnel-mode bootstrap now writes `QPI_DB_VM_SSH_PROXY_HOST` automatically so the reset helper can hop through the bot VM public IP.
@@ -750,11 +752,13 @@ Private runner / workflow gotchas:
 - Runner cloud-init now preinstalls `yc`, `uv`, and `psqldef`; workflows still keep defensive fallback installs until the runner VM is reprovisioned with the updated image bootstrap.
 - The post-merge orchestrator still skips docs-only (`AGENTS.md`, `docs/**`) and pure test-only changes on `main`, but validation-orchestration changes (`detect_ci_changes`, targeted-validation manifest/scripts, workflow selectors) now trigger post-merge validation without forcing runtime/function deploys.
 - `detect_ci_changes` and `scripts/dev/test.sh affected` share the same checked-in validation manifest; keep local targeted validation and CI/post-merge selection aligned there instead of duplicating trigger logic.
+- Validation-orchestration changes can still boot the private runner and run DB-backed validation on `main`; that is intentional because selector changes must be verified end to end against the private-runner path.
 - `gh run watch <run-id> --exit-status` is the preferred operator check after a push, but `start-private-runner` and `stop-private-runner` can sit in progress for a while during VM boot/shutdown; do not treat that alone as a failure unless the job times out or subsequent status turns red.
 - A code push to `main` can still take several extra minutes after local work is finished because `post_merge` serially waits for fast validation, private runner boot, DB-backed validation, selective deploy jobs, and runner shutdown.
 - `gh run view <run-id> --job <job-id> --log` does not stream in-progress job output; for live inspection use `gh run watch` or `gh run view <run-id> --json jobs,status,conclusion,url` and look at step states instead.
 - `gh variable` has no `get` subcommand. Use `gh variable list`, `gh variable set`, or `gh api` when verifying repo-level workflow vars such as `SUPPORT_BOT_USERNAME`.
 - In `post_merge`, a job line like `deploy-functions in 0s` means the job was intentionally skipped because no function targets changed; it is not an error condition.
+- In manual `post_merge` reruns, `full_validation=true` forces the full DB validation path but does not invent deploy targets; runtime/function deploy jobs still follow the resolved change/deploy target set and may remain skipped.
 - Runtime deploys merge explicit env overrides into `/etc/qpi/bot.env`; if `SUPPORT_BOT_USERNAME` is not passed through the workflow env, a deploy will silently blank the support deep-link config.
 - After fixing workflow/env propagation for an optional runtime feature, verify the live target directly (`/etc/qpi/bot.env`, service health, and one relevant UX path) instead of trusting the workflow green status alone.
 - Workflow action references target Node24-ready `actions/checkout@v6` and `actions/setup-python@v6`; keep the private runner on `v2.329.0` or newer for `checkout@v6` compatibility.
