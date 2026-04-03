@@ -1589,7 +1589,8 @@ async def test_phase10_e2e_admin_withdrawal_flow() -> None:
     assert any("<b>Выводы в очереди:</b>" in text for text in _event_texts(open_admin_events))
 
     detail_events = await harness.callback(flow="admin", action="withdrawal_detail", entity_id="77")
-    assert any("<b>Заявка W77</b>" in text for text in _event_texts(detail_events))
+    assert any("<b>Заявка</b> · <code>W77</code>" in text for text in _event_texts(detail_events))
+    assert all("<b>Код:</b>" not in text for text in _event_texts(detail_events))
     assert any("<b>Роль:</b> Покупатель" in text for text in _event_texts(detail_events))
 
     prompt_sent_events = await harness.callback(
@@ -1630,9 +1631,43 @@ async def test_phase10_e2e_admin_pending_withdrawals_labels_seller_requests() ->
     events = await harness.callback(flow="admin", action="withdrawals")
     text = "\n".join(_event_texts(events))
 
+    assert "<b>Заявка</b> · <code>W88</code>" in text
+    assert "Код: W88" not in text
     assert "Роль: Продавец" in text
     assert "Telegram: 10001 (@seller)" in text
     assert "UQ-seller-wallet" in text
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_admin_processed_withdrawals_use_header_ref_without_code_row() -> None:
+    runtime, deps = _build_runtime(admin_ids=[9001])
+    deps.finance.count_processed_withdrawals = AsyncMock(return_value=1)
+    deps.finance.list_processed_withdrawals = AsyncMock(
+        return_value=[
+            _ns(
+                withdrawal_request_id=77,
+                requester_role="buyer",
+                requester_telegram_id=20001,
+                requester_username="buyer",
+                amount_usdt=Decimal("2.500000"),
+                status="rejected",
+                payout_address="UQ-test-wallet",
+                requested_at=datetime(2026, 3, 2, 12, 0, 0),
+                processed_at=datetime(2026, 3, 2, 12, 5, 0),
+                sent_at=None,
+                note="Неверный адрес",
+                tx_hash=None,
+            )
+        ]
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=9001, username="admin")
+
+    events = await harness.callback(flow="admin", action="withdrawals_history")
+    text = "\n".join(_event_texts(events))
+
+    assert "<b>Заявка</b> · <code>W77</code>" in text
+    assert "Код: W77" not in text
+    assert "Комментарий: Неверный адрес" in text
 
 
 @pytest.mark.asyncio

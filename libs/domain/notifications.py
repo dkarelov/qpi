@@ -13,6 +13,11 @@ from psycopg_pool import AsyncConnectionPool
 
 from libs.db.tx import run_in_transaction
 from libs.domain.models import NotificationOutboxItem, RenderedTelegramNotification
+from libs.domain.public_refs import (
+    format_chain_tx_ref,
+    format_deposit_ref,
+    format_withdrawal_ref,
+)
 
 MSK = ZoneInfo("Europe/Moscow")
 
@@ -827,12 +832,18 @@ class NotificationService:
             lines = [
                 "<b>Пополнение на ручной разбор</b>",
                 "",
-                f"<b>Транзакция:</b> #{int(payload['chain_tx_id'])}",
+                (
+                    "<b>Транзакция:</b> "
+                    f"{_format_public_ref(format_chain_tx_ref(int(payload['chain_tx_id'])))}"
+                ),
                 f"<b>Сумма:</b> {_format_usdt_value(payload['amount_usdt'])} USDT",
                 f"<b>Причина:</b> {html.escape(str(payload['reason']))}",
             ]
             if payload.get("deposit_intent_id") is not None:
-                lines.append(f"<b>Счет:</b> #{int(payload['deposit_intent_id'])}")
+                lines.append(
+                    "<b>Счет:</b> "
+                    f"{_format_public_ref(format_deposit_ref(int(payload['deposit_intent_id'])))}"
+                )
             if payload.get("tx_hash"):
                 lines.append(f"<b>Хэш:</b> {html.escape(str(payload['tx_hash']))}")
             return RenderedTelegramNotification(
@@ -844,10 +855,11 @@ class NotificationService:
                 cta_entity_id=None,
             )
         if event_type == EVENT_DEPOSIT_EXPIRED_SELLER:
+            deposit_ref = format_deposit_ref(int(payload["deposit_intent_id"]))
             return RenderedTelegramNotification(
                 text=(
                     "<b>Счет на пополнение истек</b>\n\n"
-                    f"<b>Счет:</b> #{int(payload['deposit_intent_id'])}\n"
+                    f"<b>Счет:</b> {_format_public_ref(deposit_ref)}\n"
                     f"<b>Ожидалось:</b> {_format_usdt_value(payload['expected_amount_usdt'])} USDT"
                 ),
                 parse_mode="HTML",
@@ -857,10 +869,11 @@ class NotificationService:
                 cta_entity_id=None,
             )
         if event_type == EVENT_DEPOSIT_CANCELLED_SELLER:
+            deposit_ref = format_deposit_ref(int(payload["deposit_intent_id"]))
             lines = [
                 "<b>Счет на пополнение отменен</b>",
                 "",
-                f"<b>Счет:</b> #{int(payload['deposit_intent_id'])}",
+                f"<b>Счет:</b> {_format_public_ref(deposit_ref)}",
             ]
             if payload.get("reason"):
                 lines.append(f"<b>Причина:</b> {html.escape(str(payload['reason']))}")
@@ -873,14 +886,21 @@ class NotificationService:
                 cta_entity_id=None,
             )
         if event_type == EVENT_WITHDRAW_CREATED_ADMIN:
+            withdraw_ref = format_withdrawal_ref(int(payload["withdrawal_request_id"]))
             return RenderedTelegramNotification(
                 text=(
-                    f"<b>Новая заявка на вывод #{int(payload['withdrawal_request_id'])}</b>\n\n"
+                    "<b>Новая заявка на вывод</b> "
+                    f"· {_format_public_ref(withdraw_ref)}\n\n"
                     "<b>Роль:</b> "
                     f"{html.escape(_withdraw_requester_label(payload['requester_role']))}\n"
                     f"<b>Telegram:</b> {int(payload['requester_telegram_id'])} "
                     f"(@{html.escape(payload['requester_username'] or '-')})\n"
-                    f"<b>Сумма:</b> {_format_usdt_value(payload['amount_usdt'])} USDT"
+                    f"<b>Сумма:</b> {_format_usdt_value(payload['amount_usdt'])} USDT\n"
+                    f"<b>Статус:</b> {_withdraw_status_badge(str(payload['status']))}\n"
+                    f"<b>Кошелек:</b> {html.escape(str(payload['payout_address']))}\n"
+                    f"<b>Создана:</b> {_format_datetime_msk(payload.get('requested_at'))}\n"
+                    f"<b>Обработана:</b> {_format_datetime_msk(payload.get('processed_at'))}\n"
+                    f"<b>Отправлена:</b> {_format_datetime_msk(payload.get('sent_at'))}"
                 ),
                 parse_mode="HTML",
                 cta_text="💸 Выводы",
@@ -889,10 +909,12 @@ class NotificationService:
                 cta_entity_id=None,
             )
         if event_type == EVENT_WITHDRAW_CANCELLED_ADMIN:
+            withdraw_ref = format_withdrawal_ref(int(payload["withdrawal_request_id"]))
             return RenderedTelegramNotification(
                 text=(
-                    "<b>Заявка на вывод "
-                    f"#{int(payload['withdrawal_request_id'])} отменена заявителем</b>\n\n"
+                    "<b>Заявка на вывод</b> "
+                    f"· {_format_public_ref(withdraw_ref)} "
+                    "<b>отменена заявителем</b>\n\n"
                     "<b>Роль:</b> "
                     f"{html.escape(_withdraw_requester_label(payload['requester_role']))}\n"
                     f"<b>Telegram:</b> {int(payload['requester_telegram_id'])} "
@@ -911,19 +933,16 @@ class NotificationService:
                 if payload["requester_role"] == "seller"
                 else "Ваша заявка на вывод"
             )
+            withdraw_ref = format_withdrawal_ref(int(payload["withdrawal_request_id"]))
             if event_type == EVENT_WITHDRAW_REJECTED_REQUESTER:
                 lines = [
-                    "<b>"
-                    f"{html.escape(subject)} #{int(payload['withdrawal_request_id'])} отклонена"
-                    "</b>"
+                    f"<b>{html.escape(subject)}</b> · {_format_public_ref(withdraw_ref)} <b>отклонена</b>"
                 ]
                 if payload.get("note"):
                     lines.extend(["", f"<b>Причина:</b> {html.escape(str(payload['note']))}"])
             else:
                 lines = [
-                    "<b>"
-                    f"{html.escape(subject)} #{int(payload['withdrawal_request_id'])} отправлена"
-                    "</b>"
+                    f"<b>{html.escape(subject)}</b> · {_format_public_ref(withdraw_ref)} <b>отправлена</b>"
                 ]
                 if payload.get("tx_hash"):
                     lines.extend(
@@ -1033,6 +1052,11 @@ class NotificationService:
                 wr.id AS withdrawal_request_id,
                 wr.requester_role,
                 wr.amount_usdt,
+                wr.status,
+                wr.payout_address,
+                wr.requested_at,
+                wr.processed_at,
+                wr.sent_at,
                 wr.note,
                 u.telegram_id AS requester_telegram_id,
                 u.username AS requester_username,
@@ -1081,6 +1105,10 @@ def _format_usdt_value(value: str | Decimal) -> str:
     return text.rstrip("0").rstrip(".")
 
 
+def _format_public_ref(value: str) -> str:
+    return f"<code>{html.escape(value.strip())}</code>"
+
+
 def _format_rub_approx(value: str | Decimal, *, rub_per_usdt: Decimal | None) -> str:
     amount = _normalize_amount(Decimal(str(value)))
     if rub_per_usdt is None:
@@ -1092,10 +1120,10 @@ def _format_rub_approx(value: str | Decimal, *, rub_per_usdt: Decimal | None) ->
     return f"~{text} ₽"
 
 
-def _format_datetime_msk(value: str | None) -> str:
+def _format_datetime_msk(value: str | datetime | None) -> str:
     if not value:
         return "-"
-    parsed = datetime.fromisoformat(value)
+    parsed = datetime.fromisoformat(value) if isinstance(value, str) else value
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     localized = parsed.astimezone(MSK)
@@ -1134,6 +1162,16 @@ def _withdraw_requester_label(role: str) -> str:
     if role == "buyer":
         return "Покупатель"
     return role
+
+
+def _withdraw_status_badge(status: str) -> str:
+    if status == "withdraw_pending_admin":
+        return "🟡 На проверке"
+    if status == "rejected":
+        return "🔴 Отклонено"
+    if status == "withdraw_sent":
+        return "🟢 Отправлено"
+    return html.escape(status)
 
 
 def _iso_or_none(value: datetime | None) -> str | None:

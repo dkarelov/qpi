@@ -5641,8 +5641,7 @@ class TelegramWebhookRuntime:
         for item in pending:
             withdraw_ref = self._withdrawal_ref(item.withdrawal_request_id)
             lines.append(
-                f"<b>Заявка {withdraw_ref}</b>\n"
-                f"Код: {withdraw_ref}\n"
+                f"{self._entity_block_heading_with_ref(label='Заявка', ref=withdraw_ref)}\n"
                 f"Роль: {self._withdraw_requester_label(item.requester_role)}\n"
                 f"Telegram: {item.requester_telegram_id} "
                 f"(@{html.escape(item.requester_username or '-')})\n"
@@ -5731,8 +5730,7 @@ class TelegramWebhookRuntime:
         for item in history:
             withdraw_ref = self._withdrawal_ref(item.withdrawal_request_id)
             block_lines = [
-                f"<b>Заявка {withdraw_ref}</b>",
-                f"Код: {withdraw_ref}",
+                self._entity_block_heading_with_ref(label="Заявка", ref=withdraw_ref),
                 f"Роль: {self._withdraw_requester_label(item.requester_role)}",
                 (
                     f"Telegram: {item.requester_telegram_id} "
@@ -5822,10 +5820,6 @@ class TelegramWebhookRuntime:
             return
 
         lines = [
-            (
-                "<b>Код:</b> "
-                f"{self._format_copyable_code(self._withdrawal_ref(detail.withdrawal_request_id))}"
-            ),
             f"<b>Роль:</b> {self._withdraw_requester_label(detail.requester_role)}",
             f"<b>Telegram:</b> {detail.requester_telegram_id} "
             f"(@{html.escape(detail.requester_username or '-')})",
@@ -5881,7 +5875,10 @@ class TelegramWebhookRuntime:
         await self._replace_message(
             query_message,
             self._screen_text(
-                title=f"Заявка {self._withdrawal_ref(detail.withdrawal_request_id)}",
+                title="Заявка",
+                title_suffix_html=self._title_ref_suffix(
+                    self._withdrawal_ref(detail.withdrawal_request_id)
+                ),
                 lines=lines,
             ),
             InlineKeyboardMarkup(keyboard_rows),

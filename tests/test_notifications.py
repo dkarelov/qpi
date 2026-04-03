@@ -15,9 +15,15 @@ from libs.domain.notifications import (
     EVENT_ASSIGNMENT_RESERVATION_EXPIRED_BUYER,
     EVENT_ASSIGNMENT_REWARD_UNLOCKED_BUYER,
     EVENT_ASSIGNMENT_REWARD_UNLOCKED_SELLER,
+    EVENT_DEPOSIT_CANCELLED_SELLER,
+    EVENT_DEPOSIT_EXPIRED_SELLER,
+    EVENT_DEPOSIT_MANUAL_REVIEW_ADMIN,
     EVENT_MANUAL_BALANCE_CREDIT_TARGET,
     EVENT_SELLER_TOKEN_INVALIDATED,
+    EVENT_WITHDRAW_CANCELLED_ADMIN,
     EVENT_WITHDRAW_CREATED_ADMIN,
+    EVENT_WITHDRAW_REJECTED_REQUESTER,
+    EVENT_WITHDRAW_SENT_REQUESTER,
     OUTBOX_STATUS_SENT,
     NotificationService,
 )
@@ -203,6 +209,140 @@ def test_render_seller_reward_unlock_notification_keeps_exact_usdt_amount() -> N
 
     assert "2.538393 USDT" in rendered.text
     assert "~254 ₽" not in rendered.text
+
+
+def test_render_withdraw_created_admin_notification_uses_full_detail_body() -> None:
+    service = NotificationService(pool=None)  # type: ignore[arg-type]
+
+    rendered = service.render(
+        NotificationOutboxItem(
+            notification_id=5,
+            recipient_telegram_id=9003,
+            recipient_scope="admin",
+            event_type=EVENT_WITHDRAW_CREATED_ADMIN,
+            dedupe_key="withdrawal:3:created:admin:9003",
+            payload_json={
+                "withdrawal_request_id": 3,
+                "requester_role": "buyer",
+                "requester_telegram_id": 2120394,
+                "requester_username": "tech_banker",
+                "amount_usdt": "2.538393",
+                "status": "withdraw_pending_admin",
+                "payout_address": "UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH",
+                "requested_at": "2026-04-03T22:17:00+00:00",
+                "processed_at": None,
+                "sent_at": None,
+            },
+            status="pending",
+            attempt_count=0,
+            next_attempt_at=datetime.now(tz=UTC),
+            last_error=None,
+            sent_at=None,
+            created_at=datetime.now(tz=UTC),
+            updated_at=datetime.now(tz=UTC),
+        )
+    )
+
+    assert "<b>Новая заявка на вывод</b> · <code>W3</code>" in rendered.text
+    assert "<b>Роль:</b> Покупатель" in rendered.text
+    assert "<b>Telegram:</b> 2120394 (@tech_banker)" in rendered.text
+    assert "<b>Сумма:</b> 2.538393 USDT" in rendered.text
+    assert "<b>Статус:</b> 🟡 На проверке" in rendered.text
+    assert "<b>Кошелек:</b> UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH" in rendered.text
+    assert "<b>Создана:</b> 04.04.2026 01:17 MSK" in rendered.text
+    assert "<b>Обработана:</b> -" in rendered.text
+    assert "<b>Отправлена:</b> -" in rendered.text
+    assert "#" not in rendered.text
+
+
+@pytest.mark.parametrize(
+    ("event_type", "payload_json", "expected_refs"),
+    [
+        (
+            EVENT_DEPOSIT_MANUAL_REVIEW_ADMIN,
+            {
+                "chain_tx_id": 11,
+                "deposit_intent_id": 22,
+                "amount_usdt": "1.200100",
+                "reason": "late_payment",
+            },
+            ["<code>TX11</code>", "<code>D22</code>"],
+        ),
+        (
+            EVENT_DEPOSIT_EXPIRED_SELLER,
+            {
+                "deposit_intent_id": 22,
+                "expected_amount_usdt": "1.200100",
+            },
+            ["<code>D22</code>"],
+        ),
+        (
+            EVENT_DEPOSIT_CANCELLED_SELLER,
+            {
+                "deposit_intent_id": 22,
+                "reason": "cancelled",
+            },
+            ["<code>D22</code>"],
+        ),
+        (
+            EVENT_WITHDRAW_CANCELLED_ADMIN,
+            {
+                "withdrawal_request_id": 3,
+                "requester_role": "buyer",
+                "requester_telegram_id": 2120394,
+                "requester_username": "tech_banker",
+                "amount_usdt": "2.538393",
+            },
+            ["<code>W3</code>"],
+        ),
+        (
+            EVENT_WITHDRAW_REJECTED_REQUESTER,
+            {
+                "withdrawal_request_id": 3,
+                "requester_role": "buyer",
+                "note": "bad address",
+            },
+            ["<code>W3</code>"],
+        ),
+        (
+            EVENT_WITHDRAW_SENT_REQUESTER,
+            {
+                "withdrawal_request_id": 3,
+                "requester_role": "seller",
+                "tx_hash": "0xabc",
+            },
+            ["<code>W3</code>"],
+        ),
+    ],
+)
+def test_render_notifications_use_code_formatted_public_refs(
+    event_type: str,
+    payload_json: dict[str, object],
+    expected_refs: list[str],
+) -> None:
+    service = NotificationService(pool=None)  # type: ignore[arg-type]
+
+    rendered = service.render(
+        NotificationOutboxItem(
+            notification_id=6,
+            recipient_telegram_id=1,
+            recipient_scope="admin",
+            event_type=event_type,
+            dedupe_key=f"render:{event_type}",
+            payload_json=payload_json,
+            status="pending",
+            attempt_count=0,
+            next_attempt_at=datetime.now(tz=UTC),
+            last_error=None,
+            sent_at=None,
+            created_at=datetime.now(tz=UTC),
+            updated_at=datetime.now(tz=UTC),
+        )
+    )
+
+    assert "#" not in rendered.text
+    for expected_ref in expected_refs:
+        assert expected_ref in rendered.text
 
 
 async def _prepare_assignment(
