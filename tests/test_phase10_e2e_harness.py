@@ -930,7 +930,11 @@ async def test_phase10_e2e_buyer_review_prompt_and_submit_flow() -> None:
     payload_events = await harness.text(
         "WzU1Mjg5MjUzMiwiMjAyNi0wMy0xOFQxMDozMDowMFoiLDUsImdyZWF0Il0="
     )
-    assert any("Отзыв подтвержден." in text for text in _event_texts(payload_events))
+    assert any(
+        "Отзыв подтвержден! Ожидайте начисления кэшбэка через 15 дней после выкупа товара."
+        in text
+        for text in _event_texts(payload_events)
+    )
     assert any(event.kind == "delete" for event in payload_events)
 
     deps.buyer.submit_review_payload.assert_awaited_once()

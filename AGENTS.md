@@ -2,6 +2,22 @@
 
 Last updated: 2026-04-02 UTC
 
+## 0. Completion Gate
+
+This section is intentionally first because it is a delivery gate, not a soft preference.
+
+- For any code, schema, infra, workflow, or requirement change, local implementation and local tests are not enough to call the task complete.
+- Default completion sequence:
+  - finish the implementation,
+  - run required local validation,
+  - commit the finished work,
+  - push the current branch,
+  - inspect the triggered GitHub workflows,
+  - wait for them to reach a terminal state,
+  - if workflows fail, continue debugging or report the exact blocker; do not present the task as complete.
+- Do not stop after local validation unless the operator explicitly says to stop before commit/push/workflow verification.
+- If a push succeeds but post-push workflows fail, the task remains incomplete.
+
 ## 1. Documentation Policy
 
 `AGENTS.md` is the single project source of truth for:
