@@ -35,6 +35,18 @@ def test_bot_runtime_and_notifications_change_selects_targeted_runtime_and_order
     assert selection.needs_private_runner is True
 
 
+def test_runtime_only_notification_renderer_change_stays_runtime_only() -> None:
+    selection = resolve_validation_selection(["services/bot_api/telegram_notifications.py"])
+
+    assert selection.selected_groups == ("marketplace_runtime",)
+    assert selection.db_validation_mode == "targeted"
+    assert selection.has_runtime_changes is True
+    assert selection.function_targets == ()
+    assert "tests/test_notifications.py" in selection.db_pytest_targets
+    assert "tests/test_phase10_e2e_harness.py" in selection.fast_pytest_targets
+    assert selection.needs_private_runner is True
+
+
 def test_blockchain_checker_change_targets_only_blockchain_function() -> None:
     selection = resolve_validation_selection(["services/blockchain_checker/main.py"])
 

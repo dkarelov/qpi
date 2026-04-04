@@ -95,6 +95,7 @@ Shared layers:
 - `libs/integrations/*`: WB/TonAPI/FX clients.
 - `libs/config/settings.py`: runtime settings contracts.
 - `libs/logging/setup.py`: YC-compatible structured logging.
+- `services/bot_api/telegram_notifications.py`: bot-runtime-only Telegram notification renderer; shared outbox enqueue/claim logic stays in `libs/domain/notifications.py`.
 - `libs/db/*`: pool and schema tooling.
 - `scripts/dev/*`: canonical local reset/test/export wrappers.
 - `scripts/deploy/runtime.sh`: canonical bot VM rollout entrypoint.
@@ -575,7 +576,7 @@ DB URL source of truth:
 
 - `scripts/dev/test.sh fast` does not need `TEST_DATABASE_URL` and is the default local path when no DB credentials are present.
 - `scripts/dev/test.sh doctor` validates the local DB-backed test prerequisites and is the required first check before ad-hoc local DB-backed runs.
-- `scripts/dev/test.sh affected --base <sha> --head <sha>` or `scripts/dev/test.sh affected --paths ...` is the default local path for narrow runtime / UX changes because it resolves the minimum validation set from the checked-in validation manifest.
+- `scripts/dev/test.sh affected --base <sha> --head <sha>` or `scripts/dev/test.sh affected --paths ...` is the default local path for narrow runtime / UX changes because it resolves the minimum validation set from the checked-in validation manifest and auto-starts the default SSH tunnel when the gitignored env file has bastion metadata.
 - `scripts/dev/test.sh integration|schema-compat|migration-smoke|all`, `scripts/dev/reset_test_db.sh`, `scripts/dev/reset_remote_test_dbs.sh`, and `scripts/dev/run_db_tests_on_runner.sh` all require a real disposable test DB URL.
 - In a plain local shell, `TEST_DATABASE_URL` is normally unset until the operator exports it intentionally. The repo does not contain or infer DB credentials automatically.
 - The supported local recovery/bootstrap path is `scripts/dev/write_test_env.sh`, which derives the current app DB credentials from local Terraform outputs and writes a gitignored `.env.test.local`.
@@ -600,7 +601,7 @@ scripts/dev/test.sh doctor
 scripts/dev/write_test_env.sh --mode tunnel
 source .env.test.local
 
-# Create the local SSH tunnel to the remote DB VM:
+# Create the local SSH tunnel to the remote DB VM explicitly when needed:
 ssh -fNT -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
   -i ~/.ssh/id_rsa -L 127.0.0.1:15432:10.131.0.28:5432 ubuntu@158.160.187.114
 
@@ -616,7 +617,7 @@ scripts/dev/test.sh integration
 scripts/dev/test.sh affected --base HEAD~1 --head HEAD
 
 # Targeted local validation from explicit paths:
-scripts/dev/test.sh affected --paths services/bot_api/telegram_runtime.py libs/domain/notifications.py
+scripts/dev/test.sh affected --paths services/bot_api/telegram_runtime.py services/bot_api/telegram_notifications.py
 
 # Local schema-compat suite against the shared test DB:
 TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
@@ -646,10 +647,10 @@ Rules:
 - Full DB-backed validation should run on the dedicated private self-hosted runner, not over the workstation tunnel.
 - For small UI / copy / formatting changes, start with `scripts/dev/test.sh fast` plus the narrow affected pytest files before using `integration` or `all`.
 - `doctor` is the mandatory preflight before local DB-backed validation; it checks `.env.test.local`, the `127.0.0.1:15432` tunnel when relevant, and `psql` reachability.
-- `doctor`, `affected`, and the local DB-backed suite wrappers auto-load the default `.env.test.local` when `TEST_DATABASE_URL` is still unset; a separate manual `source .env.test.local` is still fine but no longer strictly required for the default file path.
+- `doctor`, `affected`, and the local DB-backed suite wrappers auto-load the default `.env.test.local` when `TEST_DATABASE_URL` is still unset; `affected` and the local DB-backed suite wrappers also auto-start the default SSH tunnel when the env file is in tunnel mode and includes `QPI_DB_VM_HOST` plus `QPI_DB_VM_SSH_PROXY_HOST`.
 - `affected` uses `scripts/dev/validation_groups.json` as the source of truth for local targeted validation; update that manifest when service ownership or test coverage boundaries change.
 - `scripts/dev/test.sh all` is an expensive reprovision path: it recreates disposable DBs, reapplies schema, and runs unrelated DB manifests. Do not use it as the first local check for a narrowly scoped UX fix.
-- If repeated local DB-backed runs are needed in one session, pre-create the tunnel and `.env.test.local` first; that removes the slowest avoidable local setup churn.
+- If repeated local DB-backed runs are needed in one session, pre-creating the tunnel still reduces local setup churn, but the default wrappers now recover the missing listener automatically when the bastion metadata is available.
 - `integration` and `schema-compat` now reset the disposable DB once per manifest run, not once per file; local and private-runner DB runs rely on per-test truncation for isolation after that reset.
 - `affected` still reprovisions the disposable DBs before DB-backed pytest targets; the speedup comes from a smaller selected test set, not from skipping DB recreation.
 - `qpi_test_template` is the reusable clean template DB for disposable test runs.
@@ -702,13 +703,13 @@ Workflows:
 - `.github/workflows/ci.yml`:
   - PR-focused validation workflow plus manual dispatch,
   - runs fast tests, `actionlint`, and `shellcheck` on GitHub-hosted runners,
-  - starts the private runner only for trusted same-repo PRs / manual runs that actually need DB-backed validation,
+  - starts the private runner only for trusted same-repo PRs / manual runs that actually need DB-backed validation, and now overlaps runner boot with fast validation,
   - skips migration smoke unless schema-related files changed,
   - intentionally ignores support-bot-only paths so companion Node changes do not trigger qpi DB validation.
 - `.github/workflows/post_merge.yml`:
   - single post-merge orchestrator for `main` pushes and manual reruns,
   - runs fast validation once,
-  - starts the private runner only when DB-backed validation is required,
+  - starts the private runner only when DB-backed validation is required, and now overlaps that boot with fast validation,
   - runs targeted or full DB-backed validation once depending on changed files,
   - runs runtime and Cloud Function deploy jobs on GitHub-hosted runners after validation succeeds,
   - `workflow_dispatch` supports `full_validation=true` to force the old all-up DB validation path.
@@ -768,14 +769,15 @@ Private runner / workflow gotchas:
 - `detect_ci_changes` and `scripts/dev/test.sh affected` share the same checked-in validation manifest; keep local targeted validation and CI/post-merge selection aligned there instead of duplicating trigger logic.
 - Validation-orchestration changes can still boot the private runner and run DB-backed validation on `main`; that is intentional because selector changes must be verified end to end against the private-runner path.
 - `gh run watch <run-id> --exit-status` is the preferred operator check after a push, but `start-private-runner` can sit in progress for a while during VM boot and runner registration; do not treat that alone as a failure unless the job times out or subsequent status turns red.
-- A code push to `main` can still take several extra minutes after local work is finished because `post_merge` serially waits for fast validation, private runner boot, DB-backed validation, and the selective deploy jobs; the runner now idles out locally afterward instead of spending a separate workflow tail on shutdown scheduling.
+- A code push to `main` can still take several extra minutes after local work is finished because `post_merge` still waits for private DB validation and the selective deploy jobs, but private-runner boot now overlaps with fast validation instead of serializing behind it.
 - `gh run view <run-id> --job <job-id> --log` does not stream in-progress job output; for live inspection use `gh run watch` or `gh run view <run-id> --json jobs,status,conclusion,url` and look at step states instead.
 - `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs` currently returns plain text from the blob backend, not a zip archive; if `gh run view --job --log` is sparse, fetch that endpoint directly and grep the text instead of trying to unzip it.
 - `gh variable` has no `get` subcommand. Use `gh variable list`, `gh variable set`, or `gh api` when verifying repo-level workflow vars such as `SUPPORT_BOT_USERNAME`.
 - In `post_merge`, a job line like `deploy-functions in 0s` means the job was intentionally skipped because no function targets changed; it is not an error condition.
-- In the current optimized path, a successful `post_merge` run will often spend most of its time in `start-private-runner`, `private-db-validation`, and the final deploy scripts; fast validation now completes well before those phases, so a long-running deploy stage is expected and not by itself a regression.
+- In the current optimized path, a successful `post_merge` run will often spend most of its time in `deploy-runtime` or `deploy-functions`; fast validation and private-runner boot overlap, so a long runtime deploy is expected and not by itself a regression.
 - In manual `post_merge` reruns, `full_validation=true` forces the full DB validation path but does not invent deploy targets; runtime/function deploy jobs still follow the resolved change/deploy target set and may remain skipped.
 - Runtime deploys merge explicit env overrides into `/etc/qpi/bot.env`; if `SUPPORT_BOT_USERNAME` is not passed through the workflow env, a deploy will silently blank the support deep-link config.
+- Bot runtime rollout now reuses a lockfile-keyed shared `.venv` under `/opt/qpi/shared-venvs` when `pyproject.toml` / `uv.lock` are unchanged; code-only deploys still unpack a fresh release and run the same health/smoke checks, but they no longer rebuild dependencies every time.
 - After fixing workflow/env propagation for an optional runtime feature, verify the live target directly (`/etc/qpi/bot.env`, service health, and one relevant UX path) instead of trusting the workflow green status alone.
 - Workflow action references target Node24-ready `actions/checkout@v6` and `actions/setup-python@v6`; keep the private runner on `v2.329.0` or newer for `checkout@v6` compatibility.
 - Function bundle publishing requires `zip`; it is installed both in runner cloud-init and defensively in the GitHub-hosted deploy-functions workflow.

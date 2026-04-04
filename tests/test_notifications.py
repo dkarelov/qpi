@@ -27,6 +27,7 @@ from libs.domain.notifications import (
     OUTBOX_STATUS_SENT,
     NotificationService,
 )
+from services.bot_api.telegram_notifications import render_telegram_notification
 from services.bot_api.telegram_runtime import TelegramWebhookRuntime
 from tests.e2e_harness import FakeBot, FakeTransport
 from tests.helpers import create_account, create_listing, create_shop, create_user
@@ -44,10 +45,19 @@ def _build_runtime(database_url: str) -> TelegramWebhookRuntime:
     return TelegramWebhookRuntime(settings=settings)
 
 
-def test_render_assignment_reservation_expired_notification_has_buyer_cta() -> None:
-    service = NotificationService(pool=None)  # type: ignore[arg-type]
+def _render_notification(
+    item: NotificationOutboxItem,
+    *,
+    display_rub_per_usdt: Decimal | None = None,
+):
+    return render_telegram_notification(
+        item,
+        display_rub_per_usdt=display_rub_per_usdt,
+    )
 
-    rendered = service.render(
+
+def test_render_assignment_reservation_expired_notification_has_buyer_cta() -> None:
+    rendered = _render_notification(
         NotificationOutboxItem(
             notification_id=1,
             recipient_telegram_id=1,
@@ -80,9 +90,7 @@ def test_render_assignment_reservation_expired_notification_has_buyer_cta() -> N
 
 
 def test_render_seller_token_invalidated_notification_uses_neutral_unauthorized_reason() -> None:
-    service = NotificationService(pool=None)  # type: ignore[arg-type]
-
-    rendered = service.render(
+    rendered = _render_notification(
         NotificationOutboxItem(
             notification_id=2,
             recipient_telegram_id=5,
@@ -153,9 +161,7 @@ def test_render_buyer_notifications_show_approx_rub_amounts(
     payload_json: dict[str, object],
     expected_amount: str,
 ) -> None:
-    service = NotificationService(pool=None)  # type: ignore[arg-type]
-
-    rendered = service.render(
+    rendered = _render_notification(
         NotificationOutboxItem(
             notification_id=3,
             recipient_telegram_id=1,
@@ -179,9 +185,7 @@ def test_render_buyer_notifications_show_approx_rub_amounts(
 
 
 def test_render_seller_reward_unlock_notification_keeps_exact_usdt_amount() -> None:
-    service = NotificationService(pool=None)  # type: ignore[arg-type]
-
-    rendered = service.render(
+    rendered = _render_notification(
         NotificationOutboxItem(
             notification_id=4,
             recipient_telegram_id=2,
@@ -212,9 +216,7 @@ def test_render_seller_reward_unlock_notification_keeps_exact_usdt_amount() -> N
 
 
 def test_render_withdraw_created_admin_notification_uses_full_detail_body() -> None:
-    service = NotificationService(pool=None)  # type: ignore[arg-type]
-
-    rendered = service.render(
+    rendered = _render_notification(
         NotificationOutboxItem(
             notification_id=5,
             recipient_telegram_id=9003,
@@ -320,9 +322,7 @@ def test_render_notifications_use_code_formatted_public_refs(
     payload_json: dict[str, object],
     expected_refs: list[str],
 ) -> None:
-    service = NotificationService(pool=None)  # type: ignore[arg-type]
-
-    rendered = service.render(
+    rendered = _render_notification(
         NotificationOutboxItem(
             notification_id=6,
             recipient_telegram_id=1,

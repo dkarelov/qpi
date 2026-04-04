@@ -69,6 +69,7 @@ from services.bot_api.callback_data import (
     parse_callback,
 )
 from services.bot_api.seller_handlers import SellerCommandProcessor
+from services.bot_api.telegram_notifications import render_telegram_notification
 
 try:
     from telegram import (
@@ -6285,7 +6286,7 @@ class TelegramWebhookRuntime:
         )
         for item in items:
             try:
-                rendered = self._notification_service.render(
+                rendered = render_telegram_notification(
                     item,
                     display_rub_per_usdt=self._display_rub_per_usdt,
                 )

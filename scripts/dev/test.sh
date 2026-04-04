@@ -249,6 +249,62 @@ load_test_env_if_present() {
   set -a && source "${test_env_file}" && set +a
 }
 
+test_database_mode() {
+  TEST_DATABASE_URL="${TEST_DATABASE_URL:-}" python3 - <<'PY'
+from urllib.parse import urlparse
+import os
+
+url = os.environ.get("TEST_DATABASE_URL", "").strip()
+parsed = urlparse(url)
+host = parsed.hostname or ""
+port = parsed.port or 5432
+mode = "tunnel" if host == "127.0.0.1" and port == 15432 else "private"
+print(mode)
+PY
+}
+
+local_tunnel_listener_present() {
+  ss -ltnp | rg ':15432\b' >/dev/null 2>&1
+}
+
+ensure_local_tunnel_if_needed() {
+  if [[ -z "${TEST_DATABASE_URL:-}" ]]; then
+    return
+  fi
+  if [[ "${QPI_AUTO_START_TEST_DB_TUNNEL:-1}" != "1" ]]; then
+    return
+  fi
+  if [[ "$(test_database_mode)" != "tunnel" ]]; then
+    return
+  fi
+  if local_tunnel_listener_present; then
+    return
+  fi
+  if [[ -z "${QPI_DB_VM_HOST:-}" || -z "${QPI_DB_VM_SSH_PROXY_HOST:-}" ]]; then
+    return
+  fi
+
+  local ssh_key_path="${QPI_DB_VM_SSH_KEY_PATH:-${HOME}/.ssh/id_rsa}"
+  local proxy_user="${QPI_DB_VM_SSH_PROXY_USER:-ubuntu}"
+  local proxy_port="${QPI_DB_VM_SSH_PROXY_PORT:-22}"
+
+  if [[ ! -f "${ssh_key_path}" ]]; then
+    return
+  fi
+
+  echo "Auto-starting local DB tunnel to ${QPI_DB_VM_HOST}:5432 via ${QPI_DB_VM_SSH_PROXY_HOST}" >&2
+  ssh -fNT \
+    -o BatchMode=yes \
+    -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3 \
+    -o StrictHostKeyChecking=accept-new \
+    -p "${proxy_port}" \
+    -i "${ssh_key_path}" \
+    -L 127.0.0.1:15432:"${QPI_DB_VM_HOST}":5432 \
+    "${proxy_user}@${QPI_DB_VM_SSH_PROXY_HOST}" || true
+}
+
 run_doctor() {
   "${repo_root}/scripts/dev/test_doctor.sh"
 }
@@ -282,6 +338,7 @@ run_fast() {
 run_manifest_locally() {
   local kind="$1"
   load_test_env_if_present
+  ensure_local_tunnel_if_needed
 
   local reset_script
   reset_script="$(choose_reset_script)"
@@ -309,6 +366,7 @@ run_manifest_locally() {
 
 run_targeted_locally() {
   load_test_env_if_present
+  ensure_local_tunnel_if_needed
 
   local reset_script
   reset_script="$(choose_reset_script)"
