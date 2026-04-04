@@ -260,10 +260,12 @@ jobs:
     needs:
       - determine-changes
       - private-db-validation
+      - deploy-runtime
     if: >-
       ${{
         needs.determine-changes.outputs.has_function_targets == 'true' &&
-        (needs.private-db-validation.result == 'success' || needs.private-db-validation.result == 'skipped')
+        (needs.private-db-validation.result == 'success' || needs.private-db-validation.result == 'skipped') &&
+        (needs.deploy-runtime.result == 'success' || needs.deploy-runtime.result == 'skipped')
       }}
     env:
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
