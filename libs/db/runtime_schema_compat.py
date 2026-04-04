@@ -390,6 +390,35 @@ def _ensure_assignment_review_columns(cur: psycopg.Cursor) -> None:
         )
 
 
+def _ensure_assignment_order_tracking_index(cur: psycopg.Cursor) -> None:
+    if not _table_exists(cur, table_name="assignments"):
+        return
+
+    index_def = _index_definition(cur, index_name="idx_assignments_order_tracking_order_id")
+    if index_def is not None:
+        normalized_def = index_def.lower()
+        if "picked_up_wait_review" not in normalized_def:
+            cur.execute("DROP INDEX public.idx_assignments_order_tracking_order_id")
+            index_def = None
+
+    if index_def is None:
+        cur.execute(
+            """
+            CREATE INDEX idx_assignments_order_tracking_order_id
+            ON public.assignments USING btree (order_id)
+            WHERE (
+                status = ANY (
+                    ARRAY[
+                        'order_verified'::text,
+                        'picked_up_wait_review'::text,
+                        'picked_up_wait_unlock'::text
+                    ]
+                )
+            )
+            """
+        )
+
+
 def _ensure_buyer_orders_wb_product_id(cur: psycopg.Cursor) -> None:
     if not _table_exists(cur, table_name="buyer_orders"):
         return
@@ -630,6 +659,7 @@ def apply_runtime_schema_compatibility(database_url: str) -> None:
             _ensure_token_invalidation_sources(cur)
             _ensure_assignments_wb_product_id(cur)
             _ensure_assignment_review_columns(cur)
+            _ensure_assignment_order_tracking_index(cur)
             _ensure_buyer_orders_wb_product_id(cur)
             _ensure_withdrawal_request_requester_columns(cur)
             _normalize_withdrawal_and_assignment_statuses(cur)

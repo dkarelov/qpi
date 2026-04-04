@@ -449,6 +449,21 @@ async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assig
                 )
                 """
             )
+            cur.execute("DROP INDEX IF EXISTS public.idx_assignments_order_tracking_order_id")
+            cur.execute(
+                """
+                CREATE INDEX idx_assignments_order_tracking_order_id
+                ON public.assignments USING btree (order_id)
+                WHERE (
+                    status = ANY (
+                        ARRAY[
+                            'order_verified'::text,
+                            'picked_up_wait_unlock'::text
+                        ]
+                    )
+                )
+                """
+            )
 
     async with await psycopg.AsyncConnection.connect(isolated_database) as conn:
         seller_user_id = await create_user(
@@ -613,6 +628,15 @@ async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assig
             assert cur.fetchone()[0] is None
             cur.execute("SELECT to_regclass('public.uq_withdrawal_requests_requester_active')")
             assert cur.fetchone()[0] == "uq_withdrawal_requests_requester_active"
+            cur.execute(
+                """
+                SELECT indexdef
+                FROM pg_indexes
+                WHERE schemaname = 'public'
+                  AND indexname = 'idx_assignments_order_tracking_order_id'
+                """
+            )
+            assert "picked_up_wait_review" in cur.fetchone()[0]
             cur.execute(
                 """
                 SELECT is_nullable

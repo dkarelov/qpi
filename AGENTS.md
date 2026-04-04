@@ -17,6 +17,7 @@ This section is intentionally first because it is a delivery gate, not a soft pr
   - if workflows fail, continue debugging or report the exact blocker; do not present the task as complete.
 - Do not stop after local validation unless the operator explicitly says to stop before commit/push/workflow verification.
 - If a push succeeds but post-push workflows fail, the task remains incomplete.
+- Never report success while the pushed commit is still red or while its required workflows are still running.
 
 ## 1. Documentation Policy
 
