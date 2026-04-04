@@ -77,6 +77,7 @@ class ListingResult:
     wb_photo_url: str | None = None
     wb_tech_sizes: list[str] = field(default_factory=list)
     wb_characteristics: list[dict[str, str]] = field(default_factory=list)
+    review_phrases: list[str] = field(default_factory=list)
     reference_price_rub: int | None = None
     reference_price_source: str | None = None
     reference_price_updated_at: datetime | None = None
@@ -186,6 +187,17 @@ class BuyerOrderSubmitResult:
 
 
 @dataclass(frozen=True)
+class BuyerReviewSubmitResult:
+    assignment_id: int
+    changed: bool
+    status: str
+    wb_product_id: int
+    reviewed_at: datetime
+    rating: int
+    review_text: str
+
+
+@dataclass(frozen=True)
 class BuyerAssignmentView:
     assignment_id: int
     listing_id: int
@@ -197,6 +209,8 @@ class BuyerAssignmentView:
     reservation_expires_at: datetime
     order_id: str | None
     ordered_at: datetime | None
+    review_required: bool = False
+    review_phrases: list[str] = field(default_factory=list)
     shop_id: int | None = None
     shop_title: str | None = None
     display_title: str | None = None

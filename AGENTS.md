@@ -127,7 +127,14 @@ Persistence and schema:
   - `wb_product_id`,
   - cashback in RUB,
   - slot count,
-  - search phrase.
+  - search phrase,
+  - optional review phrase pool (`0..10` phrases).
+- Seller listing-create input is a single comma-separated message:
+  - `wb_product_id, cashback_rub, slot_count, search_phrase, review_phrase_1, ... , review_phrase_10`.
+- Listing review phrase pool rules:
+  - blank phrase cells are ignored,
+  - at most 10 non-empty phrases are stored,
+  - buyer review prompts later receive up to 2 phrases chosen randomly from that pool.
 - Listing draft creation fetches WB metadata live by `wb_product_id` using the seller's WB token and stores:
   - buyer-visible `display_title`,
   - WB source title,
@@ -167,8 +174,13 @@ Persistence and schema:
   - `[search_phrase, wb_product_id, 1, wb_brand_name]`, where `wb_brand_name` is an empty string when unavailable.
 - Buyer submits verification token (base64 JSON array):
   - `[order_id, ordered_at]`, where `ordered_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
+- After pickup, buyer receives review setup token (base64 JSON array):
+  - `[wb_product_id, review_phrase_1?, review_phrase_2?]`, where phrases are omitted when the seller did not provide them.
+- Buyer submits review confirmation token (base64 JSON array):
+  - `[wb_product_id, reviewed_at, 5, review_text]`, where `reviewed_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
 - Verification token must be submitted within 4 hours of reservation.
 - `order_id` is globally unique (`1 order_id = 1 slot`).
+- Review confirmation is mandatory after pickup. Without it, cashback stays frozen even after the unlock timer has passed.
 - Buyer can cancel purchase only while the assignment is still `reserved`.
 - Buyer cancellation is a distinct terminal lifecycle outcome (`buyer_cancelled`), separate from timeout expiry.
 - Validation must happen as early as possible in buyer flows and still be rechecked at final write/transfer time.
@@ -186,6 +198,7 @@ In-progress states:
 
 - `reserved`
 - `order_verified`
+- `picked_up_wait_review`
 - `picked_up_wait_unlock`
 
 Completed visible state:
@@ -205,7 +218,10 @@ Transitions:
 - `reserved -> expired_2h` after 4h without valid verification token (legacy status code name retained).
 - `reserved -> buyer_cancelled` when the buyer explicitly cancels before submitting a verification token.
 - Valid verification token transitions to `order_verified`.
-- WB event `Продажа` transitions to `picked_up_wait_unlock` and sets unlock time `pickup + 15d`.
+- WB event `Продажа` transitions to:
+  - `picked_up_wait_review` and sets unlock time `pickup + 15d` when review confirmation is required for that assignment,
+  - `picked_up_wait_unlock` and sets unlock time `pickup + 15d` for legacy/no-review assignments.
+- Valid review confirmation token transitions `picked_up_wait_review -> picked_up_wait_unlock`.
 - WB event `Возврат` within unlock window transitions to `returned_within_14d`.
 - `order_verified -> delivery_expired` after 60 days without pickup.
 - Unlock timer credits buyer balance and transitions assignment to `withdraw_sent` (`Выплачен`).
@@ -350,8 +366,9 @@ Transitions:
   - if a shop has no other buyer-visible listings but the buyer already has an active purchase there, the shop screen shows a `Покупки` shortcut instead of a dead end,
   - purchase list uses store title (not slug), shows in-progress and paid purchases, and shows fields in order: `Товар`, `Магазин`, `Кэшбэк`, optional `Номер заказа`, `Статус`,
   - buyer purchase/withdraw blocks and concrete shop/listing screens keep copyable public refs in titles/headers instead of separate `Код ...` lines,
-  - purchase status line includes color markers: red for `Ожидает заказа`, yellow for `Заказан`, green for `Выкуплен` / `Выплачен`,
+  - purchase status line includes color markers: red for `Ожидает заказа`, yellow for `Заказан` / `Нужно оставить отзыв`, green for `Выкуплен` / `Выплачен`,
   - dashboard purchase counters are grouped as `ожидают заказа`, `заказаны`, `выкуплены`,
+  - `Нужно оставить отзыв` stays in the yellow `заказаны` bucket until review confirmation is accepted,
   - buyer dashboard `Баланс` equals withdrawable amount only and is shown as approximate RUB,
   - buyer non-withdrawal screens show cashback/balance primarily as approximate RUB; exact USDT remains visible on withdrawal-specific screens and prompts,
   - buyer non-withdrawal notifications follow the same rule as screens: approximate RUB only; exact USDT is reserved for withdrawal-specific buyer flows,
@@ -359,7 +376,10 @@ Transitions:
   - if the buyer already has an active withdrawal request, new withdrawal actions are hidden and the screen shows that request plus a cancel action,
   - buyer withdrawal history is full paginated history with `<` / `>` navigation, timestamps, comments, and tx hash when available,
   - irrelevant actions must be hidden when they cannot be used in the current state (for example withdrawal buttons when withdrawable balance is zero),
-  - purchase flow contains explicit submit-token and cancel-purchase actions.
+  - purchase flow contains explicit order-token submit, review-token submit, and cancel-purchase actions when relevant.
+- Seller notifications:
+  - pickup notification can indicate that buyer review is still pending,
+  - after review confirmation the seller receives a dedicated notification containing the confirmed rating, review text, and confirmation time.
 - All user-facing timestamps are rendered in `MSK` (`Europe/Moscow`).
 - Admin UX:
   - `Выводы`, `Депозиты`, `Исключения` sections.

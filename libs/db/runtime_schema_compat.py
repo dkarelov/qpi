@@ -11,12 +11,14 @@ from libs.db.psqldef import normalize_database_url
 _ACTIVE_ASSIGNMENT_STATUSES = (
     "reserved",
     "order_verified",
+    "picked_up_wait_review",
     "picked_up_wait_unlock",
     "withdraw_sent",
 )
 _LISTING_JSON_COLUMNS = (
     "wb_tech_sizes_json",
     "wb_characteristics_json",
+    "review_phrases_json",
 )
 _LISTING_OPTIONAL_COLUMNS = (
     "display_title",
@@ -347,6 +349,7 @@ def _ensure_assignments_wb_product_id(cur: psycopg.Cursor) -> None:
             "order_submitted" in normalized_def
             or "eligible_for_withdrawal" in normalized_def
             or "withdraw_pending_admin" in normalized_def
+            or "picked_up_wait_review" not in normalized_def
         ):
             cur.execute("DROP INDEX public.uq_assignments_buyer_product_active")
             active_index_def = None
@@ -361,12 +364,29 @@ def _ensure_assignments_wb_product_id(cur: psycopg.Cursor) -> None:
                     ARRAY[
                         'reserved'::text,
                         'order_verified'::text,
+                        'picked_up_wait_review'::text,
                         'picked_up_wait_unlock'::text,
                         'withdraw_sent'::text
                     ]
                 )
             )
             """
+        )
+
+
+def _ensure_assignment_review_columns(cur: psycopg.Cursor) -> None:
+    if not _table_exists(cur, table_name="assignments"):
+        return
+
+    if not _column_exists(cur, table_name="assignments", column_name="review_required"):
+        cur.execute(
+            "ALTER TABLE public.assignments "
+            "ADD COLUMN review_required boolean NOT NULL DEFAULT false"
+        )
+    if not _column_exists(cur, table_name="assignments", column_name="review_phrases_json"):
+        cur.execute(
+            "ALTER TABLE public.assignments "
+            "ADD COLUMN review_phrases_json jsonb NOT NULL DEFAULT '[]'::jsonb"
         )
 
 
@@ -609,6 +629,7 @@ def apply_runtime_schema_compatibility(database_url: str) -> None:
             _ensure_listing_metadata_columns(cur)
             _ensure_token_invalidation_sources(cur)
             _ensure_assignments_wb_product_id(cur)
+            _ensure_assignment_review_columns(cur)
             _ensure_buyer_orders_wb_product_id(cur)
             _ensure_withdrawal_request_requester_columns(cur)
             _normalize_withdrawal_and_assignment_statuses(cur)

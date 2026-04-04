@@ -357,6 +357,7 @@ class FinanceService:
         reward_reserved_account_id: int,
         idempotency_key: str,
         reservation_timeout_hours: int = 4,
+        review_required: bool = False,
     ) -> AssignmentReservationResult:
         if reservation_timeout_hours < 1:
             raise ValueError("reservation_timeout_hours must be >= 1")
@@ -424,6 +425,7 @@ class FinanceService:
                             status,
                             reward_usdt,
                             reservation_expires_at,
+                            review_required,
                             idempotency_key
                         )
                         VALUES (
@@ -433,6 +435,7 @@ class FinanceService:
                             'reserved',
                             %s,
                             timezone('utc', now()) + (%s * interval '1 hour'),
+                            %s,
                             %s
                         )
                         RETURNING id, reservation_expires_at
@@ -443,6 +446,7 @@ class FinanceService:
                             listing["wb_product_id"],
                             reward_usdt,
                             reservation_timeout_hours,
+                            review_required,
                             idempotency_key,
                         ),
                     )
@@ -521,6 +525,7 @@ class FinanceService:
                 if assignment["status"] not in {
                     "reserved",
                     "order_verified",
+                    "picked_up_wait_review",
                     "picked_up_wait_unlock",
                 }:
                     raise InvalidStateError("assignment cannot be cancelled from current state")

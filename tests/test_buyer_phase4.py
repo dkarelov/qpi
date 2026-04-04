@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from psycopg.rows import dict_row
 
-from libs.domain.buyer import BuyerService, decode_purchase_payload
+from libs.domain.buyer import BuyerService, decode_purchase_payload, decode_review_payload
 from libs.domain.errors import DuplicateOrderError, InvalidStateError, PayloadValidationError
 from services.bot_api.buyer_handlers import BuyerCommandProcessor
 from tests.helpers import create_account, create_listing, create_shop, create_user
@@ -24,6 +24,17 @@ def _encode_payload(
     payload: list[Any] = [order_id, ordered_at]
     if wb_product_id is not None:
         payload.append(wb_product_id)
+    return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+
+
+def _encode_review_payload(
+    *,
+    wb_product_id: int,
+    reviewed_at: str = "2026-03-18T10:30:00",
+    rating: int = 5,
+    review_text: str = "great",
+) -> str:
+    payload: list[Any] = [wb_product_id, reviewed_at, rating, review_text]
     return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
 
 
@@ -50,6 +61,7 @@ async def _prepare_reservable_listing(
     reward_usdt: Decimal,
     slot_count: int,
     available_slots: int,
+    review_phrases: list[str] | None = None,
 ) -> dict[str, Any]:
     async with db_pool.connection() as conn:
         async with conn.transaction():
@@ -74,6 +86,7 @@ async def _prepare_reservable_listing(
                 slot_count=slot_count,
                 available_slots=available_slots,
                 status="active",
+                review_phrases=review_phrases,
             )
             seller_collateral_account_id = await create_account(
                 conn,
@@ -862,6 +875,21 @@ def test_decode_purchase_payload_normalizes_timezone_offset_to_utc() -> None:
     assert decoded.ordered_at == datetime(2026, 2, 26, 12, 0, 0, tzinfo=UTC)
 
 
+def test_decode_review_payload_accepts_js_utc_timestamp() -> None:
+    decoded = decode_review_payload(
+        _encode_review_payload(
+            wb_product_id=552892532,
+            reviewed_at="2026-03-18T10:30:00.500Z",
+            review_text="отлично",
+        )
+    )
+
+    assert decoded.wb_product_id == 552892532
+    assert decoded.reviewed_at == datetime(2026, 3, 18, 10, 30, 0, 500000, tzinfo=UTC)
+    assert decoded.rating == 5
+    assert decoded.review_text == "отлично"
+
+
 @pytest.mark.asyncio
 async def test_submit_payload_rejects_wb_product_mismatch(db_pool) -> None:
     buyer_service = BuyerService(db_pool)
@@ -1010,6 +1038,91 @@ async def test_valid_payload_moves_assignment_to_order_verified_and_is_idempoten
             assert order["wb_product_id"] == 5501
             assert order["payload_version"] == 2
             assert order["raw_payload_json"][0] == "ORD-SUCCESS"
+
+
+@pytest.mark.asyncio
+async def test_submit_review_payload_moves_assignment_to_pickup_wait_unlock_and_is_idempotent(
+    db_pool,
+) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="review-shop",
+        wb_product_id=5701,
+        reward_usdt=Decimal("6.000000"),
+        slot_count=1,
+        available_slots=1,
+        review_phrases=["в размер", "не садятся после стирки"],
+    )
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870101, username="buyer_review")
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:review:1",
+    )
+    await buyer_service.submit_purchase_payload(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        payload_base64=_encode_payload(order_id="ORD-REVIEW"),
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE assignments
+                    SET status = 'picked_up_wait_review',
+                        review_phrases_json = '["в размер","не садятся после стирки"]'::jsonb,
+                        unlock_at = timezone('utc', now()) + interval '10 days'
+                    WHERE id = %s
+                    """,
+                    (reservation.assignment_id,),
+                )
+
+    payload = _encode_review_payload(wb_product_id=5701, review_text="great")
+    first = await buyer_service.submit_review_payload(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        payload_base64=payload,
+    )
+    second = await buyer_service.submit_review_payload(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        payload_base64=payload,
+    )
+
+    assert first.changed is True
+    assert second.changed is False
+    assert first.status == "picked_up_wait_unlock"
+
+    assignments = await buyer_service.list_buyer_assignments(buyer_user_id=buyer.user_id)
+    assert assignments[0].status == "picked_up_wait_unlock"
+    assert assignments[0].review_phrases == ["в размер", "не садятся после стирки"]
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT status FROM assignments WHERE id = %s",
+                (reservation.assignment_id,),
+            )
+            assignment = await cur.fetchone()
+            assert assignment["status"] == "picked_up_wait_unlock"
+
+            await cur.execute(
+                """
+                SELECT wb_product_id, rating, review_text, payload_version, raw_payload_json
+                FROM buyer_reviews
+                WHERE assignment_id = %s
+                """,
+                (reservation.assignment_id,),
+            )
+            review = await cur.fetchone()
+            assert review["wb_product_id"] == 5701
+            assert review["rating"] == 5
+            assert review["review_text"] == "great"
+            assert review["payload_version"] == 1
+            assert review["raw_payload_json"][0] == 5701
 
 
 @pytest.mark.asyncio

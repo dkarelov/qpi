@@ -25,6 +25,7 @@ EVENT_ASSIGNMENT_RETURNED_BUYER = "assignment_returned_buyer"
 EVENT_ASSIGNMENT_RETURNED_SELLER = "assignment_returned_seller"
 EVENT_ASSIGNMENT_DELIVERY_EXPIRED_BUYER = "assignment_delivery_expired_buyer"
 EVENT_ASSIGNMENT_DELIVERY_EXPIRED_SELLER = "assignment_delivery_expired_seller"
+EVENT_ASSIGNMENT_REVIEW_CONFIRMED_SELLER = "assignment_review_confirmed_seller"
 EVENT_ASSIGNMENT_REWARD_UNLOCKED_BUYER = "assignment_reward_unlocked_buyer"
 EVENT_ASSIGNMENT_REWARD_UNLOCKED_SELLER = "assignment_reward_unlocked_seller"
 EVENT_ASSIGNMENT_EARLY_PAYOUT_LISTING_DELETE_BUYER = "assignment_early_payout_listing_delete_buyer"
@@ -242,6 +243,26 @@ class NotificationService:
             recipient_scope="seller",
             event_type=EVENT_ASSIGNMENT_DELIVERY_EXPIRED_SELLER,
             dedupe_key=f"assignment:{assignment_id}:delivery_expired:seller",
+            payload_json=payload,
+        )
+
+    async def enqueue_assignment_review_confirmed_for_seller_locked(
+        self,
+        cur,
+        *,
+        assignment_id: int,
+    ) -> None:
+        ctx = await self._load_assignment_review_context_locked(cur, assignment_id=assignment_id)
+        payload = self._assignment_payload(ctx)
+        payload["reviewed_at"] = _iso_or_none(ctx["reviewed_at"])
+        payload["rating"] = int(ctx["rating"])
+        payload["review_text"] = ctx["review_text"] or ""
+        await self.enqueue_locked(
+            cur,
+            recipient_telegram_id=ctx["seller_telegram_id"],
+            recipient_scope="seller",
+            event_type=EVENT_ASSIGNMENT_REVIEW_CONFIRMED_SELLER,
+            dedupe_key=f"assignment:{assignment_id}:review_confirmed:seller",
             payload_json=payload,
         )
 
@@ -655,6 +676,7 @@ class NotificationService:
                 a.reward_usdt,
                 a.unlock_at,
                 a.order_id,
+                a.review_required,
                 bu.telegram_id AS buyer_telegram_id,
                 l.id AS listing_id,
                 l.display_title,
@@ -673,6 +695,43 @@ class NotificationService:
         row = await cur.fetchone()
         if row is None:
             raise ValueError(f"assignment {assignment_id} not found for notification")
+        return dict(row)
+
+    async def _load_assignment_review_context_locked(
+        self,
+        cur,
+        *,
+        assignment_id: int,
+    ) -> dict[str, Any]:
+        await cur.execute(
+            """
+            SELECT
+                a.id AS assignment_id,
+                a.reward_usdt,
+                a.unlock_at,
+                a.review_required,
+                bu.telegram_id AS buyer_telegram_id,
+                l.id AS listing_id,
+                l.display_title,
+                su.telegram_id AS seller_telegram_id,
+                s.id AS shop_id,
+                s.title AS shop_title,
+                br.reviewed_at,
+                br.rating,
+                br.review_text
+            FROM assignments a
+            JOIN buyer_reviews br ON br.assignment_id = a.id
+            JOIN users bu ON bu.id = a.buyer_user_id
+            JOIN listings l ON l.id = a.listing_id
+            JOIN users su ON su.id = l.seller_user_id
+            JOIN shops s ON s.id = l.shop_id
+            WHERE a.id = %s
+            """,
+            (assignment_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise ValueError(f"assignment {assignment_id} not found for review notification")
         return dict(row)
 
     async def _load_deposit_intent_context_locked(
@@ -740,6 +799,7 @@ class NotificationService:
             "display_title": ctx["display_title"] or "Без названия",
             "shop_title": ctx["shop_title"] or "Магазин",
             "reward_usdt": str(_normalize_amount(ctx["reward_usdt"])),
+            "review_required": bool(ctx.get("review_required", False)),
         }
 
     def _row_to_item(self, row: dict[str, Any]) -> NotificationOutboxItem:

@@ -27,6 +27,7 @@ from libs.domain.models import (
     BuyerBootstrapResult,
     BuyerListingResult,
     BuyerOrderSubmitResult,
+    BuyerReviewSubmitResult,
     BuyerSavedShopResult,
     BuyerShopResult,
     ReservationExpiryResult,
@@ -37,6 +38,7 @@ from libs.domain.notifications import NotificationService
 _ACTIVE_ASSIGNMENT_STATES = (
     "reserved",
     "order_verified",
+    "picked_up_wait_review",
     "picked_up_wait_unlock",
     "withdraw_sent",
 )
@@ -45,6 +47,7 @@ _RESERVATION_EXPIRED_STATUS = "expired_2h"
 _BUYER_CANCELLED_STATUS = "buyer_cancelled"
 _RESERVATION_TIMEOUT_IDEMPOTENCY_PREFIX = "reservation-expire"
 _PURCHASE_PAYLOAD_VERSION = 2
+_REVIEW_PAYLOAD_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,16 @@ class DecodedPurchasePayload:
     order_id: str
     ordered_at: datetime
     wb_product_id: int | None
+    raw_payload_json: list[Any]
+
+
+@dataclass(frozen=True)
+class DecodedReviewPayload:
+    payload_version: int
+    wb_product_id: int
+    reviewed_at: datetime
+    rating: int
+    review_text: str
     raw_payload_json: list[Any]
 
 
@@ -192,6 +205,7 @@ class BuyerService:
                                     ARRAY[
                                         'reserved'::text,
                                         'order_verified'::text,
+                                        'picked_up_wait_review'::text,
                                         'picked_up_wait_unlock'::text,
                                         'withdraw_sent'::text
                                     ]
@@ -332,6 +346,7 @@ class BuyerService:
                                             ARRAY[
                                                 'reserved'::text,
                                                 'order_verified'::text,
+                                                'picked_up_wait_review'::text,
                                                 'picked_up_wait_unlock'::text,
                                                 'withdraw_sent'::text
                                             ]
@@ -423,7 +438,7 @@ class BuyerService:
                     (
                         buyer_user_id,
                         shop_id,
-                        ["reserved", "order_verified", "picked_up_wait_unlock"],
+                        ["reserved", "order_verified", "picked_up_wait_review", "picked_up_wait_unlock"],
                     ),
                 )
                 if await cur.fetchone() is not None:
@@ -471,6 +486,7 @@ class BuyerService:
             reward_reserved_account_id=reward_reserved_account_id,
             idempotency_key=idempotency_key,
             reservation_timeout_hours=reservation_timeout_hours,
+            review_required=True,
         )
 
     async def _find_reservation_by_idempotency(
@@ -675,6 +691,156 @@ class BuyerService:
 
         return await run_in_transaction(self._pool, operation)
 
+    async def submit_review_payload(
+        self,
+        *,
+        buyer_user_id: int,
+        assignment_id: int,
+        payload_base64: str,
+    ) -> BuyerReviewSubmitResult:
+        decoded = decode_review_payload(payload_base64)
+
+        async def operation(conn: AsyncConnection) -> BuyerReviewSubmitResult:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT
+                        a.id,
+                        a.listing_id,
+                        a.buyer_user_id,
+                        a.status,
+                        l.wb_product_id
+                    FROM assignments a
+                    JOIN listings l ON l.id = a.listing_id
+                    WHERE a.id = %s
+                    FOR UPDATE OF a, l
+                    """,
+                    (assignment_id,),
+                )
+                assignment = await cur.fetchone()
+                if assignment is None:
+                    raise NotFoundError(f"assignment {assignment_id} not found")
+                if assignment["buyer_user_id"] != buyer_user_id:
+                    raise NotFoundError(f"assignment {assignment_id} not found for buyer")
+                if assignment["status"] not in {
+                    "picked_up_wait_review",
+                    "picked_up_wait_unlock",
+                    "withdraw_sent",
+                }:
+                    raise InvalidStateError("assignment cannot accept review payload in current state")
+                if decoded.wb_product_id != assignment["wb_product_id"]:
+                    raise PayloadValidationError(
+                        "payload field 'wb_product_id' does not match assignment listing"
+                    )
+
+                await cur.execute(
+                    """
+                    SELECT
+                        assignment_id,
+                        reviewed_at,
+                        rating,
+                        review_text
+                    FROM buyer_reviews
+                    WHERE assignment_id = %s
+                    FOR UPDATE
+                    """,
+                    (assignment_id,),
+                )
+                existing_review = await cur.fetchone()
+                if existing_review is not None:
+                    if (
+                        existing_review["reviewed_at"] == decoded.reviewed_at
+                        and int(existing_review["rating"]) == decoded.rating
+                        and existing_review["review_text"] == decoded.review_text
+                    ):
+                        status = assignment["status"]
+                        if status == "picked_up_wait_review":
+                            await cur.execute(
+                                """
+                                UPDATE assignments
+                                SET status = 'picked_up_wait_unlock',
+                                    updated_at = timezone('utc', now())
+                                WHERE id = %s
+                                """,
+                                (assignment_id,),
+                            )
+                            status = "picked_up_wait_unlock"
+                        return BuyerReviewSubmitResult(
+                            assignment_id=assignment_id,
+                            changed=False,
+                            status=status,
+                            wb_product_id=assignment["wb_product_id"],
+                            reviewed_at=decoded.reviewed_at,
+                            rating=decoded.rating,
+                            review_text=decoded.review_text,
+                        )
+                    raise InvalidStateError("assignment already has a different review payload")
+
+                if assignment["status"] != "picked_up_wait_review":
+                    raise InvalidStateError("assignment review is already completed")
+
+                try:
+                    await cur.execute(
+                        """
+                        INSERT INTO buyer_reviews (
+                            assignment_id,
+                            listing_id,
+                            buyer_user_id,
+                            wb_product_id,
+                            reviewed_at,
+                            rating,
+                            review_text,
+                            payload_version,
+                            raw_payload_json,
+                            source
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'plugin_base64')
+                        """,
+                        (
+                            assignment_id,
+                            assignment["listing_id"],
+                            buyer_user_id,
+                            assignment["wb_product_id"],
+                            decoded.reviewed_at,
+                            decoded.rating,
+                            decoded.review_text,
+                            decoded.payload_version,
+                            Json(decoded.raw_payload_json),
+                        ),
+                    )
+                except UniqueViolation as exc:
+                    constraint_name = exc.diag.constraint_name if exc.diag is not None else None
+                    if constraint_name == "uq_buyer_reviews_assignment_id":
+                        raise InvalidStateError(
+                            "assignment already has submitted review payload"
+                        ) from exc
+                    raise
+
+                await cur.execute(
+                    """
+                    UPDATE assignments
+                    SET status = 'picked_up_wait_unlock',
+                        updated_at = timezone('utc', now())
+                    WHERE id = %s
+                    """,
+                    (assignment_id,),
+                )
+                await self._notifications.enqueue_assignment_review_confirmed_for_seller_locked(
+                    cur,
+                    assignment_id=assignment_id,
+                )
+                return BuyerReviewSubmitResult(
+                    assignment_id=assignment_id,
+                    changed=True,
+                    status="picked_up_wait_unlock",
+                    wb_product_id=assignment["wb_product_id"],
+                    reviewed_at=decoded.reviewed_at,
+                    rating=decoded.rating,
+                    review_text=decoded.review_text,
+                )
+
+        return await run_in_transaction(self._pool, operation)
+
     async def _ensure_buyer_user_exists(self, *, user_id: int) -> None:
         async def operation(conn: AsyncConnection) -> None:
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -709,6 +875,8 @@ class BuyerService:
                         a.reward_usdt,
                         a.reservation_expires_at,
                         a.order_id,
+                        a.review_required,
+                        a.review_phrases_json,
                         l.wb_product_id,
                         l.display_title,
                         l.wb_source_title,
@@ -757,6 +925,8 @@ class BuyerService:
                         reservation_expires_at=row["reservation_expires_at"],
                         order_id=row["order_id"],
                         ordered_at=row["ordered_at"],
+                        review_required=bool(row["review_required"]),
+                        review_phrases=list(row["review_phrases_json"] or []),
                     )
                     for row in rows
                 ]
@@ -941,6 +1111,7 @@ class BuyerService:
                                 ARRAY[
                                     'reserved'::text,
                                     'order_verified'::text,
+                                    'picked_up_wait_review'::text,
                                     'picked_up_wait_unlock'::text,
                                     'withdraw_sent'::text
                                 ]
@@ -1012,7 +1183,7 @@ def decode_purchase_payload(payload_base64: str) -> DecodedPurchasePayload:
     ordered_at_raw = parsed[1]
     if not isinstance(ordered_at_raw, str):
         raise PayloadValidationError("payload field 'ordered_at' must be ISO datetime string")
-    ordered_at = _parse_iso_datetime_utc(ordered_at_raw)
+    ordered_at = _parse_iso_datetime_utc(ordered_at_raw, field_name="ordered_at")
 
     wb_product_id: int | None = None
     if len(parsed) == 3:
@@ -1037,10 +1208,62 @@ def decode_purchase_payload(payload_base64: str) -> DecodedPurchasePayload:
     )
 
 
-def _parse_iso_datetime_utc(value: str) -> datetime:
+def decode_review_payload(payload_base64: str) -> DecodedReviewPayload:
+    normalized_payload = payload_base64.strip()
+    if not normalized_payload:
+        raise PayloadValidationError("payload must not be empty")
+
+    try:
+        payload_bytes = base64.b64decode(normalized_payload, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise PayloadValidationError("payload must be valid base64") from exc
+
+    try:
+        payload_text = payload_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PayloadValidationError("payload must be utf-8 encoded JSON") from exc
+
+    try:
+        parsed = json.loads(payload_text)
+    except json.JSONDecodeError as exc:
+        raise PayloadValidationError("payload must be valid JSON array") from exc
+
+    if not isinstance(parsed, list):
+        raise PayloadValidationError("payload must be a JSON array")
+    if len(parsed) != 4:
+        raise PayloadValidationError(
+            "payload must contain [wb_product_id, reviewed_at, rating, review_text]"
+        )
+
+    wb_product_id = _require_positive_int(parsed[0], field_name="wb_product_id")
+
+    reviewed_at_raw = parsed[1]
+    if not isinstance(reviewed_at_raw, str):
+        raise PayloadValidationError("payload field 'reviewed_at' must be ISO datetime string")
+    reviewed_at = _parse_iso_datetime_utc(reviewed_at_raw, field_name="reviewed_at")
+
+    rating = _require_positive_int(parsed[2], field_name="rating")
+    if rating != 5:
+        raise PayloadValidationError("payload field 'rating' must be 5")
+
+    review_text_raw = parsed[3]
+    if not isinstance(review_text_raw, str) or not review_text_raw.strip():
+        raise PayloadValidationError("payload field 'review_text' must be non-empty string")
+
+    return DecodedReviewPayload(
+        payload_version=_REVIEW_PAYLOAD_VERSION,
+        wb_product_id=wb_product_id,
+        reviewed_at=reviewed_at,
+        rating=rating,
+        review_text=review_text_raw.strip(),
+        raw_payload_json=parsed,
+    )
+
+
+def _parse_iso_datetime_utc(value: str, *, field_name: str) -> datetime:
     normalized = value.strip()
     if not normalized:
-        raise PayloadValidationError("payload field 'ordered_at' must not be empty")
+        raise PayloadValidationError(f"payload field '{field_name}' must not be empty")
 
     # Accept JS toISOString() payloads and normalize all timestamps to UTC.
     if normalized.endswith(("Z", "z")):
@@ -1050,9 +1273,23 @@ def _parse_iso_datetime_utc(value: str) -> datetime:
         parsed = datetime.fromisoformat(normalized)
     except ValueError as exc:
         raise PayloadValidationError(
-            "payload field 'ordered_at' is not valid ISO datetime"
+            f"payload field '{field_name}' is not valid ISO datetime"
         ) from exc
 
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _require_positive_int(value: Any, *, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise PayloadValidationError(f"payload field '{field_name}' must be positive integer")
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError) as exc:
+        raise PayloadValidationError(
+            f"payload field '{field_name}' must be positive integer"
+        ) from exc
+    if normalized < 1:
+        raise PayloadValidationError(f"payload field '{field_name}' must be positive integer")
+    return normalized

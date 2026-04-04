@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import csv
 import html
 import json
 import re
-import shlex
 import threading
 import urllib.parse
 from collections.abc import Callable
@@ -109,6 +109,7 @@ _USDT_EXACT_QUANT = Decimal("0.000001")
 _RUB_QUANT = Decimal("1")
 _LISTING_COLLATERAL_FEE_MULTIPLIER = Decimal("1.01")
 _BUYER_TASK_COMPANION_PRODUCTS = 1
+_QPILKA_EXTENSION_URL = "https://chromewebstore.google.com/detail/qpilka/joefinmgneknnaejambgbaclobeedaga"
 _NUMBERED_PAGE_SIZE = 10
 _MSK_TZ = ZoneInfo("Europe/Moscow")
 _TON_FRIENDLY_MAINNET_PREFIXES = frozenset({"E", "U"})
@@ -133,9 +134,18 @@ _RUNTIME_REQUIRED_SCHEMA_COLUMNS = {
     },
     "assignments": {
         "wb_product_id",
+        "review_required",
+        "review_phrases_json",
     },
     "buyer_orders": {
         "wb_product_id",
+    },
+    "buyer_reviews": {
+        "assignment_id",
+        "wb_product_id",
+        "reviewed_at",
+        "rating",
+        "review_text",
     },
     "listings": {
         "display_title",
@@ -148,6 +158,7 @@ _RUNTIME_REQUIRED_SCHEMA_COLUMNS = {
         "wb_photo_url",
         "wb_tech_sizes_json",
         "wb_characteristics_json",
+        "review_phrases_json",
         "reference_price_rub",
         "reference_price_source",
         "reference_price_updated_at",
@@ -1545,7 +1556,7 @@ class TelegramWebhookRuntime:
                     (
                         "<b>Счастливый путь</b>\n"
                         "1. Создайте магазин и сохраните токен WB API.\n"
-                        "2. Создайте объявление: артикул WB, кэшбэк, слоты, поисковая фраза.\n"
+                        "2. Создайте объявление: артикул WB, кэшбэк, слоты, поисковая фраза и до 10 фраз для отзыва.\n"
                         "3. При необходимости пополните баланс для обеспечения.\n"
                         "4. Активируйте объявление и поделитесь ссылкой на магазин.\n"
                         "5. Следите за заказами и выводите доступный остаток."
@@ -1616,13 +1627,15 @@ class TelegramWebhookRuntime:
                     (
                         "<b>Что это</b>\n"
                         "После создания бот фиксирует кэшбэк в USDT, проверяет карточку WB и "
-                        "показывает покупателю только нужные поля."
+                        "показывает покупателю только нужные поля. После выкупа покупатель "
+                        "подтверждает обязательный отзыв на 5 звезд."
                     ),
                     (
                         "<b>FAQ</b>\n"
                         "1. Если параметр нужно изменить, создайте новое объявление.\n"
                         "2. Активация требует валидный токен WB, достаточное обеспечение и живую карточку товара.\n"
-                        "3. Если средств не хватает, сначала пополните баланс продавца."
+                        "3. Для отзыва можно указать до 10 фраз, из которых бот выберет до двух случайно.\n"
+                        "4. Если средств не хватает, сначала пополните баланс продавца."
                     ),
                 ],
                 separate_blocks=True,
@@ -1908,23 +1921,50 @@ class TelegramWebhookRuntime:
             cta="Отправьте сообщение с информацией об объявлении согласно формату ниже.",
             lines=[
                 (
-                    "<b>Формат:</b> "
-                    "<code>&lt;артикул ВБ&gt; &lt;кэшбэк руб&gt; "
-                    "&lt;макс заказов&gt; &lt;поисковая фраза&gt;</code>"
+                    "<b>Формат (через запятую):</b> "
+                    "<code>артикул ВБ, кэшбэк в рублях, макс. заказов, поисковая фраза, "
+                    "фраза для отзыва 1, ... , фраза для отзыва 10</code>"
                 ),
-                '<b>Пример:</b> <code>12345678 100 5 "женские джинсы"</code>',
+                (
+                    "<b>Пример:</b> <code>12345678, 100, 5, женские джинсы, "
+                    "в размер, не садятся после стирки</code>"
+                ),
                 (
                     f"<b>Кэшбэк:</b> сумма для покупателя. "
                     f"Конвертация в $ произойдет по текущему курсу ~{fx_text}."
                 ),
                 "<b>Макс заказов:</b> количество покупателей по этому объявлению.",
                 "<b>Поисковая фраза:</b> запрос, по которому покупатель будет искать товар.",
+                (
+                    "<b>Фразы для отзыва (необязательно):</b> 0-10 фраз, из которых случайным "
+                    "образом выбираются две для предложения покупателю вставить в отзыв о товаре."
+                ),
             ],
             note=(
                 "После этого бот подтянет карточку товара, попробует определить цену "
                 "покупателя по заказам за 30 дней и попросит подтвердить данные."
             ),
         )
+
+    def _parse_listing_create_input(
+        self,
+        text: str,
+    ) -> tuple[int, Decimal, int, str, list[str]]:
+        try:
+            rows = list(csv.reader([text], skipinitialspace=True))
+        except csv.Error as exc:
+            raise ValueError("invalid csv") from exc
+        if len(rows) != 1 or len(rows[0]) < 4:
+            raise ValueError("listing create input must contain at least 4 fields")
+        fields = [field.strip() for field in rows[0]]
+        wb_product_id = int(fields[0])
+        cashback_rub = Decimal(fields[1])
+        slots = int(fields[2])
+        search_phrase = fields[3]
+        review_phrases = [field for field in fields[4:] if field]
+        if len(review_phrases) > 10:
+            raise ValueError("review_phrases must contain at most 10 entries")
+        return wb_product_id, cashback_rub, slots, search_phrase, review_phrases
 
     def _listing_title_review_markup(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
@@ -1971,6 +2011,7 @@ class TelegramWebhookRuntime:
         *,
         wb_product_id: int,
         search_phrase: str,
+        review_phrases: list[str] | None,
         cashback_rub: Decimal,
         slot_count: int,
         snapshot: WbProductSnapshot,
@@ -1999,6 +2040,7 @@ class TelegramWebhookRuntime:
             f"<b>Кэшбэк, %:</b> {cashback_percent}",
             f"<b>Макс. заказов:</b> {slot_count}",
             f"<b>Обеспечение:</b> {self._format_usdt_with_rub(collateral_required_usdt)}",
+            f"<b>Фразы для отзыва:</b> {html.escape(self._format_review_phrases_text(review_phrases))}",
             f"<b>Название для покупателей:</b> {html.escape(suggested_display_title)}",
         ]
         if observed_buyer_price is not None and reference_price_source == "orders":
@@ -2311,6 +2353,7 @@ class TelegramWebhookRuntime:
         reference_price_rub: int | None,
         reference_price_source: str | None,
         search_phrase: str,
+        review_phrases: list[str] | None,
         cashback_rub: Decimal,
         reward_usdt: Decimal,
         slot_count: int,
@@ -2329,6 +2372,7 @@ class TelegramWebhookRuntime:
             f"<b>Кэшбэк, %:</b> {cashback_percent}",
             f"<b>Макс. заказов:</b> {slot_count}",
             f"<b>Обеспечение:</b> {self._format_usdt_with_rub(collateral_required_usdt)}",
+            f"<b>Фразы для отзыва:</b> {html.escape(self._format_review_phrases_text(review_phrases))}",
         ]
         if wb_subject_name:
             lines.append(f"<b>Предмет:</b> {html.escape(wb_subject_name)}")
@@ -2701,6 +2745,7 @@ class TelegramWebhookRuntime:
             self._listing_title_confirmation_text(
                 wb_product_id=wb_product_id,
                 search_phrase=str(prompt_state.get("search_phrase", "")).strip(),
+                review_phrases=list(prompt_state.get("review_phrases") or []),
                 cashback_rub=Decimal(str(prompt_state.get("cashback_rub", "0"))),
                 slot_count=int(prompt_state.get("slot_count", 0)),
                 snapshot=WbProductSnapshot(
@@ -2768,6 +2813,7 @@ class TelegramWebhookRuntime:
                 wb_photo_url=str(prompt_state.get("wb_photo_url", "")).strip() or None,
                 wb_tech_sizes=list(prompt_state.get("wb_tech_sizes") or []),
                 wb_characteristics=list(prompt_state.get("wb_characteristics") or []),
+                review_phrases=list(prompt_state.get("review_phrases") or []),
                 reference_price_rub=(
                     int(prompt_state["reference_price_rub"])
                     if prompt_state.get("reference_price_rub") is not None
@@ -2805,6 +2851,7 @@ class TelegramWebhookRuntime:
                 reference_price_rub=listing.reference_price_rub,
                 reference_price_source=listing.reference_price_source,
                 search_phrase=listing.search_phrase,
+                review_phrases=getattr(listing, "review_phrases", []),
                 cashback_rub=(listing.reward_usdt * self._display_rub_per_usdt).quantize(
                     _RUB_QUANT, rounding=ROUND_HALF_UP
                 ),
@@ -3915,6 +3962,56 @@ class TelegramWebhookRuntime:
                 parse_mode="HTML",
             )
             return
+        if action == "submit_review_payload_prompt":
+            if not payload.entity_id:
+                await self._replace_message(
+                    query_message,
+                    "Не удалось открыть покупку. Попробуйте снова.",
+                    InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    text="↩️ Назад к покупкам",
+                                    callback_data=build_callback(
+                                        flow=_ROLE_BUYER,
+                                        action="assignments",
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
+                )
+                return
+            assignment_id = int(payload.entity_id)
+            self._set_prompt(
+                context,
+                role=_ROLE_BUYER,
+                prompt_type="buyer_submit_review_payload",
+                sensitive=True,
+                extra={"assignment_id": assignment_id},
+            )
+            await self._replace_message(
+                query_message,
+                self._screen_text(
+                    title="Токен отзыва",
+                    cta="Вставьте токен из расширения следующим сообщением ниже.",
+                ),
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к покупкам",
+                                callback_data=build_callback(
+                                    flow=_ROLE_BUYER,
+                                    action="assignments",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
+                parse_mode="HTML",
+            )
+            return
         if action == "assignment_cancel_prompt":
             if not payload.entity_id:
                 await self._replace_message(
@@ -4336,9 +4433,7 @@ class TelegramWebhookRuntime:
                         "<b>Как пользоваться ботом</b>\n"
                         "1. Установите расширение для браузера Chrome / Яндекс Qpilka "
                         "(обязательно):\n"
-                        '<a href="https://chromewebstore.google.com/detail/qpilka/joefinmgneknnaejambgbaclobeedaga">'
-                        "https://chromewebstore.google.com/detail/qpilka/joefinmgneknnaejambgbaclobeedaga"
-                        "</a>\n"
+                        f'<a href="{_QPILKA_EXTENSION_URL}">{_QPILKA_EXTENSION_URL}</a>\n'
                         "2. Откройте магазин и выберите товар.\n"
                         "3. Нажмите «Купить» (произойдет бронирование товара) и скопируйте токен заявки на покупку.\n"
                         "4. Вставьте полученный токен в расширение браузера Qpilka и следуйте подсказкам "
@@ -4346,8 +4441,9 @@ class TelegramWebhookRuntime:
                         "бронирование аннулируется.\n"
                         "5. Если вы все сделали правильно, то после заказа товара вы получите "
                         "токен-подтверждение. Отправьте его в бот.\n"
-                        "6. Выкупите товар и ждите разблокировки кэшбэка (15 дней).\n"
-                        "7. После начисления кэшбэка оформите вывод."
+                        "6. Выкупите товар, затем подтвердите отзыв на 5 звезд через расширение.\n"
+                        "7. Дождитесь разблокировки кэшбэка через 15 дней после выкупа.\n"
+                        "8. После начисления кэшбэка оформите вывод."
                     ),
                     (
                         "<b>FAQ</b>\n"
@@ -4427,13 +4523,15 @@ class TelegramWebhookRuntime:
                 lines=[
                     (
                         "Сначала покупка ждет оформления заказа, затем подтверждается, потом "
-                        "ждет выкупа и только после этого через 15 дней начисляется кэшбэк."
+                        "ждет выкупа, обязательного отзыва на 5 звезд и только после этого "
+                        "через 15 дней начисляется кэшбэк."
                     ),
                     (
                         "<b>Полезно знать</b>\n"
                         "1. Токен-подтверждение нужно отправить в течение 4 часов после брони.\n"
-                        "2. От покупки можно отказаться, пока она еще не подтверждена.\n"
-                        "3. Один и тот же товар нельзя брать повторно с одного аккаунта."
+                        "2. После выкупа нужно подтвердить отзыв на 5 звезд через расширение.\n"
+                        "3. От покупки можно отказаться, пока она еще не подтверждена.\n"
+                        "4. Один и тот же товар нельзя брать повторно с одного аккаунта."
                     ),
                 ],
                 separate_blocks=True,
@@ -4815,22 +4913,13 @@ class TelegramWebhookRuntime:
                 title="Покупка создана",
                 lines=[
                     self._buyer_task_instruction_text(assignment),
-                    (
-                        "<b>Срок заказа:</b> "
-                        f"до {self._format_datetime_msk(assignment.reservation_expires_at)}"
-                    ),
                 ],
-                note="После отправки токена-подтверждения бот продолжит проверку автоматически.",
             )
         else:
             text = self._screen_text(
                 title="Покупка уже активна",
                 lines=[
                     self._buyer_task_instruction_text(assignment),
-                    (
-                        "<b>Срок заказа:</b> "
-                        f"до {self._format_datetime_msk(assignment.reservation_expires_at)}"
-                    ),
                 ],
             )
         self._logger.info(
@@ -5102,10 +5191,6 @@ class TelegramWebhookRuntime:
             block_lines.append(f"<b>Статус:</b> {self._buyer_purchase_status_badge(item.status)}")
             if item.status == "reserved":
                 block_lines.append(self._buyer_task_instruction_text(item, include_title=False))
-                block_lines.append(
-                    "<b>Срок заказа:</b> "
-                    f"до {self._format_datetime_msk(item.reservation_expires_at)}"
-                )
                 keyboard_rows.append(
                     [
                         InlineKeyboardButton(
@@ -5125,6 +5210,20 @@ class TelegramWebhookRuntime:
                             callback_data=build_callback(
                                 flow=_ROLE_BUYER,
                                 action="assignment_cancel_prompt",
+                                entity_id=str(item.assignment_id),
+                            ),
+                        )
+                    ]
+                )
+            elif item.status == "picked_up_wait_review":
+                block_lines.append(self._buyer_review_instruction_text(item, include_title=False))
+                keyboard_rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text="✍️ Ввести токен отзыва",
+                            callback_data=build_callback(
+                                flow=_ROLE_BUYER,
+                                action="submit_review_payload_prompt",
                                 entity_id=str(item.assignment_id),
                             ),
                         )
@@ -6944,21 +7043,13 @@ class TelegramWebhookRuntime:
                 )
                 return
             try:
-                tokens = shlex.split(text)
-            except ValueError:
-                tokens = []
-            if len(tokens) != 4:
-                await message.reply_text(
-                    self._listing_create_instruction_text(shop_title=shop_title),
-                    reply_markup=back_markup,
-                    parse_mode="HTML",
-                )
-                return
-            try:
-                wb_product_id = int(tokens[0])
-                cashback_rub = Decimal(tokens[1])
-                slots = int(tokens[2])
-                search_phrase = tokens[3].strip()
+                (
+                    wb_product_id,
+                    cashback_rub,
+                    slots,
+                    search_phrase,
+                    review_phrases,
+                ) = self._parse_listing_create_input(text)
                 if wb_product_id < 1:
                     raise ValueError("wb_product_id must be >= 1")
                 if cashback_rub <= Decimal("0"):
@@ -6992,8 +7083,9 @@ class TelegramWebhookRuntime:
                 )
             except (ValueError, InvalidOperation):
                 await message.reply_text(
-                    ("Не удалось разобрать данные.\nПроверьте формат и отправьте строку еще раз."),
+                    self._listing_create_instruction_text(shop_title=shop_title),
                     reply_markup=back_markup,
+                    parse_mode="HTML",
                 )
                 return
             except ListingValidationError as exc:
@@ -7013,6 +7105,7 @@ class TelegramWebhookRuntime:
             prompt_reply_text = self._listing_title_confirmation_text(
                 wb_product_id=wb_product_id,
                 search_phrase=search_phrase,
+                review_phrases=review_phrases,
                 cashback_rub=cashback_rub,
                 slot_count=slots,
                 snapshot=snapshot,
@@ -7044,6 +7137,7 @@ class TelegramWebhookRuntime:
                     "reward_usdt": str(reward_usdt),
                     "slot_count": slots,
                     "search_phrase": search_phrase,
+                    "review_phrases": review_phrases,
                     "wb_source_title": snapshot.name,
                     "wb_subject_name": snapshot.subject_name,
                     "wb_brand_name": snapshot.brand,
@@ -7573,6 +7667,55 @@ class TelegramWebhookRuntime:
                 )
             self._logger.info(
                 "buyer_payload_submitted",
+                telegram_update_id=update.update_id,
+                assignment_id=result.assignment_id,
+                assignment_ref=self._assignment_ref(result.assignment_id),
+                changed=result.changed,
+            )
+            await message.reply_text(reply, reply_markup=self._buyer_menu_markup())
+            return
+
+        if prompt_type == "buyer_submit_review_payload":
+            assignment_id = int(prompt_state.get("assignment_id", 0))
+            if assignment_id < 1:
+                self._clear_prompt(context)
+                await message.reply_text("Покупка не найдена. Откройте список покупок заново.")
+                return
+            try:
+                buyer = await self._buyer_service.bootstrap_buyer(
+                    telegram_id=identity.telegram_id,
+                    username=identity.username,
+                )
+                result = await self._buyer_service.submit_review_payload(
+                    buyer_user_id=buyer.user_id,
+                    assignment_id=assignment_id,
+                    payload_base64=text,
+                )
+            except NotFoundError:
+                await message.reply_text("Покупка не найдена.")
+                return
+            except PayloadValidationError:
+                await message.reply_text(
+                    "Токен отзыва не принят.\n"
+                    "Проверьте, что вы скопировали его полностью из расширения для этой покупки."
+                )
+                return
+            except InvalidStateError:
+                await message.reply_text(
+                    "Сейчас нельзя отправить токен отзыва для этой покупки."
+                )
+                return
+
+            self._clear_prompt(context)
+            if result.changed:
+                reply = (
+                    "Отзыв подтвержден.\n"
+                    "Дальше бот автоматически начислит кэшбэк, когда пройдет срок разблокировки."
+                )
+            else:
+                reply = "Этот токен отзыва уже был отправлен ранее."
+            self._logger.info(
+                "buyer_review_payload_submitted",
                 telegram_update_id=update.update_id,
                 assignment_id=result.assignment_id,
                 assignment_ref=self._assignment_ref(result.assignment_id),
@@ -8377,7 +8520,9 @@ class TelegramWebhookRuntime:
             )
         ):
             decorated_title = f"📦 {title}"
-        elif plain_title.startswith(("Покупки", "Покупка", "Токен-подтверждение", "Отмена покупки")):
+        elif plain_title.startswith(
+            ("Покупки", "Покупка", "Токен-подтверждение", "Токен отзыва", "Отмена покупки")
+        ):
             decorated_title = f"📋 {title}"
         elif plain_title.startswith(("Счет на пополнение", "Как перевести USDT")):
             decorated_title = f"💰 {title}"
@@ -8566,12 +8711,24 @@ class TelegramWebhookRuntime:
         raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         return base64.b64encode(raw.encode("utf-8")).decode("ascii")
 
+    def _build_buyer_review_token(
+        self,
+        *,
+        wb_product_id: int,
+        review_phrases: list[str] | None,
+    ) -> str:
+        payload: list[Any] = [wb_product_id]
+        payload.extend(self._normalize_review_phrases(review_phrases)[:2])
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return base64.b64encode(raw.encode("utf-8")).decode("ascii")
+
     def _buyer_task_instruction_text(self, assignment, *, include_title: bool = True) -> str:
         listing_token = self._build_buyer_listing_token(
             search_phrase=assignment.search_phrase,
             wb_product_id=assignment.wb_product_id,
             brand_name=getattr(assignment, "wb_brand_name", None),
         )
+        reservation_deadline = self._format_datetime_msk(getattr(assignment, "reservation_expires_at", None))
         display_title = self._listing_display_title(
             display_title=getattr(assignment, "display_title", None),
             fallback=assignment.search_phrase,
@@ -8581,11 +8738,49 @@ class TelegramWebhookRuntime:
             lines.append(f"<b>Товар:</b> {html.escape(display_title)}")
         lines.extend(
             [
-                f"<b>Поисковая фраза:</b> &quot;{html.escape(assignment.search_phrase)}&quot;",
-                "1. Введите следующий токен в расширении Qpilka:",
+                (
+                    '1. Введите токен в <a href="'
+                    f"{_QPILKA_EXTENSION_URL}"
+                    '">расширении для браузера Chrome / Яндекс Qpilka</a>:'
+                ),
                 f"<code>{listing_token}</code>",
-                "2. Выполните шаги до оформления заказа.",
+                (
+                    "2. Выполните шаги, описанные в расширении, и оформите заказ "
+                    f"до {reservation_deadline} (по истечении срока бронь отменится)."
+                ),
                 "3. Отправьте токен-подтверждение сюда.",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _buyer_review_instruction_text(self, assignment, *, include_title: bool = True) -> str:
+        review_token = self._build_buyer_review_token(
+            wb_product_id=assignment.wb_product_id,
+            review_phrases=getattr(assignment, "review_phrases", None),
+        )
+        display_title = self._listing_display_title(
+            display_title=getattr(assignment, "display_title", None),
+            fallback=assignment.search_phrase,
+        )
+        lines: list[str] = []
+        if include_title:
+            lines.append(f"<b>Товар:</b> {html.escape(display_title)}")
+        lines.append("<b>Следующий шаг:</b> оставьте отзыв на 5 звезд через Qpilka.")
+        selected_phrases = self._normalize_review_phrases(getattr(assignment, "review_phrases", None))
+        if selected_phrases:
+            lines.append(
+                "<b>Фразы для отзыва:</b> "
+                + html.escape(self._format_review_phrases_text(selected_phrases))
+            )
+        lines.extend(
+            [
+                (
+                    '1. Введите токен в <a href="'
+                    f"{_QPILKA_EXTENSION_URL}"
+                    '">расширении для браузера Chrome / Яндекс Qpilka</a>:'
+                ),
+                f"<code>{review_token}</code>",
+                "2. Следуйте подсказкам расширения и отправьте токен-подтверждение отзыва сюда.",
             ]
         )
         return "\n".join(lines)
@@ -8632,6 +8827,7 @@ class TelegramWebhookRuntime:
         mapping = {
             "reserved": "Ожидает заказа",
             "order_verified": "Заказан",
+            "picked_up_wait_review": "Нужно оставить отзыв",
             "picked_up_wait_unlock": "Выкуплен",
             "withdraw_sent": "Выплачен",
             "expired_2h": "Бронь истекла",
@@ -8647,6 +8843,7 @@ class TelegramWebhookRuntime:
         visible_statuses = {
             "reserved",
             "order_verified",
+            "picked_up_wait_review",
             "picked_up_wait_unlock",
             "withdraw_sent",
         }
@@ -8667,7 +8864,7 @@ class TelegramWebhookRuntime:
     def _buyer_dashboard_status_bucket(status: str) -> str | None:
         if status == "reserved":
             return "awaiting_order"
-        if status in {"order_verified", "wb_invalid", "delivery_expired"}:
+        if status in {"order_verified", "picked_up_wait_review", "wb_invalid", "delivery_expired"}:
             return "ordered"
         if status in {
             "picked_up_wait_unlock",
@@ -9077,6 +9274,12 @@ class TelegramWebhookRuntime:
             )
             .replace("<b>", "")
             .replace("</b>", ""),
+            (
+                "Фразы для отзыва: "
+                + html.escape(
+                    self._format_review_phrases_text(getattr(listing, "review_phrases", []))
+                )
+            ),
             f"Размеры: {html.escape(self._format_sizes_text(listing.wb_tech_sizes))}",
         ]
         lines.append(
@@ -9127,9 +9330,10 @@ class TelegramWebhookRuntime:
                 ),
                 f"<b>Кэшбэк:</b> {html.escape(cashback_text)}",
                 f"<b>Поисковая фраза:</b> &quot;{html.escape(listing.search_phrase)}&quot;",
-                f"<b>Размеры:</b> {html.escape(self._format_sizes_text(listing.wb_tech_sizes))}",
             ]
         )
+        if self._should_show_buyer_sizes(listing.wb_tech_sizes):
+            lines.append(f"<b>Размеры:</b> {html.escape(self._format_sizes_text(listing.wb_tech_sizes))}")
         description_block = self._format_expandable_block_html(
             title="Описание",
             body=listing.wb_description,
@@ -9166,10 +9370,39 @@ class TelegramWebhookRuntime:
         )
 
     @staticmethod
-    def _format_sizes_text(sizes: list[str] | None) -> str:
+    def _normalize_review_phrases(review_phrases: list[str] | None) -> list[str]:
+        normalized: list[str] = []
+        for phrase in review_phrases or []:
+            cleaned = str(phrase).strip()
+            if cleaned:
+                normalized.append(cleaned)
+        return normalized
+
+    def _format_review_phrases_text(self, review_phrases: list[str] | None) -> str:
+        normalized = self._normalize_review_phrases(review_phrases)
+        if not normalized:
+            return "не заданы"
+        return "; ".join(normalized)
+
+    @staticmethod
+    def _normalize_sizes(sizes: list[str] | None) -> list[str]:
         if not sizes:
+            return []
+        normalized: list[str] = []
+        for size in sizes:
+            cleaned = str(size).strip()
+            if cleaned:
+                normalized.append(cleaned)
+        return normalized
+
+    def _should_show_buyer_sizes(self, sizes: list[str] | None) -> bool:
+        return self._normalize_sizes(sizes) != ["0"]
+
+    def _format_sizes_text(self, sizes: list[str] | None) -> str:
+        normalized = self._normalize_sizes(sizes)
+        if not normalized:
             return "—"
-        return ", ".join(size for size in sizes if size)
+        return ", ".join(normalized)
 
     def _format_characteristics_block_html(
         self,

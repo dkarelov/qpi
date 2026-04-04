@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from libs.config.settings import BotApiSettings
@@ -207,12 +208,13 @@ def test_listing_create_instruction_contains_new_fields_and_fx_reference() -> No
     assert "Создание объявления для магазина «Тушенка»" in text
     assert "<i>Отправьте сообщение с информацией об объявлении согласно формату ниже.</i>" in text
     assert (
-        "&lt;артикул ВБ&gt; &lt;кэшбэк руб&gt; "
-        "&lt;макс заказов&gt; &lt;поисковая фраза&gt;"
+        "артикул ВБ, кэшбэк в рублях, макс. заказов, поисковая фраза"
     ) in text
-    assert "12345678 100 5" in text
+    assert "фраза для отзыва 1" in text
+    assert "12345678, 100, 5, женские джинсы" in text
     assert "Конвертация в $" in text
     assert "~100" in text
+    assert "Фразы для отзыва" in text
     assert "подтянет карточку товара" in text
     assert "попробует определить цену покупателя" in text
 
@@ -256,6 +258,7 @@ def test_listing_created_prompt_activation_explains_activation_effect() -> None:
         reference_price_rub=1200,
         reference_price_source="orders",
         search_phrase="женские джинсы",
+        review_phrases=["в размер", "не садятся после стирки"],
         cashback_rub=Decimal("100"),
         reward_usdt=Decimal("1.000000"),
         slot_count=5,
@@ -268,6 +271,7 @@ def test_listing_created_prompt_activation_explains_activation_effect() -> None:
     assert "Источник цены:</b> рассчитана по заказам за 30 дней." in text
     assert "Артикул продавца:</b> sku-1" in text
     assert "Цена покупателя:</b> 1200 ₽" in text
+    assert "Фразы для отзыва:</b> в размер; не садятся после стирки" in text
 
 
 def test_cashback_rub_formatter_includes_percent_when_reference_price_is_known() -> None:
@@ -282,7 +286,7 @@ def test_cashback_rub_formatter_includes_percent_when_reference_price_is_known()
     )
 
 
-def test_buyer_task_instruction_contains_title_and_search_phrase() -> None:
+def test_buyer_task_instruction_contains_title_link_and_deadline() -> None:
     runtime = _build_runtime()
 
     assignment = type(
@@ -293,6 +297,7 @@ def test_buyer_task_instruction_contains_title_and_search_phrase() -> None:
             "search_phrase": "женские джинсы",
             "wb_product_id": 12345678,
             "wb_brand_name": "LeBrand",
+            "reservation_expires_at": datetime(2026, 4, 4, 3, 31, tzinfo=UTC),
         },
     )()
     text = runtime._buyer_task_instruction_text(assignment)
@@ -300,9 +305,67 @@ def test_buyer_task_instruction_contains_title_and_search_phrase() -> None:
     decoded = json.loads(base64.b64decode(token).decode("utf-8"))
 
     assert "<b>Товар:</b> Джинсы женские прямые" in text
-    assert "Поисковая фраза:</b> &quot;женские джинсы&quot;" in text
+    assert (
+        '<a href="https://chromewebstore.google.com/detail/qpilka/joefinmgneknnaejambgbaclobeedaga">'
+        "расширении для браузера Chrome / Яндекс Qpilka</a>"
+    ) in text
+    assert "до 04.04.2026 06:31 MSK (по истечении срока бронь отменится)." in text
     assert "Отправьте токен-подтверждение сюда." in text
+    assert "Поисковая фраза:</b>" not in text
     assert decoded == ["женские джинсы", 12345678, 1, "LeBrand"]
+
+
+def test_buyer_listing_detail_hides_singleton_zero_size() -> None:
+    runtime = _build_runtime()
+    listing = type(
+        "Listing",
+        (),
+        {
+            "listing_id": 21,
+            "display_title": "Белорусская тушенка",
+            "search_phrase": "тушенка белорусская",
+            "wb_subject_name": "Консервы",
+            "reference_price_rub": 490,
+            "reward_usdt": Decimal("1.250000"),
+            "wb_tech_sizes": ["0"],
+            "wb_description": "Говядина",
+            "wb_characteristics": [{"name": "Вес", "value": "325 г"}],
+        },
+    )()
+
+    text = runtime._buyer_listing_detail_html(listing=listing)
+
+    assert "<b>Размеры:</b>" not in text
+    assert "Характеристики" in text
+
+
+def test_buyer_review_instruction_contains_token_and_selected_phrases() -> None:
+    runtime = _build_runtime()
+
+    assignment = type(
+        "Assignment",
+        (),
+        {
+            "display_title": "Джинсы женские прямые",
+            "search_phrase": "женские джинсы",
+            "wb_product_id": 12345678,
+            "review_phrases": ["в размер", "не садятся после стирки"],
+        },
+    )()
+    text = runtime._buyer_review_instruction_text(assignment)
+    token = text.split("<code>", maxsplit=1)[1].split("</code>", maxsplit=1)[0]
+    decoded = json.loads(base64.b64decode(token).decode("utf-8"))
+
+    assert "оставьте отзыв на 5 звезд" in text
+    assert "Фразы для отзыва:</b> в размер; не садятся после стирки" in text
+    assert decoded == [12345678, "в размер", "не садятся после стирки"]
+
+
+def test_buyer_review_status_stays_in_yellow_bucket() -> None:
+    runtime = _build_runtime()
+
+    assert runtime._buyer_dashboard_status_bucket("picked_up_wait_review") == "ordered"
+    assert "Нужно оставить отзыв" in runtime._buyer_purchase_status_badge("picked_up_wait_review")
 
 
 def test_wallet_link_builder_uses_ton_transfer_with_usdt_jetton_and_micro_units() -> None:

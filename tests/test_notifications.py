@@ -13,6 +13,7 @@ from libs.domain.models import NotificationOutboxItem
 from libs.domain.notifications import (
     EVENT_ASSIGNMENT_EARLY_PAYOUT_LISTING_DELETE_BUYER,
     EVENT_ASSIGNMENT_RESERVATION_EXPIRED_BUYER,
+    EVENT_ASSIGNMENT_REVIEW_CONFIRMED_SELLER,
     EVENT_ASSIGNMENT_REWARD_UNLOCKED_BUYER,
     EVENT_ASSIGNMENT_REWARD_UNLOCKED_SELLER,
     EVENT_DEPOSIT_CANCELLED_SELLER,
@@ -87,6 +88,43 @@ def test_render_assignment_reservation_expired_notification_has_buyer_cta() -> N
     assert rendered.cta_flow == "buyer"
     assert rendered.cta_action == "assignments"
     assert rendered.cta_text == "📋 Покупки"
+
+
+def test_render_assignment_review_confirmed_seller_notification_contains_rating_and_text() -> None:
+    rendered = _render_notification(
+        NotificationOutboxItem(
+            notification_id=11,
+            recipient_telegram_id=5,
+            recipient_scope="seller",
+            event_type=EVENT_ASSIGNMENT_REVIEW_CONFIRMED_SELLER,
+            dedupe_key="assignment:1:review_confirmed:seller",
+            payload_json={
+                "assignment_id": 1,
+                "listing_id": 2,
+                "shop_id": 3,
+                "display_title": "Товар",
+                "shop_title": "Магазин",
+                "reward_usdt": "3.000000",
+                "rating": 5,
+                "review_text": "Отлично",
+                "reviewed_at": "2026-03-18T10:30:00+00:00",
+            },
+            status="pending",
+            attempt_count=0,
+            next_attempt_at=datetime.now(tz=UTC),
+            last_error=None,
+            sent_at=None,
+            created_at=datetime.now(tz=UTC),
+            updated_at=datetime.now(tz=UTC),
+        )
+    )
+
+    assert "Отзыв подтвержден" in rendered.text
+    assert "Оценка:</b> 5 / 5" in rendered.text
+    assert "Текст отзыва:</b> Отлично" in rendered.text
+    assert rendered.cta_flow == "seller"
+    assert rendered.cta_action == "listing_open"
+    assert rendered.cta_entity_id == "2"
 
 
 def test_render_seller_token_invalidated_notification_uses_neutral_unauthorized_reason() -> None:

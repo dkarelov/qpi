@@ -17,6 +17,7 @@ from libs.domain.notifications import (
     EVENT_ASSIGNMENT_RESERVATION_EXPIRED_BUYER,
     EVENT_ASSIGNMENT_RETURNED_BUYER,
     EVENT_ASSIGNMENT_RETURNED_SELLER,
+    EVENT_ASSIGNMENT_REVIEW_CONFIRMED_SELLER,
     EVENT_ASSIGNMENT_REWARD_UNLOCKED_BUYER,
     EVENT_ASSIGNMENT_REWARD_UNLOCKED_SELLER,
     EVENT_DEPOSIT_CANCELLED_SELLER,
@@ -77,19 +78,43 @@ def render_telegram_notification(
         )
     if event_type in {EVENT_ASSIGNMENT_PICKED_UP_BUYER, EVENT_ASSIGNMENT_PICKED_UP_SELLER}:
         title = "Выкуп подтвержден" if item.recipient_scope == "buyer" else "Покупка выкуплена"
+        if payload.get("review_required"):
+            next_step = (
+                "Оставьте обязательный отзыв на 5 звезд через Qpilka. "
+                f"Кэшбэк разблокируется после отзыва, но не раньше {_format_datetime_msk(payload.get('unlock_at'))}."
+                if item.recipient_scope == "buyer"
+                else "Покупатель должен подтвердить обязательный отзыв на 5 звезд перед разблокировкой кэшбэка."
+            )
+        else:
+            next_step = f"Кэшбэк разблокируется: {_format_datetime_msk(payload.get('unlock_at'))}"
         return RenderedTelegramNotification(
             text=(
                 f"<b>{title}</b>\n\n"
                 f"<b>Товар:</b> {html.escape(payload['display_title'])}\n"
                 f"<b>Магазин:</b> {html.escape(payload['shop_title'])}\n"
-                "<b>Кэшбэк разблокируется:</b> "
-                f"{_format_datetime_msk(payload.get('unlock_at'))}"
+                f"<b>Следующий шаг:</b> {html.escape(next_step)}"
             ),
             parse_mode="HTML",
             cta_text="📋 Покупки" if item.recipient_scope == "buyer" else "📦 Объявления",
             cta_flow="buyer" if item.recipient_scope == "buyer" else "seller",
             cta_action="assignments" if item.recipient_scope == "buyer" else "listing_open",
             cta_entity_id=None if item.recipient_scope == "buyer" else str(payload["listing_id"]),
+        )
+    if event_type == EVENT_ASSIGNMENT_REVIEW_CONFIRMED_SELLER:
+        return RenderedTelegramNotification(
+            text=(
+                "<b>Отзыв подтвержден</b>\n\n"
+                f"<b>Товар:</b> {html.escape(payload['display_title'])}\n"
+                f"<b>Магазин:</b> {html.escape(payload['shop_title'])}\n"
+                f"<b>Оценка:</b> {int(payload['rating'])} / 5\n"
+                f"<b>Текст отзыва:</b> {html.escape(str(payload['review_text']))}\n"
+                f"<b>Подтвержден:</b> {_format_datetime_msk(payload.get('reviewed_at'))}"
+            ),
+            parse_mode="HTML",
+            cta_text="📦 Объявления",
+            cta_flow="seller",
+            cta_action="listing_open",
+            cta_entity_id=str(payload["listing_id"]),
         )
     if event_type in {EVENT_ASSIGNMENT_RETURNED_BUYER, EVENT_ASSIGNMENT_RETURNED_SELLER}:
         return RenderedTelegramNotification(

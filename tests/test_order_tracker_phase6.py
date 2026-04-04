@@ -90,6 +90,8 @@ async def _prepare_order_verified_assignment(
     wb_product_id: int,
     ordered_at: datetime,
     reward_usdt: Decimal,
+    review_required: bool = False,
+    review_phrases: list[str] | None = None,
 ) -> dict[str, int]:
     buyer_service = BuyerService(db_pool)
 
@@ -116,6 +118,7 @@ async def _prepare_order_verified_assignment(
                 slot_count=1,
                 available_slots=1,
                 status="active",
+                review_phrases=review_phrases,
             )
             await create_account(
                 conn,
@@ -141,6 +144,17 @@ async def _prepare_order_verified_assignment(
         listing_id=listing_id,
         idempotency_key=f"reserve:{buyer_telegram_id}:{wb_product_id}",
     )
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE assignments
+                    SET review_required = %s
+                    WHERE id = %s
+                    """,
+                    (review_required, reservation.assignment_id),
+                )
     payload_base64 = _encode_payload(
         order_id=order_id,
         ordered_at=ordered_at,
@@ -271,6 +285,58 @@ async def test_order_tracker_sale_matches_order_uid_when_wb_srid_has_prefix(
             assert assignment["status"] == "picked_up_wait_unlock"
             assert assignment["pickup_at"] is not None
             assert assignment["unlock_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_order_tracker_sale_moves_review_required_assignment_to_pickup_wait_review(
+    db_pool,
+    isolated_database: str,
+) -> None:
+    now = datetime.now(UTC)
+    fixture = await _prepare_order_verified_assignment(
+        db_pool,
+        seller_telegram_id=910021,
+        buyer_telegram_id=920021,
+        order_id="order-sale-review",
+        wb_product_id=670021,
+        ordered_at=now - timedelta(days=2),
+        reward_usdt=Decimal("9.000000"),
+        review_required=True,
+        review_phrases=["в размер", "не садятся после стирки", "хорошая ткань"],
+    )
+    await _insert_wb_report_row(
+        db_pool,
+        rrd_id=810021,
+        srid="order-sale-review",
+        supplier_oper_name="Продажа",
+        event_at=now - timedelta(days=1),
+        nm_id=fixture["wb_product_id"],
+    )
+
+    service = _build_tracker_service(db_pool, lock_conninfo=isolated_database, lock_id=500621)
+    result = await service.run_once()
+
+    assert result.wb_pickup_count == 1
+    assert result.unlock_changed_count == 0
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT status, pickup_at, unlock_at, review_phrases_json
+                FROM assignments
+                WHERE id = %s
+                """,
+                (fixture["assignment_id"],),
+            )
+            assignment = await cur.fetchone()
+            assert assignment["status"] == "picked_up_wait_review"
+            assert assignment["pickup_at"] is not None
+            assert assignment["unlock_at"] is not None
+            assert len(assignment["review_phrases_json"]) == 2
+            assert set(assignment["review_phrases_json"]).issubset(
+                {"в размер", "не садятся после стирки", "хорошая ткань"}
+            )
 
 
 @pytest.mark.asyncio

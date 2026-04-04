@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
 
 from libs.db.tx import run_in_transaction
@@ -262,7 +264,7 @@ class OrderTrackerService:
             if candidate.supplier_oper_name != _RETURN_OPERATION:
                 continue
 
-            if candidate.assignment_status == "picked_up_wait_unlock":
+            if candidate.assignment_status in {"picked_up_wait_review", "picked_up_wait_unlock"}:
                 if (
                     candidate.unlock_at is None
                     or candidate.event_at is None
@@ -338,7 +340,7 @@ class OrderTrackerService:
                             wr.rrd_id DESC
                         LIMIT 1
                     ) wr ON TRUE
-                    WHERE a.status IN ('order_verified', 'picked_up_wait_unlock')
+                    WHERE a.status IN ('order_verified', 'picked_up_wait_review', 'picked_up_wait_unlock')
                       AND a.order_id IS NOT NULL
                     ORDER BY a.updated_at ASC, a.id ASC
                     LIMIT %s
@@ -371,16 +373,41 @@ class OrderTrackerService:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
+                    SELECT
+                        a.status,
+                        a.review_required,
+                        l.review_phrases_json
+                    FROM assignments a
+                    JOIN listings l ON l.id = a.listing_id
+                    WHERE a.id = %s
+                    FOR UPDATE OF a, l
+                    """,
+                    (assignment_id,),
+                )
+                assignment = await cur.fetchone()
+                if assignment is None or assignment["status"] != "order_verified":
+                    return False
+                next_status = (
+                    "picked_up_wait_review" if assignment["review_required"] else "picked_up_wait_unlock"
+                )
+                review_phrases = []
+                if assignment["review_required"]:
+                    review_phrases = self._pick_assignment_review_phrases(
+                        list(assignment["review_phrases_json"] or [])
+                    )
+                await cur.execute(
+                    """
                     UPDATE assignments
-                    SET status = 'picked_up_wait_unlock',
+                    SET status = %s,
                         pickup_at = COALESCE(pickup_at, %s),
                         unlock_at = COALESCE(unlock_at, %s),
+                        review_phrases_json = %s,
                         cancel_reason = NULL,
                         updated_at = timezone('utc', now())
                     WHERE id = %s
                       AND status = 'order_verified'
                     """,
-                    (pickup_at_utc, unlock_at, assignment_id),
+                    (next_status, pickup_at_utc, unlock_at, Json(review_phrases), assignment_id),
                 )
                 changed = cur.rowcount == 1
                 if changed:
@@ -523,6 +550,20 @@ class OrderTrackerService:
                 ]
 
         return await run_in_transaction(self._pool, operation, read_only=True)
+
+    @staticmethod
+    def _pick_assignment_review_phrases(review_phrases: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for phrase in review_phrases:
+            item = str(phrase).strip()
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            normalized.append(item)
+        if len(normalized) <= 2:
+            return normalized
+        return random.sample(normalized, k=2)
 
     async def _ensure_buyer_available_account_id(self, *, buyer_user_id: int) -> int:
         async def operation(conn: AsyncConnection) -> int:

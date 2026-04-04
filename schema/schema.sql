@@ -56,13 +56,15 @@ CREATE TABLE "public"."assignments" (
     "listing_id" bigint NOT NULL,
     "buyer_user_id" bigint NOT NULL,
     "wb_product_id" bigint NOT NULL,
-    "status" text NOT NULL CONSTRAINT assignments_status_check CHECK (status = ANY (ARRAY['reserved'::text, 'order_verified'::text, 'picked_up_wait_unlock'::text, 'withdraw_sent'::text, 'expired_2h'::text, 'buyer_cancelled'::text, 'wb_invalid'::text, 'returned_within_14d'::text, 'delivery_expired'::text])),
+    "status" text NOT NULL CONSTRAINT assignments_status_check CHECK (status = ANY (ARRAY['reserved'::text, 'order_verified'::text, 'picked_up_wait_review'::text, 'picked_up_wait_unlock'::text, 'withdraw_sent'::text, 'expired_2h'::text, 'buyer_cancelled'::text, 'wb_invalid'::text, 'returned_within_14d'::text, 'delivery_expired'::text])),
     "reward_usdt" numeric(20,6) NOT NULL CONSTRAINT assignments_reward_usdt_check CHECK (reward_usdt > 0::numeric),
     "reservation_expires_at" timestamp with time zone NOT NULL,
     "order_id" text,
     "order_submitted_at" timestamp with time zone,
     "pickup_at" timestamp with time zone,
     "unlock_at" timestamp with time zone,
+    "review_required" boolean NOT NULL DEFAULT false,
+    "review_phrases_json" jsonb NOT NULL DEFAULT '[]'::jsonb,
     "returned_at" timestamp with time zone,
     "cancel_reason" text,
     "idempotency_key" text NOT NULL,
@@ -79,13 +81,13 @@ CREATE INDEX idx_assignments_buyer_product_status ON public.assignments USING bt
 
 CREATE INDEX idx_assignments_reserved_expires_at ON public.assignments USING btree (reservation_expires_at) WHERE (status = 'reserved'::text);
 
-CREATE INDEX idx_assignments_order_tracking_order_id ON public.assignments USING btree (order_id) WHERE (status = ANY (ARRAY['order_verified'::text, 'picked_up_wait_unlock'::text]));
+CREATE INDEX idx_assignments_order_tracking_order_id ON public.assignments USING btree (order_id) WHERE (status = ANY (ARRAY['order_verified'::text, 'picked_up_wait_review'::text, 'picked_up_wait_unlock'::text]));
 
 CREATE INDEX idx_assignments_unlock_due ON public.assignments USING btree (unlock_at) WHERE (status = 'picked_up_wait_unlock'::text);
 
 CREATE UNIQUE INDEX uq_assignments_order_id ON public.assignments USING btree (order_id) WHERE (order_id IS NOT NULL);
 
-CREATE UNIQUE INDEX uq_assignments_buyer_product_active ON public.assignments USING btree (buyer_user_id, wb_product_id) WHERE (status = ANY (ARRAY['reserved'::text, 'order_verified'::text, 'picked_up_wait_unlock'::text, 'withdraw_sent'::text]));
+CREATE UNIQUE INDEX uq_assignments_buyer_product_active ON public.assignments USING btree (buyer_user_id, wb_product_id) WHERE (status = ANY (ARRAY['reserved'::text, 'order_verified'::text, 'picked_up_wait_review'::text, 'picked_up_wait_unlock'::text, 'withdraw_sent'::text]));
 
 ALTER TABLE ONLY "public"."assignments" ADD CONSTRAINT "assignments_buyer_user_id_fkey" FOREIGN KEY ("buyer_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 
@@ -122,6 +124,35 @@ ALTER TABLE ONLY "public"."buyer_orders" ADD CONSTRAINT "buyer_orders_assignment
 ALTER TABLE ONLY "public"."buyer_orders" ADD CONSTRAINT "buyer_orders_buyer_user_id_fkey" FOREIGN KEY ("buyer_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 
 ALTER TABLE ONLY "public"."buyer_orders" ADD CONSTRAINT "buyer_orders_listing_id_fkey" FOREIGN KEY ("listing_id") REFERENCES "public"."listings" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+CREATE TABLE "public"."buyer_reviews" (
+    "id" bigserial NOT NULL,
+    "assignment_id" bigint NOT NULL,
+    "listing_id" bigint NOT NULL,
+    "buyer_user_id" bigint NOT NULL,
+    "wb_product_id" bigint NOT NULL,
+    "reviewed_at" timestamp with time zone NOT NULL,
+    "rating" integer NOT NULL CONSTRAINT buyer_reviews_rating_check CHECK (rating = 5),
+    "review_text" text NOT NULL CONSTRAINT buyer_reviews_review_text_check CHECK (length(btrim(review_text)) > 0),
+    "payload_version" integer NOT NULL,
+    "raw_payload_json" jsonb NOT NULL DEFAULT '{}'::jsonb,
+    "source" text NOT NULL DEFAULT 'plugin_base64'::text,
+    "created_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    "updated_at" timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+    CONSTRAINT buyer_reviews_pkey PRIMARY KEY ("id")
+);
+
+CREATE UNIQUE INDEX uq_buyer_reviews_assignment_id ON public.buyer_reviews USING btree (assignment_id);
+
+CREATE INDEX idx_buyer_reviews_listing_id ON public.buyer_reviews USING btree (listing_id);
+
+CREATE INDEX idx_buyer_reviews_buyer_user_id ON public.buyer_reviews USING btree (buyer_user_id);
+
+ALTER TABLE ONLY "public"."buyer_reviews" ADD CONSTRAINT "buyer_reviews_assignment_id_fkey" FOREIGN KEY ("assignment_id") REFERENCES "public"."assignments" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE ONLY "public"."buyer_reviews" ADD CONSTRAINT "buyer_reviews_buyer_user_id_fkey" FOREIGN KEY ("buyer_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE ONLY "public"."buyer_reviews" ADD CONSTRAINT "buyer_reviews_listing_id_fkey" FOREIGN KEY ("listing_id") REFERENCES "public"."listings" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 
 CREATE TABLE "public"."buyer_saved_shops" (
     "id" bigserial NOT NULL,
@@ -261,6 +292,7 @@ CREATE TABLE "public"."listings" (
     "wb_photo_url" text,
     "wb_tech_sizes_json" jsonb NOT NULL DEFAULT '[]'::jsonb,
     "wb_characteristics_json" jsonb NOT NULL DEFAULT '[]'::jsonb,
+    "review_phrases_json" jsonb NOT NULL DEFAULT '[]'::jsonb,
     "reference_price_rub" integer CONSTRAINT listings_reference_price_rub_check CHECK ((reference_price_rub IS NULL) OR (reference_price_rub > 0)),
     "reference_price_source" text CONSTRAINT listings_reference_price_source_check CHECK ((reference_price_source IS NULL) OR (reference_price_source = ANY (ARRAY['orders'::text, 'manual'::text]))),
     "reference_price_updated_at" timestamp with time zone,

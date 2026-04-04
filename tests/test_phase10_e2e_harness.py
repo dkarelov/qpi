@@ -78,6 +78,7 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
                 wb_photo_url="https://example.com/photo.webp",
                 wb_tech_sizes=["0"],
                 wb_characteristics=[{"name": "Плотность", "value": "80 г/м2"}],
+                review_phrases=["в размер", "не садятся после стирки"],
                 reference_price_rub=400,
                 reference_price_source="orders",
                 search_phrase="бумага а4 для принтера",
@@ -101,6 +102,7 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
                 wb_photo_url="https://example.com/photo.webp",
                 wb_tech_sizes=["0"],
                 wb_characteristics=[{"name": "Плотность", "value": "80 г/м2"}],
+                review_phrases=["в размер", "не садятся после стирки"],
                 reference_price_rub=400,
                 reference_price_source="orders",
                 reward_usdt=Decimal("1.000000"),
@@ -125,6 +127,7 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
                 wb_photo_url="https://example.com/photo.webp",
                 wb_tech_sizes=["0"],
                 wb_characteristics=[{"name": "Плотность", "value": "80 г/м2"}],
+                review_phrases=["в размер", "не садятся после стирки"],
                 reference_price_rub=400,
                 reference_price_source="orders",
                 reward_usdt=Decimal("1.200000"),
@@ -229,6 +232,7 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
                     order_id=None,
                     search_phrase="бумага а4 для принтера",
                     wb_product_id=552892532,
+                    review_phrases=[],
                     reservation_expires_at=datetime(2026, 3, 2, 14, 0, 0),
                 )
             ]
@@ -240,6 +244,7 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
                 order_id="ORDER-1",
             )
         ),
+        submit_review_payload=AsyncMock(return_value=_ns(assignment_id=31, changed=True)),
         cancel_assignment_by_buyer=AsyncMock(return_value=_ns(changed=True)),
     )
 
@@ -487,7 +492,9 @@ async def test_phase10_e2e_seller_listing_create_and_activate_flow() -> None:
     )
     assert any("Создание объявления для магазина" in text for text in _event_texts(prompt_events))
 
-    preview_events = await harness.text('552892532 100 5 "бумага а4 для принтера"')
+    preview_events = await harness.text(
+        "552892532, 100, 5, бумага а4 для принтера, в размер, не садятся после стирки"
+    )
     assert any("Проверьте объявление" in text for text in _event_texts(preview_events))
     assert any(
         "Название для покупателей:</b> Бумага A4 для принтера" in text
@@ -521,7 +528,9 @@ async def test_phase10_e2e_seller_listing_create_asks_manual_price_when_no_order
     harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
 
     await harness.callback(flow="seller", action="listing_create_prompt", entity_id="11")
-    manual_price_events = await harness.text('552892532 100 5 "бумага а4 для принтера"')
+    manual_price_events = await harness.text(
+        "552892532, 100, 5, бумага а4 для принтера, в размер, не садятся после стирки"
+    )
     manual_price_text = "\n".join(_event_texts(manual_price_events))
     assert "Введите текущую цену покупателя" in manual_price_text
 
@@ -545,7 +554,9 @@ async def test_phase10_e2e_seller_listing_create_allows_explicit_title_edit() ->
     harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
 
     await harness.callback(flow="seller", action="listing_create_prompt", entity_id="11")
-    preview_events = await harness.text('552892532 100 5 "бумага а4 для принтера"')
+    preview_events = await harness.text(
+        "552892532, 100, 5, бумага а4 для принтера, в размер, не садятся после стирки"
+    )
     assert any("✏️ Изменить название" in _markup_labels(event) for event in preview_events)
 
     edit_prompt_events = await harness.callback(flow="seller", action="listing_title_edit_prompt")
@@ -558,6 +569,7 @@ async def test_phase10_e2e_seller_listing_create_allows_explicit_title_edit() ->
     await harness.callback(flow="seller", action="listing_title_keep")
     create_call = deps.seller.create_listing_draft.await_args.kwargs
     assert create_call["display_title"] == "Бумага для офиса"
+    assert create_call["review_phrases"] == ["в размер", "не садятся после стирки"]
 
 
 @pytest.mark.asyncio
@@ -841,6 +853,13 @@ async def test_phase10_e2e_buyer_deeplink_reserve_submit_payload_flow() -> None:
     )
     reserve_text = "\n".join(_event_texts(reserve_events))
     assert "Покупка создана" in reserve_text
+    assert "Введите токен в " in reserve_text
+    assert (
+        '<a href="https://chromewebstore.google.com/detail/qpilka/joefinmgneknnaejambgbaclobeedaga">'
+        "расширении для браузера Chrome / Яндекс Qpilka</a>"
+    ) in reserve_text
+    assert "до 02.03.2026 17:00 MSK (по истечении срока бронь отменится)." in reserve_text
+    assert "<b>Срок заказа:</b>" not in reserve_text
     assert any("Ввести токен-подтверждение" in _markup_labels(event) for event in reserve_events)
 
     submit_prompt_events = await harness.callback(
@@ -860,6 +879,61 @@ async def test_phase10_e2e_buyer_deeplink_reserve_submit_payload_flow() -> None:
 
     deps.buyer.reserve_listing_slot.assert_awaited_once()
     deps.buyer.submit_purchase_payload.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_buyer_review_prompt_and_submit_flow() -> None:
+    runtime, deps = _build_runtime()
+    deps.buyer.list_buyer_assignments = AsyncMock(
+        return_value=[
+            _ns(
+                assignment_id=31,
+                listing_id=21,
+                shop_slug="shop_tushenka",
+                shop_title="Тушенка",
+                status="picked_up_wait_review",
+                display_title="Бумага A4 для принтера",
+                wb_source_title="BRAUBERG Бумага A4 для принтера",
+                wb_subject_name="Бумага офисная",
+                wb_brand_name="BRAUBERG",
+                wb_description="Белая бумага для офиса",
+                wb_photo_url="https://example.com/photo.webp",
+                wb_tech_sizes=["0"],
+                wb_characteristics=[{"name": "Плотность", "value": "80 г/м2"}],
+                reference_price_rub=400,
+                reward_usdt=Decimal("0.250000"),
+                order_id="ORDER-1",
+                search_phrase="бумага а4 для принтера",
+                wb_product_id=552892532,
+                review_phrases=["в размер", "не садятся после стирки"],
+                reservation_expires_at=datetime(2026, 3, 2, 14, 0, 0),
+            )
+        ]
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    purchase_events = await harness.callback(flow="buyer", action="assignments")
+    purchase_text = "\n".join(_event_texts(purchase_events))
+    assert "Нужно оставить отзыв" in purchase_text
+    assert any("✍️ Ввести токен отзыва" in _markup_labels(event) for event in purchase_events)
+
+    review_prompt_events = await harness.callback(
+        flow="buyer",
+        action="submit_review_payload_prompt",
+        entity_id="31",
+    )
+    assert any(
+        "Вставьте токен из расширения следующим сообщением ниже." in text
+        for text in _event_texts(review_prompt_events)
+    )
+
+    payload_events = await harness.text(
+        "WzU1Mjg5MjUzMiwiMjAyNi0wMy0xOFQxMDozMDowMFoiLDUsImdyZWF0Il0="
+    )
+    assert any("Отзыв подтвержден." in text for text in _event_texts(payload_events))
+    assert any(event.kind == "delete" for event in payload_events)
+
+    deps.buyer.submit_review_payload.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -953,6 +1027,7 @@ async def test_phase10_e2e_buyer_listing_open_shows_photo_and_detail_card() -> N
     detail_text = "\n".join(_event_texts(detail_events))
     assert "Цена:</b> 400 ₽" in detail_text
     assert "Характеристики" in detail_text
+    assert "Размеры:</b>" not in detail_text
     assert "Артикул WB:</b>" not in detail_text
     assert "Бренд:</b>" not in detail_text
     assert "Название WB:</b>" not in detail_text
@@ -1312,6 +1387,8 @@ async def test_phase10_e2e_buyer_purchases_screen_uses_shop_title_and_hides_expi
     assert first_block.index("<b>Кэшбэк:</b>") < first_block.index(
         "<b>Статус:</b> 🔴 Ожидает заказа"
     )
+    assert "Введите токен в " in first_block
+    assert "<b>Срок заказа:</b>" not in first_block
     assert "\n\n<b>Покупка</b> · <code>P32</code>" in text
     assert text.count("<b>Статус:</b> 🟢 Выплачен") >= 2
 

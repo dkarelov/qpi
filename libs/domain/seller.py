@@ -34,6 +34,7 @@ from libs.domain.notifications import NotificationService
 _OPEN_ASSIGNMENT_STATES = (
     "reserved",
     "order_verified",
+    "picked_up_wait_review",
     "picked_up_wait_unlock",
 )
 _MANUAL_SOURCE = "manual"
@@ -536,6 +537,7 @@ class SellerService:
         wb_photo_url: str | None = None,
         wb_tech_sizes: list[str] | None = None,
         wb_characteristics: list[dict[str, str]] | None = None,
+        review_phrases: list[str] | None = None,
         reference_price_rub: int | None = None,
         reference_price_source: str | None = None,
         reference_price_updated_at: datetime | None = None,
@@ -559,6 +561,9 @@ class SellerService:
         normalized_wb_photo_url = wb_photo_url.strip() if wb_photo_url else None
         normalized_wb_tech_sizes = _normalize_text_list(wb_tech_sizes)
         normalized_wb_characteristics = _normalize_characteristics(wb_characteristics)
+        normalized_review_phrases = _normalize_text_list(review_phrases)
+        if len(normalized_review_phrases) > 10:
+            raise ValueError("review_phrases must contain at most 10 entries")
         normalized_reference_price_rub: int | None = None
         if reference_price_rub is not None:
             normalized_reference_price_rub = int(reference_price_rub)
@@ -602,6 +607,7 @@ class SellerService:
                         wb_photo_url,
                         wb_tech_sizes_json,
                         wb_characteristics_json,
+                        review_phrases_json,
                         reference_price_rub,
                         reference_price_source,
                         reference_price_updated_at,
@@ -614,7 +620,7 @@ class SellerService:
                     )
                     VALUES (
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         'draft'
                     )
                     RETURNING
@@ -630,6 +636,7 @@ class SellerService:
                         wb_photo_url,
                         wb_tech_sizes_json,
                         wb_characteristics_json,
+                        review_phrases_json,
                         reference_price_rub,
                         reference_price_source,
                         reference_price_updated_at,
@@ -654,6 +661,7 @@ class SellerService:
                         normalized_wb_photo_url,
                         Json(normalized_wb_tech_sizes),
                         Json(normalized_wb_characteristics),
+                        Json(normalized_review_phrases),
                         normalized_reference_price_rub,
                         normalized_reference_price_source,
                         reference_price_updated_at,
@@ -678,6 +686,7 @@ class SellerService:
                     wb_photo_url=row["wb_photo_url"],
                     wb_tech_sizes=list(row["wb_tech_sizes_json"] or []),
                     wb_characteristics=list(row["wb_characteristics_json"] or []),
+                    review_phrases=list(row["review_phrases_json"] or []),
                     reference_price_rub=row["reference_price_rub"],
                     reference_price_source=row["reference_price_source"],
                     reference_price_updated_at=row["reference_price_updated_at"],
@@ -716,6 +725,7 @@ class SellerService:
                         wb_photo_url,
                         wb_tech_sizes_json,
                         wb_characteristics_json,
+                        review_phrases_json,
                         reference_price_rub,
                         reference_price_source,
                         reference_price_updated_at,
@@ -752,6 +762,7 @@ class SellerService:
                         wb_photo_url=row["wb_photo_url"],
                         wb_tech_sizes=list(row["wb_tech_sizes_json"] or []),
                         wb_characteristics=list(row["wb_characteristics_json"] or []),
+                        review_phrases=list(row["review_phrases_json"] or []),
                         reference_price_rub=row["reference_price_rub"],
                         reference_price_source=row["reference_price_source"],
                         reference_price_updated_at=row["reference_price_updated_at"],
@@ -792,6 +803,7 @@ class SellerService:
                         wb_photo_url,
                         wb_tech_sizes_json,
                         wb_characteristics_json,
+                        review_phrases_json,
                         reference_price_rub,
                         reference_price_source,
                         reference_price_updated_at,
@@ -825,6 +837,7 @@ class SellerService:
                     wb_photo_url=row["wb_photo_url"],
                     wb_tech_sizes=list(row["wb_tech_sizes_json"] or []),
                     wb_characteristics=list(row["wb_characteristics_json"] or []),
+                    review_phrases=list(row["review_phrases_json"] or []),
                     reference_price_rub=row["reference_price_rub"],
                     reference_price_source=row["reference_price_source"],
                     reference_price_updated_at=row["reference_price_updated_at"],
@@ -904,6 +917,7 @@ class SellerService:
                             COUNT(*) FILTER (
                                 WHERE a.status IN (
                                     'order_verified',
+                                    'picked_up_wait_review',
                                     'wb_invalid',
                                     'delivery_expired'
                                 )
@@ -1006,6 +1020,7 @@ class SellerService:
                                     ARRAY[
                                         'reserved'::text,
                                         'order_verified'::text,
+                                        'picked_up_wait_review'::text,
                                         'picked_up_wait_unlock'::text
                                     ]
                               )

@@ -230,6 +230,7 @@ async def test_listing_draft_persists_buyer_visible_metadata(db_pool) -> None:
         reference_price_rub=392,
         reference_price_source="manual",
         search_phrase="клей b7000",
+        review_phrases=["не течет", "удобный дозатор"],
         reward_usdt=Decimal("1.000000"),
         slot_count=2,
     )
@@ -243,6 +244,7 @@ async def test_listing_draft_persists_buyer_visible_metadata(db_pool) -> None:
     assert loaded.wb_source_title == "B7000 Клей универсальный прозрачный"
     assert loaded.wb_brand_name == "B7000"
     assert loaded.reference_price_rub == 392
+    assert loaded.review_phrases == ["не течет", "удобный дозатор"]
 
 
 @pytest.mark.asyncio

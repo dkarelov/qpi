@@ -109,6 +109,7 @@ async def create_listing(
     wb_photo_url: str | None = None,
     wb_tech_sizes: list[str] | None = None,
     wb_characteristics: list[dict[str, str]] | None = None,
+    review_phrases: list[str] | None = None,
     reference_price_rub: int | None = None,
     reference_price_source: str | None = None,
 ) -> int:
@@ -128,6 +129,7 @@ async def create_listing(
                 wb_photo_url,
                 wb_tech_sizes_json,
                 wb_characteristics_json,
+                review_phrases_json,
                 reference_price_rub,
                 reference_price_source,
                 search_phrase,
@@ -137,7 +139,7 @@ async def create_listing(
                 collateral_required_usdt,
                 status
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -153,6 +155,7 @@ async def create_listing(
                 wb_photo_url,
                 Json(wb_tech_sizes or []),
                 Json(wb_characteristics or []),
+                Json(review_phrases or []),
                 reference_price_rub,
                 reference_price_source,
                 search_phrase,
