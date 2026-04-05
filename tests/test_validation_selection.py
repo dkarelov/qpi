@@ -84,6 +84,22 @@ def test_validation_infra_change_forces_full_validation_without_deploy_targets()
     assert selection.needs_private_runner is True
 
 
+def test_workflow_change_resolves_fast_only_validation() -> None:
+    selection = resolve_validation_selection([".github/workflows/post_merge.yml"])
+
+    assert selection.selected_groups == ("validation_infra_fast",)
+    assert selection.full_db_validation is False
+    assert selection.db_validation_mode == "none"
+    assert selection.fast_pytest_targets == (
+        "tests/test_test_doctor.py",
+        "tests/test_validation_selection.py",
+    )
+    assert selection.db_pytest_targets == ()
+    assert selection.has_runtime_changes is False
+    assert selection.function_targets == ()
+    assert selection.needs_private_runner is False
+
+
 def test_fast_test_path_is_selected_directly() -> None:
     selection = resolve_validation_selection(["tests/test_telegram_runtime_ux_phase9.py"])
 

@@ -1,20 +1,11 @@
 {
   "groups": [
     {
-      "name": "validation_infra_full",
+      "name": "validation_infra_fast",
       "trigger_globs": [
         "scripts/common/detect_ci_changes.sh",
-        "scripts/deploy/private_runner.sh",
-        "scripts/deploy/private_runner_autoshutdown.sh",
-        "scripts/dev/test.sh",
-        "scripts/dev/run_db_tests_on_runner.sh",
-        "scripts/dev/reset_test_db.sh",
-        "scripts/dev/reset_remote_test_dbs.sh",
-        "scripts/dev/test_db_template_lib.sh",
-        "scripts/dev/write_test_env.sh",
-        "scripts/dev/test_doctor.sh",
         "scripts/dev/validation_groups.json",
-        "infra/cloud-init/runner.yaml.tftpl",
+        "scripts/dev/test_doctor.sh",
         ".github/actionlint.yaml",
         ".github/actions/**",
         ".github/workflows/ci.yml",
@@ -25,6 +16,30 @@
         ".github/workflows/private_runner_keepalive.yml",
         ".github/workflows/support_bot_deploy.yml",
         "libs/devtools/*"
+      ],
+      "fast_pytest_targets": [
+        "tests/test_validation_selection.py",
+        "tests/test_test_doctor.py"
+      ],
+      "db_pytest_targets": [],
+      "full_db_validation": false,
+      "requires_migration": false,
+      "has_runtime_changes": false,
+      "function_targets": []
+    },
+    {
+      "name": "validation_infra_full",
+      "trigger_globs": [
+        "scripts/deploy/private_runner.sh",
+        "scripts/deploy/private_runner_autoshutdown.sh",
+        "scripts/dev/test.sh",
+        "scripts/dev/run_db_tests_on_runner.sh",
+        "scripts/dev/reset_test_db.sh",
+        "scripts/dev/reset_remote_test_dbs.sh",
+        "scripts/dev/test_db_template_lib.sh",
+        "scripts/dev/write_test_env.sh",
+        "infra/cloud-init/runner.yaml.tftpl",
+        ".github/workflows/private_runner_keepalive.yml"
       ],
       "fast_pytest_targets": [
         "tests/test_validation_selection.py",
