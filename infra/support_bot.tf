@@ -1,11 +1,30 @@
 locals {
   support_bot_instance_group_name = coalesce(var.support_bot_instance_group_name, "${var.project}-support-bot-ig")
+  support_bot_container_registry_name = "${var.project}-support-bot-registry"
+  support_bot_container_repository_name = "support-bot"
 
   support_bot_cloud_init = templatefile("${path.module}/cloud-init/support_bot.yaml.tftpl", {})
 
   support_bot_ssh_keys_metadata = join("\n", [
     for key in var.support_bot_ssh_public_keys : "ubuntu:${trimspace(key)}"
   ])
+}
+
+resource "yandex_container_registry" "support_bot" {
+  folder_id = var.folder_id
+  name      = local.support_bot_container_registry_name
+}
+
+resource "yandex_container_repository" "support_bot" {
+  name = "${yandex_container_registry.support_bot.id}/${local.support_bot_container_repository_name}"
+}
+
+resource "yandex_container_registry_iam_binding" "support_bot_pullers" {
+  registry_id = yandex_container_registry.support_bot.id
+  role        = "container-registry.images.puller"
+  members = [
+    "serviceAccount:${yandex_iam_service_account.bot_vm.id}",
+  ]
 }
 
 resource "yandex_vpc_security_group" "support_bot" {

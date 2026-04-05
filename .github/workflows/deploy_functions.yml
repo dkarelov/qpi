@@ -2,6 +2,12 @@ name: Deploy Functions (Manual)
 
 on:
   workflow_dispatch:
+    inputs:
+      preflight_only:
+        description: "Run validation, preflight checks, and bundle builds without publishing functions"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -110,16 +116,102 @@ jobs:
             scripts/dev/run_db_tests_on_runner.sh migration-smoke
           fi
 
-  deploy-functions:
-    runs-on: ubuntu-latest
+  predeploy-functions:
+    runs-on: [self-hosted, linux, qpi-private]
     needs:
       - determine-targets
       - private-db-validation
     if: ${{ needs.determine-targets.outputs.has_targets == 'true' }}
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
       YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      BOT_VM_INSTANCE_GROUP_NAME: ${{ vars.BOT_VM_INSTANCE_GROUP_NAME }}
+      BOT_VM_HOST: ${{ vars.BOT_VM_HOST }}
+      BOT_VM_SSH_USER: ${{ vars.BOT_VM_SSH_USER }}
+      BOT_VM_SSH_PORT: ${{ vars.BOT_VM_SSH_PORT }}
+      BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup shared bootstrap
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          install-yc: "true"
+          install-psqldef: "true"
+          configure-private-git-auth: "true"
+          psqldef-version: ${{ env.PSQLDEF_VERSION }}
+
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Preflight function deploy
+        run: scripts/deploy/preflight.sh functions
+
+  build-function-bundles:
+    runs-on: ubuntu-latest
+    needs:
+      - determine-targets
+      - predeploy-functions
+    if: ${{ needs.determine-targets.outputs.has_targets == 'true' }}
+    env:
+      GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+      TARGETS: ${{ needs.determine-targets.outputs.targets }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup shared bootstrap
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          install-zip: "true"
+          configure-private-git-auth: "true"
+
+      - name: Build function bundles
+        run: |
+          bundle_dir="${RUNNER_TEMP}/function-bundles"
+          mkdir -p "${bundle_dir}"
+          : > "${bundle_dir}/manifest.tsv"
+
+          for target in ${TARGETS}; do
+            metadata="$(scripts/deploy/function.sh metadata "${target}")"
+            bundle_path="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["zip_path"])' "${metadata}")"
+            sha256="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["sha256"])' "${metadata}")"
+            cp "${bundle_path}" "${bundle_dir}/${target}.zip"
+            cp "${bundle_path}.sha256" "${bundle_dir}/${target}.zip.sha256"
+            printf '%s\t%s\n' "${target}" "${sha256}" >> "${bundle_dir}/manifest.tsv"
+          done
+
+      - name: Upload function bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: function-bundles-${{ github.sha }}
+          path: ${{ runner.temp }}/function-bundles
+          if-no-files-found: error
+
+  deploy-functions:
+    runs-on: [self-hosted, linux, qpi-private]
+    needs:
+      - determine-targets
+      - predeploy-functions
+      - build-function-bundles
+    if: >-
+      ${{
+        needs.determine-targets.outputs.has_targets == 'true' &&
+        github.event.inputs.preflight_only != 'true'
+      }}
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      BOT_VM_INSTANCE_GROUP_NAME: ${{ vars.BOT_VM_INSTANCE_GROUP_NAME }}
       BOT_VM_HOST: ${{ vars.BOT_VM_HOST }}
       BOT_VM_SSH_USER: ${{ vars.BOT_VM_SSH_USER }}
       BOT_VM_SSH_PORT: ${{ vars.BOT_VM_SSH_PORT }}
@@ -133,27 +225,22 @@ jobs:
         uses: ./.github/actions/setup-qpi-deploy
         with:
           install-yc: "true"
-          install-uv: "true"
-          install-zip: "true"
           install-psqldef: "true"
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
 
-      - name: Validate deployment auth
-        run: |
-          test -n "${GH_TOKEN}" || { echo "TOKEN_YC_JSON_LOGGER secret is required"; exit 1; }
-          test -n "${YC_TOKEN}" || { echo "YC_TOKEN is required"; exit 1; }
-          test -n "${YC_FOLDER_ID}" || { echo "YC_FOLDER_ID is required"; exit 1; }
-          test -n "${BOT_VM_HOST}" || { echo "BOT_VM_HOST is required"; exit 1; }
-          test -n "${BOT_VM_SSH_PRIVATE_KEY}" || { echo "BOT_VM_SSH_PRIVATE_KEY is required"; exit 1; }
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
 
-      - name: Deploy changed functions
-        run: |
-          if [[ -z "${TARGETS}" ]]; then
-            echo "No function targets resolved."
-            exit 0
-          fi
+      - name: Download function bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: function-bundles-${{ github.sha }}
+          path: ${{ runner.temp }}/function-bundles
 
+      - name: Publish functions from prebuilt bundles
+        run: |
           for target in ${TARGETS}; do
-            scripts/deploy/function.sh "${target}"
+            QPI_FUNCTION_BUNDLE_PATH="${RUNNER_TEMP}/function-bundles/${target}.zip" \
+              scripts/deploy/function.sh "${target}"
           done

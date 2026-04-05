@@ -15,6 +15,11 @@ on:
         options:
           - auto
           - release-grade
+      preflight_only:
+        description: "Run validation, preflight checks, and artifact build without rollout"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -164,7 +169,51 @@ jobs:
       - name: DB-backed validation
         run: scripts/dev/run_db_tests_on_runner.sh all
 
-  deploy-runtime-hotfix:
+  predeploy-runtime-release:
+    runs-on: [self-hosted, linux, qpi-private]
+    needs:
+      - resolve-target
+      - private-db-validation
+    if: ${{ needs.resolve-target.outputs.deploy_mode == 'release-grade' }}
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      BOT_VM_INSTANCE_GROUP_NAME: ${{ vars.BOT_VM_INSTANCE_GROUP_NAME }}
+      BOT_VM_HOST: ${{ vars.BOT_VM_HOST }}
+      BOT_VM_SSH_USER: ${{ vars.BOT_VM_SSH_USER }}
+      BOT_VM_SSH_PORT: ${{ vars.BOT_VM_SSH_PORT }}
+      BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TOKEN_CIPHER_KEY: ${{ secrets.TOKEN_CIPHER_KEY }}
+      BOT_WEBHOOK_SECRET_TOKEN: ${{ secrets.BOT_WEBHOOK_SECRET_TOKEN }}
+      DEPLOY_BASE_SHA: ${{ needs.resolve-target.outputs.target_sha }}^
+      DEPLOY_HEAD_SHA: ${{ needs.resolve-target.outputs.target_sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve-target.outputs.target_sha }}
+          fetch-depth: 2
+
+      - name: Setup shared bootstrap
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          install-yc: "true"
+          install-psqldef: "true"
+          configure-private-git-auth: "true"
+          psqldef-version: ${{ env.PSQLDEF_VERSION }}
+
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Preflight runtime deploy
+        run: scripts/deploy/preflight.sh runtime
+
+  predeploy-runtime-hotfix:
     runs-on: ubuntu-latest
     needs: resolve-target
     if: ${{ needs.resolve-target.outputs.deploy_mode == 'hotfix' }}
@@ -176,13 +225,12 @@ jobs:
       BOT_VM_HOST: ${{ vars.BOT_VM_HOST }}
       BOT_VM_SSH_USER: ${{ vars.BOT_VM_SSH_USER }}
       BOT_VM_SSH_PORT: ${{ vars.BOT_VM_SSH_PORT }}
-      BOT_HEALTH_PORT: ${{ vars.BOT_HEALTH_PORT }}
-      ADMIN_TELEGRAM_IDS: ${{ vars.ADMIN_TELEGRAM_IDS }}
-      SUPPORT_BOT_USERNAME: ${{ vars.SUPPORT_BOT_USERNAME }}
+      BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TOKEN_CIPHER_KEY: ${{ secrets.TOKEN_CIPHER_KEY }}
       BOT_WEBHOOK_SECRET_TOKEN: ${{ secrets.BOT_WEBHOOK_SECRET_TOKEN }}
-      BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
+      DEPLOY_BASE_SHA: ${{ needs.resolve-target.outputs.target_sha }}^
+      DEPLOY_HEAD_SHA: ${{ needs.resolve-target.outputs.target_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -198,29 +246,67 @@ jobs:
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
 
-      - name: Validate required deployment secrets
-        run: |
-          test -n "${YC_TOKEN}" || { echo "YC_TOKEN is required"; exit 1; }
-          test -n "${YC_FOLDER_ID}" || { echo "YC_FOLDER_ID is required"; exit 1; }
-          test -n "${BOT_VM_HOST}" || { echo "BOT_VM_HOST is required"; exit 1; }
-          test -n "${BOT_VM_SSH_PRIVATE_KEY}" || { echo "BOT_VM_SSH_PRIVATE_KEY is required"; exit 1; }
-          test -n "${TELEGRAM_BOT_TOKEN}" || { echo "TELEGRAM_BOT_TOKEN is required"; exit 1; }
-          test -n "${TOKEN_CIPHER_KEY}" || { echo "TOKEN_CIPHER_KEY is required"; exit 1; }
-          test -n "${BOT_WEBHOOK_SECRET_TOKEN}" || { echo "BOT_WEBHOOK_SECRET_TOKEN is required"; exit 1; }
-          test -n "${GH_TOKEN}" || { echo "TOKEN_YC_JSON_LOGGER secret is required"; exit 1; }
-
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
 
-      - name: Deploy runtime
-        run: scripts/deploy/runtime.sh
+      - name: Preflight runtime deploy
+        run: scripts/deploy/preflight.sh runtime
 
-  deploy-runtime-release:
+  build-runtime-artifact:
     runs-on: ubuntu-latest
     needs:
       - resolve-target
-      - private-db-validation
-    if: ${{ needs.resolve-target.outputs.deploy_mode == 'release-grade' }}
+      - predeploy-runtime-release
+      - predeploy-runtime-hotfix
+    if: >-
+      ${{
+        needs.predeploy-runtime-release.result == 'success' ||
+        needs.predeploy-runtime-hotfix.result == 'success'
+      }}
+    outputs:
+      artifact_name: ${{ steps.build.outputs.artifact_name }}
+      archive_file: ${{ steps.build.outputs.archive_file }}
+      archive_sha256: ${{ steps.build.outputs.archive_sha256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve-target.outputs.target_sha }}
+
+      - name: Build runtime artifact
+        id: build
+        env:
+          QPI_RELEASE_ID: ${{ needs.resolve-target.outputs.target_sha }}
+        run: |
+          metadata="$(scripts/deploy/runtime.sh metadata)"
+          archive_path="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["archive_path"])' "${metadata}")"
+          archive_sha256="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["sha256"])' "${metadata}")"
+          archive_file="qpi-bot-${QPI_RELEASE_ID}.tar.gz"
+          cp "${archive_path}" "${RUNNER_TEMP}/${archive_file}"
+          {
+            echo "artifact_name=runtime-artifact-${QPI_RELEASE_ID}"
+            echo "archive_file=${archive_file}"
+            echo "archive_sha256=${archive_sha256}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Upload runtime artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/${{ steps.build.outputs.archive_file }}
+          if-no-files-found: error
+
+  deploy-runtime-hotfix:
+    runs-on: ubuntu-latest
+    needs:
+      - resolve-target
+      - predeploy-runtime-hotfix
+      - build-runtime-artifact
+    if: >-
+      ${{
+        needs.resolve-target.outputs.deploy_mode == 'hotfix' &&
+        github.event.inputs.preflight_only != 'true'
+      }}
     env:
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
@@ -236,6 +322,9 @@ jobs:
       TOKEN_CIPHER_KEY: ${{ secrets.TOKEN_CIPHER_KEY }}
       BOT_WEBHOOK_SECRET_TOKEN: ${{ secrets.BOT_WEBHOOK_SECRET_TOKEN }}
       BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
+      DEPLOY_BASE_SHA: ${{ needs.resolve-target.outputs.target_sha }}^
+      DEPLOY_HEAD_SHA: ${{ needs.resolve-target.outputs.target_sha }}
+      QPI_RELEASE_ID: ${{ needs.resolve-target.outputs.target_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -251,19 +340,77 @@ jobs:
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
 
-      - name: Validate required deployment secrets
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Download runtime artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build-runtime-artifact.outputs.artifact_name }}
+          path: ${{ runner.temp }}/runtime-artifact
+
+      - name: Deploy runtime from prebuilt artifact
         run: |
-          test -n "${YC_TOKEN}" || { echo "YC_TOKEN is required"; exit 1; }
-          test -n "${YC_FOLDER_ID}" || { echo "YC_FOLDER_ID is required"; exit 1; }
-          test -n "${BOT_VM_HOST}" || { echo "BOT_VM_HOST is required"; exit 1; }
-          test -n "${BOT_VM_SSH_PRIVATE_KEY}" || { echo "BOT_VM_SSH_PRIVATE_KEY is required"; exit 1; }
-          test -n "${TELEGRAM_BOT_TOKEN}" || { echo "TELEGRAM_BOT_TOKEN is required"; exit 1; }
-          test -n "${TOKEN_CIPHER_KEY}" || { echo "TOKEN_CIPHER_KEY is required"; exit 1; }
-          test -n "${BOT_WEBHOOK_SECRET_TOKEN}" || { echo "BOT_WEBHOOK_SECRET_TOKEN is required"; exit 1; }
-          test -n "${GH_TOKEN}" || { echo "TOKEN_YC_JSON_LOGGER secret is required"; exit 1; }
+          QPI_RUNTIME_ARCHIVE_PATH="${RUNNER_TEMP}/runtime-artifact/${{ needs.build-runtime-artifact.outputs.archive_file }}" \
+            scripts/deploy/runtime.sh deploy
+
+  deploy-runtime-release:
+    runs-on: [self-hosted, linux, qpi-private]
+    needs:
+      - resolve-target
+      - predeploy-runtime-release
+      - build-runtime-artifact
+    if: >-
+      ${{
+        needs.resolve-target.outputs.deploy_mode == 'release-grade' &&
+        github.event.inputs.preflight_only != 'true'
+      }}
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      BOT_VM_INSTANCE_GROUP_NAME: ${{ vars.BOT_VM_INSTANCE_GROUP_NAME }}
+      BOT_VM_HOST: ${{ vars.BOT_VM_HOST }}
+      BOT_VM_SSH_USER: ${{ vars.BOT_VM_SSH_USER }}
+      BOT_VM_SSH_PORT: ${{ vars.BOT_VM_SSH_PORT }}
+      BOT_HEALTH_PORT: ${{ vars.BOT_HEALTH_PORT }}
+      ADMIN_TELEGRAM_IDS: ${{ vars.ADMIN_TELEGRAM_IDS }}
+      SUPPORT_BOT_USERNAME: ${{ vars.SUPPORT_BOT_USERNAME }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TOKEN_CIPHER_KEY: ${{ secrets.TOKEN_CIPHER_KEY }}
+      BOT_WEBHOOK_SECRET_TOKEN: ${{ secrets.BOT_WEBHOOK_SECRET_TOKEN }}
+      BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
+      DEPLOY_BASE_SHA: ${{ needs.resolve-target.outputs.target_sha }}^
+      DEPLOY_HEAD_SHA: ${{ needs.resolve-target.outputs.target_sha }}
+      QPI_RELEASE_ID: ${{ needs.resolve-target.outputs.target_sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve-target.outputs.target_sha }}
+          fetch-depth: 2
+
+      - name: Setup shared bootstrap
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          install-yc: "true"
+          install-psqldef: "true"
+          configure-private-git-auth: "true"
+          psqldef-version: ${{ env.PSQLDEF_VERSION }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
 
-      - name: Deploy runtime
-        run: scripts/deploy/runtime.sh
+      - name: Download runtime artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build-runtime-artifact.outputs.artifact_name }}
+          path: ${{ runner.temp }}/runtime-artifact
+
+      - name: Deploy runtime from prebuilt artifact
+        run: |
+          QPI_RUNTIME_ARCHIVE_PATH="${RUNNER_TEMP}/runtime-artifact/${{ needs.build-runtime-artifact.outputs.archive_file }}" \
+            scripts/deploy/runtime.sh deploy

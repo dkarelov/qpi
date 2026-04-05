@@ -4,18 +4,25 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 artifacts_dir="${repo_root}/.artifacts/runtime"
-schema_mode="${QPI_DEPLOY_SCHEMA_MODE:-auto}"
+
+# shellcheck source=scripts/deploy/common.sh
+source "${script_dir}/common.sh"
 
 usage() {
   cat <<'EOF' >&2
-usage: runtime.sh
+usage:
+  runtime.sh build
+  runtime.sh metadata
+  runtime.sh deploy [archive-path]
+  runtime.sh [archive-path]
 
-Required environment:
+Required environment for deploy:
   BOT_VM_HOST
   TELEGRAM_BOT_TOKEN
   TOKEN_CIPHER_KEY
   BOT_WEBHOOK_SECRET_TOKEN
   YC_FOLDER_ID
+  GH_TOKEN or TOKEN_YC_JSON_LOGGER
 
 Optional environment:
   BOT_VM_INSTANCE_GROUP_NAME (default: qpi-bot-ig)
@@ -26,50 +33,40 @@ Optional environment:
   BOT_VM_SSH_PRIVATE_KEY
   ADMIN_TELEGRAM_IDS
   SUPPORT_BOT_USERNAME
-  GH_TOKEN or TOKEN_YC_JSON_LOGGER
   DEPLOY_BASE_SHA / DEPLOY_HEAD_SHA (for schema auto-detection)
   QPI_ALLOW_DEPLOY_WHEN_UNHEALTHY (default: 0)
+  QPI_DEPLOY_SCHEMA_MODE (default: auto)
   QPI_DEPLOY_MIN_FREE_MB (default: 2048)
+  QPI_PREDEPLOY_ONLY (default: 0)
+  QPI_RELEASE_ID
+  QPI_RUNTIME_ARCHIVE_PATH
   QPI_RUNTIME_ARTIFACT_RETENTION_COUNT (default: 10)
   QPI_RUNTIME_ARTIFACT_RETENTION_DAYS (default: 14)
 EOF
 }
 
-if [[ "${1:-}" == "--help" ]]; then
+command_name="deploy"
+archive_arg="${QPI_RUNTIME_ARCHIVE_PATH:-}"
+
+case "${1:-}" in
+  build|metadata|deploy)
+    command_name="$1"
+    shift
+    ;;
+  --help)
+    usage
+    exit 0
+    ;;
+esac
+
+if [[ $# -gt 1 ]]; then
   usage
-  exit 0
+  exit 1
 fi
 
-require_env() {
-  local name="$1"
-  if [[ -z "${!name:-}" ]]; then
-    echo "${name} is required." >&2
-    exit 1
-  fi
-}
-
-require_command() {
-  local name="$1"
-  if ! command -v "${name}" >/dev/null 2>&1; then
-    echo "Required command not found: ${name}" >&2
-    exit 1
-  fi
-}
-
-configure_yc_cli() {
-  if [[ -n "${YC_TOKEN:-}" ]]; then
-    yc config set token "${YC_TOKEN}" >/dev/null
-  fi
-  if [[ -n "${YC_FOLDER_ID:-}" ]]; then
-    yc config set folder-id "${YC_FOLDER_ID}" >/dev/null
-  fi
-}
-
-require_env "BOT_VM_HOST"
-require_env "TELEGRAM_BOT_TOKEN"
-require_env "TOKEN_CIPHER_KEY"
-require_env "BOT_WEBHOOK_SECRET_TOKEN"
-require_env "YC_FOLDER_ID"
+if [[ $# -eq 1 ]]; then
+  archive_arg="$1"
+fi
 
 BOT_VM_INSTANCE_GROUP_NAME="${BOT_VM_INSTANCE_GROUP_NAME:-qpi-bot-ig}"
 BOT_VM_SSH_USER="${BOT_VM_SSH_USER:-ubuntu}"
@@ -77,17 +74,9 @@ BOT_VM_SSH_PORT="${BOT_VM_SSH_PORT:-22}"
 BOT_HEALTH_PORT="${BOT_HEALTH_PORT:-18080}"
 QPI_ALLOW_DEPLOY_WHEN_UNHEALTHY="${QPI_ALLOW_DEPLOY_WHEN_UNHEALTHY:-0}"
 QPI_DEPLOY_MIN_FREE_MB="${QPI_DEPLOY_MIN_FREE_MB:-2048}"
+QPI_PREDEPLOY_ONLY="${QPI_PREDEPLOY_ONLY:-0}"
 QPI_RUNTIME_ARTIFACT_RETENTION_COUNT="${QPI_RUNTIME_ARTIFACT_RETENTION_COUNT:-10}"
 QPI_RUNTIME_ARTIFACT_RETENTION_DAYS="${QPI_RUNTIME_ARTIFACT_RETENTION_DAYS:-14}"
-
-require_nonnegative_integer() {
-  local name="$1"
-  local value="$2"
-  if [[ ! "${value}" =~ ^[0-9]+$ ]]; then
-    echo "${name} must be a non-negative integer." >&2
-    exit 1
-  fi
-}
 
 resolve_git_token() {
   if [[ -n "${GH_TOKEN:-}" ]]; then
@@ -104,79 +93,6 @@ resolve_git_token() {
   fi
 }
 
-detect_schema_apply() {
-  case "${schema_mode}" in
-    always)
-      return 0
-      ;;
-    never)
-      return 1
-      ;;
-    auto)
-      ;;
-    *)
-      echo "Unsupported QPI_DEPLOY_SCHEMA_MODE: ${schema_mode}" >&2
-      exit 1
-      ;;
-  esac
-
-  local base_ref
-  local head_ref
-  local diff_target
-
-  if [[ -n "${DEPLOY_BASE_SHA:-}" && -n "${DEPLOY_HEAD_SHA:-}" ]]; then
-    base_ref="${DEPLOY_BASE_SHA}"
-    head_ref="${DEPLOY_HEAD_SHA}"
-    if git cat-file -e "${base_ref}^{commit}" 2>/dev/null && git cat-file -e "${head_ref}^{commit}" 2>/dev/null; then
-      diff_target="$(git diff --name-only "${base_ref}" "${head_ref}")"
-    else
-      return 0
-    fi
-  elif [[ -n "$(git status --porcelain 2>/dev/null || true)" ]]; then
-    return 0
-  elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
-    diff_target="$(git diff --name-only HEAD^ HEAD)"
-  else
-    return 0
-  fi
-
-  if printf '%s\n' "${diff_target}" | grep -Eq '^(schema/|libs/db/|scripts/deploy/schema_remote\.sh$)'; then
-    return 0
-  fi
-  return 1
-}
-
-prepare_ssh_key() {
-  local key_source
-  if [[ -n "${BOT_VM_SSH_PRIVATE_KEY:-}" ]]; then
-    ssh_key_path="$(mktemp)"
-    chmod 600 "${ssh_key_path}"
-    printf '%s' "${BOT_VM_SSH_PRIVATE_KEY}" > "${ssh_key_path}"
-    if ! ssh-keygen -y -f "${ssh_key_path}" >/dev/null 2>&1; then
-      printf '%b' "${BOT_VM_SSH_PRIVATE_KEY}" > "${ssh_key_path}"
-    fi
-    if ! ssh-keygen -y -f "${ssh_key_path}" >/dev/null 2>&1; then
-      if ! printf '%s' "${BOT_VM_SSH_PRIVATE_KEY}" | base64 -d > "${ssh_key_path}" 2>/dev/null; then
-        :
-      fi
-    fi
-    sed -i 's/\r$//' "${ssh_key_path}"
-    generated_ssh_key=1
-  else
-    key_source="${BOT_VM_SSH_KEY_PATH:-${HOME}/.ssh/id_rsa}"
-    if [[ ! -f "${key_source}" ]]; then
-      echo "SSH key not found: ${key_source}" >&2
-      exit 1
-    fi
-    ssh_key_path="${key_source}"
-    generated_ssh_key=0
-  fi
-  if ! ssh-keygen -y -f "${ssh_key_path}" >/dev/null 2>&1; then
-    echo "Failed to decode BOT_VM_SSH_PRIVATE_KEY into a valid private key." >&2
-    exit 1
-  fi
-}
-
 cleanup() {
   if [[ -n "${temp_dir:-}" && -d "${temp_dir}" ]]; then
     rm -rf "${temp_dir}"
@@ -186,51 +102,6 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
-
-yc_bot_instance_group_json() {
-  yc compute instance-group list-instances \
-    --folder-id "${YC_FOLDER_ID}" \
-    --name "${BOT_VM_INSTANCE_GROUP_NAME}" \
-    --format json
-}
-
-verify_target_vm() {
-  require_command yc
-  local resolved
-  resolved="$(
-    yc_bot_instance_group_json | python3 -c '
-import json
-import sys
-
-payload = json.load(sys.stdin)
-expected = sys.argv[1]
-
-if isinstance(payload, list):
-    items = payload
-else:
-    items = payload.get("instances") or payload.get("items") or []
-    if not isinstance(items, list):
-        items = []
-
-for item in items:
-    addresses = []
-    for interface in item.get("network_interfaces", []) or item.get("networkInterfaces", []) or []:
-        primary = interface.get("primary_v4_address") or interface.get("primaryV4Address") or {}
-        addresses.append(primary.get("address"))
-        nat = primary.get("one_to_one_nat") or primary.get("oneToOneNat") or {}
-        addresses.append(nat.get("address"))
-    addresses = [address for address in addresses if address]
-    if expected in addresses:
-        print(item.get("id", "ok"))
-        break
-' "${BOT_VM_HOST}"
-  )"
-
-  if [[ -z "${resolved}" ]]; then
-    echo "BOT_VM_HOST=${BOT_VM_HOST} is not part of instance group ${BOT_VM_INSTANCE_GROUP_NAME} in folder ${YC_FOLDER_ID}." >&2
-    exit 1
-  fi
-}
 
 remote_exec() {
   ssh \
@@ -266,8 +137,8 @@ remote_preflight() {
 }
 
 prune_runtime_artifacts() {
-  require_nonnegative_integer "QPI_RUNTIME_ARTIFACT_RETENTION_COUNT" "${QPI_RUNTIME_ARTIFACT_RETENTION_COUNT}"
-  require_nonnegative_integer "QPI_RUNTIME_ARTIFACT_RETENTION_DAYS" "${QPI_RUNTIME_ARTIFACT_RETENTION_DAYS}"
+  qpi_require_nonnegative_integer "QPI_RUNTIME_ARTIFACT_RETENTION_COUNT" "${QPI_RUNTIME_ARTIFACT_RETENTION_COUNT}"
+  qpi_require_nonnegative_integer "QPI_RUNTIME_ARTIFACT_RETENTION_DAYS" "${QPI_RUNTIME_ARTIFACT_RETENTION_DAYS}"
 
   mkdir -p "${artifacts_dir}"
 
@@ -287,37 +158,104 @@ prune_runtime_artifacts() {
   fi
 }
 
+build_archive() {
+  local release_stamp
+  local release_sha
+  local release_id
+  local archive_path
+
+  mkdir -p "${artifacts_dir}"
+  prune_runtime_artifacts
+
+  release_stamp="$(date -u +%Y%m%d%H%M%S)"
+  release_sha="$(git rev-parse --short HEAD 2>/dev/null || echo manual)"
+  release_id="${QPI_RELEASE_ID:-${release_stamp}-${release_sha}}"
+  archive_path="${artifacts_dir}/qpi-bot-${release_id}.tar.gz"
+
+  tar \
+    --exclude=.git \
+    --exclude=.venv \
+    --exclude=.pytest_cache \
+    --exclude=.ruff_cache \
+    --exclude=.mypy_cache \
+    --exclude=.artifacts \
+    --exclude=infra/.terraform \
+    --exclude='infra/*.tfstate' \
+    --exclude='infra/*.tfstate.*' \
+    --exclude='infra/*.tfplan' \
+    -czf "${archive_path}" \
+    -C "${repo_root}" .
+
+  printf '%s\n' "${archive_path}"
+}
+
+emit_metadata() {
+  local bundle_path
+  local sha256
+  bundle_path="$(build_archive)"
+  sha256="$(sha256sum "${bundle_path}" | awk '{print $1}')"
+  python3 - <<'PY' "${bundle_path}" "${sha256}"
+import json
+import sys
+
+print(json.dumps({"archive_path": sys.argv[1], "sha256": sys.argv[2]}))
+PY
+}
+
+run_preflight() {
+  eval "$("${script_dir}/preflight.sh" runtime)"
+}
+
+if [[ "${command_name}" == "build" ]]; then
+  build_archive
+  exit 0
+fi
+
+if [[ "${command_name}" == "metadata" ]]; then
+  emit_metadata
+  exit 0
+fi
+
 resolve_git_token
-require_env "GH_TOKEN"
-configure_yc_cli
-prepare_ssh_key
-verify_target_vm
-remote_preflight
+qpi_require_env "BOT_VM_HOST"
+qpi_require_env "TELEGRAM_BOT_TOKEN"
+qpi_require_env "TOKEN_CIPHER_KEY"
+qpi_require_env "BOT_WEBHOOK_SECRET_TOKEN"
+qpi_require_env "YC_FOLDER_ID"
+qpi_require_env "GH_TOKEN"
 
-mkdir -p "${artifacts_dir}"
-prune_runtime_artifacts
-release_stamp="$(date -u +%Y%m%d%H%M%S)"
-release_sha="$(git rev-parse --short HEAD 2>/dev/null || echo manual)"
-release_id="${QPI_RELEASE_ID:-${release_stamp}-${release_sha}}"
-archive_path="${artifacts_dir}/qpi-bot-${release_id}.tar.gz"
-
+generated_ssh_key=0
+ssh_key_path=""
 temp_dir="$(mktemp -d)"
+
+qpi_timing_init
+
+qpi_phase_start "preflight"
+run_preflight
+runtime_schema_action="${runtime_schema_action:-assert-clean}"
+qpi_phase_end
+
+qpi_phase_start "package"
+runtime_archive_path="${archive_arg:-}"
+if [[ -z "${runtime_archive_path}" ]]; then
+  runtime_archive_path="$(build_archive)"
+fi
+runtime_archive_sha256="$(sha256sum "${runtime_archive_path}" | awk '{print $1}')"
+qpi_phase_end
+
+if [[ "${QPI_PREDEPLOY_ONLY}" == "1" ]]; then
+  echo "release_id=${QPI_RELEASE_ID:-}"
+  echo "runtime_archive_path=${runtime_archive_path}"
+  echo "runtime_archive_sha256=${runtime_archive_sha256}"
+  echo "schema_apply=${runtime_schema_action}"
+  qpi_emit_timing_summary "Runtime Deploy"
+  exit 0
+fi
+
+qpi_prepare_private_key "BOT_VM_SSH_PRIVATE_KEY" "BOT_VM_SSH_KEY_PATH" "${HOME}/.ssh/id_rsa" ssh_key_path generated_ssh_key
+
 overrides_env="${temp_dir}/qpi-bot-overrides.env"
 rollout_env="${temp_dir}/qpi-rollout.env"
-
-tar \
-  --exclude=.git \
-  --exclude=.venv \
-  --exclude=.pytest_cache \
-  --exclude=.ruff_cache \
-  --exclude=.mypy_cache \
-  --exclude=.artifacts \
-  --exclude=infra/.terraform \
-  --exclude='infra/*.tfstate' \
-  --exclude='infra/*.tfstate.*' \
-  --exclude='infra/*.tfplan' \
-  -czf "${archive_path}" \
-  -C "${repo_root}" .
 
 cat > "${overrides_env}" <<EOF
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
@@ -332,12 +270,17 @@ GH_TOKEN=${GH_TOKEN}
 TOKEN_YC_JSON_LOGGER=${GH_TOKEN}
 EOF
 
+qpi_phase_start "remote_preflight"
+remote_preflight
+qpi_phase_end
+
+qpi_phase_start "upload"
 install -m 0700 -d "${HOME}/.ssh"
 touch "${HOME}/.ssh/known_hosts"
 ssh-keyscan -p "${BOT_VM_SSH_PORT}" "${BOT_VM_HOST}" >> "${HOME}/.ssh/known_hosts" 2>/dev/null
 
 scp -P "${BOT_VM_SSH_PORT}" -i "${ssh_key_path}" \
-  "${archive_path}" \
+  "${runtime_archive_path}" \
   "${repo_root}/infra/scripts/remote_rollout_bot.sh" \
   "${repo_root}/infra/scripts/merge_bot_env.py" \
   "${BOT_VM_SSH_USER}@${BOT_VM_HOST}:/tmp/"
@@ -349,12 +292,9 @@ scp -P "${BOT_VM_SSH_PORT}" -i "${ssh_key_path}" \
 scp -P "${BOT_VM_SSH_PORT}" -i "${ssh_key_path}" \
   "${rollout_env}" \
   "${BOT_VM_SSH_USER}@${BOT_VM_HOST}:/tmp/qpi-rollout.env"
+qpi_phase_end
 
-schema_apply_decision="asserted-clean"
-if detect_schema_apply; then
-  schema_apply_decision="applied"
-fi
-
+qpi_phase_start "schema"
 remote_exec \
   "sudo python3 /tmp/merge_bot_env.py \
     --base /etc/qpi/bot.env \
@@ -362,7 +302,7 @@ remote_exec \
    sudo chown root:${BOT_VM_SSH_USER} /etc/qpi/bot.env && \
    sudo chmod 0640 /etc/qpi/bot.env"
 
-if [[ "${schema_apply_decision}" == "applied" ]]; then
+if [[ "${runtime_schema_action}" == "apply" ]]; then
   BOT_VM_HOST="${BOT_VM_HOST}" \
   BOT_VM_SSH_USER="${BOT_VM_SSH_USER}" \
   BOT_VM_SSH_PORT="${BOT_VM_SSH_PORT}" \
@@ -377,12 +317,17 @@ else
   BOT_VM_SSH_KEY_PATH="${BOT_VM_SSH_KEY_PATH:-}" \
   "${repo_root}/scripts/deploy/schema_remote.sh" assert-clean
 fi
+qpi_phase_end
 
+qpi_phase_start "rollout"
+release_id="${QPI_RELEASE_ID:-$(basename "${runtime_archive_path}" .tar.gz | sed 's/^qpi-bot-//')}"
 remote_exec \
   "set -a && source /tmp/qpi-rollout.env && set +a && \
    chmod +x /tmp/remote_rollout_bot.sh && \
-   /tmp/remote_rollout_bot.sh '${release_id}' '/tmp/$(basename "${archive_path}")' '${BOT_HEALTH_PORT}'"
+   /tmp/remote_rollout_bot.sh '${release_id}' '/tmp/$(basename "${runtime_archive_path}")' '${BOT_HEALTH_PORT}'"
+qpi_phase_end
 
+qpi_phase_start "smoke"
 remote_exec \
   "set -a && source /etc/qpi/bot.env && set +a && \
    cd /opt/qpi/current && \
@@ -398,15 +343,25 @@ remote_exec \
 after_release_target="$(remote_output "readlink -f /opt/qpi/current || true")"
 after_service_state="$(remote_output "systemctl is-active qpi-bot.service || true")"
 after_health_payload="$(remote_output "curl -fsS http://127.0.0.1:${BOT_HEALTH_PORT}/healthz")"
+qpi_phase_end
 
-cat <<EOF
-release_id=${release_id}
-schema_apply=${schema_apply_decision}
-before_release=${before_release_target}
-after_release=${after_release_target}
-before_service_state=${before_service_state}
-after_service_state=${after_service_state}
-free_mb_before=${free_mb}
-before_health_payload=${before_health_payload}
-after_health_payload=${after_health_payload}
-EOF
+echo "release_id=${release_id}"
+echo "runtime_archive_path=${runtime_archive_path}"
+echo "runtime_archive_sha256=${runtime_archive_sha256}"
+echo "schema_apply=${runtime_schema_action}"
+echo "before_release=${before_release_target}"
+echo "after_release=${after_release_target}"
+echo "before_service_state=${before_service_state}"
+echo "after_service_state=${after_service_state}"
+echo "free_mb_before=${free_mb}"
+echo "before_health_payload=${before_health_payload}"
+echo "after_health_payload=${after_health_payload}"
+
+qpi_append_step_summary "### Runtime Deploy Result"
+qpi_append_step_summary ""
+qpi_append_step_summary "- Release ID: \`${release_id}\`"
+qpi_append_step_summary "- Archive SHA256: \`${runtime_archive_sha256}\`"
+qpi_append_step_summary "- Schema action: \`${runtime_schema_action}\`"
+qpi_append_step_summary "- Service state: \`${after_service_state}\`"
+qpi_append_step_summary ""
+qpi_emit_timing_summary "Runtime Deploy"

@@ -117,6 +117,7 @@ Shared layers:
 - `scripts/dev/*`: canonical local reset/test/export wrappers.
 - `scripts/deploy/runtime.sh`: canonical bot VM rollout entrypoint.
 - `scripts/deploy/function.sh`: canonical code-only Cloud Function rollout entrypoint.
+- `scripts/deploy/preflight.sh`: canonical shared deploy preflight entrypoint for runtime, function, and support-bot rollouts.
 - `scripts/deploy/schema_remote.sh`: canonical production-schema cleanup/assert/apply entrypoint over the bot-VM bastion.
 - `scripts/deploy/support_bot.sh`: canonical support-bot image rollout entrypoint.
 - `scripts/deploy/private_runner.sh`: canonical on-demand private runner lifecycle entrypoint for CI/deploy jobs.
@@ -431,7 +432,10 @@ Transitions:
 - Code-only deploy entrypoints are `scripts/deploy/runtime.sh`, `scripts/deploy/function.sh`, and `scripts/deploy/support_bot.sh`; broader infra mutations still remain Terraform-only.
 - Cloud Function packaging must be service-scoped to avoid unrelated redeploys.
 - DB-backed CI/deploy execution is designed around a dedicated private self-hosted GitHub runner VM; GitHub-hosted runners only handle fast suites and bootstrap/start-stop orchestration.
+- Release-grade marketplace runtime and function deploys now reuse the private runner after DB validation so the network-heavy rollout happens from the same YC region as the targets.
+- Marketplace deploy workflows now run an explicit predeploy gate before rollout and publish immutable runtime/function artifacts before the deploy step consumes them.
 - Marketplace bot runtime is webhook-based. Companion support-bot runtime uses long polling and remains private-only.
+- Support-bot images are now published to a dedicated Yandex Container Registry repository and pulled on the VM during rollout instead of being copied as `docker save` archives.
 - `SUPPORT_BOT_USERNAME` is an optional marketplace bot runtime env var; when set, seller/buyer screens can build deep links into the support-bot using the public ref contract above.
 - Expected load target: ~100 concurrent users.
 
@@ -446,6 +450,7 @@ Compute and networking:
 - Bot runtime: instance group (`qpi-bot-ig`), size 1, preemptible.
 - Bot public IP: `158.160.187.114`.
 - Support bot runtime: Terraform-defined private-only instance group (`qpi-support-bot-ig`), size 1, preemptible; resolve live IDs with `terraform -chdir=infra output` after apply.
+- Support-bot image registry: Terraform-managed Yandex Container Registry (`qpi-support-bot-registry`) with immutable SHA-tagged images under repository `support-bot`.
 - DB VM: private-only (`10.131.0.28`), non-preemptible.
 - Private runner VM: `qpi-private-runner` (`fv47djh2aqv62pq449mq`), preemptible, on-demand, private IP `10.130.0.23`.
 - Private runner public IP is ephemeral NAT and must be resolved dynamically through `yc`, not hardcoded.
@@ -750,26 +755,34 @@ Workflows:
   - runs fast validation once,
   - starts the private runner only when DB-backed validation is required, and now overlaps that boot with fast validation,
   - runs targeted or full DB-backed validation once depending on changed files,
-  - runs runtime and Cloud Function deploy jobs on GitHub-hosted runners after validation succeeds,
+  - runs a dedicated marketplace predeploy gate on the private runner before any rollout,
+  - builds immutable runtime/function artifacts once on GitHub-hosted runners,
+  - runs runtime and Cloud Function deploy jobs from the private runner after validation and predeploy succeed,
   - `workflow_dispatch` supports `full_validation=true` to force the old all-up DB validation path.
 - `.github/workflows/deploy_runtime.yml`:
   - manual runtime deploy path with two modes,
   - `auto` resolves to `hotfix` only for SHAs already on `main` with a successful push-event `post_merge` run for that exact SHA,
-  - `hotfix` skips repeated validation and runs deploy-only rollout plus the existing post-deploy smoke checks from a GitHub-hosted runner,
-  - `release-grade` keeps fast validation plus full DB-backed validation before rollout,
+  - both modes now run an explicit preflight gate and build a single runtime artifact before any rollout step,
+  - `hotfix` keeps GitHub-hosted deploy execution after the artifact is built,
+  - `release-grade` keeps fast validation plus full DB-backed validation before rollout and now executes rollout from the private runner,
+  - `preflight_only=true` runs checks plus artifact build without touching production,
   - the target SHA is checked out directly in the workflow, so operator reruns are no longer limited to `HEAD`.
 - `.github/workflows/deploy_functions.yml`:
   - manual function-only deploy path,
   - keeps release-grade DB-backed validation on the private runner,
-  - runs the final function publish step on a GitHub-hosted runner after validation.
+  - runs a dedicated preflight gate on the private runner before publish,
+  - builds immutable function bundles once on GitHub-hosted runners and publishes those exact bundles from the private runner,
+  - `preflight_only=true` runs checks plus bundle build without publishing.
 - `.github/workflows/support_bot_ci.yml`:
   - support-bot PR/manual workflow,
   - runs Node 24 build/test plus production image build,
   - also runs repo workflow/shell lint so support-bot workflow/script changes are validated without triggering qpi DB suites.
 - `.github/workflows/support_bot_deploy.yml`:
   - support-bot `main` auto-deploy plus manual dispatch,
-  - builds the image on GitHub-hosted runners,
-  - reuses the existing private runner only for private-network deployment into the support-bot instance group.
+  - builds and pushes the image to Yandex Container Registry on GitHub-hosted runners,
+  - runs a dedicated preflight gate on the private runner before rollout,
+  - reuses the existing private runner only for private-network deployment into the support-bot instance group,
+  - `preflight_only=true` builds/pushes the image and runs checks without touching the VM release symlink.
 - `.github/workflows/private_runner_keepalive.yml`:
   - weekly start of the dedicated private runner,
   - validates runner registration / dispatch path.
@@ -792,6 +805,7 @@ Private runner / workflow gotchas:
 - Repo secrets `PRIVATE_RUNNER_SSH_PRIVATE_KEY`, `DB_VM_SSH_PRIVATE_KEY`, and `BOT_VM_SSH_PRIVATE_KEY` should be stored as base64-encoded private key material. The scripts accept raw / escaped / base64 formats, but base64 is the canonical GitHub Actions format because multiline PEM secrets were brittle during rollout.
 - Deploy/bootstrap scripts configure `yc` from `YC_TOKEN` + `YC_FOLDER_ID` on every run; do not assume `yc init` or a preexisting profile on GitHub-hosted or self-hosted runners.
 - Shared deploy/bootstrap setup now lives in `.github/actions/setup-qpi-deploy`; use it for runtime/function deploy jobs instead of reintroducing per-workflow tool-install snippets.
+- `scripts/deploy/preflight.sh` is the shared predeploy gate. Runtime/function/support-bot workflows should fail there before starting rollout rather than discovering SSH/schema/host problems mid-deploy.
 - GitHub-hosted validation jobs cache `~/.cache/uv` keyed by Python version and `uv.lock` to reduce repeated dependency download cost.
 - Fast validation is centralized in reusable workflow `.github/workflows/_fast_validation.yml`; keep PR, post-merge, and manual deploy validation behavior aligned there instead of editing each caller separately.
 - When sourcing a shared shell helper from `scripts/**`, keep the `# shellcheck source=...` hint repo-relative (for example `scripts/dev/test_db_template_lib.sh`), not workstation-absolute; CI shellcheck runs against the checked-out repo tree and will fail on local absolute paths even when the script itself works.
@@ -815,7 +829,8 @@ Private runner / workflow gotchas:
 - `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs` currently returns plain text from the blob backend, not a zip archive; if `gh run view --job --log` is sparse, fetch that endpoint directly and grep the text instead of trying to unzip it.
 - `gh variable` has no `get` subcommand. Use `gh variable list`, `gh variable set`, or `gh api` when verifying repo-level workflow vars such as `SUPPORT_BOT_USERNAME`.
 - In `post_merge`, a job line like `deploy-functions in 0s` means the job was intentionally skipped because no function targets changed; it is not an error condition.
-- In the current optimized path, a successful `post_merge` run will often spend most of its time in `deploy-runtime` or `deploy-functions`; fast validation and private-runner boot overlap, so a long runtime deploy is expected and not by itself a regression.
+- In the current optimized path, a successful `post_merge` run will often spend most of its time in the predeploy/runtime/function rollout phases; fast validation and private-runner boot overlap, so the deploy-specific timing summary is the source of truth when checking for regressions.
+- Release-grade marketplace deploy scripts now print phase timing key-values and write a Markdown timing table to `${GITHUB_STEP_SUMMARY}` when available; use those timings before guessing whether runner boot, packaging, upload, schema, or rollout got slower.
 - In manual `post_merge` reruns, `full_validation=true` forces the full DB validation path but does not invent deploy targets; runtime/function deploy jobs still follow the resolved change/deploy target set and may remain skipped.
 - Runtime deploys merge explicit env overrides into `/etc/qpi/bot.env`; if `SUPPORT_BOT_USERNAME` is not passed through the workflow env, a deploy will silently blank the support deep-link config.
 - Bot runtime rollout now reuses a lockfile-keyed shared `.venv` under `/opt/qpi/shared-venvs` when `pyproject.toml` / `uv.lock` are unchanged; code-only deploys still unpack a fresh release and run the same health/smoke checks, but they no longer rebuild dependencies every time.

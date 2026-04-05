@@ -5,6 +5,9 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 cache_root="${repo_root}/.artifacts/function-bundles"
 
+# shellcheck source=scripts/deploy/common.sh
+source "${script_dir}/common.sh"
+
 usage() {
   cat <<'EOF' >&2
 usage:
@@ -16,8 +19,6 @@ usage:
 Required environment for deploy:
   YC_FOLDER_ID
   BOT_VM_HOST
-
-Required environment for build/metadata/deploy:
   GH_TOKEN or TOKEN_YC_JSON_LOGGER
 
 Optional environment:
@@ -25,6 +26,9 @@ Optional environment:
   BOT_VM_SSH_PORT (default: 22)
   BOT_VM_SSH_KEY_PATH (default: ~/.ssh/id_rsa)
   BOT_VM_SSH_PRIVATE_KEY
+  QPI_FUNCTION_BUNDLE_PATH
+  QPI_PREDEPLOY_ONLY (default: 0)
+  QPI_SKIP_FUNCTION_SCHEMA_CHECK (default: 0)
   QPI_FUNCTION_BUNDLE_RETENTION_COUNT (default: 10)
   QPI_FUNCTION_BUNDLE_RETENTION_DAYS (default: 14)
 EOF
@@ -44,6 +48,8 @@ fi
 service_name="$1"
 QPI_FUNCTION_BUNDLE_RETENTION_COUNT="${QPI_FUNCTION_BUNDLE_RETENTION_COUNT:-10}"
 QPI_FUNCTION_BUNDLE_RETENTION_DAYS="${QPI_FUNCTION_BUNDLE_RETENTION_DAYS:-14}"
+QPI_PREDEPLOY_ONLY="${QPI_PREDEPLOY_ONLY:-0}"
+QPI_SKIP_FUNCTION_SCHEMA_CHECK="${QPI_SKIP_FUNCTION_SCHEMA_CHECK:-0}"
 
 case "${service_name}" in
   daily_report_scrapper)
@@ -60,32 +66,6 @@ case "${service_name}" in
     exit 1
     ;;
 esac
-
-require_env() {
-  local name="$1"
-  if [[ -z "${!name:-}" ]]; then
-    echo "${name} is required." >&2
-    exit 1
-  fi
-}
-
-configure_yc_cli() {
-  if [[ -n "${YC_TOKEN:-}" ]]; then
-    yc config set token "${YC_TOKEN}" >/dev/null
-  fi
-  if [[ -n "${YC_FOLDER_ID:-}" ]]; then
-    yc config set folder-id "${YC_FOLDER_ID}" >/dev/null
-  fi
-}
-
-require_nonnegative_integer() {
-  local name="$1"
-  local value="$2"
-  if [[ ! "${value}" =~ ^[0-9]+$ ]]; then
-    echo "${name} must be a non-negative integer." >&2
-    exit 1
-  fi
-}
 
 resolve_git_token() {
   if [[ -n "${GH_TOKEN:-}" ]]; then
@@ -113,6 +93,47 @@ bundle_manifest_hash() {
   )
 }
 
+prune_bundle_hash() {
+  local bundle_dir="$1"
+  local bundle_hash="$2"
+
+  rm -f \
+    "${bundle_dir}/${bundle_hash}.zip" \
+    "${bundle_dir}/${bundle_hash}.zip.sha256" \
+    "${bundle_dir}/${bundle_hash}.requirements.txt"
+  rm -rf "${bundle_dir}/stage-${bundle_hash}"
+}
+
+prune_bundle_dir() {
+  local bundle_dir="$1"
+
+  qpi_require_nonnegative_integer "QPI_FUNCTION_BUNDLE_RETENTION_COUNT" "${QPI_FUNCTION_BUNDLE_RETENTION_COUNT}"
+  qpi_require_nonnegative_integer "QPI_FUNCTION_BUNDLE_RETENTION_DAYS" "${QPI_FUNCTION_BUNDLE_RETENTION_DAYS}"
+
+  mapfile -t old_hashes < <(
+    find "${bundle_dir}" -maxdepth 1 -type f -name '*.zip' -mtime +"${QPI_FUNCTION_BUNDLE_RETENTION_DAYS}" -printf '%f\n' |
+      sed 's/\.zip$//'
+  )
+  for bundle_hash in "${old_hashes[@]}"; do
+    prune_bundle_hash "${bundle_dir}" "${bundle_hash}"
+  done
+
+  find "${bundle_dir}" -maxdepth 1 -type d -name 'stage-*' -mtime +"${QPI_FUNCTION_BUNDLE_RETENTION_DAYS}" \
+    -exec rm -rf {} +
+
+  mapfile -t live_hashes < <(
+    find "${bundle_dir}" -maxdepth 1 -type f -name '*.zip' -printf '%T@ %f\n' |
+      sort -nr |
+      awk '{sub(/^[^ ]+ /, ""); sub(/\.zip$/, ""); print}'
+  )
+
+  if (( ${#live_hashes[@]} > QPI_FUNCTION_BUNDLE_RETENTION_COUNT )); then
+    for bundle_hash in "${live_hashes[@]:QPI_FUNCTION_BUNDLE_RETENTION_COUNT}"; do
+      prune_bundle_hash "${bundle_dir}" "${bundle_hash}"
+    done
+  fi
+}
+
 build_bundle() {
   local manifest_hash
   local bundle_dir
@@ -122,7 +143,7 @@ build_bundle() {
   local staged_requirements_path
 
   resolve_git_token
-  require_env "GH_TOKEN"
+  qpi_require_env "GH_TOKEN"
 
   manifest_hash="$(bundle_manifest_hash)"
   bundle_dir="${cache_root}/${service_name}"
@@ -166,47 +187,6 @@ build_bundle() {
   printf '%s\n' "${bundle_path}"
 }
 
-prune_bundle_hash() {
-  local bundle_dir="$1"
-  local bundle_hash="$2"
-
-  rm -f \
-    "${bundle_dir}/${bundle_hash}.zip" \
-    "${bundle_dir}/${bundle_hash}.zip.sha256" \
-    "${bundle_dir}/${bundle_hash}.requirements.txt"
-  rm -rf "${bundle_dir}/stage-${bundle_hash}"
-}
-
-prune_bundle_dir() {
-  local bundle_dir="$1"
-
-  require_nonnegative_integer "QPI_FUNCTION_BUNDLE_RETENTION_COUNT" "${QPI_FUNCTION_BUNDLE_RETENTION_COUNT}"
-  require_nonnegative_integer "QPI_FUNCTION_BUNDLE_RETENTION_DAYS" "${QPI_FUNCTION_BUNDLE_RETENTION_DAYS}"
-
-  mapfile -t old_hashes < <(
-    find "${bundle_dir}" -maxdepth 1 -type f -name '*.zip' -mtime +"${QPI_FUNCTION_BUNDLE_RETENTION_DAYS}" -printf '%f\n' |
-      sed 's/\.zip$//'
-  )
-  for bundle_hash in "${old_hashes[@]}"; do
-    prune_bundle_hash "${bundle_dir}" "${bundle_hash}"
-  done
-
-  find "${bundle_dir}" -maxdepth 1 -type d -name 'stage-*' -mtime +"${QPI_FUNCTION_BUNDLE_RETENTION_DAYS}" \
-    -exec rm -rf {} +
-
-  mapfile -t live_hashes < <(
-    find "${bundle_dir}" -maxdepth 1 -type f -name '*.zip' -printf '%T@ %f\n' |
-      sort -nr |
-      awk '{sub(/^[^ ]+ /, ""); sub(/\.zip$/, ""); print}'
-  )
-
-  if (( ${#live_hashes[@]} > QPI_FUNCTION_BUNDLE_RETENTION_COUNT )); then
-    for bundle_hash in "${live_hashes[@]:QPI_FUNCTION_BUNDLE_RETENTION_COUNT}"; do
-      prune_bundle_hash "${bundle_dir}" "${bundle_hash}"
-    done
-  fi
-}
-
 latest_version_id() {
   local versions_json
   local version_id
@@ -225,11 +205,7 @@ import sys
 
 with open(sys.argv[1], encoding="utf-8") as fh:
     payload = json.load(fh)
-if isinstance(payload, dict):
-    items = payload.get("versions") or payload.get("items") or []
-else:
-    items = payload
-
+items = payload if isinstance(payload, list) else (payload.get("versions") or payload.get("items") or [])
 if not items:
     raise SystemExit("No live function versions found; provision the function with Terraform first.")
 
@@ -326,25 +302,11 @@ PY
   rm -f "${args_file}"
 }
 
-emit_metadata() {
-  local bundle_path
-  local sha256
-  bundle_path="$(build_bundle)"
-  sha256="$(cat "${bundle_path}.sha256")"
-  python3 - <<'PY' "${bundle_path}" "${sha256}"
-import json
-import sys
-
-print(json.dumps({"zip_path": sys.argv[1], "sha256": sys.argv[2]}))
-PY
-}
-
 compare_version_configs() {
   local old_version_id="$1"
   local new_version_id="$2"
   local old_json
   local new_json
-  local compare_status=0
 
   old_json="$(mktemp)"
   new_json="$(mktemp)"
@@ -395,15 +357,38 @@ if old != new:
     raise SystemExit(1)
 PY
   then
-    compare_status=1
+    rm -f "${old_json}" "${new_json}"
+    return 1
   fi
+
   rm -f "${old_json}" "${new_json}"
-  return "${compare_status}"
+}
+
+emit_metadata() {
+  local bundle_path
+  local sha256
+  bundle_path="$(build_bundle)"
+  sha256="$(cat "${bundle_path}.sha256")"
+  python3 - <<'PY' "${bundle_path}" "${sha256}"
+import json
+import sys
+
+print(json.dumps({"zip_path": sys.argv[1], "sha256": sys.argv[2]}))
+PY
+}
+
+run_preflight() {
+  local -a args=(functions)
+  if [[ "${QPI_SKIP_FUNCTION_SCHEMA_CHECK}" == "1" ]]; then
+    args+=(--skip-schema-check)
+  fi
+  eval "$("${script_dir}/preflight.sh" "${args[@]}")"
 }
 
 deploy_bundle() {
   local bundle_path
   local bundle_size
+  local bundle_sha256
   local version_id
   local description
   local created_json
@@ -411,28 +396,40 @@ deploy_bundle() {
   local -a create_args
 
   resolve_git_token
-  require_env "GH_TOKEN"
-  require_env "YC_FOLDER_ID"
-  require_env "BOT_VM_HOST"
-  configure_yc_cli
+  qpi_require_env "GH_TOKEN"
+  qpi_require_env "YC_FOLDER_ID"
+  qpi_require_env "BOT_VM_HOST"
+  qpi_configure_yc_cli
 
-  BOT_VM_HOST="${BOT_VM_HOST}" \
-  BOT_VM_SSH_USER="${BOT_VM_SSH_USER:-ubuntu}" \
-  BOT_VM_SSH_PORT="${BOT_VM_SSH_PORT:-22}" \
-  BOT_VM_SSH_PRIVATE_KEY="${BOT_VM_SSH_PRIVATE_KEY:-}" \
-  BOT_VM_SSH_KEY_PATH="${BOT_VM_SSH_KEY_PATH:-}" \
-  "${repo_root}/scripts/deploy/schema_remote.sh" assert-clean
+  qpi_timing_init
 
-  bundle_path="$(build_bundle)"
+  qpi_phase_start "preflight"
+  run_preflight
+  qpi_phase_end
+
+  qpi_phase_start "bundle"
+  bundle_path="${QPI_FUNCTION_BUNDLE_PATH:-}"
+  if [[ -z "${bundle_path}" ]]; then
+    bundle_path="$(build_bundle)"
+  fi
   bundle_size="$(wc -c < "${bundle_path}")"
+  bundle_sha256="$(sha256sum "${bundle_path}" | awk '{print $1}')"
+  qpi_phase_end
+
+  if [[ "${QPI_PREDEPLOY_ONLY}" == "1" ]]; then
+    echo "function_name=${function_name}"
+    echo "bundle_path=${bundle_path}"
+    echo "bundle_size_bytes=${bundle_size}"
+    echo "bundle_sha256=${bundle_sha256}"
+    qpi_emit_timing_summary "Function Deploy (${service_name})"
+    exit 0
+  fi
+
   version_id="$(latest_version_id)"
   description="Direct code-only deploy $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   mapfile -d '' -t create_args < <(build_version_create_args "${version_id}")
 
-  echo "Bundle: ${bundle_path}"
-  echo "Bundle size (bytes): ${bundle_size}"
-  echo "Source live version: ${version_id}"
-
+  qpi_phase_start "publish"
   created_json="$(mktemp)"
   yc serverless function version create \
     --folder-id "${YC_FOLDER_ID}" \
@@ -456,9 +453,26 @@ print(version_id)
 PY
   )"
   rm -f "${created_json}"
+  qpi_phase_end
 
-  echo "Created function version: ${created_version_id}"
+  qpi_phase_start "verify"
   compare_version_configs "${version_id}" "${created_version_id}"
+  qpi_phase_end
+
+  echo "function_name=${function_name}"
+  echo "bundle_path=${bundle_path}"
+  echo "bundle_size_bytes=${bundle_size}"
+  echo "bundle_sha256=${bundle_sha256}"
+  echo "source_live_version=${version_id}"
+  echo "created_version=${created_version_id}"
+
+  qpi_append_step_summary "### Function Deploy Result"
+  qpi_append_step_summary ""
+  qpi_append_step_summary "- Function: \`${function_name}\`"
+  qpi_append_step_summary "- Bundle SHA256: \`${bundle_sha256}\`"
+  qpi_append_step_summary "- Created version: \`${created_version_id}\`"
+  qpi_append_step_summary ""
+  qpi_emit_timing_summary "Function Deploy (${service_name})"
 }
 
 case "${command_name}" in

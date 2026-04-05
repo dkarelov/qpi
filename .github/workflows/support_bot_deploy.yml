@@ -10,6 +10,12 @@ on:
       - "infra/scripts/remote_rollout_support_bot.sh"
       - "scripts/deploy/support_bot.sh"
   workflow_dispatch:
+    inputs:
+      preflight_only:
+        description: "Run image build/push and deploy preflight checks without rollout"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -18,8 +24,12 @@ jobs:
   build-image:
     runs-on: ubuntu-latest
     outputs:
-      image_tag: ${{ steps.meta.outputs.image_tag }}
-      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+      image_ref: ${{ steps.meta.outputs.image_ref }}
+      registry_id: ${{ steps.meta.outputs.registry_id }}
+    env:
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      SUPPORT_BOT_CONTAINER_REGISTRY_NAME: ${{ vars.SUPPORT_BOT_CONTAINER_REGISTRY_NAME }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -30,6 +40,13 @@ jobs:
           node-version: "24"
           cache: "npm"
           cache-dependency-path: apps/support-bot/upstream/package-lock.json
+
+      - name: Setup yc CLI
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          setup-python: "false"
+          install-uv: "false"
+          install-yc: "true"
 
       - name: Install dependencies
         working-directory: apps/support-bot/upstream
@@ -43,26 +60,33 @@ jobs:
         working-directory: apps/support-bot/upstream
         run: npm test
 
-      - name: Set image metadata
+      - name: Resolve image metadata
         id: meta
         run: |
+          yc config set token "${YC_TOKEN}" >/dev/null
+          yc config set folder-id "${YC_FOLDER_ID}" >/dev/null
+          registry_name="${SUPPORT_BOT_CONTAINER_REGISTRY_NAME:-qpi-support-bot-registry}"
+          registry_id="$(
+            yc container registry get --name "${registry_name}" --folder-id "${YC_FOLDER_ID}" --format json | \
+              python3 -c 'import json,sys; payload=json.load(sys.stdin); registry_id=payload.get("id"); assert registry_id, "Failed to resolve support-bot container registry id."; print(registry_id)'
+          )"
+          image_ref="cr.yandex/${registry_id}/support-bot:${GITHUB_SHA}"
           {
-            echo "image_tag=qpi-support-bot:${GITHUB_SHA}"
-            echo "artifact_name=support-bot-image-${GITHUB_SHA}.tar"
+            echo "registry_id=${registry_id}"
+            echo "image_ref=${image_ref}"
           } >> "${GITHUB_OUTPUT}"
 
-      - name: Build production image
-        run: docker build -f apps/support-bot/Dockerfile -t "${{ steps.meta.outputs.image_tag }}" apps/support-bot
+      - name: Authenticate Docker to Yandex Container Registry
+        run: |
+          yc config set token "${YC_TOKEN}" >/dev/null
+          yc config set folder-id "${YC_FOLDER_ID}" >/dev/null
+          registry_token="$(yc iam create-token)"
+          printf '%s' "${registry_token}" | docker login --username iam --password-stdin cr.yandex
 
-      - name: Save image archive
-        run: docker save -o "${RUNNER_TEMP}/${{ steps.meta.outputs.artifact_name }}" "${{ steps.meta.outputs.image_tag }}"
-
-      - name: Upload image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: support-bot-image
-          path: ${{ runner.temp }}/${{ steps.meta.outputs.artifact_name }}
-          if-no-files-found: error
+      - name: Build and push production image
+        run: |
+          docker build -f apps/support-bot/Dockerfile -t "${{ steps.meta.outputs.image_ref }}" apps/support-bot
+          docker push "${{ steps.meta.outputs.image_ref }}"
 
   start-private-runner:
     runs-on: ubuntu-latest
@@ -84,6 +108,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup yc CLI
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          setup-python: "false"
+          install-uv: "false"
+          install-yc: "true"
+
       - name: Validate required runner secrets
         run: |
           test -n "${YC_TOKEN}" || { echo "YC_TOKEN is required"; exit 1; }
@@ -92,15 +123,10 @@ jobs:
           test -n "${PRIVATE_RUNNER_SSH_PRIVATE_KEY}" || { echo "PRIVATE_RUNNER_SSH_PRIVATE_KEY is required"; exit 1; }
           test -n "${PRIVATE_RUNNER_BOOTSTRAP_TOKEN}" || { echo "PRIVATE_RUNNER_BOOTSTRAP_TOKEN is required"; exit 1; }
 
-      - name: Install yc CLI
-        run: |
-          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
-          echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
-
       - name: Start private runner
         run: scripts/deploy/private_runner.sh ensure-ready
 
-  deploy-support-bot:
+  predeploy-support-bot:
     runs-on: [self-hosted, linux, qpi-private]
     needs:
       - build-image
@@ -121,29 +147,45 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install yc CLI
-        run: |
-          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "${HOME}/yandex-cloud" -n
-          echo "${HOME}/yandex-cloud/bin" >> "${GITHUB_PATH}"
-
-      - name: Download image artifact
-        uses: actions/download-artifact@v4
+      - name: Setup yc CLI
+        uses: ./.github/actions/setup-qpi-deploy
         with:
-          name: support-bot-image
-          path: ${{ runner.temp }}/support-bot-image
+          setup-python: "false"
+          install-uv: "false"
+          install-yc: "true"
 
-      - name: Validate required deploy settings
-        run: |
-          test -n "${YC_TOKEN}" || { echo "YC_TOKEN is required"; exit 1; }
-          test -n "${YC_FOLDER_ID}" || { echo "YC_FOLDER_ID is required"; exit 1; }
-          test -n "${SUPPORT_BOT_INSTANCE_GROUP_NAME}" || { echo "SUPPORT_BOT_INSTANCE_GROUP_NAME is required"; exit 1; }
-          test -n "${SUPPORT_BOT_VM_SSH_PRIVATE_KEY}" || { echo "SUPPORT_BOT_VM_SSH_PRIVATE_KEY is required"; exit 1; }
-          test -n "${SUPPORT_BOT_TELEGRAM_BOT_TOKEN}" || { echo "SUPPORT_BOT_TELEGRAM_BOT_TOKEN is required"; exit 1; }
-          test -n "${SUPPORT_BOT_STAFFCHAT_ID}" || { echo "SUPPORT_BOT_STAFFCHAT_ID is required"; exit 1; }
-          test -n "${SUPPORT_BOT_OWNER_ID}" || { echo "SUPPORT_BOT_OWNER_ID is required"; exit 1; }
+      - name: Preflight support-bot deploy
+        run: scripts/deploy/preflight.sh support-bot
+
+  deploy-support-bot:
+    runs-on: [self-hosted, linux, qpi-private]
+    needs:
+      - build-image
+      - predeploy-support-bot
+    if: ${{ github.event.inputs.preflight_only != 'true' }}
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
+    env:
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      SUPPORT_BOT_INSTANCE_GROUP_NAME: ${{ vars.SUPPORT_BOT_INSTANCE_GROUP_NAME }}
+      SUPPORT_BOT_VM_SSH_USER: ${{ vars.SUPPORT_BOT_VM_SSH_USER }}
+      SUPPORT_BOT_TELEGRAM_BOT_TOKEN: ${{ secrets.SUPPORT_BOT_TELEGRAM_BOT_TOKEN }}
+      SUPPORT_BOT_STAFFCHAT_ID: ${{ vars.SUPPORT_BOT_STAFFCHAT_ID }}
+      SUPPORT_BOT_OWNER_ID: ${{ vars.SUPPORT_BOT_OWNER_ID }}
+      SUPPORT_BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
+      SUPPORT_BOT_RELEASE_ID: ${{ github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup yc CLI
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          setup-python: "false"
+          install-uv: "false"
+          install-yc: "true"
 
       - name: Deploy support bot
-        run: |
-          scripts/deploy/support_bot.sh \
-            "${RUNNER_TEMP}/support-bot-image/${{ needs.build-image.outputs.artifact_name }}" \
-            "${{ needs.build-image.outputs.image_tag }}"
+        run: scripts/deploy/support_bot.sh "${{ needs.build-image.outputs.image_ref }}"
