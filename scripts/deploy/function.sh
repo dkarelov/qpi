@@ -100,6 +100,7 @@ prune_bundle_hash() {
   rm -f \
     "${bundle_dir}/${bundle_hash}.zip" \
     "${bundle_dir}/${bundle_hash}.zip.sha256" \
+    "${bundle_dir}/${bundle_hash}.direct-url-requirements.txt" \
     "${bundle_dir}/${bundle_hash}.requirements.txt"
   rm -rf "${bundle_dir}/stage-${bundle_hash}"
 }
@@ -139,6 +140,7 @@ build_bundle() {
   local bundle_dir
   local stage_dir
   local bundle_path
+  local direct_requirements_path
   local requirements_path
   local staged_requirements_path
   local wheels_dir
@@ -151,6 +153,7 @@ build_bundle() {
   bundle_dir="${cache_root}/${service_name}"
   stage_dir="${bundle_dir}/stage-${manifest_hash}"
   bundle_path="${bundle_dir}/${manifest_hash}.zip"
+  direct_requirements_path="${bundle_dir}/${manifest_hash}.direct-url-requirements.txt"
   requirements_path="${bundle_dir}/${manifest_hash}.requirements.txt"
   staged_requirements_path="${stage_dir}/requirements.txt"
   wheels_dir="${stage_dir}/vendor/wheels"
@@ -175,7 +178,25 @@ build_bundle() {
     --output-file "${requirements_path}" >&2
 
   mkdir -p "${wheels_dir}"
-  python3 -m pip wheel --no-cache-dir --requirement "${requirements_path}" --wheel-dir "${wheels_dir}" >&2
+  python3 - "${requirements_path}" "${direct_requirements_path}" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+requirements_path = Path(sys.argv[1])
+direct_path = Path(sys.argv[2])
+
+direct_lines = [
+    line
+    for line in requirements_path.read_text(encoding="utf-8").splitlines()
+    if " @ git+" in line.strip() and not line.strip().startswith("#")
+]
+direct_path.write_text("\n".join(direct_lines) + ("\n" if direct_lines else ""), encoding="utf-8")
+PY
+  if [[ -s "${direct_requirements_path}" ]]; then
+    python3 -m pip wheel --no-cache-dir --requirement "${direct_requirements_path}" --wheel-dir "${wheels_dir}" >&2
+  fi
 
   python3 - "${requirements_path}" "${staged_requirements_path}" "${wheels_dir}" <<'PY'
 from __future__ import annotations
