@@ -220,7 +220,7 @@ for wheel in wheels_dir.glob("*.whl"):
     if len(parts) >= 2:
         wheel_versions[normalize_name(parts[0])] = parts[1]
 
-lines = ["--no-index", "--find-links ./vendor/wheels"]
+lines = ["--find-links ./vendor/wheels"]
 for raw_line in requirements_path.read_text(encoding="utf-8").splitlines():
     stripped = raw_line.strip()
     if " @ git+" in stripped and not stripped.startswith("#"):

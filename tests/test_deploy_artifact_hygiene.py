@@ -33,4 +33,5 @@ def test_function_bundle_script_does_not_write_tokenized_requirements_into_stage
 
     assert "x-access-token:${GH_TOKEN}" not in script
     assert "--find-links ./vendor/wheels" in script
+    assert '"--no-index"' not in script
     assert "Generated function requirements contain secret markers" in script
