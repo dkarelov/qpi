@@ -18,6 +18,8 @@ from libs.domain.public_refs import (
 from services.bot_api.callback_data import build_callback
 from services.bot_api.telegram_runtime import TelegramWebhookRuntime
 
+_TASK_UUID = "11111111-1111-4111-8111-111111111111"
+
 
 def _build_runtime(*, support_bot_username: str | None = "qpilka_support_bot") -> TelegramWebhookRuntime:
     settings = BotApiSettings.model_validate(
@@ -180,13 +182,14 @@ def test_buyer_listing_token_contains_search_phrase_product_count_and_brand() ->
     runtime = _build_runtime()
 
     token = runtime._build_buyer_listing_token(
+        task_uuid=_TASK_UUID,
         search_phrase="бумага а4 для принтера 500 листов белая",
         wb_product_id=552892532,
         brand_name="BRAUBERG",
     )
     decoded = json.loads(base64.b64decode(token).decode("utf-8"))
 
-    assert decoded == ["бумага а4 для принтера 500 листов белая", 552892532, 1, "BRAUBERG"]
+    assert decoded == [1, _TASK_UUID, "бумага а4 для принтера 500 листов белая", 552892532, 1, "BRAUBERG"]
 
 
 def test_token_instruction_contains_required_sections() -> None:
@@ -207,9 +210,7 @@ def test_listing_create_instruction_contains_new_fields_and_fx_reference() -> No
     text = runtime._listing_create_instruction_text(shop_title="Тушенка")
     assert "Создание объявления для магазина «Тушенка»" in text
     assert "<i>Отправьте сообщение с информацией об объявлении согласно формату ниже.</i>" in text
-    assert (
-        "артикул ВБ, кэшбэк в рублях, макс. заказов, поисковая фраза"
-    ) in text
+    assert ("артикул ВБ, кэшбэк в рублях, макс. заказов, поисковая фраза") in text
     assert "фраза для отзыва 1" in text
     assert "12345678, 100, 5, женские джинсы" in text
     assert "Конвертация в $" in text
@@ -295,6 +296,7 @@ def test_buyer_task_instruction_contains_title_link_and_deadline() -> None:
         {
             "display_title": "Джинсы женские прямые",
             "search_phrase": "женские джинсы",
+            "task_uuid": _TASK_UUID,
             "wb_product_id": 12345678,
             "wb_brand_name": "LeBrand",
             "reservation_expires_at": datetime(2026, 4, 4, 3, 31, tzinfo=UTC),
@@ -312,7 +314,7 @@ def test_buyer_task_instruction_contains_title_link_and_deadline() -> None:
     assert "до 04.04.2026 06:31 MSK (по истечении срока бронь отменится)." in text
     assert "Отправьте токен-подтверждение сюда." in text
     assert "Поисковая фраза:</b>" not in text
-    assert decoded == ["женские джинсы", 12345678, 1, "LeBrand"]
+    assert decoded == [1, _TASK_UUID, "женские джинсы", 12345678, 1, "LeBrand"]
 
 
 def test_buyer_listing_detail_hides_singleton_zero_size() -> None:
@@ -348,6 +350,7 @@ def test_buyer_review_instruction_contains_token_and_selected_phrases() -> None:
         {
             "display_title": "Джинсы женские прямые",
             "search_phrase": "женские джинсы",
+            "task_uuid": _TASK_UUID,
             "wb_product_id": 12345678,
             "review_phrases": ["в размер", "не садятся после стирки"],
         },
@@ -358,7 +361,7 @@ def test_buyer_review_instruction_contains_token_and_selected_phrases() -> None:
 
     assert "оставьте отзыв на 5 звезд" in text
     assert "Фразы для отзыва:</b> в размер; не садятся после стирки" in text
-    assert decoded == [12345678, "в размер", "не садятся после стирки"]
+    assert decoded == [2, _TASK_UUID, 12345678, "в размер", "не садятся после стирки"]
 
 
 def test_buyer_review_status_stays_in_yellow_bucket() -> None:
@@ -415,12 +418,15 @@ def test_support_link_builder_uses_support_bot_and_context_fallback() -> None:
         )
         == "https://t.me/qpilka_support_bot?start=buyer_purchase_P31_L21_S11"
     )
-    assert build_support_deep_link(
-        bot_username="qpilka_support_bot",
-        role="seller",
-        topic="listing",
-        refs=["L" + "1" * 80],
-    ) == "https://t.me/qpilka_support_bot?start=seller_generic"
+    assert (
+        build_support_deep_link(
+            bot_username="qpilka_support_bot",
+            role="seller",
+            topic="listing",
+            refs=["L" + "1" * 80],
+        )
+        == "https://t.me/qpilka_support_bot?start=seller_generic"
+    )
 
 
 def test_support_buttons_are_hidden_when_support_bot_username_is_missing() -> None:

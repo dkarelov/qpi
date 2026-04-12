@@ -172,18 +172,20 @@ async def test_runtime_schema_compat_apply_backfills_legacy_assignment_product_i
                 INSERT INTO assignments (
                     listing_id,
                     buyer_user_id,
+                    task_uuid,
                     wb_product_id,
                     status,
                     reward_usdt,
                     reservation_expires_at,
                     idempotency_key
                 )
-                VALUES (%s, %s, %s, 'order_verified', %s, %s, %s)
+                VALUES (%s, %s, %s, %s, 'order_verified', %s, %s, %s)
                 RETURNING id
                 """,
                 (
                     listing_id,
                     buyer_user_id,
+                    "11111111-1111-4111-8111-000000000021",
                     552892532,
                     Decimal("0.130000"),
                     datetime.now(UTC) + timedelta(hours=2),
@@ -197,6 +199,7 @@ async def test_runtime_schema_compat_apply_backfills_legacy_assignment_product_i
                     assignment_id,
                     listing_id,
                     buyer_user_id,
+                    task_uuid,
                     order_id,
                     wb_product_id,
                     ordered_at,
@@ -204,12 +207,13 @@ async def test_runtime_schema_compat_apply_backfills_legacy_assignment_product_i
                     raw_payload_json,
                     source
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, 1, '{}'::jsonb, 'plugin_base64')
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 1, '{}'::jsonb, 'plugin_base64')
                 """,
                 (
                     assignment_id,
                     listing_id,
                     buyer_user_id,
+                    "11111111-1111-4111-8111-000000000021",
                     "compat-order-1",
                     552892532,
                     datetime.now(UTC),
@@ -288,6 +292,7 @@ async def test_runtime_schema_compat_apply_migrates_review_phrases_to_text_array
                 INSERT INTO assignments (
                     listing_id,
                     buyer_user_id,
+                    task_uuid,
                     wb_product_id,
                     status,
                     reward_usdt,
@@ -296,12 +301,13 @@ async def test_runtime_schema_compat_apply_migrates_review_phrases_to_text_array
                     review_phrases,
                     idempotency_key
                 )
-                VALUES (%s, %s, %s, 'picked_up_wait_review', %s, %s, true, %s, %s)
+                VALUES (%s, %s, %s, %s, 'picked_up_wait_review', %s, %s, true, %s, %s)
                 RETURNING id
                 """,
                 (
                     listing_id,
                     buyer_user_id,
+                    "11111111-1111-4111-8111-000000000022",
                     552892534,
                     Decimal("0.130000"),
                     datetime.now(UTC) + timedelta(hours=2),
@@ -314,17 +320,13 @@ async def test_runtime_schema_compat_apply_migrates_review_phrases_to_text_array
 
     with psycopg.connect(isolated_database, autocommit=True) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "ALTER TABLE public.listings ADD COLUMN review_phrases_json jsonb NOT NULL DEFAULT '[]'::jsonb"
-            )
+            cur.execute("ALTER TABLE public.listings ADD COLUMN review_phrases_json jsonb NOT NULL DEFAULT '[]'::jsonb")
             cur.execute("UPDATE public.listings SET review_phrases_json = to_jsonb(review_phrases)")
             cur.execute("ALTER TABLE public.listings DROP COLUMN review_phrases")
             cur.execute(
                 "ALTER TABLE public.assignments ADD COLUMN review_phrases_json jsonb NOT NULL DEFAULT '[]'::jsonb"
             )
-            cur.execute(
-                "UPDATE public.assignments SET review_phrases_json = to_jsonb(review_phrases)"
-            )
+            cur.execute("UPDATE public.assignments SET review_phrases_json = to_jsonb(review_phrases)")
             cur.execute("ALTER TABLE public.assignments DROP COLUMN review_phrases")
 
     run_runtime_schema_compat_apply(isolated_database)
@@ -393,9 +395,7 @@ async def test_runtime_schema_compat_apply_widens_legacy_token_invalidation_sour
 
     with psycopg.connect(isolated_database, autocommit=True) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "ALTER TABLE public.listings DROP CONSTRAINT listings_pause_source_check"
-            )
+            cur.execute("ALTER TABLE public.listings DROP CONSTRAINT listings_pause_source_check")
             cur.execute(
                 """
                 ALTER TABLE public.listings
@@ -410,9 +410,7 @@ async def test_runtime_schema_compat_apply_widens_legacy_token_invalidation_sour
                 )
                 """
             )
-            cur.execute(
-                "ALTER TABLE public.shops DROP CONSTRAINT shops_wb_token_status_source_check"
-            )
+            cur.execute("ALTER TABLE public.shops DROP CONSTRAINT shops_wb_token_status_source_check")
             cur.execute(
                 """
                 ALTER TABLE public.shops
@@ -469,9 +467,7 @@ async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assig
 ) -> None:
     with psycopg.connect(isolated_database, autocommit=True) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "ALTER TABLE public.assignments DROP CONSTRAINT assignments_status_check"
-            )
+            cur.execute("ALTER TABLE public.assignments DROP CONSTRAINT assignments_status_check")
             cur.execute(
                 """
                 ALTER TABLE public.assignments
@@ -494,22 +490,10 @@ async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assig
                 )
                 """
             )
-            cur.execute(
-                "ALTER TABLE public.withdrawal_requests "
-                "DROP CONSTRAINT withdrawal_requests_status_check"
-            )
-            cur.execute(
-                "ALTER TABLE public.withdrawal_requests "
-                "ALTER COLUMN requester_user_id DROP NOT NULL"
-            )
-            cur.execute(
-                "ALTER TABLE public.withdrawal_requests "
-                "ALTER COLUMN requester_role DROP NOT NULL"
-            )
-            cur.execute(
-                "ALTER TABLE public.withdrawal_requests "
-                "ADD COLUMN buyer_user_id bigint"
-            )
+            cur.execute("ALTER TABLE public.withdrawal_requests DROP CONSTRAINT withdrawal_requests_status_check")
+            cur.execute("ALTER TABLE public.withdrawal_requests ALTER COLUMN requester_user_id DROP NOT NULL")
+            cur.execute("ALTER TABLE public.withdrawal_requests ALTER COLUMN requester_role DROP NOT NULL")
+            cur.execute("ALTER TABLE public.withdrawal_requests ADD COLUMN buyer_user_id bigint")
             cur.execute(
                 """
                 ALTER TABLE public.withdrawal_requests
@@ -646,18 +630,20 @@ async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assig
                 INSERT INTO assignments (
                     listing_id,
                     buyer_user_id,
+                    task_uuid,
                     wb_product_id,
                     status,
                     reward_usdt,
                     reservation_expires_at,
                     idempotency_key
                 )
-                VALUES (%s, %s, %s, 'eligible_for_withdrawal', %s, %s, %s)
+                VALUES (%s, %s, %s, %s, 'eligible_for_withdrawal', %s, %s, %s)
                 RETURNING id
                 """,
                 (
                     listing_id,
                     buyer_user_id,
+                    "11111111-1111-4111-8111-000000000023",
                     552892540,
                     Decimal("1.000000"),
                     datetime.now(UTC) + timedelta(hours=2),
@@ -670,18 +656,20 @@ async def test_runtime_schema_compat_apply_backfills_legacy_withdrawal_and_assig
                 INSERT INTO assignments (
                     listing_id,
                     buyer_user_id,
+                    task_uuid,
                     wb_product_id,
                     status,
                     reward_usdt,
                     reservation_expires_at,
                     idempotency_key
                 )
-                VALUES (%s, %s, %s, 'order_submitted', %s, %s, %s)
+                VALUES (%s, %s, %s, %s, 'order_submitted', %s, %s, %s)
                 RETURNING id
                 """,
                 (
                     second_listing_id,
                     buyer_user_id,
+                    "11111111-1111-4111-8111-000000000024",
                     552892541,
                     Decimal("1.000000"),
                     datetime.now(UTC) + timedelta(hours=2),

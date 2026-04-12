@@ -193,16 +193,19 @@ Persistence and schema:
 - Buyer-facing listing screens show buyer-visible title, WB subject, description, photo, sizes, characteristics, cashback in RUB with approximate percent, and `Цена` in RUB.
 - Buyer-facing listing screens/cards must not expose WB article (`Артикул WB` / `Артикул ВБ`), WB brand, or WB source title.
 - Buyer receives setup token (base64 JSON array):
-  - `[search_phrase, wb_product_id, 1, wb_brand_name]`, where `wb_brand_name` is an empty string when unavailable.
+  - `[1, task_uuid, search_phrase, wb_product_id, 1, wb_brand_name]`, where `task_uuid` is the immutable assignment UUID and `wb_brand_name` is an empty string when unavailable.
 - Buyer submits verification token (base64 JSON array):
-  - `[order_id, ordered_at]`, where `ordered_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
+  - `[1, task_uuid, wb_product_id, order_id, ordered_at]`, where `ordered_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
 - After pickup, buyer receives review setup token (base64 JSON array):
-  - `[wb_product_id, review_phrase_1?, review_phrase_2?]`, where phrases are omitted when the seller did not provide them.
+  - `[2, task_uuid, wb_product_id, review_phrase_1?, review_phrase_2?]`, where phrases are omitted when the seller did not provide them.
 - Buyer submits review confirmation token (base64 JSON array):
-  - `[wb_product_id, reviewed_at, 5, review_text]`, where `reviewed_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
+  - `[2, task_uuid, wb_product_id, reviewed_at, review_score, review_text]`, where `reviewed_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
 - Verification token must be submitted within 4 hours of reservation.
 - `order_id` is globally unique (`1 order_id = 1 slot`).
 - Review confirmation is mandatory after pickup. Without it, cashback stays frozen even after the unlock timer has passed.
+- Automatic review verification requires `review_score = 5` and presence of every non-empty required phrase selected for that assignment.
+- If automatic review verification fails, the review is stored for manual review, the assignment remains `picked_up_wait_review`, and cashback stays blocked until the buyer corrects the review or an admin manually verifies the token.
+- Verification/review tokens with mismatched `task_uuid`, wrong WB product, wrong buyer ownership, or wrong token type must be rejected without state changes.
 - Buyer can cancel purchase only while the assignment is still `reserved`.
 - Buyer cancellation is a distinct terminal lifecycle outcome (`buyer_cancelled`), separate from timeout expiry.
 - Validation must happen as early as possible in buyer flows and still be rechecked at final write/transfer time.
@@ -269,6 +272,7 @@ Transitions:
   - free-form reason/comment,
   - tx reference (e.g. `tx:...`).
 - `system_payout` balance provisioning remains an accepted implementation shortcut for externally funded credits, but every such top-up must create an immutable audit record in `system_balance_provisions`.
+- Admin `⚠️ Исключения` now covers both deposit anomalies and blocked buyer review confirmations; admins can manually verify a matching review-confirmation token for `P<assignment_id>` and audibly move the assignment to `picked_up_wait_unlock`.
 
 ### 4.5 Seller top-up auto-confirmation rules (blockchain checker)
 

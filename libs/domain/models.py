@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,7 @@ class AssignmentReservationResult:
     created: bool
     reward_usdt: Decimal
     reservation_expires_at: datetime
+    task_uuid: UUID
 
 
 @dataclass(frozen=True)
@@ -191,16 +193,20 @@ class BuyerReviewSubmitResult:
     assignment_id: int
     changed: bool
     status: str
+    task_uuid: UUID
     wb_product_id: int
     reviewed_at: datetime
     rating: int
     review_text: str
+    verification_status: str
+    verification_reason: str | None = None
 
 
 @dataclass(frozen=True)
 class BuyerAssignmentView:
     assignment_id: int
     listing_id: int
+    task_uuid: UUID
     shop_slug: str
     wb_product_id: int
     search_phrase: str
@@ -211,6 +217,8 @@ class BuyerAssignmentView:
     ordered_at: datetime | None
     review_required: bool = False
     review_phrases: list[str] = field(default_factory=list)
+    review_verification_status: str | None = None
+    review_verification_reason: str | None = None
     shop_id: int | None = None
     shop_title: str | None = None
     display_title: str | None = None
@@ -409,6 +417,24 @@ class AdminDepositReviewTxView:
 
 
 @dataclass(frozen=True)
+class AdminPendingReviewConfirmationView:
+    assignment_id: int
+    task_uuid: UUID
+    listing_id: int
+    buyer_user_id: int
+    buyer_telegram_id: int
+    buyer_username: str | None
+    shop_title: str
+    display_title: str
+    wb_product_id: int
+    reviewed_at: datetime
+    rating: int
+    review_text: str
+    review_phrases: list[str] = field(default_factory=list)
+    verification_reason: str | None = None
+
+
+@dataclass(frozen=True)
 class AdminExpiredDepositIntentView:
     deposit_intent_id: int
     seller_user_id: int
@@ -417,6 +443,19 @@ class AdminExpiredDepositIntentView:
     suffix_code: int
     status: str
     expires_at: datetime
+
+
+@dataclass(frozen=True)
+class AdminReviewVerificationResult:
+    assignment_id: int
+    changed: bool
+    status: str
+    task_uuid: UUID
+    wb_product_id: int
+    reviewed_at: datetime
+    rating: int
+    review_text: str
+    verification_status: str
 
 
 @dataclass(frozen=True)

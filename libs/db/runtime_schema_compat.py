@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 from collections.abc import Iterable
+from uuid import uuid4
 
 import psycopg
 
@@ -116,10 +117,7 @@ def _ensure_review_phrases_array_column(
     if not _table_exists(cur, table_name=table_name):
         return
     if not _column_exists(cur, table_name=table_name, column_name="review_phrases"):
-        cur.execute(
-            f"ALTER TABLE public.{table_name} "
-            "ADD COLUMN review_phrases text[] NOT NULL DEFAULT '{}'::text[]"
-        )
+        cur.execute(f"ALTER TABLE public.{table_name} ADD COLUMN review_phrases text[] NOT NULL DEFAULT '{{}}'::text[]")
     if not _column_exists(cur, table_name=table_name, column_name=legacy_json_column):
         return
     cur.execute(
@@ -212,9 +210,7 @@ def _ensure_accounts_account_kinds(cur: psycopg.Cursor) -> None:
     cur.execute(
         "ALTER TABLE public.accounts "
         "ADD CONSTRAINT accounts_account_kind_check CHECK ("
-        "account_kind = ANY (ARRAY["
-        + ", ".join(f"'{kind}'::text" for kind in _ACCOUNT_KINDS)
-        + "]))"
+        "account_kind = ANY (ARRAY[" + ", ".join(f"'{kind}'::text" for kind in _ACCOUNT_KINDS) + "]))"
     )
 
 
@@ -270,10 +266,7 @@ def _ensure_listing_metadata_columns(cur: psycopg.Cursor) -> None:
     for column_name in _LISTING_JSON_COLUMNS:
         if _column_exists(cur, table_name="listings", column_name=column_name):
             continue
-        cur.execute(
-            "ALTER TABLE public.listings "
-            f"ADD COLUMN {column_name} jsonb NOT NULL DEFAULT '[]'::jsonb"
-        )
+        cur.execute(f"ALTER TABLE public.listings ADD COLUMN {column_name} jsonb NOT NULL DEFAULT '[]'::jsonb")
 
     _ensure_review_phrases_array_column(cur, table_name="listings")
 
@@ -287,9 +280,7 @@ def _ensure_token_invalidation_sources(cur: psycopg.Cursor) -> None:
         )
         if constraint_def is None or "scrapper_401_unauthorized" not in constraint_def:
             if constraint_def is not None:
-                cur.execute(
-                    "ALTER TABLE public.listings DROP CONSTRAINT listings_pause_source_check"
-                )
+                cur.execute("ALTER TABLE public.listings DROP CONSTRAINT listings_pause_source_check")
             cur.execute(
                 "ALTER TABLE public.listings "
                 "ADD CONSTRAINT listings_pause_source_check CHECK ("
@@ -306,9 +297,7 @@ def _ensure_token_invalidation_sources(cur: psycopg.Cursor) -> None:
         )
         if constraint_def is None or "scrapper_401_unauthorized" not in constraint_def:
             if constraint_def is not None:
-                cur.execute(
-                    "ALTER TABLE public.shops DROP CONSTRAINT shops_wb_token_status_source_check"
-                )
+                cur.execute("ALTER TABLE public.shops DROP CONSTRAINT shops_wb_token_status_source_check")
             cur.execute(
                 "ALTER TABLE public.shops "
                 "ADD CONSTRAINT shops_wb_token_status_source_check CHECK ("
@@ -409,11 +398,199 @@ def _ensure_assignment_review_columns(cur: psycopg.Cursor) -> None:
         return
 
     if not _column_exists(cur, table_name="assignments", column_name="review_required"):
-        cur.execute(
-            "ALTER TABLE public.assignments "
-            "ADD COLUMN review_required boolean NOT NULL DEFAULT false"
-        )
+        cur.execute("ALTER TABLE public.assignments ADD COLUMN review_required boolean NOT NULL DEFAULT false")
     _ensure_review_phrases_array_column(cur, table_name="assignments")
+
+
+def _ensure_assignment_task_uuid(cur: psycopg.Cursor) -> None:
+    if not _table_exists(cur, table_name="assignments"):
+        return
+
+    if not _column_exists(cur, table_name="assignments", column_name="task_uuid"):
+        cur.execute("ALTER TABLE public.assignments ADD COLUMN task_uuid uuid")
+
+    cur.execute(
+        """
+        SELECT id
+        FROM public.assignments
+        WHERE task_uuid IS NULL
+        ORDER BY id ASC
+        """
+    )
+    for (assignment_id,) in cur.fetchall():
+        cur.execute(
+            """
+            UPDATE public.assignments
+            SET task_uuid = %s
+            WHERE id = %s
+            """,
+            (uuid4(), assignment_id),
+        )
+
+    cur.execute("SELECT COUNT(*) FROM public.assignments WHERE task_uuid IS NULL")
+    missing_count = int(cur.fetchone()[0])
+    if missing_count:
+        raise RuntimeError(
+            "runtime schema compatibility failed: assignments.task_uuid "
+            f"still has {missing_count} NULL rows after backfill"
+        )
+
+    cur.execute("ALTER TABLE public.assignments ALTER COLUMN task_uuid SET NOT NULL")
+    if not _index_exists(cur, index_name="uq_assignments_task_uuid"):
+        cur.execute(
+            """
+            CREATE UNIQUE INDEX uq_assignments_task_uuid
+            ON public.assignments USING btree (task_uuid)
+            """
+        )
+
+
+def _ensure_buyer_order_task_uuid(cur: psycopg.Cursor) -> None:
+    if not _table_exists(cur, table_name="buyer_orders"):
+        return
+
+    if not _column_exists(cur, table_name="buyer_orders", column_name="task_uuid"):
+        cur.execute("ALTER TABLE public.buyer_orders ADD COLUMN task_uuid uuid")
+
+    cur.execute(
+        """
+        UPDATE public.buyer_orders AS bo
+        SET task_uuid = a.task_uuid
+        FROM public.assignments AS a
+        WHERE bo.assignment_id = a.id
+          AND bo.task_uuid IS NULL
+        """
+    )
+
+    cur.execute("SELECT COUNT(*) FROM public.buyer_orders WHERE task_uuid IS NULL")
+    missing_count = int(cur.fetchone()[0])
+    if missing_count:
+        raise RuntimeError(
+            "runtime schema compatibility failed: buyer_orders.task_uuid "
+            f"still has {missing_count} NULL rows after backfill"
+        )
+
+    cur.execute("ALTER TABLE public.buyer_orders ALTER COLUMN task_uuid SET NOT NULL")
+
+
+def _ensure_buyer_review_verification_columns(cur: psycopg.Cursor) -> None:
+    if not _table_exists(cur, table_name="buyer_reviews"):
+        return
+
+    if not _column_exists(cur, table_name="buyer_reviews", column_name="task_uuid"):
+        cur.execute("ALTER TABLE public.buyer_reviews ADD COLUMN task_uuid uuid")
+    if not _column_exists(cur, table_name="buyer_reviews", column_name="verification_status"):
+        cur.execute("ALTER TABLE public.buyer_reviews ADD COLUMN verification_status text")
+    if not _column_exists(cur, table_name="buyer_reviews", column_name="verification_reason"):
+        cur.execute("ALTER TABLE public.buyer_reviews ADD COLUMN verification_reason text")
+    if not _column_exists(cur, table_name="buyer_reviews", column_name="verified_at"):
+        cur.execute("ALTER TABLE public.buyer_reviews ADD COLUMN verified_at timestamp with time zone")
+    if not _column_exists(cur, table_name="buyer_reviews", column_name="verified_by_admin_user_id"):
+        cur.execute("ALTER TABLE public.buyer_reviews ADD COLUMN verified_by_admin_user_id bigint")
+
+    cur.execute(
+        """
+        UPDATE public.buyer_reviews AS br
+        SET task_uuid = a.task_uuid
+        FROM public.assignments AS a
+        WHERE br.assignment_id = a.id
+          AND br.task_uuid IS NULL
+        """
+    )
+    cur.execute(
+        """
+        UPDATE public.buyer_reviews
+        SET verification_status = 'verified_auto',
+            verification_reason = NULL,
+            verified_at = COALESCE(verified_at, created_at)
+        WHERE verification_status IS NULL
+        """
+    )
+
+    cur.execute("SELECT COUNT(*) FROM public.buyer_reviews WHERE task_uuid IS NULL")
+    missing_task_uuid_count = int(cur.fetchone()[0])
+    if missing_task_uuid_count:
+        raise RuntimeError(
+            "runtime schema compatibility failed: buyer_reviews.task_uuid "
+            f"still has {missing_task_uuid_count} NULL rows after backfill"
+        )
+
+    cur.execute("SELECT COUNT(*) FROM public.buyer_reviews WHERE verification_status IS NULL")
+    missing_status_count = int(cur.fetchone()[0])
+    if missing_status_count:
+        raise RuntimeError(
+            "runtime schema compatibility failed: buyer_reviews.verification_status "
+            f"still has {missing_status_count} NULL rows after backfill"
+        )
+
+    cur.execute("ALTER TABLE public.buyer_reviews ALTER COLUMN task_uuid SET NOT NULL")
+    cur.execute("ALTER TABLE public.buyer_reviews ALTER COLUMN verification_status SET NOT NULL")
+
+    rating_constraint = _constraint_definition(
+        cur,
+        table_name="buyer_reviews",
+        constraint_name="buyer_reviews_rating_check",
+    )
+    normalized_rating_constraint = rating_constraint.lower() if rating_constraint else None
+    if normalized_rating_constraint is None or ">= 1" not in normalized_rating_constraint:
+        if rating_constraint is not None:
+            cur.execute("ALTER TABLE public.buyer_reviews DROP CONSTRAINT buyer_reviews_rating_check")
+        cur.execute(
+            """
+            ALTER TABLE public.buyer_reviews
+            ADD CONSTRAINT buyer_reviews_rating_check CHECK (rating >= 1 AND rating <= 5)
+            """
+        )
+
+    verification_status_constraint = _constraint_definition(
+        cur,
+        table_name="buyer_reviews",
+        constraint_name="buyer_reviews_verification_status_check",
+    )
+    normalized_verification_constraint = (
+        verification_status_constraint.lower() if verification_status_constraint else None
+    )
+    if (
+        normalized_verification_constraint is None
+        or "pending_manual" not in normalized_verification_constraint
+        or "verified_auto" not in normalized_verification_constraint
+        or "verified_admin" not in normalized_verification_constraint
+    ):
+        if verification_status_constraint is not None:
+            cur.execute("ALTER TABLE public.buyer_reviews DROP CONSTRAINT buyer_reviews_verification_status_check")
+        cur.execute(
+            """
+            ALTER TABLE public.buyer_reviews
+            ADD CONSTRAINT buyer_reviews_verification_status_check CHECK (
+                verification_status = ANY (
+                    ARRAY[
+                        'pending_manual'::text,
+                        'verified_auto'::text,
+                        'verified_admin'::text
+                    ]
+                )
+            )
+            """
+        )
+
+    if (
+        _constraint_definition(
+            cur,
+            table_name="buyer_reviews",
+            constraint_name="buyer_reviews_verified_by_admin_user_id_fkey",
+        )
+        is None
+    ):
+        cur.execute(
+            """
+            ALTER TABLE ONLY public.buyer_reviews
+            ADD CONSTRAINT buyer_reviews_verified_by_admin_user_id_fkey
+            FOREIGN KEY (verified_by_admin_user_id)
+            REFERENCES public.users (id)
+            ON UPDATE NO ACTION
+            ON DELETE NO ACTION
+            """
+        )
 
 
 def _ensure_assignment_order_tracking_index(cur: psycopg.Cursor) -> None:
@@ -556,8 +733,7 @@ def _ensure_withdrawal_request_requester_columns(cur: psycopg.Cursor) -> None:
     if requester_role_check_def is None or "seller" not in requester_role_check_def.lower():
         if requester_role_check_def is not None:
             cur.execute(
-                "ALTER TABLE public.withdrawal_requests "
-                "DROP CONSTRAINT withdrawal_requests_requester_role_check"
+                "ALTER TABLE public.withdrawal_requests DROP CONSTRAINT withdrawal_requests_requester_role_check"
             )
         cur.execute(
             """
@@ -685,8 +861,11 @@ def apply_runtime_schema_compatibility(database_url: str) -> None:
             _ensure_token_invalidation_sources(cur)
             _ensure_assignments_wb_product_id(cur)
             _ensure_assignment_review_columns(cur)
+            _ensure_assignment_task_uuid(cur)
             _ensure_assignment_order_tracking_index(cur)
             _ensure_buyer_orders_wb_product_id(cur)
+            _ensure_buyer_order_task_uuid(cur)
+            _ensure_buyer_review_verification_columns(cur)
             _ensure_withdrawal_request_requester_columns(cur)
             _normalize_withdrawal_and_assignment_statuses(cur)
             _ensure_wb_report_rows_wb_srid(cur)

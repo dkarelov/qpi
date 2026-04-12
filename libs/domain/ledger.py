@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
+from uuid import uuid4
 
 from psycopg import AsyncConnection
 from psycopg.errors import UniqueViolation
@@ -136,20 +137,14 @@ class FinanceService:
                 has_required_role = False
                 if required_role == "seller":
                     has_required_role = bool(
-                        user_row["is_seller"]
-                        or user_row["is_admin"]
-                        or user_row["role"] in {"seller", "admin"}
+                        user_row["is_seller"] or user_row["is_admin"] or user_row["role"] in {"seller", "admin"}
                     )
                 elif required_role == "buyer":
                     has_required_role = bool(
-                        user_row["is_buyer"]
-                        or user_row["is_admin"]
-                        or user_row["role"] in {"buyer", "admin"}
+                        user_row["is_buyer"] or user_row["is_admin"] or user_row["role"] in {"buyer", "admin"}
                     )
                 if not has_required_role:
-                    raise InvalidStateError(
-                        f"user capabilities are incompatible with {account_kind}"
-                    )
+                    raise InvalidStateError(f"user capabilities are incompatible with {account_kind}")
 
                 account_id = await self.ensure_owner_account_locked(
                     cur,
@@ -366,7 +361,7 @@ class FinanceService:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
-                    SELECT id, reward_usdt, reservation_expires_at
+                    SELECT id, reward_usdt, reservation_expires_at, task_uuid
                     FROM assignments
                     WHERE idempotency_key = %s
                     """,
@@ -379,6 +374,7 @@ class FinanceService:
                         created=False,
                         reward_usdt=existing["reward_usdt"],
                         reservation_expires_at=existing["reservation_expires_at"],
+                        task_uuid=existing["task_uuid"],
                     )
 
                 await cur.execute(
@@ -415,6 +411,8 @@ class FinanceService:
 
                 reward_usdt = _normalize_amount(listing["reward_usdt"])
 
+                task_uuid = uuid4()
+
                 try:
                     await cur.execute(
                         """
@@ -422,6 +420,7 @@ class FinanceService:
                             listing_id,
                             buyer_user_id,
                             wb_product_id,
+                            task_uuid,
                             status,
                             reward_usdt,
                             reservation_expires_at,
@@ -429,6 +428,7 @@ class FinanceService:
                             idempotency_key
                         )
                         VALUES (
+                            %s,
                             %s,
                             %s,
                             %s,
@@ -444,6 +444,7 @@ class FinanceService:
                             listing_id,
                             buyer_user_id,
                             listing["wb_product_id"],
+                            task_uuid,
                             reward_usdt,
                             reservation_timeout_hours,
                             review_required,
@@ -453,9 +454,7 @@ class FinanceService:
                 except UniqueViolation as exc:
                     constraint_name = exc.diag.constraint_name if exc.diag is not None else None
                     if constraint_name == "uq_assignments_buyer_product_active":
-                        raise InvalidStateError(
-                            "buyer already has assignment for this item"
-                        ) from exc
+                        raise InvalidStateError("buyer already has assignment for this item") from exc
                     raise
                 assignment = await cur.fetchone()
 
@@ -487,6 +486,7 @@ class FinanceService:
                     created=True,
                     reward_usdt=reward_usdt,
                     reservation_expires_at=assignment["reservation_expires_at"],
+                    task_uuid=task_uuid,
                 )
 
         return await run_in_transaction(self._pool, operation)
@@ -576,11 +576,9 @@ class FinanceService:
                 )
 
                 if notification_event == "reservation_expired":
-                    await (
-                        self._notifications.enqueue_assignment_reservation_expired_for_buyer_locked(
-                            cur,
-                            assignment_id=assignment_id,
-                        )
+                    await self._notifications.enqueue_assignment_reservation_expired_for_buyer_locked(
+                        cur,
+                        assignment_id=assignment_id,
                     )
                 elif notification_event == "assignment_returned":
                     await self._notifications.enqueue_assignment_returned_locked(
@@ -721,9 +719,7 @@ class FinanceService:
                 )
                 active = await cur.fetchone()
                 if active is not None:
-                    raise InvalidStateError(
-                        f"{normalized_requester_role} already has active withdrawal request"
-                    )
+                    raise InvalidStateError(f"{normalized_requester_role} already has active withdrawal request")
 
                 await self._transfer_locked(
                     cur,
@@ -839,9 +835,7 @@ class FinanceService:
                     return StatusChangeResult(changed=False)
 
                 if request["status"] != "withdraw_pending_admin":
-                    raise InvalidStateError(
-                        "withdrawal request cannot be cancelled from current state"
-                    )
+                    raise InvalidStateError("withdrawal request cannot be cancelled from current state")
 
                 await cur.execute(
                     """
@@ -919,9 +913,7 @@ class FinanceService:
                     return StatusChangeResult(changed=False)
 
                 if request["status"] != "withdraw_pending_admin":
-                    raise InvalidStateError(
-                        "withdrawal request cannot be rejected from current state"
-                    )
+                    raise InvalidStateError("withdrawal request cannot be rejected from current state")
 
                 await cur.execute(
                     """
@@ -1240,11 +1232,7 @@ class FinanceService:
                     cur,
                     target_user_id=target_user_id,
                     amount_usdt=amount,
-                    recipient_role=(
-                        "seller"
-                        if target_account["account_kind"] == "seller_available"
-                        else "buyer"
-                    ),
+                    recipient_role=("seller" if target_account["account_kind"] == "seller_available" else "buyer"),
                     dedupe_key=f"manual_deposit:{created['id']}:target:{target_user_id}",
                 )
 
@@ -1293,9 +1281,7 @@ class FinanceService:
                 row = await cur.fetchone()
                 return BuyerBalanceSnapshot(
                     buyer_available_usdt=_normalize_amount(row["buyer_available_usdt"]),
-                    buyer_withdraw_pending_usdt=_normalize_amount(
-                        row["buyer_withdraw_pending_usdt"]
-                    ),
+                    buyer_withdraw_pending_usdt=_normalize_amount(row["buyer_withdraw_pending_usdt"]),
                 )
 
         return await run_in_transaction(self._pool, operation, read_only=True)
@@ -1797,11 +1783,7 @@ class FinanceService:
         owner_user_id: int | None,
         account_kind: str,
     ) -> int:
-        account_code = (
-            f"user:{owner_user_id}:{account_kind}"
-            if owner_user_id is not None
-            else f"system:{account_kind}"
-        )
+        account_code = f"user:{owner_user_id}:{account_kind}" if owner_user_id is not None else f"system:{account_kind}"
         await cur.execute(
             """
             INSERT INTO accounts (

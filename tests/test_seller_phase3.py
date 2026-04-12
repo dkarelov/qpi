@@ -111,9 +111,7 @@ async def test_seller_bootstrap_is_idempotent_and_creates_accounts(db_pool) -> N
     assert first.user_id == second.user_id
     assert first.seller_available_account_id == second.seller_available_account_id
     assert first.seller_collateral_account_id == second.seller_collateral_account_id
-    assert (
-        first.seller_withdraw_pending_account_id == second.seller_withdraw_pending_account_id
-    )
+    assert first.seller_withdraw_pending_account_id == second.seller_withdraw_pending_account_id
 
     async with db_pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -846,6 +844,7 @@ async def test_seller_order_counters_follow_dashboard_buckets(db_pool) -> None:
                     INSERT INTO assignments (
                         listing_id,
                         buyer_user_id,
+                        task_uuid,
                         wb_product_id,
                         status,
                         reward_usdt,
@@ -853,23 +852,26 @@ async def test_seller_order_counters_follow_dashboard_buckets(db_pool) -> None:
                         idempotency_key
                     )
                     VALUES
-                        (%s, %s, %s, 'reserved', %s, timezone('utc', now()) + interval '1 hour', %s),
-                        (%s, %s, %s, 'order_verified', %s, timezone('utc', now()) + interval '1 hour', %s),
-                        (%s, %s, %s, 'withdraw_sent', %s, timezone('utc', now()) + interval '1 hour', %s)
+                        (%s, %s, %s, %s, 'reserved', %s, timezone('utc', now()) + interval '1 hour', %s),
+                        (%s, %s, %s, %s, 'order_verified', %s, timezone('utc', now()) + interval '1 hour', %s),
+                        (%s, %s, %s, %s, 'withdraw_sent', %s, timezone('utc', now()) + interval '1 hour', %s)
                     """,
                     (
                         reserved_listing_id,
                         buyer_user_id,
+                        "11111111-1111-4111-8111-000000000011",
                         91001,
                         Decimal("1.000000"),
                         "seller-counter-reserved",
                         ordered_listing_id,
                         buyer_user_id,
+                        "11111111-1111-4111-8111-000000000012",
                         91002,
                         Decimal("1.000000"),
                         "seller-counter-ordered",
                         paid_listing_id,
                         buyer_user_id,
+                        "11111111-1111-4111-8111-000000000013",
                         91003,
                         Decimal("1.000000"),
                         "seller-counter-paid",

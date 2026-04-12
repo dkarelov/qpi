@@ -43,6 +43,7 @@ from libs.domain.public_refs import (
     format_listing_ref,
     format_shop_ref,
     format_withdrawal_ref,
+    parse_assignment_ref,
     parse_chain_tx_ref,
     parse_deposit_ref,
     parse_withdrawal_ref,
@@ -123,6 +124,7 @@ _BUYER_COMMAND_PREFIXES = (
     "/shop",
     "/reserve",
     "/submit_order",
+    "/submit_review",
     "/my_orders",
 )
 _RUNTIME_REQUIRED_SCHEMA_COLUMNS = {
@@ -132,19 +134,26 @@ _RUNTIME_REQUIRED_SCHEMA_COLUMNS = {
         "is_admin",
     },
     "assignments": {
+        "task_uuid",
         "wb_product_id",
         "review_required",
         "review_phrases",
     },
     "buyer_orders": {
+        "task_uuid",
         "wb_product_id",
     },
     "buyer_reviews": {
         "assignment_id",
+        "task_uuid",
         "wb_product_id",
         "reviewed_at",
         "rating",
         "review_text",
+        "verification_status",
+        "verification_reason",
+        "verified_at",
+        "verified_by_admin_user_id",
     },
     "listings": {
         "display_title",
@@ -462,8 +471,7 @@ class TelegramWebhookRuntime:
         has_custom_certificate = bool(cert_path and key_path)
         webhook_info = await application.bot.get_webhook_info()
         webhook_matches = (
-            webhook_info.url == desired_url
-            and webhook_info.has_custom_certificate is has_custom_certificate
+            webhook_info.url == desired_url and webhook_info.has_custom_certificate is has_custom_certificate
         )
         if webhook_matches:
             self._logger.info(
@@ -563,9 +571,7 @@ class TelegramWebhookRuntime:
             raw_text=raw_text,
         )
         if response is None:
-            await update.message.reply_text(
-                "Команда не распознана. Используйте /start и кнопки меню."
-            )
+            await update.message.reply_text("Команда не распознана. Используйте /start и кнопки меню.")
             return
 
         if response.delete_source_message:
@@ -1088,11 +1094,7 @@ class TelegramWebhookRuntime:
                 role=_ROLE_SELLER,
                 prompt_type="seller_listing_title_edit",
                 sensitive=False,
-                extra={
-                    key: value
-                    for key, value in prompt_state.items()
-                    if key not in {"role", "type", "sensitive"}
-                },
+                extra={key: value for key, value in prompt_state.items() if key not in {"role", "type", "sensitive"}},
             )
             await self._replace_message(
                 query_message,
@@ -1112,9 +1114,7 @@ class TelegramWebhookRuntime:
                         "Редактирование объявлений недоступно, чтобы не создавать конфликтов "
                         "с уже начатыми заданиями покупателей.",
                     ],
-                    note=(
-                        "Если нужно изменить параметры, создайте новое объявление и удалите старое."
-                    ),
+                    note=("Если нужно изменить параметры, создайте новое объявление и удалите старое."),
                     warning=True,
                 ),
                 InlineKeyboardMarkup(
@@ -1314,9 +1314,7 @@ class TelegramWebhookRuntime:
                     ),
                 )
                 return
-            detail = await self._finance_service.get_withdrawal_request_detail(
-                request_id=int(payload.entity_id)
-            )
+            detail = await self._finance_service.get_withdrawal_request_detail(request_id=int(payload.entity_id))
             if (
                 detail.requester_user_id != seller.user_id
                 or detail.requester_role != "seller"
@@ -1346,10 +1344,7 @@ class TelegramWebhookRuntime:
                     title="Отмена вывода",
                     cta="Подтвердите действие ниже.",
                     lines=[
-                        (
-                            "<b>Сумма:</b> "
-                            f"{self._format_usdt_value(detail.amount_usdt, precise=True)} USDT"
-                        ),
+                        (f"<b>Сумма:</b> {self._format_usdt_value(detail.amount_usdt, precise=True)} USDT"),
                         f"<b>Адрес:</b> {html.escape(detail.payout_address)}",
                         "Средства вернутся в доступный баланс продавца.",
                     ],
@@ -1503,12 +1498,8 @@ class TelegramWebhookRuntime:
     ) -> None:
         await self._refresh_display_rub_per_usdt()
         shops = await self._seller_service.list_shops(seller_user_id=seller_user_id)
-        listings = await self._seller_service.list_listing_collateral_views(
-            seller_user_id=seller_user_id
-        )
-        balance = await self._seller_service.get_seller_balance_snapshot(
-            seller_user_id=seller_user_id
-        )
+        listings = await self._seller_service.list_listing_collateral_views(seller_user_id=seller_user_id)
+        balance = await self._seller_service.get_seller_balance_snapshot(seller_user_id=seller_user_id)
         orders = await self._load_seller_order_counters(seller_user_id=seller_user_id)
 
         listings_active = sum(1 for item in listings if item.status == "active")
@@ -1517,9 +1508,7 @@ class TelegramWebhookRuntime:
         shops_active = sum(1 for item in shops if self._is_valid_shop_token(item.wb_token_status))
         balance_free = balance.seller_available_usdt
         balance_total = (
-            balance.seller_available_usdt
-            + balance.seller_collateral_usdt
-            + balance.seller_withdraw_pending_usdt
+            balance.seller_available_usdt + balance.seller_collateral_usdt + balance.seller_withdraw_pending_usdt
         )
 
         text = self._screen_text(
@@ -1696,9 +1685,7 @@ class TelegramWebhookRuntime:
     async def _load_seller_order_counters(self, *, seller_user_id: int) -> dict[str, int]:
         if self._seller_service is None:
             return {"awaiting_order": 0, "ordered": 0, "picked_up": 0}
-        return await self._seller_service.get_seller_order_counters(
-            seller_user_id=seller_user_id
-        )
+        return await self._seller_service.get_seller_order_counters(seller_user_id=seller_user_id)
 
     async def _render_seller_shops(
         self,
@@ -1880,29 +1867,16 @@ class TelegramWebhookRuntime:
         return InlineKeyboardMarkup(keyboard_rows)
 
     def _shop_token_instruction_text(self, *, shop_title: str | None = None) -> str:
-        title = (
-            f"Токен WB API для магазина «{html.escape(shop_title)}»"
-            if shop_title
-            else "Создание магазина"
-        )
+        title = f"Токен WB API для магазина «{html.escape(shop_title)}»" if shop_title else "Создание магазина"
         lines = [
             "<b>Шаг 1 из 2.</b>",
             (
                 "<b>Как создать:</b> Создайте Базовый токен в режиме "
                 "«Только для чтения» с категориями: Контент, Статистика, Вопросы и отзывы."
             ),
-            (
-                "<b>Где найти:</b> ЛК ВБ -> Интеграции по API -> "
-                "Создать токен -> Для интеграции вручную."
-            ),
-            (
-                "<b>Зачем нужен токен:</b> для получения информации о товаре, "
-                "проверки статуса заказов и отзывов."
-            ),
-            (
-                "<b>Безопасно:</b> токен создается только в режиме чтения, "
-                "поэтому изменить данные с ним невозможно."
-            ),
+            ("<b>Где найти:</b> ЛК ВБ -> Интеграции по API -> Создать токен -> Для интеграции вручную."),
+            ("<b>Зачем нужен токен:</b> для получения информации о товаре, проверки статуса заказов и отзывов."),
+            ("<b>Безопасно:</b> токен создается только в режиме чтения, поэтому изменить данные с ним невозможно."),
         ]
         note = (
             "Сначала бот проверит токен, и только потом попросит название магазина."
@@ -1927,14 +1901,8 @@ class TelegramWebhookRuntime:
                     "<code>артикул ВБ, кэшбэк в рублях, макс. заказов, поисковая фраза, "
                     "фраза для отзыва 1, ... , фраза для отзыва 10</code>"
                 ),
-                (
-                    "<b>Пример:</b> <code>12345678, 100, 5, женские джинсы, "
-                    "в размер, не садятся после стирки</code>"
-                ),
-                (
-                    f"<b>Кэшбэк:</b> сумма для покупателя. "
-                    f"Конвертация в $ произойдет по текущему курсу ~{fx_text}."
-                ),
+                ("<b>Пример:</b> <code>12345678, 100, 5, женские джинсы, в размер, не садятся после стирки</code>"),
+                (f"<b>Кэшбэк:</b> сумма для покупателя. Конвертация в $ произойдет по текущему курсу ~{fx_text}."),
                 "<b>Макс заказов:</b> количество покупателей по этому объявлению.",
                 "<b>Поисковая фраза:</b> запрос, по которому покупатель будет искать товар.",
                 (
@@ -2012,9 +1980,9 @@ class TelegramWebhookRuntime:
             _USDT_EXACT_QUANT,
             rounding=ROUND_HALF_UP,
         )
-        collateral_required_usdt = (
-            reward_usdt * Decimal(slot_count) * _LISTING_COLLATERAL_FEE_MULTIPLIER
-        ).quantize(_USDT_EXACT_QUANT, rounding=ROUND_HALF_UP)
+        collateral_required_usdt = (reward_usdt * Decimal(slot_count) * _LISTING_COLLATERAL_FEE_MULTIPLIER).quantize(
+            _USDT_EXACT_QUANT, rounding=ROUND_HALF_UP
+        )
         cashback_percent = self._format_listing_cashback_percent(
             reference_price_rub=buyer_price_rub,
             cashback_rub=cashback_rub,
@@ -2291,9 +2259,9 @@ class TelegramWebhookRuntime:
             _RUB_QUANT,
             rounding=ROUND_HALF_UP,
         )
-        new_collateral = (
-            new_reward_usdt * Decimal(new_slot_count) * _LISTING_COLLATERAL_FEE_MULTIPLIER
-        ).quantize(_USDT_EXACT_QUANT, rounding=ROUND_HALF_UP)
+        new_collateral = (new_reward_usdt * Decimal(new_slot_count) * _LISTING_COLLATERAL_FEE_MULTIPLIER).quantize(
+            _USDT_EXACT_QUANT, rounding=ROUND_HALF_UP
+        )
         current_title = self._listing_display_title(
             display_title=listing.display_title,
             fallback=listing.search_phrase,
@@ -2305,11 +2273,7 @@ class TelegramWebhookRuntime:
         return self._screen_text(
             title="Подтвердите изменения",
             lines=[
-                (
-                    f"<b>Название:</b> "
-                    f"{html.escape(current_title)} "
-                    f"-> {html.escape(new_display_title)}"
-                ),
+                (f"<b>Название:</b> {html.escape(current_title)} -> {html.escape(new_display_title)}"),
                 (
                     f"<b>Поисковая фраза:</b> &quot;{html.escape(listing.search_phrase)}&quot; "
                     f"-> &quot;{html.escape(new_search_phrase)}&quot;"
@@ -2378,10 +2342,7 @@ class TelegramWebhookRuntime:
             self._screen_text(
                 title="Проверьте объявление перед активацией",
                 lines=lines,
-                note=(
-                    "Если все верно, активируйте объявление. "
-                    "После активации поделитесь ссылкой на магазин."
-                ),
+                note=("Если все верно, активируйте объявление. После активации поделитесь ссылкой на магазин."),
             )
             + "\n\n<b>Активировать объявление сейчас?</b>"
         )
@@ -2419,10 +2380,7 @@ class TelegramWebhookRuntime:
                     "Покупателям будет выплачен кэшбэк: "
                     f"{self._format_usdt_with_rub(preview.assignment_linked_reserved_usdt)}"
                 ),
-                (
-                    "Продавцу вернется: "
-                    f"{self._format_usdt_with_rub(preview.unassigned_collateral_usdt)}"
-                ),
+                (f"Продавцу вернется: {self._format_usdt_with_rub(preview.unassigned_collateral_usdt)}"),
             ],
             note=(
                 "При удалении магазина активные задания будут считаться выполненными, "
@@ -2514,9 +2472,7 @@ class TelegramWebhookRuntime:
         page: int = 1,
         notice: str | None = None,
     ) -> None:
-        listings = await self._seller_service.list_listing_collateral_views(
-            seller_user_id=seller_user_id
-        )
+        listings = await self._seller_service.list_listing_collateral_views(seller_user_id=seller_user_id)
         if not listings:
             lines = ["Объявлений пока нет."]
             if notice:
@@ -2577,9 +2533,7 @@ class TelegramWebhookRuntime:
             )
             shop_slug = shop_slugs.get(listing.shop_id)
             shop_link = (
-                f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop_slug}"
-                if shop_slug
-                else "—"
+                f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop_slug}" if shop_slug else "—"
             )
             lines.append(
                 f"<b>{number}. {html.escape(display_title)}</b>\n"
@@ -2602,10 +2556,7 @@ class TelegramWebhookRuntime:
                     }"
                 )
                 + "\n"
-                + (
-                    f"<b>Статус:</b> "
-                    f"{self._listing_activity_badge(is_active=listing.status == 'active')}"
-                )
+                + (f"<b>Статус:</b> {self._listing_activity_badge(is_active=listing.status == 'active')}")
             )
         title = "Объявления"
         if total_pages > 1:
@@ -2693,9 +2644,7 @@ class TelegramWebhookRuntime:
                 listing=listing,
                 collateral_view=collateral_view,
                 seller_available_usdt=balance_snapshot.seller_available_usdt,
-                shop_link=(
-                    f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"
-                ),
+                shop_link=(f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"),
                 notice=notice,
             ),
             self._seller_listing_detail_markup(
@@ -2747,9 +2696,7 @@ class TelegramWebhookRuntime:
                     tech_sizes=list(prompt_state.get("wb_tech_sizes") or []),
                     characteristics=list(prompt_state.get("wb_characteristics") or []),
                 ),
-                suggested_display_title=str(
-                    prompt_state.get("suggested_display_title", "")
-                ).strip(),
+                suggested_display_title=str(prompt_state.get("suggested_display_title", "")).strip(),
                 buyer_price_rub=int(prompt_state.get("reference_price_rub", 0)),
                 reference_price_source=str(prompt_state.get("reference_price_source", "")),
                 observed_buyer_price=(
@@ -2758,9 +2705,7 @@ class TelegramWebhookRuntime:
                         seller_price_rub=int(prompt_state.get("seller_price_rub", 0)),
                         spp_percent=int(prompt_state.get("spp_percent", 0)),
                         observed_at=(
-                            datetime.fromisoformat(
-                                str(prompt_state.get("reference_price_updated_at"))
-                            )
+                            datetime.fromisoformat(str(prompt_state.get("reference_price_updated_at")))
                             if prompt_state.get("reference_price_updated_at")
                             else None
                         ),
@@ -2807,9 +2752,7 @@ class TelegramWebhookRuntime:
                     if prompt_state.get("reference_price_rub") is not None
                     else None
                 ),
-                reference_price_source=(
-                    str(prompt_state.get("reference_price_source", "")).strip() or None
-                ),
+                reference_price_source=(str(prompt_state.get("reference_price_source", "")).strip() or None),
                 reference_price_updated_at=(
                     datetime.fromisoformat(str(prompt_state.get("reference_price_updated_at")))
                     if prompt_state.get("reference_price_updated_at")
@@ -3167,10 +3110,7 @@ class TelegramWebhookRuntime:
                     "Покупателям будет выплачен кэшбэк: "
                     f"{self._format_usdt_with_rub(preview.assignment_linked_reserved_usdt)}"
                 ),
-                (
-                    "Продавцу вернется: "
-                    f"{self._format_usdt_with_rub(preview.unassigned_collateral_usdt)}"
-                ),
+                (f"Продавцу вернется: {self._format_usdt_with_rub(preview.unassigned_collateral_usdt)}"),
             ],
             note=(
                 "При удалении объявления все активные задания будут считаться выполненными, "
@@ -3259,29 +3199,17 @@ class TelegramWebhookRuntime:
         seller_user_id: int,
     ) -> None:
         await self._refresh_display_rub_per_usdt()
-        snapshot = await self._seller_service.get_seller_balance_snapshot(
-            seller_user_id=seller_user_id
-        )
-        active_request = await self._finance_service.get_active_seller_withdrawal_request(
-            seller_user_id=seller_user_id
-        )
-        listings = await self._seller_service.list_listing_collateral_views(
-            seller_user_id=seller_user_id
-        )
+        snapshot = await self._seller_service.get_seller_balance_snapshot(seller_user_id=seller_user_id)
+        active_request = await self._finance_service.get_active_seller_withdrawal_request(seller_user_id=seller_user_id)
+        listings = await self._seller_service.list_listing_collateral_views(seller_user_id=seller_user_id)
         allocated_total = snapshot.seller_collateral_usdt
         required_total = sum((item.collateral_required_usdt for item in listings), Decimal("0"))
         activation_capacity = snapshot.seller_available_usdt + snapshot.seller_collateral_usdt
         shortfall = required_total - activation_capacity
         lines = [
-            (
-                "<b>Свободно для новых объявлений:</b> "
-                f"{self._format_usdt_with_rub(snapshot.seller_available_usdt)}"
-            ),
+            (f"<b>Свободно для новых объявлений:</b> {self._format_usdt_with_rub(snapshot.seller_available_usdt)}"),
             f"<b>Уже выделено под объявления:</b> {self._format_usdt_with_rub(allocated_total)}",
-            (
-                "<b>В процессе вывода:</b> "
-                f"{self._format_usdt_with_rub(snapshot.seller_withdraw_pending_usdt)}"
-            ),
+            (f"<b>В процессе вывода:</b> {self._format_usdt_with_rub(snapshot.seller_withdraw_pending_usdt)}"),
         ]
         if active_request is not None:
             withdraw_ref = self._withdrawal_ref(active_request.withdrawal_request_id)
@@ -3289,11 +3217,7 @@ class TelegramWebhookRuntime:
                 "\n".join(
                     [
                         self._entity_block_heading_with_ref(label="Активная заявка", ref=withdraw_ref),
-                        (
-                            "<b>Сумма:</b> "
-                            f"{self._format_usdt_value(active_request.amount_usdt, precise=True)}"
-                            " USDT"
-                        ),
+                        (f"<b>Сумма:</b> {self._format_usdt_value(active_request.amount_usdt, precise=True)} USDT"),
                         f"<b>Статус:</b> {self._withdraw_status_badge(active_request.status)}",
                         f"<b>Адрес:</b> {html.escape(active_request.payout_address)}",
                         f"<b>Создана:</b> {self._format_datetime_msk(active_request.requested_at)}",
@@ -3301,9 +3225,7 @@ class TelegramWebhookRuntime:
                 )
             )
         if shortfall > Decimal("0.000000"):
-            lines.append(
-                f"<b>Не хватает для активации:</b> {self._format_usdt_with_rub(shortfall)}"
-            )
+            lines.append(f"<b>Не хватает для активации:</b> {self._format_usdt_with_rub(shortfall)}")
         text = self._screen_text(
             title="Баланс продавца",
             cta="Выберите следующее действие ниже.",
@@ -3322,9 +3244,7 @@ class TelegramWebhookRuntime:
                 can_withdraw_available=(
                     active_request is None and snapshot.seller_available_usdt > Decimal("0.000000")
                 ),
-                active_request_id=(
-                    active_request.withdrawal_request_id if active_request is not None else None
-                ),
+                active_request_id=(active_request.withdrawal_request_id if active_request is not None else None),
             ),
             parse_mode="HTML",
         )
@@ -3396,13 +3316,9 @@ class TelegramWebhookRuntime:
                     f"<b>Создана:</b> {self._format_datetime_msk(item.requested_at)}",
                 ]
                 if item.processed_at is not None:
-                    block_lines.append(
-                        f"<b>Обработана:</b> {self._format_datetime_msk(item.processed_at)}"
-                    )
+                    block_lines.append(f"<b>Обработана:</b> {self._format_datetime_msk(item.processed_at)}")
                 if item.sent_at is not None:
-                    block_lines.append(
-                        f"<b>Отправлена:</b> {self._format_datetime_msk(item.sent_at)}"
-                    )
+                    block_lines.append(f"<b>Отправлена:</b> {self._format_datetime_msk(item.sent_at)}")
                 if item.note:
                     block_lines.append(f"<b>Комментарий:</b> {html.escape(item.note)}")
                 if item.tx_hash:
@@ -3414,9 +3330,7 @@ class TelegramWebhookRuntime:
             block_lines = []
             if entry_id > 0:
                 deposit_ref = self._deposit_ref(entry_id)
-                block_lines.append(
-                    self._entity_block_heading_with_ref(label="Счет на пополнение", ref=deposit_ref)
-                )
+                block_lines.append(self._entity_block_heading_with_ref(label="Счет на пополнение", ref=deposit_ref))
             else:
                 block_lines.append("<b>Пополнение</b>")
             block_lines.extend(
@@ -3429,10 +3343,7 @@ class TelegramWebhookRuntime:
             )
             block = "\n".join(block_lines)
             if item.status == "credited" and item.credited_amount_usdt is not None:
-                block += (
-                    f"\n<b>Зачислено:</b> "
-                    f"{self._format_usdt_value(item.credited_amount_usdt, precise=True)} USDT"
-                )
+                block += f"\n<b>Зачислено:</b> {self._format_usdt_value(item.credited_amount_usdt, precise=True)} USDT"
             if item.status == "manual_review":
                 block += "\n<i>Перевод найден, но нужна проверка администратором.</i>"
             if item.status == "expired":
@@ -3557,16 +3468,11 @@ class TelegramWebhookRuntime:
         query_message: Message | None,
         seller_user_id: int,
     ) -> None:
-        active_request = await self._finance_service.get_active_seller_withdrawal_request(
-            seller_user_id=seller_user_id
-        )
+        active_request = await self._finance_service.get_active_seller_withdrawal_request(seller_user_id=seller_user_id)
         if active_request is not None:
             await self._replace_message(
                 query_message,
-                (
-                    "У вас уже есть активная заявка на вывод. "
-                    "Дождитесь обработки или отмените ее на экране баланса."
-                ),
+                ("У вас уже есть активная заявка на вывод. Дождитесь обработки или отмените ее на экране баланса."),
                 InlineKeyboardMarkup(
                     [
                         [
@@ -3583,9 +3489,7 @@ class TelegramWebhookRuntime:
             )
             return
 
-        snapshot = await self._seller_service.get_seller_balance_snapshot(
-            seller_user_id=seller_user_id
-        )
+        snapshot = await self._seller_service.get_seller_balance_snapshot(seller_user_id=seller_user_id)
         amount = snapshot.seller_available_usdt
         if amount <= Decimal("0.000000"):
             await self._replace_message(
@@ -3619,10 +3523,7 @@ class TelegramWebhookRuntime:
         )
         await self._replace_message(
             query_message,
-            (
-                "Введите адрес кошелька в сети TON для вывода "
-                f"{self._format_usdt_value(amount, precise=True)} USDT."
-            ),
+            (f"Введите адрес кошелька в сети TON для вывода {self._format_usdt_value(amount, precise=True)} USDT."),
             InlineKeyboardMarkup(
                 [
                     [
@@ -4071,9 +3972,7 @@ class TelegramWebhookRuntime:
                 self._screen_text(
                     title="Отмена покупки",
                     cta="Подтвердите действие ниже.",
-                    lines=[
-                        "Бронь будет снята, а покупка снова станет доступна другим покупателям."
-                    ],
+                    lines=["Бронь будет снята, а покупка снова станет доступна другим покупателям."],
                 ),
                 InlineKeyboardMarkup(
                     [
@@ -4212,9 +4111,7 @@ class TelegramWebhookRuntime:
                     ),
                 )
                 return
-            detail = await self._finance_service.get_withdrawal_request_detail(
-                request_id=int(payload.entity_id)
-            )
+            detail = await self._finance_service.get_withdrawal_request_detail(request_id=int(payload.entity_id))
             if (
                 detail.requester_user_id != buyer.user_id
                 or detail.requester_role != "buyer"
@@ -4244,10 +4141,7 @@ class TelegramWebhookRuntime:
                     title="Отмена вывода",
                     cta="Подтвердите действие ниже.",
                     lines=[
-                        (
-                            "<b>Сумма:</b> "
-                            f"{self._format_usdt_value(detail.amount_usdt, precise=True)} USDT"
-                        ),
+                        (f"<b>Сумма:</b> {self._format_usdt_value(detail.amount_usdt, precise=True)} USDT"),
                         f"<b>Адрес:</b> {html.escape(detail.payout_address)}",
                         "Средства вернутся в доступный баланс покупателя.",
                     ],
@@ -4370,9 +4264,7 @@ class TelegramWebhookRuntime:
         assignments = self._buyer_visible_assignments(
             await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
         )
-        snapshot = await self._finance_service.get_buyer_balance_snapshot(
-            buyer_user_id=buyer_user_id
-        )
+        snapshot = await self._finance_service.get_buyer_balance_snapshot(buyer_user_id=buyer_user_id)
         bucket_counts = {
             "awaiting_order": 0,
             "ordered": 0,
@@ -4628,10 +4520,7 @@ class TelegramWebhookRuntime:
         shops_page = saved_shops[start_index:end_index]
         for idx, shop in enumerate(shops_page, start=start_index + 1):
             badge = self._buyer_shop_activity_badge(shop.active_listings_count)
-            lines.append(
-                f"<b>{idx}. {badge} {html.escape(shop.title)} "
-                f"(объявлений: {shop.active_listings_count})</b>"
-            )
+            lines.append(f"<b>{idx}. {badge} {html.escape(shop.title)} (объявлений: {shop.active_listings_count})</b>")
 
         await self._replace_message(
             query_message,
@@ -4780,8 +4669,7 @@ class TelegramWebhookRuntime:
             if active_same_listing:
                 await self._replace_message(
                     query_message,
-                    "У вас уже есть активная покупка по этому товару.\n"
-                    "Продолжить можно в разделе «📋 Покупки».",
+                    "У вас уже есть активная покупка по этому товару.\nПродолжить можно в разделе «📋 Покупки».",
                     InlineKeyboardMarkup(
                         [
                             [
@@ -4846,8 +4734,7 @@ class TelegramWebhookRuntime:
             if "already has assignment" in details:
                 await self._replace_message(
                     query_message,
-                    "У вас уже есть активная покупка по этому товару.\n"
-                    "Продолжить можно в разделе «📋 Покупки».",
+                    "У вас уже есть активная покупка по этому товару.\nПродолжить можно в разделе «📋 Покупки».",
                     InlineKeyboardMarkup(
                         [
                             [
@@ -5053,9 +4940,7 @@ class TelegramWebhookRuntime:
             result = await self._buyer_service.cancel_assignment_by_buyer(
                 buyer_user_id=buyer_user_id,
                 assignment_id=assignment_id,
-                idempotency_key=(
-                    f"tg-assignment-cancel:{buyer_user_id}:{assignment_id}:{callback_query_id}"
-                ),
+                idempotency_key=(f"tg-assignment-cancel:{buyer_user_id}:{assignment_id}:{callback_query_id}"),
             )
         except NotFoundError:
             await self._replace_message(
@@ -5208,6 +5093,20 @@ class TelegramWebhookRuntime:
                     ]
                 )
             elif item.status == "picked_up_wait_review":
+                if getattr(item, "review_verification_status", None) == "pending_manual":
+                    reason = str(getattr(item, "review_verification_reason", "") or "").strip()
+                    if reason:
+                        block_lines.append(
+                            "<b>Проверка отзыва:</b> "
+                            + html.escape(reason)
+                            + " Исправьте отзыв или напишите в поддержку со скриншотом."
+                        )
+                    else:
+                        block_lines.append(
+                            "<b>Проверка отзыва:</b> "
+                            "Автоматическая проверка не пройдена. "
+                            "Исправьте отзыв или напишите в поддержку со скриншотом."
+                        )
                 block_lines.append(self._buyer_review_instruction_text(item, include_title=False))
                 keyboard_rows.append(
                     [
@@ -5250,21 +5149,11 @@ class TelegramWebhookRuntime:
         buyer_user_id: int,
     ) -> None:
         await self._refresh_display_rub_per_usdt()
-        snapshot = await self._finance_service.get_buyer_balance_snapshot(
-            buyer_user_id=buyer_user_id
-        )
-        active_request = await self._finance_service.get_active_buyer_withdrawal_request(
-            buyer_user_id=buyer_user_id
-        )
+        snapshot = await self._finance_service.get_buyer_balance_snapshot(buyer_user_id=buyer_user_id)
+        active_request = await self._finance_service.get_active_buyer_withdrawal_request(buyer_user_id=buyer_user_id)
         lines = [
-            (
-                "<b>Доступно для вывода:</b> "
-                f"{self._format_buyer_balance_amount(snapshot.buyer_available_usdt)}"
-            ),
-            (
-                "<b>В процессе вывода:</b> "
-                f"{self._format_buyer_balance_amount(snapshot.buyer_withdraw_pending_usdt)}"
-            ),
+            (f"<b>Доступно для вывода:</b> {self._format_buyer_balance_amount(snapshot.buyer_available_usdt)}"),
+            (f"<b>В процессе вывода:</b> {self._format_buyer_balance_amount(snapshot.buyer_withdraw_pending_usdt)}"),
         ]
         if active_request is not None:
             withdraw_ref = self._withdrawal_ref(active_request.withdrawal_request_id)
@@ -5272,11 +5161,7 @@ class TelegramWebhookRuntime:
                 "\n".join(
                     [
                         self._entity_block_heading_with_ref(label="Активная заявка", ref=withdraw_ref),
-                        (
-                            "<b>Сумма:</b> "
-                            f"{self._format_usdt_value(active_request.amount_usdt, precise=True)}"
-                            " USDT"
-                        ),
+                        (f"<b>Сумма:</b> {self._format_usdt_value(active_request.amount_usdt, precise=True)} USDT"),
                         f"<b>Статус:</b> {self._withdraw_status_badge(active_request.status)}",
                         f"<b>Адрес:</b> {html.escape(active_request.payout_address)}",
                         f"<b>Создана:</b> {self._format_datetime_msk(active_request.requested_at)}",
@@ -5360,16 +5245,11 @@ class TelegramWebhookRuntime:
         query_message: Message | None,
         buyer_user_id: int,
     ) -> None:
-        active_request = await self._finance_service.get_active_buyer_withdrawal_request(
-            buyer_user_id=buyer_user_id
-        )
+        active_request = await self._finance_service.get_active_buyer_withdrawal_request(buyer_user_id=buyer_user_id)
         if active_request is not None:
             await self._replace_message(
                 query_message,
-                (
-                    "У вас уже есть активная заявка на вывод. "
-                    "Дождитесь обработки или отмените ее на экране баланса."
-                ),
+                ("У вас уже есть активная заявка на вывод. Дождитесь обработки или отмените ее на экране баланса."),
                 InlineKeyboardMarkup(
                     [
                         [
@@ -5386,9 +5266,7 @@ class TelegramWebhookRuntime:
             )
             return
 
-        snapshot = await self._finance_service.get_buyer_balance_snapshot(
-            buyer_user_id=buyer_user_id
-        )
+        snapshot = await self._finance_service.get_buyer_balance_snapshot(buyer_user_id=buyer_user_id)
         amount = snapshot.buyer_available_usdt
         if amount <= Decimal("0.000000"):
             await self._replace_message(
@@ -5422,10 +5300,7 @@ class TelegramWebhookRuntime:
         )
         await self._replace_message(
             query_message,
-            (
-                "Введите адрес кошелька в сети TON для вывода "
-                f"{self._format_usdt_value(amount, precise=True)} USDT."
-            ),
+            (f"Введите адрес кошелька в сети TON для вывода {self._format_usdt_value(amount, precise=True)} USDT."),
             InlineKeyboardMarkup(
                 [
                     [
@@ -5445,9 +5320,7 @@ class TelegramWebhookRuntime:
         buyer_user_id: int,
         page: int = 1,
     ) -> None:
-        total_items = await self._finance_service.count_buyer_withdrawal_history(
-            buyer_user_id=buyer_user_id
-        )
+        total_items = await self._finance_service.count_buyer_withdrawal_history(buyer_user_id=buyer_user_id)
         if total_items < 1:
             await self._replace_message(
                 query_message,
@@ -5496,9 +5369,7 @@ class TelegramWebhookRuntime:
                 f"<b>Создана:</b> {self._format_datetime_msk(item.requested_at)}",
             ]
             if item.processed_at is not None:
-                block_lines.append(
-                    f"<b>Обработана:</b> {self._format_datetime_msk(item.processed_at)}"
-                )
+                block_lines.append(f"<b>Обработана:</b> {self._format_datetime_msk(item.processed_at)}")
             if item.sent_at is not None:
                 block_lines.append(f"<b>Отправлена:</b> {self._format_datetime_msk(item.sent_at)}")
             if item.note:
@@ -5552,10 +5423,7 @@ class TelegramWebhookRuntime:
                 ),
                 cta="Проверьте статус выводов ниже.",
                 lines=lines,
-                note=(
-                    "Если вывод отклонен или задержан, проверьте статус "
-                    "и при необходимости оформите новую заявку."
-                ),
+                note=("Если вывод отклонен или задержан, проверьте статус и при необходимости оформите новую заявку."),
                 separate_blocks=True,
             ),
             InlineKeyboardMarkup(keyboard_rows),
@@ -5572,6 +5440,7 @@ class TelegramWebhookRuntime:
 
     async def _render_admin_dashboard(self, *, query_message: Message | None) -> None:
         pending_withdrawals = await self._finance_service.list_pending_withdrawals(limit=1000)
+        pending_review_confirmations = await self._buyer_service.list_admin_pending_review_confirmations(limit=1000)
         review_txs = await self._deposit_service.list_admin_review_txs(limit=1000)
         expired_intents = await self._deposit_service.list_admin_expired_intents(limit=1000)
 
@@ -5580,6 +5449,7 @@ class TelegramWebhookRuntime:
             cta="Выберите раздел ниже.",
             lines=[
                 f"<b>Выводы в очереди:</b> {len(pending_withdrawals)}",
+                f"<b>Отзывы на ручную проверку:</b> {len(pending_review_confirmations)}",
                 f"<b>Платежи на ручной разбор:</b> {len(review_txs)}",
                 f"<b>Просроченные счета:</b> {len(expired_intents)}",
             ],
@@ -5599,10 +5469,7 @@ class TelegramWebhookRuntime:
                 title="Выводы",
                 cta="Выберите действие ниже.",
                 lines=["Раздел для обработки и проверки заявок на вывод."],
-                note=(
-                    "Откройте ожидающие заявки, историю "
-                    "или перейдите к конкретной заявке по коду или номеру."
-                ),
+                note=("Откройте ожидающие заявки, историю или перейдите к конкретной заявке по коду или номеру."),
             ),
             InlineKeyboardMarkup(
                 [
@@ -5824,10 +5691,7 @@ class TelegramWebhookRuntime:
             block_lines = [
                 self._entity_block_heading_with_ref(label="Заявка", ref=withdraw_ref),
                 f"Роль: {self._withdraw_requester_label(item.requester_role)}",
-                (
-                    f"Telegram: {item.requester_telegram_id} "
-                    f"(@{html.escape(item.requester_username or '-')})"
-                ),
+                (f"Telegram: {item.requester_telegram_id} (@{html.escape(item.requester_username or '-')})"),
                 f"Сумма: {self._format_usdt_value(item.amount_usdt, precise=True)} USDT",
                 f"Статус: {self._withdraw_status_badge(item.status)}",
                 f"Кошелек: {html.escape(item.payout_address)}",
@@ -5882,9 +5746,7 @@ class TelegramWebhookRuntime:
             query_message,
             self._screen_text(
                 title=(
-                    f"История выводов · стр. {resolved_page}/{total_pages}"
-                    if total_pages > 1
-                    else "История выводов"
+                    f"История выводов · стр. {resolved_page}/{total_pages}" if total_pages > 1 else "История выводов"
                 ),
                 cta="Проверьте обработанные заявки ниже.",
                 lines=lines,
@@ -5901,9 +5763,7 @@ class TelegramWebhookRuntime:
         request_id: int,
     ) -> None:
         try:
-            detail = await self._finance_service.get_withdrawal_request_detail(
-                request_id=request_id
-            )
+            detail = await self._finance_service.get_withdrawal_request_detail(request_id=request_id)
         except NotFoundError:
             await self._replace_message(
                 query_message,
@@ -5913,8 +5773,7 @@ class TelegramWebhookRuntime:
 
         lines = [
             f"<b>Роль:</b> {self._withdraw_requester_label(detail.requester_role)}",
-            f"<b>Telegram:</b> {detail.requester_telegram_id} "
-            f"(@{html.escape(detail.requester_username or '-')})",
+            f"<b>Telegram:</b> {detail.requester_telegram_id} (@{html.escape(detail.requester_username or '-')})",
             f"<b>Сумма:</b> {self._format_usdt_value(detail.amount_usdt, precise=True)} USDT",
             f"<b>Статус:</b> {self._withdraw_status_badge(detail.status)}",
             f"<b>Кошелек:</b> {html.escape(detail.payout_address)}",
@@ -5968,9 +5827,7 @@ class TelegramWebhookRuntime:
             query_message,
             self._screen_text(
                 title="Заявка",
-                title_suffix_html=self._title_ref_suffix(
-                    self._withdrawal_ref(detail.withdrawal_request_id)
-                ),
+                title_suffix_html=self._title_ref_suffix(self._withdrawal_ref(detail.withdrawal_request_id)),
                 lines=lines,
             ),
             InlineKeyboardMarkup(keyboard_rows),
@@ -6021,9 +5878,7 @@ class TelegramWebhookRuntime:
         tx_hash: str,
     ) -> bool:
         try:
-            detail = await self._finance_service.get_withdrawal_request_detail(
-                request_id=request_id
-            )
+            detail = await self._finance_service.get_withdrawal_request_detail(request_id=request_id)
             validation_error = await self._validate_withdrawal_completion_tx(
                 tx_hash=tx_hash,
                 payout_address=detail.payout_address,
@@ -6099,11 +5954,7 @@ class TelegramWebhookRuntime:
                 target_telegram_id=target_telegram_id,
                 account_kind=normalized_account_kind,
             )
-            tx_hash = (
-                external_reference[3:].strip()
-                if external_reference.lower().startswith("tx:")
-                else None
-            )
+            tx_hash = external_reference[3:].strip() if external_reference.lower().startswith("tx:") else None
             result = await self._finance_service.manual_deposit_credit(
                 admin_user_id=admin_user_id,
                 target_user_id=target_user_id,
@@ -6162,18 +6013,35 @@ class TelegramWebhookRuntime:
         *,
         query_message: Message | None,
     ) -> None:
+        pending_reviews = await self._buyer_service.list_admin_pending_review_confirmations(limit=20)
         review_txs = await self._deposit_service.list_admin_review_txs(limit=20)
         expired_intents = await self._deposit_service.list_admin_expired_intents(limit=20)
 
-        lines = ["⚠️ Пополнения, требующие проверки:"]
+        lines: list[str] = []
+        if pending_reviews:
+            lines.append("Отзывы, требующие проверки:")
+            for item in pending_reviews:
+                phrases_text = html.escape(self._format_review_phrases_text(item.review_phrases))
+                lines.append(
+                    f"Покупка {self._assignment_ref(item.assignment_id)}\n"
+                    f"Покупатель: {item.buyer_telegram_id} "
+                    f"(@{html.escape(item.buyer_username or '-')})\n"
+                    f"Товар: {html.escape(item.display_title)}\n"
+                    f"Оценка: {item.rating} / 5\n"
+                    f"Фразы: {phrases_text}\n"
+                    f"Причина: {html.escape(item.verification_reason or '-')}\n"
+                    f"Текст: {html.escape(item.review_text)}"
+                )
+        else:
+            lines.append("Отзывов на ручную проверку нет.")
+
+        lines.append("⚠️ Пополнения, требующие проверки:")
         if review_txs:
             lines.append("Платежи на ручной разбор:")
             for tx in review_txs:
                 suffix = f"{tx.suffix_code:03d}" if tx.suffix_code is not None else "нет"
                 account_hint = (
-                    f"Счет: {self._deposit_ref(tx.matched_intent_id)}"
-                    if tx.matched_intent_id
-                    else "Счет: не найден"
+                    f"Счет: {self._deposit_ref(tx.matched_intent_id)}" if tx.matched_intent_id else "Счет: не найден"
                 )
                 lines.append(
                     f"Транзакция {self._chain_tx_ref(tx.chain_tx_id)}\n"
@@ -6204,6 +6072,15 @@ class TelegramWebhookRuntime:
             [
                 [
                     InlineKeyboardButton(
+                        text="✅ Проверить отзыв",
+                        callback_data=build_callback(
+                            flow=_ROLE_ADMIN,
+                            action="review_verify_prompt",
+                        ),
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
                         text="🔗 Привязать платеж к счету",
                         callback_data=build_callback(
                             flow=_ROLE_ADMIN,
@@ -6226,7 +6103,17 @@ class TelegramWebhookRuntime:
                 ],
             ]
         )
-        await self._replace_message(query_message, "\n\n".join(lines), keyboard)
+        await self._replace_message(
+            query_message,
+            self._screen_text(
+                title="Исключения",
+                cta="Проверьте отзывы и пополнения, которым нужна ручная обработка.",
+                lines=lines,
+                separate_blocks=True,
+            ),
+            keyboard,
+            parse_mode="HTML",
+        )
 
     async def _execute_admin_deposit_attach(
         self,
@@ -6240,9 +6127,7 @@ class TelegramWebhookRuntime:
             result = await self._deposit_service.credit_intent_from_chain_tx(
                 deposit_intent_id=deposit_intent_id,
                 chain_tx_id=chain_tx_id,
-                idempotency_key=(
-                    f"tg-admin-deposit-attach:{admin_user_id}:{chain_tx_id}:{deposit_intent_id}"
-                ),
+                idempotency_key=(f"tg-admin-deposit-attach:{admin_user_id}:{chain_tx_id}:{deposit_intent_id}"),
                 admin_user_id=admin_user_id,
                 allow_expired=True,
             )
@@ -6320,6 +6205,57 @@ class TelegramWebhookRuntime:
             changed=changed,
         )
 
+    async def _execute_admin_review_verification(
+        self,
+        *,
+        query_message: Message | None,
+        admin_user_id: int,
+        assignment_id: int,
+        payload_base64: str,
+    ) -> None:
+        try:
+            result = await self._buyer_service.admin_verify_review_payload(
+                admin_user_id=admin_user_id,
+                assignment_id=assignment_id,
+                payload_base64=payload_base64,
+                idempotency_key=f"tg-admin-review-verify:{admin_user_id}:{assignment_id}",
+            )
+        except PayloadValidationError:
+            await self._replace_message(
+                query_message,
+                (
+                    "Не удалось подтвердить отзыв.\n"
+                    "Проверьте, что токен относится к этой покупке и скопирован полностью."
+                ),
+                self._admin_menu_markup(),
+            )
+            return
+        except (NotFoundError, InvalidStateError):
+            await self._replace_message(
+                query_message,
+                "Не удалось подтвердить отзыв. Откройте исключения и попробуйте снова.",
+                self._admin_menu_markup(),
+            )
+            return
+
+        assignment_ref = self._assignment_ref(result.assignment_id)
+        if result.changed:
+            message = (
+                "Отзыв подтвержден вручную.\n"
+                f"Покупка: {assignment_ref}\n"
+                "Кэшбэк будет разблокирован по стандартному сроку после выкупа."
+            )
+        else:
+            message = f"Отзыв для покупки {assignment_ref} уже был подтвержден ранее."
+        await self._replace_message(query_message, message, self._admin_menu_markup())
+        self._logger.info(
+            "admin_review_verified",
+            assignment_id=result.assignment_id,
+            assignment_ref=assignment_ref,
+            changed=result.changed,
+            verification_status=result.verification_status,
+        )
+
     async def _resolve_manual_deposit_target(
         self,
         *,
@@ -6336,9 +6272,7 @@ class TelegramWebhookRuntime:
     async def _ensure_system_payout_account_id(self) -> int:
         if self._finance_service is None:
             raise RuntimeError("finance service is not initialized")
-        return await self._finance_service.ensure_system_account_id(
-            account_kind="system_payout"
-        )
+        return await self._finance_service.ensure_system_account_id(account_kind="system_payout")
 
     @staticmethod
     def _normalize_manual_deposit_account_kind(account_kind: str) -> str:
@@ -6372,9 +6306,7 @@ class TelegramWebhookRuntime:
         if self._notification_service is None:
             return
         await self._refresh_display_rub_per_usdt()
-        items = await self._notification_service.claim_pending(
-            limit=_NOTIFICATION_DISPATCH_BATCH_SIZE
-        )
+        items = await self._notification_service.claim_pending(limit=_NOTIFICATION_DISPATCH_BATCH_SIZE)
         for item in items:
             try:
                 rendered = render_telegram_notification(
@@ -6459,9 +6391,7 @@ class TelegramWebhookRuntime:
 
     @staticmethod
     def _notification_retry_delay(attempt_number: int) -> int:
-        delay = min(
-            _NOTIFICATION_DISPATCH_MAX_BACKOFF_SECONDS, 30 * (2 ** max(0, attempt_number - 1))
-        )
+        delay = min(_NOTIFICATION_DISPATCH_MAX_BACKOFF_SECONDS, 30 * (2 ** max(0, attempt_number - 1)))
         return int(delay)
 
     @staticmethod
@@ -6486,9 +6416,7 @@ class TelegramWebhookRuntime:
         reason: str | None = None,
         tx_hash: str | None = None,
     ) -> str:
-        subject = (
-            "Заявка продавца на вывод" if requester_role == "seller" else "Ваша заявка на вывод"
-        )
+        subject = "Заявка продавца на вывод" if requester_role == "seller" else "Ваша заявка на вывод"
         withdraw_ref = self._withdrawal_ref(request_id)
         if status == "rejected":
             message = f"{subject} {withdraw_ref} отклонена."
@@ -6697,6 +6625,32 @@ class TelegramWebhookRuntime:
         if action == "deposit_exceptions":
             await self._render_admin_deposit_exceptions(query_message=query_message)
             return
+        if action == "review_verify_prompt":
+            self._set_prompt(
+                context,
+                role=_ROLE_ADMIN,
+                prompt_type="admin_review_verify",
+                sensitive=True,
+                extra={"admin_user_id": admin_user_id},
+            )
+            await self._replace_message(
+                query_message,
+                "Введите: <код_покупки> <base64_review_token>.\nНапример: P31 eyJ...==",
+                InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                text="↩️ Назад к исключениям",
+                                callback_data=build_callback(
+                                    flow=_ROLE_ADMIN,
+                                    action="exceptions_section",
+                                ),
+                            )
+                        ]
+                    ]
+                ),
+            )
+            return
         if action == "deposit_attach_prompt":
             self._set_prompt(
                 context,
@@ -6852,10 +6806,7 @@ class TelegramWebhookRuntime:
             if seller_user_id < 1 or not token_ciphertext:
                 self._clear_prompt(context)
                 await message.reply_text(
-                    (
-                        "Не удалось продолжить создание магазина. "
-                        "Начните заново из раздела «🏪 Магазины»."
-                    ),
+                    ("Не удалось продолжить создание магазина. Начните заново из раздела «🏪 Магазины»."),
                     reply_markup=self._seller_back_markup(action="shops", label="↩️ К магазинам"),
                 )
                 return
@@ -6880,18 +6831,14 @@ class TelegramWebhookRuntime:
                 if "title" in details and ("exists" in details or "unique" in details):
                     error_text = "Магазин с таким названием уже есть.\nВведите другое название."
                 else:
-                    error_text = (
-                        "Не удалось создать магазин.\nПроверьте название и попробуйте еще раз."
-                    )
+                    error_text = "Не удалось создать магазин.\nПроверьте название и попробуйте еще раз."
                 await message.reply_text(
                     error_text,
                     reply_markup=self._seller_back_markup(action="shops", label="↩️ К магазинам"),
                 )
                 return
 
-            deep_link = (
-                f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"
-            )
+            deep_link = f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"
             self._clear_prompt(context)
             await message.reply_text(
                 (f"Магазин «{shop.title}» создан.\nСсылка для покупателей:\n{deep_link}"),
@@ -6907,9 +6854,7 @@ class TelegramWebhookRuntime:
             seller_user_id = int(prompt_state.get("seller_user_id", 0))
             if shop_id < 1:
                 self._clear_prompt(context)
-                await message.reply_text(
-                    "Не удалось продолжить ввод токена. Откройте карточку магазина заново."
-                )
+                await message.reply_text("Не удалось продолжить ввод токена. Откройте карточку магазина заново.")
                 return
             try:
                 response = await self._seller_processor.handle(
@@ -6928,10 +6873,7 @@ class TelegramWebhookRuntime:
                     query_message=message,
                     seller_user_id=seller_user_id,
                     shop_id=shop_id,
-                    notice=(
-                        "Не удалось проверить или сохранить токен. "
-                        "Попробуйте снова через карточку магазина."
-                    ),
+                    notice=("Не удалось проверить или сохранить токен. Попробуйте снова через карточку магазина."),
                 )
                 return
             self._clear_prompt(context)
@@ -6975,14 +6917,9 @@ class TelegramWebhookRuntime:
             except (NotFoundError, InvalidStateError) as exc:
                 details = str(exc).strip().lower()
                 if "title" in details and ("exists" in details or "unique" in details):
-                    error_text = (
-                        "Магазин с таким названием уже существует.\nВведите другое название."
-                    )
+                    error_text = "Магазин с таким названием уже существует.\nВведите другое название."
                 else:
-                    error_text = (
-                        "Не удалось переименовать магазин.\n"
-                        "Проверьте название и попробуйте еще раз."
-                    )
+                    error_text = "Не удалось переименовать магазин.\nПроверьте название и попробуйте еще раз."
                 await message.reply_text(
                     error_text,
                     reply_markup=self._seller_shop_detail_markup(
@@ -6992,14 +6929,9 @@ class TelegramWebhookRuntime:
                 )
                 return
             self._clear_prompt(context)
-            deep_link = (
-                f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"
-            )
+            deep_link = f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"
             await message.reply_text(
-                (
-                    f"Магазин переименован: «{shop.title}».\n"
-                    f"Новая ссылка для покупателей:\n{deep_link}"
-                ),
+                (f"Магазин переименован: «{shop.title}».\nНовая ссылка для покупателей:\n{deep_link}"),
                 reply_markup=self._seller_shop_detail_markup(
                     shop_id=shop_id,
                     token_is_valid=self._is_valid_shop_token(shop.wb_token_status),
@@ -7027,10 +6959,7 @@ class TelegramWebhookRuntime:
             if seller_user_id < 1 or shop_id < 1:
                 self._clear_prompt(context)
                 await message.reply_text(
-                    (
-                        "Не удалось продолжить создание объявления. "
-                        "Откройте раздел «📦 Объявления» заново."
-                    ),
+                    ("Не удалось продолжить создание объявления. Откройте раздел «📦 Объявления» заново."),
                     reply_markup=back_markup,
                 )
                 return
@@ -7085,10 +7014,7 @@ class TelegramWebhookRuntime:
                 return
             except (NotFoundError, InvalidStateError, InsufficientFundsError):
                 await message.reply_text(
-                    (
-                        "Не удалось создать объявление.\n"
-                        "Проверьте токен магазина, баланс и введенные значения."
-                    ),
+                    ("Не удалось создать объявление.\nПроверьте токен магазина, баланс и введенные значения."),
                     reply_markup=back_markup,
                 )
                 return
@@ -7102,9 +7028,7 @@ class TelegramWebhookRuntime:
                 slot_count=slots,
                 snapshot=snapshot,
                 suggested_display_title=suggested_display_title,
-                buyer_price_rub=(
-                    observed_buyer_price.buyer_price_rub if observed_buyer_price is not None else 0
-                ),
+                buyer_price_rub=(observed_buyer_price.buyer_price_rub if observed_buyer_price is not None else 0),
                 reference_price_source="orders" if observed_buyer_price is not None else "manual",
                 observed_buyer_price=observed_buyer_price,
             )
@@ -7139,31 +7063,18 @@ class TelegramWebhookRuntime:
                     "wb_tech_sizes": snapshot.tech_sizes,
                     "wb_characteristics": snapshot.characteristics,
                     "reference_price_rub": (
-                        observed_buyer_price.buyer_price_rub
-                        if observed_buyer_price is not None
-                        else None
+                        observed_buyer_price.buyer_price_rub if observed_buyer_price is not None else None
                     ),
-                    "reference_price_source": (
-                        "orders" if observed_buyer_price is not None else None
-                    ),
+                    "reference_price_source": ("orders" if observed_buyer_price is not None else None),
                     "reference_price_updated_at": (
                         observed_buyer_price.observed_at.isoformat()
-                        if (
-                            observed_buyer_price is not None
-                            and observed_buyer_price.observed_at is not None
-                        )
+                        if (observed_buyer_price is not None and observed_buyer_price.observed_at is not None)
                         else None
                     ),
                     "seller_price_rub": (
-                        observed_buyer_price.seller_price_rub
-                        if observed_buyer_price is not None
-                        else None
+                        observed_buyer_price.seller_price_rub if observed_buyer_price is not None else None
                     ),
-                    "spp_percent": (
-                        observed_buyer_price.spp_percent
-                        if observed_buyer_price is not None
-                        else None
-                    ),
+                    "spp_percent": (observed_buyer_price.spp_percent if observed_buyer_price is not None else None),
                     "suggested_display_title": suggested_display_title,
                 },
             )
@@ -7200,9 +7111,7 @@ class TelegramWebhookRuntime:
                 ]
             )
             try:
-                buyer_price_rub = int(
-                    Decimal(text.strip()).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-                )
+                buyer_price_rub = int(Decimal(text.strip()).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
             except (InvalidOperation, ValueError):
                 await message.reply_text(
                     "Неверный формат цены. Введите сумму в рублях, например 392.",
@@ -7223,11 +7132,7 @@ class TelegramWebhookRuntime:
                 role=_ROLE_SELLER,
                 prompt_type="seller_listing_create_review",
                 sensitive=False,
-                extra={
-                    key: value
-                    for key, value in prompt_state.items()
-                    if key not in {"role", "type", "sensitive"}
-                },
+                extra={key: value for key, value in prompt_state.items() if key not in {"role", "type", "sensitive"}},
             )
             await self._render_pending_listing_title_review(
                 query_message=message,
@@ -7261,15 +7166,9 @@ class TelegramWebhookRuntime:
                 role=_ROLE_SELLER,
                 prompt_type="seller_listing_create_review",
                 sensitive=False,
-                extra={
-                    key: value
-                    for key, value in prompt_state.items()
-                    if key not in {"role", "type", "sensitive"}
-                },
+                extra={key: value for key, value in prompt_state.items() if key not in {"role", "type", "sensitive"}},
             )
-            context.user_data[_PROMPT_STATE_KEY]["suggested_display_title"] = (
-                suggested_display_title
-            )
+            context.user_data[_PROMPT_STATE_KEY]["suggested_display_title"] = suggested_display_title
             await self._render_pending_listing_title_review(
                 query_message=message,
                 prompt_state=context.user_data[_PROMPT_STATE_KEY],
@@ -7328,9 +7227,7 @@ class TelegramWebhookRuntime:
             if amount <= Decimal("0.000000"):
                 await message.reply_text("Сумма должна быть больше 0.")
                 return
-            snapshot = await self._seller_service.get_seller_balance_snapshot(
-                seller_user_id=seller_user_id
-            )
+            snapshot = await self._seller_service.get_seller_balance_snapshot(seller_user_id=seller_user_id)
             if amount > snapshot.seller_available_usdt:
                 await message.reply_text(
                     "Сумма превышает доступный баланс.\n"
@@ -7347,10 +7244,7 @@ class TelegramWebhookRuntime:
                 extra={"seller_user_id": seller_user_id, "amount_usdt": str(amount)},
             )
             await message.reply_text(
-                (
-                    "Введите адрес кошелька в сети TON для вывода "
-                    f"{self._format_usdt_value(amount, precise=True)} USDT."
-                ),
+                (f"Введите адрес кошелька в сети TON для вывода {self._format_usdt_value(amount, precise=True)} USDT."),
                 reply_markup=InlineKeyboardMarkup(
                     [
                         [
@@ -7390,9 +7284,7 @@ class TelegramWebhookRuntime:
                 await message.reply_text(str(exc))
                 return
             except TonapiApiError:
-                await message.reply_text(
-                    "Не удалось проверить адрес через TonAPI. Повторите попытку позже."
-                )
+                await message.reply_text("Не удалось проверить адрес через TonAPI. Повторите попытку позже.")
                 return
 
             seller = await self._seller_service.bootstrap_seller(
@@ -7486,11 +7378,7 @@ class TelegramWebhookRuntime:
                 )
                 return
             target_shard = next(
-                (
-                    shard
-                    for shard in shards
-                    if shard.shard_key == self._settings.seller_collateral_shard_key
-                ),
+                (shard for shard in shards if shard.shard_key == self._settings.seller_collateral_shard_key),
                 shards[0],
             )
             try:
@@ -7504,10 +7392,7 @@ class TelegramWebhookRuntime:
                 details = str(exc).strip()
                 if "all 999 suffixes" in details:
                     await message.reply_text(
-                        (
-                            "Сейчас нельзя создать новый счет: достигнут лимит "
-                            "активных счетов.\nПопробуйте позже."
-                        ),
+                        ("Сейчас нельзя создать новый счет: достигнут лимит активных счетов.\nПопробуйте позже."),
                         reply_markup=self._seller_balance_menu_markup(),
                     )
                     return
@@ -7534,18 +7419,13 @@ class TelegramWebhookRuntime:
             await message.reply_text(
                 self._screen_text(
                     title="Счет на пополнение создан",
-                    title_suffix_html=self._title_ref_suffix(
-                        self._deposit_ref(intent.deposit_intent_id)
-                    ),
+                    title_suffix_html=self._title_ref_suffix(self._deposit_ref(intent.deposit_intent_id)),
                     cta=(
                         "Откройте Телеграм Кошелек или используйте ссылку для других "
                         "кошельков, либо скопируйте адрес и сумму вручную."
                     ),
                     lines=[
-                        (
-                            "<b>Срок действия:</b> "
-                            f"{self._settings.seller_collateral_invoice_ttl_hours} ч"
-                        ),
+                        (f"<b>Срок действия:</b> {self._settings.seller_collateral_invoice_ttl_hours} ч"),
                         "<b>Сеть:</b> USDT в сети TON (не ERC-20)",
                         f"<b>Адрес:</b> {self._format_copyable_code(intent.deposit_address)}",
                         (f"<b>Сумма (должна полностью совпадать):</b> {expected_amount_text}"),
@@ -7629,7 +7509,9 @@ class TelegramWebhookRuntime:
                     "Токен-подтверждение не принят.\n"
                     "Проверьте, что вы скопировали его полностью из расширения для этой покупки."
                 )
-                if details and "timezone" in details:
+                if any(token in details for token in ("task_uuid", "wb_product_id", "token_type")):
+                    await message.reply_text(f"{base}\nПохоже, токен относится к другой покупке или устарел.")
+                elif details and "timezone" in details:
                     await message.reply_text(
                         f"{base}\nПроверьте дату и время на устройстве и сформируйте токен заново."
                     )
@@ -7640,9 +7522,7 @@ class TelegramWebhookRuntime:
                 await message.reply_text("Этот номер заказа уже использован в другой покупке.")
                 return
             except InvalidStateError:
-                await message.reply_text(
-                    "Сейчас нельзя отправить токен-подтверждение для этой покупки."
-                )
+                await message.reply_text("Сейчас нельзя отправить токен-подтверждение для этой покупки.")
                 return
 
             self._clear_prompt(context)
@@ -7653,10 +7533,7 @@ class TelegramWebhookRuntime:
                     "Дальше мы автоматически проверим выкуп и начисление кэшбэка."
                 )
             else:
-                reply = (
-                    "Этот токен-подтверждение уже отправлен ранее.\n"
-                    f"Номер заказа: {result.order_id}"
-                )
+                reply = f"Этот токен-подтверждение уже отправлен ранее.\nНомер заказа: {result.order_id}"
             self._logger.info(
                 "buyer_payload_submitted",
                 telegram_update_id=update.update_id,
@@ -7686,33 +7563,56 @@ class TelegramWebhookRuntime:
             except NotFoundError:
                 await message.reply_text("Покупка не найдена.")
                 return
-            except PayloadValidationError:
-                await message.reply_text(
+            except PayloadValidationError as exc:
+                details = str(exc).strip().lower()
+                base = (
                     "Токен отзыва не принят.\n"
                     "Проверьте, что вы скопировали его полностью из расширения для этой покупки."
                 )
+                if any(token in details for token in ("task_uuid", "wb_product_id", "token_type")):
+                    await message.reply_text(f"{base}\nПохоже, токен относится к другой покупке или устарел.")
+                elif "timezone" in details:
+                    await message.reply_text(
+                        f"{base}\nПроверьте дату и время на устройстве и сформируйте токен заново."
+                    )
+                else:
+                    await message.reply_text(base)
                 return
             except InvalidStateError:
-                await message.reply_text(
-                    "Сейчас нельзя отправить токен отзыва для этой покупки."
-                )
+                await message.reply_text("Сейчас нельзя отправить токен отзыва для этой покупки.")
                 return
 
             self._clear_prompt(context)
-            if result.changed:
-                reply = (
-                    "Отзыв подтвержден! Ожидайте начисления кэшбэка через 15 дней после выкупа товара."
-                )
+            reply_markup = self._buyer_menu_markup()
+            if result.verification_status != "pending_manual":
+                if result.changed:
+                    reply = "Отзыв подтвержден. Ожидайте начисления кэшбэка через 15 дней после выкупа товара."
+                else:
+                    reply = "Этот токен отзыва уже был отправлен ранее."
             else:
-                reply = "Этот токен отзыва уже был отправлен ранее."
+                reason = str(result.verification_reason or "").strip()
+                if result.changed:
+                    reply = (
+                        "Токен отзыва сохранен, но автоматическая проверка не пройдена.\nКэшбэк пока не будет выплачен."
+                    )
+                else:
+                    reply = "Этот токен отзыва уже был отправлен ранее.\nКэшбэк по покупке все еще заблокирован."
+                if reason:
+                    reply += f"\nПричина: {reason}"
+                reply += (
+                    "\nИсправьте отзыв и отправьте новый токен "
+                    "или напишите в поддержку со скриншотом опубликованного отзыва."
+                )
+                reply_markup = self._buyer_review_followup_markup(assignment_id=result.assignment_id)
             self._logger.info(
                 "buyer_review_payload_submitted",
                 telegram_update_id=update.update_id,
                 assignment_id=result.assignment_id,
                 assignment_ref=self._assignment_ref(result.assignment_id),
                 changed=result.changed,
+                verification_status=result.verification_status,
             )
-            await message.reply_text(reply, reply_markup=self._buyer_menu_markup())
+            await message.reply_text(reply, reply_markup=reply_markup)
             return
 
         if prompt_type == "buyer_withdraw_amount":
@@ -7742,9 +7642,7 @@ class TelegramWebhookRuntime:
             if amount <= Decimal("0.000000"):
                 await message.reply_text("Сумма должна быть больше 0.")
                 return
-            snapshot = await self._finance_service.get_buyer_balance_snapshot(
-                buyer_user_id=buyer_user_id
-            )
+            snapshot = await self._finance_service.get_buyer_balance_snapshot(buyer_user_id=buyer_user_id)
             if amount > snapshot.buyer_available_usdt:
                 await message.reply_text(
                     "Сумма превышает доступный баланс.\n"
@@ -7761,10 +7659,7 @@ class TelegramWebhookRuntime:
                 extra={"buyer_user_id": buyer_user_id, "amount_usdt": str(amount)},
             )
             await message.reply_text(
-                (
-                    "Введите адрес кошелька в сети TON для вывода "
-                    f"{self._format_usdt_value(amount, precise=True)} USDT."
-                ),
+                (f"Введите адрес кошелька в сети TON для вывода {self._format_usdt_value(amount, precise=True)} USDT."),
                 reply_markup=InlineKeyboardMarkup(
                     [
                         [
@@ -7804,9 +7699,7 @@ class TelegramWebhookRuntime:
                 await message.reply_text(str(exc))
                 return
             except TonapiApiError:
-                await message.reply_text(
-                    "Не удалось проверить адрес через TonAPI. Повторите попытку позже."
-                )
+                await message.reply_text("Не удалось проверить адрес через TonAPI. Повторите попытку позже.")
                 return
 
             buyer = await self._buyer_service.bootstrap_buyer(
@@ -7929,9 +7822,7 @@ class TelegramWebhookRuntime:
             admin_user_id = int(prompt_state.get("admin_user_id", 0))
             tokens = text.split(maxsplit=3)
             if len(tokens) != 4:
-                await message.reply_text(
-                    "Формат:\n<telegram_id> <роль> <сумма_usdt> <комментарий_или_ссылка>"
-                )
+                await message.reply_text("Формат:\n<telegram_id> <роль> <сумма_usdt> <комментарий_или_ссылка>")
                 return
             telegram_id_raw, account_kind, amount_raw, external_reference = tokens
             if not telegram_id_raw.isdigit():
@@ -7959,6 +7850,31 @@ class TelegramWebhookRuntime:
                 account_kind=account_kind,
                 amount_usdt=amount,
                 external_reference=external_reference,
+            )
+            return
+
+        if prompt_type == "admin_review_verify":
+            admin_user_id = int(prompt_state.get("admin_user_id", 0))
+            tokens = text.split(maxsplit=1)
+            if len(tokens) != 2:
+                await message.reply_text("Формат: <код_покупки> <base64_review_token>")
+                return
+            assignment_raw, payload_base64 = tokens
+            try:
+                assignment_id = self._parse_assignment_reference(assignment_raw)
+            except ValueError:
+                await message.reply_text("Используйте код покупки вида P31 или обычное число.")
+                return
+            if admin_user_id < 1:
+                self._clear_prompt(context)
+                await message.reply_text("Ошибка контекста админа. Откройте меню заново.")
+                return
+            self._clear_prompt(context)
+            await self._execute_admin_review_verification(
+                query_message=message,
+                admin_user_id=admin_user_id,
+                assignment_id=assignment_id,
+                payload_base64=payload_base64.strip(),
             )
             return
 
@@ -8090,10 +8006,7 @@ class TelegramWebhookRuntime:
                 text = self._screen_text(
                     title=html.escape(header),
                     title_suffix_html=self._title_ref_suffix(shop_ref),
-                    cta=(
-                        "У вас уже есть активная покупка в этом магазине. "
-                        "Других объявлений здесь пока нет."
-                    ),
+                    cta=("У вас уже есть активная покупка в этом магазине. Других объявлений здесь пока нет."),
                 )
                 keyboard_rows = [
                     [
@@ -8381,9 +8294,7 @@ class TelegramWebhookRuntime:
         if ":" not in normalized_address and len(normalized_address) == 48:
             first_char = normalized_address[0]
             if first_char in _TON_FRIENDLY_TESTNET_PREFIXES:
-                raise ValueError(
-                    "Нужен адрес USDT в сети TON mainnet. Testnet-адреса не поддерживаются."
-                )
+                raise ValueError("Нужен адрес USDT в сети TON mainnet. Testnet-адреса не поддерживаются.")
             if first_char not in _TON_FRIENDLY_MAINNET_PREFIXES:
                 raise ValueError("Похоже, адрес введен в неверном формате. Повторите ввод.")
         if self._tonapi_client is None:
@@ -8413,9 +8324,7 @@ class TelegramWebhookRuntime:
             raise TonapiApiError(status_code=None, message="TonAPI client is not ready")
 
         payout_wallet_raw = (await self._resolve_payout_wallet_raw_form()).strip().lower()
-        destination_raw = (
-            (await self._parse_ton_mainnet_address(address=payout_address)).strip().lower()
-        )
+        destination_raw = (await self._parse_ton_mainnet_address(address=payout_address)).strip().lower()
         expected_amount = amount_usdt.quantize(_USDT_EXACT_QUANT, rounding=ROUND_HALF_UP)
         before_lt: int | None = None
 
@@ -8451,9 +8360,7 @@ class TelegramWebhookRuntime:
                 break
             before_lt = page.next_from
 
-        return (
-            "Транзакция с таким хэшем пока не найдена в истории TON USDT. Повторите попытку позже."
-        )
+        return "Транзакция с таким хэшем пока не найдена в истории TON USDT. Повторите попытку позже."
 
     @staticmethod
     def _screen_text(
@@ -8475,9 +8382,7 @@ class TelegramWebhookRuntime:
             decorated_title = f"🧑‍💼 {title}"
         elif plain_title.startswith("Кабинет покупателя"):
             decorated_title = f"🛍️ {title}"
-        elif plain_title.startswith(
-            ("Магазины", "Магазин", "Токен WB API", "Создание магазина", "Удаление магазина")
-        ):
+        elif plain_title.startswith(("Магазины", "Магазин", "Токен WB API", "Создание магазина", "Удаление магазина")):
             decorated_title = f"🏪 {title}"
         elif plain_title.startswith(
             (
@@ -8495,9 +8400,7 @@ class TelegramWebhookRuntime:
             )
         ):
             decorated_title = f"📦 {title}"
-        elif plain_title.startswith(
-            ("Покупки", "Покупка", "Токен-подтверждение", "Токен отзыва", "Отмена покупки")
-        ):
+        elif plain_title.startswith(("Покупки", "Покупка", "Токен-подтверждение", "Токен отзыва", "Отмена покупки")):
             decorated_title = f"📋 {title}"
         elif plain_title.startswith(("Счет на пополнение", "Как перевести USDT")):
             decorated_title = f"💰 {title}"
@@ -8567,6 +8470,10 @@ class TelegramWebhookRuntime:
     @staticmethod
     def _assignment_ref(assignment_id: int) -> str:
         return format_assignment_ref(assignment_id)
+
+    @staticmethod
+    def _parse_assignment_reference(value: str) -> int:
+        return parse_assignment_ref(value)
 
     @staticmethod
     def _withdrawal_ref(withdrawal_request_id: int) -> str:
@@ -8653,10 +8560,7 @@ class TelegramWebhookRuntime:
         text: str | None = None,
     ) -> str:
         normalized_address = destination_address.strip()
-        base_units = int(
-            expected_amount_usdt.quantize(_USDT_EXACT_QUANT, rounding=ROUND_HALF_UP)
-            * Decimal("1000000")
-        )
+        base_units = int(expected_amount_usdt.quantize(_USDT_EXACT_QUANT, rounding=ROUND_HALF_UP) * Decimal("1000000"))
         params = {
             "jetton": self._settings.tonapi_usdt_jetton_master,
             "amount": str(base_units),
@@ -8673,11 +8577,14 @@ class TelegramWebhookRuntime:
     def _build_buyer_listing_token(
         self,
         *,
+        task_uuid: str,
         search_phrase: str,
         wb_product_id: int,
         brand_name: str | None,
     ) -> str:
         payload = [
+            1,
+            task_uuid,
             search_phrase,
             wb_product_id,
             _BUYER_TASK_COMPANION_PRODUCTS,
@@ -8689,16 +8596,18 @@ class TelegramWebhookRuntime:
     def _build_buyer_review_token(
         self,
         *,
+        task_uuid: str,
         wb_product_id: int,
         review_phrases: list[str] | None,
     ) -> str:
-        payload: list[Any] = [wb_product_id]
+        payload: list[Any] = [2, task_uuid, wb_product_id]
         payload.extend(self._normalize_review_phrases(review_phrases)[:2])
         raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         return base64.b64encode(raw.encode("utf-8")).decode("ascii")
 
     def _buyer_task_instruction_text(self, assignment, *, include_title: bool = True) -> str:
         listing_token = self._build_buyer_listing_token(
+            task_uuid=str(assignment.task_uuid),
             search_phrase=assignment.search_phrase,
             wb_product_id=assignment.wb_product_id,
             brand_name=getattr(assignment, "wb_brand_name", None),
@@ -8730,6 +8639,7 @@ class TelegramWebhookRuntime:
 
     def _buyer_review_instruction_text(self, assignment, *, include_title: bool = True) -> str:
         review_token = self._build_buyer_review_token(
+            task_uuid=str(assignment.task_uuid),
             wb_product_id=assignment.wb_product_id,
             review_phrases=getattr(assignment, "review_phrases", None),
         )
@@ -8743,10 +8653,7 @@ class TelegramWebhookRuntime:
         lines.append("<b>Следующий шаг:</b> оставьте отзыв на 5 звезд через Qpilka.")
         selected_phrases = self._normalize_review_phrases(getattr(assignment, "review_phrases", None))
         if selected_phrases:
-            lines.append(
-                "<b>Фразы для отзыва:</b> "
-                + html.escape(self._format_review_phrases_text(selected_phrases))
-            )
+            lines.append("<b>Фразы для отзыва:</b> " + html.escape(self._format_review_phrases_text(selected_phrases)))
         lines.extend(
             [
                 (
@@ -8987,15 +8894,11 @@ class TelegramWebhookRuntime:
         except NotFoundError as exc:
             raise ListingValidationError("Магазин не найден или уже удален.") from exc
         except InvalidStateError as exc:
-            raise ListingValidationError(
-                "Токен магазина невалиден. Обновите токен WB API."
-            ) from exc
+            raise ListingValidationError("Токен магазина невалиден. Обновите токен WB API.") from exc
         try:
             return decrypt_token(ciphertext, self._settings.token_cipher_key)
         except Exception as exc:
-            raise ListingValidationError(
-                "Не удалось прочитать токен магазина. Сохраните его заново."
-            ) from exc
+            raise ListingValidationError("Не удалось прочитать токен магазина. Сохраните его заново.") from exc
 
     def _set_prompt(
         self,
@@ -9161,11 +9064,7 @@ class TelegramWebhookRuntime:
             seller_available_usdt=seller_available_usdt,
         ):
             return f"🟢 {required_text}"
-        return (
-            "🔴 "
-            f"{self._format_usdt(collateral_view.collateral_required_usdt)} "
-            "(недостаточно средств)"
-        )
+        return f"🔴 {self._format_usdt(collateral_view.collateral_required_usdt)} (недостаточно средств)"
 
     def _listing_detail_note(
         self,
@@ -9175,10 +9074,7 @@ class TelegramWebhookRuntime:
         seller_available_usdt: Decimal = Decimal("0.000000"),
     ) -> str:
         if listing.status == "active":
-            return (
-                "Объявление активно. При необходимости поставьте его на паузу "
-                "или поделитесь ссылкой на магазин."
-            )
+            return "Объявление активно. При необходимости поставьте его на паузу или поделитесь ссылкой на магазин."
         if not self._listing_has_sufficient_collateral(
             collateral_view=collateral_view,
             seller_available_usdt=seller_available_usdt,
@@ -9201,9 +9097,7 @@ class TelegramWebhookRuntime:
             fallback=listing.search_phrase,
         )
         planned = collateral_view.slot_count if collateral_view is not None else listing.slot_count
-        in_progress = (
-            collateral_view.in_progress_assignments_count if collateral_view is not None else 0
-        )
+        in_progress = collateral_view.in_progress_assignments_count if collateral_view is not None else 0
         cashback_text = self._format_cashback_with_percent(
             reward_usdt=listing.reward_usdt,
             reference_price_rub=listing.reference_price_rub,
@@ -9251,17 +9145,11 @@ class TelegramWebhookRuntime:
             .replace("</b>", ""),
             (
                 "Фразы для отзыва: "
-                + html.escape(
-                    self._format_review_phrases_text(getattr(listing, "review_phrases", []))
-                )
+                + html.escape(self._format_review_phrases_text(getattr(listing, "review_phrases", [])))
             ),
             f"Размеры: {html.escape(self._format_sizes_text(listing.wb_tech_sizes))}",
         ]
-        lines.append(
-            "\n<b>Параметры</b>\n<blockquote expandable>"
-            + "\n".join(parameters_lines)
-            + "</blockquote>"
-        )
+        lines.append("\n<b>Параметры</b>\n<blockquote expandable>" + "\n".join(parameters_lines) + "</blockquote>")
         description_block = self._format_expandable_block_html(
             title="Описание",
             body=listing.wb_description,
@@ -9340,9 +9228,7 @@ class TelegramWebhookRuntime:
             suffix = " (из заказов)"
         elif source == "manual":
             suffix = " (вручную)"
-        return (
-            f"<b>{html.escape(label)}:</b> {self._format_price_rub(price_rub)}{html.escape(suffix)}"
-        )
+        return f"<b>{html.escape(label)}:</b> {self._format_price_rub(price_rub)}{html.escape(suffix)}"
 
     @staticmethod
     def _normalize_review_phrases(review_phrases: list[str] | None) -> list[str]:
@@ -9400,10 +9286,7 @@ class TelegramWebhookRuntime:
         normalized = (body or "").strip()
         if not normalized:
             return None
-        return (
-            f"<b>{html.escape(title)}</b>\n"
-            f"<blockquote expandable>{html.escape(normalized)}</blockquote>"
-        )
+        return f"<b>{html.escape(title)}</b>\n<blockquote expandable>{html.escape(normalized)}</blockquote>"
 
     def _root_menu_markup(self, *, identity: TelegramIdentity | None) -> InlineKeyboardMarkup:
         keyboard = [
@@ -9563,6 +9446,19 @@ class TelegramWebhookRuntime:
         ]
         return InlineKeyboardMarkup(keyboard)
 
+    def _buyer_review_followup_markup(self, *, assignment_id: int) -> InlineKeyboardMarkup:
+        keyboard: list[list[InlineKeyboardButton]] = []
+        support_button = self._build_support_button(
+            role=_ROLE_BUYER,
+            topic="review",
+            refs=[self._assignment_ref(assignment_id)],
+            text="🆘 Поддержка",
+        )
+        if support_button is not None:
+            keyboard.append([support_button])
+        keyboard.extend(self._buyer_menu_markup().inline_keyboard)
+        return InlineKeyboardMarkup(keyboard)
+
     def _admin_menu_markup(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
             [
@@ -9679,23 +9575,18 @@ class TelegramWebhookRuntime:
 
         if missing_columns:
             missing_list = ", ".join(missing_columns)
-            raise RuntimeError(
-                f"runtime schema compatibility check failed; missing columns: {missing_list}"
-            )
+            raise RuntimeError(f"runtime schema compatibility check failed; missing columns: {missing_list}")
 
         self._logger.info(
             "telegram_runtime_schema_compatibility_ok",
             required_tables=len(_RUNTIME_REQUIRED_SCHEMA_COLUMNS),
-            required_columns=sum(
-                len(columns) for columns in _RUNTIME_REQUIRED_SCHEMA_COLUMNS.values()
-            ),
+            required_columns=sum(len(columns) for columns in _RUNTIME_REQUIRED_SCHEMA_COLUMNS.values()),
         )
 
     def _build_webhook_url(self) -> str:
         if not self._settings.webhook_base_url:
             raise ValueError(
-                "WEBHOOK_BASE_URL is required for webhook runtime "
-                "(example: https://158.160.187.114:8443)."
+                "WEBHOOK_BASE_URL is required for webhook runtime (example: https://158.160.187.114:8443)."
             )
         return f"{self._settings.webhook_base_url.rstrip('/')}/{self._settings.webhook_path}"
 

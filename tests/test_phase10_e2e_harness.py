@@ -14,6 +14,8 @@ from libs.integrations.wb_public import WbPublicApiError
 from services.bot_api.telegram_runtime import TelegramWebhookRuntime
 from tests.e2e_harness import TelegramRuntimeHarness
 
+_TASK_UUID = "11111111-1111-4111-8111-111111111111"
+
 
 def _ns(**kwargs):
     return SimpleNamespace(**kwargs)
@@ -55,15 +57,11 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
         create_shop=AsyncMock(return_value=_ns(shop_id=11, title="Тушенка", slug="shop_tushenka")),
         save_validated_shop_token=AsyncMock(return_value=None),
         get_shop=AsyncMock(
-            return_value=_ns(
-                shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid"
-            )
+            return_value=_ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")
         ),
         get_validated_shop_token_ciphertext=AsyncMock(return_value="ciphertext"),
         rename_shop=AsyncMock(
-            return_value=_ns(
-                shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid"
-            )
+            return_value=_ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")
         ),
         create_listing_draft=AsyncMock(
             return_value=_ns(
@@ -182,9 +180,7 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
                 buyer_withdraw_pending_account_id=402,
             )
         ),
-        resolve_shop_by_slug=AsyncMock(
-            return_value=_ns(shop_id=11, title="Тушенка", slug="shop_tushenka")
-        ),
+        resolve_shop_by_slug=AsyncMock(return_value=_ns(shop_id=11, title="Тушенка", slug="shop_tushenka")),
         list_active_listings_by_shop_slug=AsyncMock(
             return_value=[
                 _ns(
@@ -206,16 +202,15 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
         ),
         touch_saved_shop=AsyncMock(return_value=None),
         list_saved_shops=AsyncMock(return_value=[]),
-        resolve_saved_shop_for_buyer=AsyncMock(
-            return_value=_ns(shop_id=11, title="Тушенка", slug="shop_tushenka")
-        ),
+        resolve_saved_shop_for_buyer=AsyncMock(return_value=_ns(shop_id=11, title="Тушенка", slug="shop_tushenka")),
         remove_saved_shop=AsyncMock(return_value=_ns(changed=True)),
-        reserve_listing_slot=AsyncMock(return_value=_ns(assignment_id=31, created=True)),
+        reserve_listing_slot=AsyncMock(return_value=_ns(assignment_id=31, created=True, task_uuid=_TASK_UUID)),
         list_buyer_assignments=AsyncMock(
             return_value=[
                 _ns(
                     assignment_id=31,
                     listing_id=21,
+                    task_uuid=_TASK_UUID,
                     shop_slug="shop_tushenka",
                     shop_title="Тушенка",
                     status="reserved",
@@ -244,7 +239,22 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
                 order_id="ORDER-1",
             )
         ),
-        submit_review_payload=AsyncMock(return_value=_ns(assignment_id=31, changed=True)),
+        submit_review_payload=AsyncMock(
+            return_value=_ns(
+                assignment_id=31,
+                changed=True,
+                verification_status="verified_auto",
+                verification_reason=None,
+            )
+        ),
+        list_admin_pending_review_confirmations=AsyncMock(return_value=[]),
+        admin_verify_review_payload=AsyncMock(
+            return_value=_ns(
+                assignment_id=31,
+                changed=True,
+                verification_status="verified_admin",
+            )
+        ),
         cancel_assignment_by_buyer=AsyncMock(return_value=_ns(changed=True)),
     )
 
@@ -336,9 +346,7 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
     runtime._finance_service = finance_service
     runtime._deposit_service = deposit_service
     runtime._wb_ping_client = _ns(
-        validate_token=AsyncMock(
-            return_value=WbPingResult(valid=True, status_code=200, message="ok")
-        )
+        validate_token=AsyncMock(return_value=WbPingResult(valid=True, status_code=200, message="ok"))
     )
     runtime._wb_public_client = _ns(
         fetch_product_snapshot=AsyncMock(
@@ -366,18 +374,14 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
     )
     runtime._load_shop_wb_token = AsyncMock(return_value="wb-valid")
     runtime._fx_rate_service = None
-    runtime._load_seller_order_counters = AsyncMock(
-        return_value={"awaiting_order": 0, "ordered": 0, "picked_up": 0}
-    )
+    runtime._load_seller_order_counters = AsyncMock(return_value={"awaiting_order": 0, "ordered": 0, "picked_up": 0})
     runtime._refresh_display_rub_per_usdt = AsyncMock(return_value=None)
     runtime._ensure_admin_user = AsyncMock(return_value=90011)
     runtime._ensure_system_payout_account_id = AsyncMock(return_value=701)
     runtime._payout_wallet_raw_form = "0:payout-wallet"
     runtime._tonapi_client = _ns(
         parse_address=AsyncMock(side_effect=lambda account_id: _ns(raw_form="0:dest-wallet")),
-        get_jetton_account_history=AsyncMock(
-            return_value=_ns(operations=[], next_from=None)
-        ),
+        get_jetton_account_history=AsyncMock(return_value=_ns(operations=[], next_from=None)),
     )
 
     return runtime, _ns(
@@ -404,12 +408,7 @@ def _markup_urls(event) -> list[str]:
     markup = event.reply_markup
     if markup is None:
         return []
-    return [
-        button.url
-        for row in markup.inline_keyboard
-        for button in row
-        if getattr(button, "url", None)
-    ]
+    return [button.url for row in markup.inline_keyboard for button in row if getattr(button, "url", None)]
 
 
 @pytest.mark.asyncio
@@ -425,13 +424,8 @@ async def test_phase10_e2e_seller_shop_create_token_first_flow() -> None:
     assert any("<b>Объявления:</b>" in text for text in _event_texts(role_events))
 
     create_prompt_events = await harness.callback(flow="seller", action="shop_create_token_prompt")
-    assert any(
-        "Шаг 1 из 2." in text for text in _event_texts(create_prompt_events)
-    )
-    assert any(
-        "Контент, Статистика, Вопросы и отзывы" in text
-        for text in _event_texts(create_prompt_events)
-    )
+    assert any("Шаг 1 из 2." in text for text in _event_texts(create_prompt_events))
+    assert any("Контент, Статистика, Вопросы и отзывы" in text for text in _event_texts(create_prompt_events))
     assert any("Только для чтения" in text for text in _event_texts(create_prompt_events))
     assert all("➕ Создать магазин" not in _markup_labels(event) for event in create_prompt_events)
 
@@ -455,9 +449,7 @@ async def test_phase10_e2e_seller_shop_create_token_first_flow() -> None:
 async def test_phase10_e2e_seller_listing_create_and_activate_flow() -> None:
     runtime, deps = _build_runtime()
     deps.seller.list_shops = AsyncMock(
-        return_value=[
-            _ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")
-        ]
+        return_value=[_ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")]
     )
     deps.seller.list_listing_collateral_views = AsyncMock(
         return_value=[
@@ -483,23 +475,15 @@ async def test_phase10_e2e_seller_listing_create_and_activate_flow() -> None:
 
     pick_events = await harness.callback(flow="seller", action="listing_create_pick_shop")
     assert any(
-        "Выберите магазин, для которого хотите создать объявление." in text
-        for text in _event_texts(pick_events)
+        "Выберите магазин, для которого хотите создать объявление." in text for text in _event_texts(pick_events)
     )
 
-    prompt_events = await harness.callback(
-        flow="seller", action="listing_create_prompt", entity_id="11"
-    )
+    prompt_events = await harness.callback(flow="seller", action="listing_create_prompt", entity_id="11")
     assert any("Создание объявления для магазина" in text for text in _event_texts(prompt_events))
 
-    preview_events = await harness.text(
-        "552892532, 100, 5, бумага а4 для принтера, в размер, не садятся после стирки"
-    )
+    preview_events = await harness.text("552892532, 100, 5, бумага а4 для принтера, в размер, не садятся после стирки")
     assert any("Проверьте объявление" in text for text in _event_texts(preview_events))
-    assert any(
-        "Название для покупателей:</b> Бумага A4 для принтера" in text
-        for text in _event_texts(preview_events)
-    )
+    assert any("Название для покупателей:</b> Бумага A4 для принтера" in text for text in _event_texts(preview_events))
     assert any(event.kind == "reply_photo" for event in preview_events)
     assert any(event.photo == "https://example.com/photo.webp" for event in preview_events)
     assert any("✅ Сохранить текущее название" in _markup_labels(event) for event in preview_events)
@@ -507,9 +491,7 @@ async def test_phase10_e2e_seller_listing_create_and_activate_flow() -> None:
     create_events = await harness.callback(flow="seller", action="listing_title_keep")
     assert any("Активировать объявление сейчас?" in text for text in _event_texts(create_events))
 
-    activate_events = await harness.callback(
-        flow="seller", action="listing_activate", entity_id="21"
-    )
+    activate_events = await harness.callback(flow="seller", action="listing_activate", entity_id="21")
     assert any("Объявление активно." in text for text in _event_texts(activate_events))
 
     deps.seller.create_listing_draft.assert_awaited_once()
@@ -521,9 +503,7 @@ async def test_phase10_e2e_seller_listing_create_asks_manual_price_when_no_order
     runtime, deps = _build_runtime()
     runtime._wb_public_client.lookup_buyer_price = AsyncMock(return_value=None)
     deps.seller.list_shops = AsyncMock(
-        return_value=[
-            _ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")
-        ]
+        return_value=[_ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")]
     )
     harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
 
@@ -547,16 +527,12 @@ async def test_phase10_e2e_seller_listing_create_asks_manual_price_when_no_order
 async def test_phase10_e2e_seller_listing_create_allows_explicit_title_edit() -> None:
     runtime, deps = _build_runtime()
     deps.seller.list_shops = AsyncMock(
-        return_value=[
-            _ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")
-        ]
+        return_value=[_ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")]
     )
     harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
 
     await harness.callback(flow="seller", action="listing_create_prompt", entity_id="11")
-    preview_events = await harness.text(
-        "552892532, 100, 5, бумага а4 для принтера, в размер, не садятся после стирки"
-    )
+    preview_events = await harness.text("552892532, 100, 5, бумага а4 для принтера, в размер, не садятся после стирки")
     assert any("✏️ Изменить название" in _markup_labels(event) for event in preview_events)
 
     edit_prompt_events = await harness.callback(flow="seller", action="listing_title_edit_prompt")
@@ -596,30 +572,19 @@ async def test_phase10_e2e_seller_topup_and_transactions_flow() -> None:
     harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
 
     topup_prompt_events = await harness.callback(flow="seller", action="topup_prompt")
-    assert any(
-        "Введите сумму пополнения в USDT" in text for text in _event_texts(topup_prompt_events)
-    )
+    assert any("Введите сумму пополнения в USDT" in text for text in _event_texts(topup_prompt_events))
     assert any("❓ Как перевести?" in _markup_labels(event) for event in topup_prompt_events)
 
     topup_create_events = await harness.text("1.2")
     assert any("Счет на пополнение создан" in text for text in _event_texts(topup_create_events))
-    assert any(
-        "Сумма (должна полностью совпадать):" in text
-        for text in _event_texts(topup_create_events)
-    )
+    assert any("Сумма (должна полностью совпадать):" in text for text in _event_texts(topup_create_events))
     assert any("<code>1.2001 USDT</code>" in text for text in _event_texts(topup_create_events))
     assert any(
         "<code>UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH</code>" in text
         for text in _event_texts(topup_create_events)
     )
-    assert any(
-        "👛 Открыть Телеграм Кошелек" in _markup_labels(event)
-        for event in topup_create_events
-    )
-    assert any(
-        "🔗 Ссылка (другие кошельки)" in _markup_labels(event)
-        for event in topup_create_events
-    )
+    assert any("👛 Открыть Телеграм Кошелек" in _markup_labels(event) for event in topup_create_events)
+    assert any("🔗 Ссылка (другие кошельки)" in _markup_labels(event) for event in topup_create_events)
     assert any("❓ Как перевести?" in _markup_labels(event) for event in topup_create_events)
     wallet_urls = [url for event in topup_create_events for url in _markup_urls(event)]
     assert "https://t.me/wallet/start" in wallet_urls
@@ -631,13 +596,8 @@ async def test_phase10_e2e_seller_topup_and_transactions_flow() -> None:
     assert "Как перевести USDT" in topup_help_text
     assert 'href="https://help.ru.wallet.tg/article/60-znakomstvo-s-wallet"' in topup_help_text
     assert 'href="https://t.me/wallet"' in topup_help_text
-    assert (
-        'href="https://help.ru.wallet.tg/article/80-kak-kupit-kriptovalutu-na-p2p-markete"'
-        in topup_help_text
-    )
-    assert (
-        "Рекомендуем делать перевод на несколько объявлений сразу" in topup_help_text
-    )
+    assert 'href="https://help.ru.wallet.tg/article/80-kak-kupit-kriptovalutu-na-p2p-markete"' in topup_help_text
+    assert "Рекомендуем делать перевод на несколько объявлений сразу" in topup_help_text
     assert "1. Зайдите" in topup_help_text
     assert "2. Пополните" in topup_help_text
     assert "3. Выведите" in topup_help_text
@@ -731,8 +691,7 @@ async def test_phase10_e2e_seller_can_cancel_pending_withdrawal() -> None:
         entity_id="77",
     )
     assert any(
-        "Заявка на вывод отменена. Средства вернулись в доступный баланс продавца."
-        in text
+        "Заявка на вывод отменена. Средства вернулись в доступный баланс продавца." in text
         for text in _event_texts(confirm_events)
     )
     deps.finance.cancel_withdrawal_request.assert_awaited_once()
@@ -868,9 +827,7 @@ async def test_phase10_e2e_buyer_deeplink_reserve_submit_payload_flow() -> None:
         entity_id="31",
     )
     assert any(
-        "Вставьте токен из расширения следующим сообщением ниже."
-        in text
-        for text in _event_texts(submit_prompt_events)
+        "Вставьте токен из расширения следующим сообщением ниже." in text for text in _event_texts(submit_prompt_events)
     )
 
     payload_events = await harness.text("WyJPUkRFUi0xIiwiMjAyNi0wMy0wMlQxMjozMDowMCJd")
@@ -889,6 +846,7 @@ async def test_phase10_e2e_buyer_review_prompt_and_submit_flow() -> None:
             _ns(
                 assignment_id=31,
                 listing_id=21,
+                task_uuid=_TASK_UUID,
                 shop_slug="shop_tushenka",
                 shop_title="Тушенка",
                 status="picked_up_wait_review",
@@ -923,16 +881,12 @@ async def test_phase10_e2e_buyer_review_prompt_and_submit_flow() -> None:
         entity_id="31",
     )
     assert any(
-        "Вставьте токен из расширения следующим сообщением ниже." in text
-        for text in _event_texts(review_prompt_events)
+        "Вставьте токен из расширения следующим сообщением ниже." in text for text in _event_texts(review_prompt_events)
     )
 
-    payload_events = await harness.text(
-        "WzU1Mjg5MjUzMiwiMjAyNi0wMy0xOFQxMDozMDowMFoiLDUsImdyZWF0Il0="
-    )
+    payload_events = await harness.text("WzU1Mjg5MjUzMiwiMjAyNi0wMy0xOFQxMDozMDowMFoiLDUsImdyZWF0Il0=")
     assert any(
-        "Отзыв подтвержден! Ожидайте начисления кэшбэка через 15 дней после выкупа товара."
-        in text
+        "Отзыв подтвержден. Ожидайте начисления кэшбэка через 15 дней после выкупа товара." in text
         for text in _event_texts(payload_events)
     )
     assert any(event.kind == "delete" for event in payload_events)
@@ -998,8 +952,7 @@ async def test_phase10_e2e_buyer_support_button_is_inside_instruction() -> None:
 
 
 @pytest.mark.asyncio
-async def test_phase10_e2e_buyer_shop_screen_shows_purchases_button_when_no_other_listings(
-) -> None:
+async def test_phase10_e2e_buyer_shop_screen_shows_purchases_button_when_no_other_listings() -> None:
     runtime, deps = _build_runtime()
     deps.buyer.list_active_listings_by_shop_slug = AsyncMock(return_value=[])
     harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
@@ -1010,10 +963,7 @@ async def test_phase10_e2e_buyer_shop_screen_shows_purchases_button_when_no_othe
     for event in events:
         labels.extend(_markup_labels(event))
 
-    assert (
-        "У вас уже есть активная покупка в этом магазине. "
-        "Других объявлений здесь пока нет."
-    ) in text
+    assert ("У вас уже есть активная покупка в этом магазине. Других объявлений здесь пока нет.") in text
     assert "📋 Покупки" in labels
 
 
@@ -1042,9 +992,7 @@ async def test_phase10_e2e_buyer_listing_open_shows_photo_and_detail_card() -> N
 async def test_phase10_e2e_seller_listing_open_shows_photo_and_detail_card() -> None:
     runtime, deps = _build_runtime()
     deps.seller.list_shops = AsyncMock(
-        return_value=[
-            _ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")
-        ]
+        return_value=[_ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")]
     )
     deps.seller.list_listing_collateral_views = AsyncMock(
         return_value=[
@@ -1086,9 +1034,7 @@ async def test_phase10_e2e_seller_listing_open_shows_photo_and_detail_card() -> 
 async def test_phase10_e2e_seller_draft_listing_uses_available_balance_for_activation() -> None:
     runtime, deps = _build_runtime()
     deps.seller.list_shops = AsyncMock(
-        return_value=[
-            _ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")
-        ]
+        return_value=[_ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")]
     )
     deps.seller.get_seller_balance_snapshot = AsyncMock(
         return_value=_ns(
@@ -1165,9 +1111,7 @@ async def test_phase10_e2e_seller_draft_listing_uses_available_balance_for_activ
 async def test_phase10_e2e_seller_listings_are_numbered_and_paginated() -> None:
     runtime, deps = _build_runtime()
     deps.seller.list_shops = AsyncMock(
-        return_value=[
-            _ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")
-        ]
+        return_value=[_ns(shop_id=11, title="Тушенка", slug="shop_tushenka", wb_token_status="valid")]
     )
     deps.seller.list_listing_collateral_views = AsyncMock(
         return_value=[
@@ -1194,9 +1138,7 @@ async def test_phase10_e2e_seller_listings_are_numbered_and_paginated() -> None:
 
     page_one_events = await harness.callback(flow="seller", action="listings")
     page_one_text = "\n".join(_event_texts(page_one_events))
-    page_one_labels = {
-        label for event in page_one_events for label in _markup_labels(event)
-    }
+    page_one_labels = {label for event in page_one_events for label in _markup_labels(event)}
 
     assert "<b>1. Товар 1</b>" in page_one_text
     assert "<b>10. Товар 10</b>" in page_one_text
@@ -1207,9 +1149,7 @@ async def test_phase10_e2e_seller_listings_are_numbered_and_paginated() -> None:
 
     page_two_events = await harness.callback(flow="seller", action="listings", entity_id="2")
     page_two_text = "\n".join(_event_texts(page_two_events))
-    page_two_labels = {
-        label for event in page_two_events for label in _markup_labels(event)
-    }
+    page_two_labels = {label for event in page_two_events for label in _markup_labels(event)}
 
     assert "<b>11. Товар 11</b>" in page_two_text
     assert "<b>12. Товар 12</b>" in page_two_text
@@ -1232,6 +1172,7 @@ async def test_phase10_e2e_seller_activation_insufficient_funds_shows_topup_cta(
     runtime, deps = _build_runtime()
     deps.seller.activate_listing = AsyncMock(side_effect=Exception())  # placeholder
     from libs.domain.errors import InsufficientFundsError  # local import for test only
+
     deps.seller.activate_listing = AsyncMock(side_effect=InsufficientFundsError())
 
     harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
@@ -1296,8 +1237,7 @@ async def test_phase10_e2e_buyer_cancel_task_flow() -> None:
         query_id="cancel-1",
     )
     assert any(
-        "Покупка отменена. Она снова доступна другим покупателям." in text
-        for text in _event_texts(confirm_events)
+        "Покупка отменена. Она снова доступна другим покупателям." in text for text in _event_texts(confirm_events)
     )
     deps.buyer.cancel_assignment_by_buyer.assert_awaited_once()
 
@@ -1310,6 +1250,7 @@ async def test_phase10_e2e_buyer_purchases_screen_uses_shop_title_and_hides_expi
             _ns(
                 assignment_id=31,
                 listing_id=21,
+                task_uuid=_TASK_UUID,
                 shop_slug="shop_tushenka",
                 shop_title="Тушенка",
                 status="reserved",
@@ -1384,13 +1325,9 @@ async def test_phase10_e2e_buyer_purchases_screen_uses_shop_title_and_hides_expi
     assert "<b>Магазин:</b> Выплаченные" in text
     assert "shop_tushenka" not in text
     assert text.count("<b>Номер заказа:</b>") == 2
-    assert first_block.index("<b>Товар:</b> Бумага A4 для принтера") < first_block.index(
-        "<b>Магазин:</b> Тушенка"
-    )
+    assert first_block.index("<b>Товар:</b> Бумага A4 для принтера") < first_block.index("<b>Магазин:</b> Тушенка")
     assert first_block.index("<b>Магазин:</b> Тушенка") < first_block.index("<b>Кэшбэк:</b>")
-    assert first_block.index("<b>Кэшбэк:</b>") < first_block.index(
-        "<b>Статус:</b> 🔴 Ожидает заказа"
-    )
+    assert first_block.index("<b>Кэшбэк:</b>") < first_block.index("<b>Статус:</b> 🔴 Ожидает заказа")
     assert "Введите токен в " in first_block
     assert "<b>Срок заказа:</b>" not in first_block
     assert "\n\n<b>Покупка</b> · <code>P32</code>" in text
@@ -1553,8 +1490,7 @@ async def test_phase10_e2e_buyer_withdraw_request_handles_unexpected_create_fail
     events = await harness.text("UQ-buyer-wallet")
 
     assert any(
-        "Техническая ошибка при создании заявки на вывод. Баланс не изменен." in text
-        for text in _event_texts(events)
+        "Техническая ошибка при создании заявки на вывод. Баланс не изменен." in text for text in _event_texts(events)
     )
 
 
@@ -1592,15 +1528,11 @@ async def test_phase10_e2e_buyer_withdraw_history_shows_timestamps_and_note() ->
 @pytest.mark.asyncio
 async def test_phase10_e2e_buyer_cannot_reserve_already_purchased_item() -> None:
     runtime, deps = _build_runtime()
-    deps.buyer.reserve_listing_slot = AsyncMock(
-        side_effect=InvalidStateError("already purchased wb_product_id")
-    )
+    deps.buyer.reserve_listing_slot = AsyncMock(side_effect=InvalidStateError("already purchased wb_product_id"))
     harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
 
     events = await harness.callback(flow="buyer", action="reserve", entity_id="21")
-    assert any(
-        "Этот товар уже был куплен с вашего аккаунта." in text for text in _event_texts(events)
-    )
+    assert any("Этот товар уже был куплен с вашего аккаунта." in text for text in _event_texts(events))
 
 
 @pytest.mark.asyncio
@@ -1679,9 +1611,7 @@ async def test_phase10_e2e_admin_withdrawal_flow() -> None:
         action="withdrawal_complete_prompt",
         entity_id="77",
     )
-    assert any(
-        "Введите хэш перевода для заявки W77." in text for text in _event_texts(prompt_sent_events)
-    )
+    assert any("Введите хэш перевода для заявки W77." in text for text in _event_texts(prompt_sent_events))
 
     sent_events = await harness.text("0xabc")
     sent_text = "\n".join(_event_texts(sent_events))
@@ -1774,17 +1704,13 @@ async def test_phase10_e2e_admin_withdrawal_completion_rejects_unknown_tx_hash()
         )
     )
     runtime._tonapi_client.parse_address = AsyncMock(return_value=_ns(raw_form="0:dest-wallet"))
-    runtime._tonapi_client.get_jetton_account_history = AsyncMock(
-        return_value=_ns(operations=[], next_from=None)
-    )
+    runtime._tonapi_client.get_jetton_account_history = AsyncMock(return_value=_ns(operations=[], next_from=None))
     harness = TelegramRuntimeHarness(runtime, telegram_id=9001, username="admin")
 
     await harness.callback(flow="admin", action="withdrawal_complete_prompt", entity_id="77")
     events = await harness.text("0xmissing")
 
-    assert any(
-        "Транзакция с таким хэшем пока не найдена" in text for text in _event_texts(events)
-    )
+    assert any("Транзакция с таким хэшем пока не найдена" in text for text in _event_texts(events))
     deps.finance.complete_withdrawal_request.assert_not_awaited()
 
 
@@ -1822,14 +1748,10 @@ async def test_phase10_e2e_admin_deposit_exceptions_flow() -> None:
     assert any("⚠️ Пополнения, требующие проверки:" in text for text in _event_texts(section_events))
 
     attach_prompt = await harness.callback(flow="admin", action="deposit_attach_prompt")
-    assert any(
-        "Введите: <код_транзакции> <код_счета>." in text for text in _event_texts(attach_prompt)
-    )
+    assert any("Введите: <код_транзакции> <код_счета>." in text for text in _event_texts(attach_prompt))
 
     attach_result = await harness.text("TX11 D22")
-    assert any(
-        "Платеж привязан к счету и зачислен." in text for text in _event_texts(attach_result)
-    )
+    assert any("Платеж привязан к счету и зачислен." in text for text in _event_texts(attach_result))
 
     cancel_prompt = await harness.callback(flow="admin", action="deposit_cancel_prompt")
     assert any("Введите: <код_счета> <причина>." in text for text in _event_texts(cancel_prompt))
@@ -1839,6 +1761,45 @@ async def test_phase10_e2e_admin_deposit_exceptions_flow() -> None:
 
     deps.deposit.credit_intent_from_chain_tx.assert_awaited_once()
     deps.deposit.cancel_deposit_intent.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_admin_review_verification_flow() -> None:
+    runtime, deps = _build_runtime(admin_ids=[9001])
+    deps.buyer.list_admin_pending_review_confirmations = AsyncMock(
+        return_value=[
+            _ns(
+                assignment_id=31,
+                task_uuid=_TASK_UUID,
+                listing_id=21,
+                buyer_user_id=202,
+                buyer_telegram_id=777001,
+                buyer_username="buyer1",
+                shop_title="Тушенка",
+                display_title="Бумага A4 для принтера",
+                wb_product_id=552892532,
+                reviewed_at=datetime(2026, 3, 18, 10, 30, 0),
+                rating=4,
+                review_text="Очень понравились, в размер.",
+                review_phrases=["в размер", "не садятся после стирки"],
+                verification_reason="Нужна оценка 5 из 5.",
+            )
+        ]
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=9001, username="admin")
+
+    section_events = await harness.callback(flow="admin", action="exceptions_section")
+    section_text = "\n".join(_event_texts(section_events))
+    assert "Отзывы, требующие проверки:" in section_text
+    assert "Покупка P31" in section_text
+    assert any("✅ Проверить отзыв" in _markup_labels(event) for event in section_events)
+
+    prompt_events = await harness.callback(flow="admin", action="review_verify_prompt")
+    assert any("Введите: <код_покупки> <base64_review_token>." in text for text in _event_texts(prompt_events))
+
+    result_events = await harness.text("P31 eyJ...==")
+    assert any("Отзыв подтвержден вручную." in text for text in _event_texts(result_events))
+    deps.buyer.admin_verify_review_payload.assert_awaited_once()
 
 
 @pytest.mark.asyncio

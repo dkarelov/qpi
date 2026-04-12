@@ -14,27 +14,29 @@ from libs.domain.errors import DuplicateOrderError, InvalidStateError, PayloadVa
 from services.bot_api.buyer_handlers import BuyerCommandProcessor
 from tests.helpers import create_account, create_listing, create_shop, create_user
 
+_TASK_UUID = "11111111-1111-4111-8111-111111111111"
+
 
 def _encode_payload(
     *,
+    task_uuid: str = _TASK_UUID,
     order_id: str,
     ordered_at: str = "2026-02-26T12:00:00",
-    wb_product_id: int | None = None,
+    wb_product_id: int,
 ) -> str:
-    payload: list[Any] = [order_id, ordered_at]
-    if wb_product_id is not None:
-        payload.append(wb_product_id)
+    payload: list[Any] = [1, task_uuid, wb_product_id, order_id, ordered_at]
     return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
 
 
 def _encode_review_payload(
     *,
+    task_uuid: str = _TASK_UUID,
     wb_product_id: int,
     reviewed_at: str = "2026-03-18T10:30:00",
     rating: int = 5,
     review_text: str = "great",
 ) -> str:
-    payload: list[Any] = [wb_product_id, reviewed_at, rating, review_text]
+    payload: list[Any] = [2, task_uuid, wb_product_id, reviewed_at, rating, review_text]
     return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
 
 
@@ -385,7 +387,11 @@ async def test_catalog_hides_products_already_purchased_by_buyer(db_pool) -> Non
     await buyer_service.submit_purchase_payload(
         buyer_user_id=buyer.user_id,
         assignment_id=reservation.assignment_id,
-        payload_base64=_encode_payload(order_id="repeat-filter-order"),
+        payload_base64=_encode_payload(
+            task_uuid=str(reservation.task_uuid),
+            order_id="repeat-filter-order",
+            wb_product_id=7001,
+        ),
     )
 
     listings = await buyer_service.list_active_listings_by_shop_slug(
@@ -470,7 +476,11 @@ async def test_reserve_rejects_product_already_purchased_by_buyer(db_pool) -> No
     await buyer_service.submit_purchase_payload(
         buyer_user_id=buyer.user_id,
         assignment_id=first_reservation.assignment_id,
-        payload_base64=_encode_payload(order_id="repeat-reserve-order"),
+        payload_base64=_encode_payload(
+            task_uuid=str(first_reservation.task_uuid),
+            order_id="repeat-reserve-order",
+            wb_product_id=7101,
+        ),
     )
 
     with pytest.raises(InvalidStateError, match="already purchased"):
@@ -789,17 +799,13 @@ async def test_worker_expiry_transitions_reserved_to_expired_and_releases_funds(
         ),
         (
             lambda _wb_product_id: base64.b64encode(
-                json.dumps({"order_id": "ORD-MISSING", "ordered_at": "2026-02-26T12:00:00"}).encode(
-                    "utf-8"
-                )
+                json.dumps({"order_id": "ORD-MISSING", "ordered_at": "2026-02-26T12:00:00"}).encode("utf-8")
             ).decode("ascii"),
             "JSON array",
         ),
         (
-            lambda _wb_product_id: base64.b64encode(
-                json.dumps(["ORD-MISSING"]).encode("utf-8")
-            ).decode("ascii"),
-            "contain [order_id, ordered_at]",
+            lambda _wb_product_id: base64.b64encode(json.dumps(["ORD-MISSING"]).encode("utf-8")).decode("ascii"),
+            "contain [token_type, task_uuid",
         ),
     ],
 )
@@ -856,9 +862,12 @@ def test_decode_purchase_payload_accepts_js_utc_timestamp() -> None:
         _encode_payload(
             order_id="ORD-UTC-Z",
             ordered_at="2026-03-10T20:32:23.807Z",
+            wb_product_id=552892532,
         )
     )
 
+    assert str(decoded.task_uuid) == _TASK_UUID
+    assert decoded.wb_product_id == 552892532
     assert decoded.order_id == "ORD-UTC-Z"
     assert decoded.ordered_at == datetime(2026, 3, 10, 20, 32, 23, 807000, tzinfo=UTC)
 
@@ -868,9 +877,12 @@ def test_decode_purchase_payload_normalizes_timezone_offset_to_utc() -> None:
         _encode_payload(
             order_id="ORD-OFFSET",
             ordered_at="2026-02-26T15:00:00+03:00",
+            wb_product_id=552892532,
         )
     )
 
+    assert str(decoded.task_uuid) == _TASK_UUID
+    assert decoded.wb_product_id == 552892532
     assert decoded.order_id == "ORD-OFFSET"
     assert decoded.ordered_at == datetime(2026, 2, 26, 12, 0, 0, tzinfo=UTC)
 
@@ -884,6 +896,7 @@ def test_decode_review_payload_accepts_js_utc_timestamp() -> None:
         )
     )
 
+    assert str(decoded.task_uuid) == _TASK_UUID
     assert decoded.wb_product_id == 552892532
     assert decoded.reviewed_at == datetime(2026, 3, 18, 10, 30, 0, 500000, tzinfo=UTC)
     assert decoded.rating == 5
@@ -916,8 +929,42 @@ async def test_submit_payload_rejects_wb_product_mismatch(db_pool) -> None:
             buyer_user_id=buyer.user_id,
             assignment_id=reservation.assignment_id,
             payload_base64=_encode_payload(
+                task_uuid=str(reservation.task_uuid),
                 order_id="ORD-PRODUCT-MISMATCH",
                 wb_product_id=999999,
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_submit_payload_rejects_task_uuid_mismatch(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="payload-uuid-mismatch-shop",
+        wb_product_id=5312,
+        reward_usdt=Decimal("8.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+    buyer = await buyer_service.bootstrap_buyer(
+        telegram_id=850012,
+        username="buyer_payload_uuid_mismatch",
+    )
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:buyer:850012:uuid-mismatch",
+    )
+
+    with pytest.raises(PayloadValidationError, match="task_uuid"):
+        await buyer_service.submit_purchase_payload(
+            buyer_user_id=buyer.user_id,
+            assignment_id=reservation.assignment_id,
+            payload_base64=_encode_payload(
+                task_uuid=_TASK_UUID,
+                order_id="ORD-UUID-MISMATCH",
+                wb_product_id=5312,
             ),
         )
 
@@ -947,7 +994,16 @@ async def test_duplicate_order_id_is_rejected_for_second_assignment(db_pool) -> 
         idempotency_key="reserve:dup:2",
     )
 
-    payload = _encode_payload(order_id="ORD-DUP")
+    payload = _encode_payload(
+        task_uuid=str(reservation_one.task_uuid),
+        order_id="ORD-DUP",
+        wb_product_id=5401,
+    )
+    duplicate_payload = _encode_payload(
+        task_uuid=str(reservation_two.task_uuid),
+        order_id="ORD-DUP",
+        wb_product_id=5401,
+    )
     first_submit = await buyer_service.submit_purchase_payload(
         buyer_user_id=buyer_one.user_id,
         assignment_id=reservation_one.assignment_id,
@@ -959,7 +1015,7 @@ async def test_duplicate_order_id_is_rejected_for_second_assignment(db_pool) -> 
         await buyer_service.submit_purchase_payload(
             buyer_user_id=buyer_two.user_id,
             assignment_id=reservation_two.assignment_id,
-            payload_base64=payload,
+            payload_base64=duplicate_payload,
         )
 
     async with db_pool.connection() as conn:
@@ -989,7 +1045,11 @@ async def test_valid_payload_moves_assignment_to_order_verified_and_is_idempoten
         listing_id=fixture["listing_id"],
         idempotency_key="reserve:success:1",
     )
-    payload = _encode_payload(order_id="ORD-SUCCESS")
+    payload = _encode_payload(
+        task_uuid=str(reservation.task_uuid),
+        order_id="ORD-SUCCESS",
+        wb_product_id=5501,
+    )
 
     first = await buyer_service.submit_purchase_payload(
         buyer_user_id=buyer.user_id,
@@ -1036,8 +1096,9 @@ async def test_valid_payload_moves_assignment_to_order_verified_and_is_idempoten
             order = await cur.fetchone()
             assert order["order_id"] == "ORD-SUCCESS"
             assert order["wb_product_id"] == 5501
-            assert order["payload_version"] == 2
-            assert order["raw_payload_json"][0] == "ORD-SUCCESS"
+            assert order["payload_version"] == 3
+            assert order["raw_payload_json"][0] == 1
+            assert order["raw_payload_json"][1] == str(reservation.task_uuid)
 
 
 @pytest.mark.asyncio
@@ -1063,7 +1124,11 @@ async def test_submit_review_payload_moves_assignment_to_pickup_wait_unlock_and_
     await buyer_service.submit_purchase_payload(
         buyer_user_id=buyer.user_id,
         assignment_id=reservation.assignment_id,
-        payload_base64=_encode_payload(order_id="ORD-REVIEW"),
+        payload_base64=_encode_payload(
+            task_uuid=str(reservation.task_uuid),
+            order_id="ORD-REVIEW",
+            wb_product_id=5701,
+        ),
     )
 
     async with db_pool.connection() as conn:
@@ -1080,7 +1145,11 @@ async def test_submit_review_payload_moves_assignment_to_pickup_wait_unlock_and_
                     (reservation.assignment_id,),
                 )
 
-    payload = _encode_review_payload(wb_product_id=5701, review_text="great")
+    payload = _encode_review_payload(
+        task_uuid=str(reservation.task_uuid),
+        wb_product_id=5701,
+        review_text="Очень понравились, в размер и не садятся после стирки.",
+    )
     first = await buyer_service.submit_review_payload(
         buyer_user_id=buyer.user_id,
         assignment_id=reservation.assignment_id,
@@ -1095,6 +1164,7 @@ async def test_submit_review_payload_moves_assignment_to_pickup_wait_unlock_and_
     assert first.changed is True
     assert second.changed is False
     assert first.status == "picked_up_wait_unlock"
+    assert first.verification_status == "verified_auto"
 
     assignments = await buyer_service.list_buyer_assignments(buyer_user_id=buyer.user_id)
     assert assignments[0].status == "picked_up_wait_unlock"
@@ -1120,9 +1190,223 @@ async def test_submit_review_payload_moves_assignment_to_pickup_wait_unlock_and_
             review = await cur.fetchone()
             assert review["wb_product_id"] == 5701
             assert review["rating"] == 5
-            assert review["review_text"] == "great"
-            assert review["payload_version"] == 1
-            assert review["raw_payload_json"][0] == 5701
+            assert review["review_text"] == "Очень понравились, в размер и не садятся после стирки."
+            assert review["payload_version"] == 2
+            assert review["raw_payload_json"][0] == 2
+            assert review["raw_payload_json"][1] == str(reservation.task_uuid)
+
+
+@pytest.mark.asyncio
+async def test_submit_review_payload_stays_blocked_until_corrected(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="review-fix-shop",
+        wb_product_id=5702,
+        reward_usdt=Decimal("6.000000"),
+        slot_count=1,
+        available_slots=1,
+        review_phrases=["в размер", "не садятся после стирки"],
+    )
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870102, username="buyer_review_fix")
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:review:2",
+    )
+    await buyer_service.submit_purchase_payload(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        payload_base64=_encode_payload(
+            task_uuid=str(reservation.task_uuid),
+            order_id="ORD-REVIEW-FIX",
+            wb_product_id=5702,
+        ),
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE assignments
+                    SET status = 'picked_up_wait_review',
+                        review_phrases = ARRAY['в размер', 'не садятся после стирки'],
+                        unlock_at = timezone('utc', now()) + interval '10 days'
+                    WHERE id = %s
+                    """,
+                    (reservation.assignment_id,),
+                )
+
+    blocked = await buyer_service.submit_review_payload(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        payload_base64=_encode_review_payload(
+            task_uuid=str(reservation.task_uuid),
+            wb_product_id=5702,
+            review_text="Очень понравились, в размер.",
+        ),
+    )
+
+    assert blocked.changed is True
+    assert blocked.status == "picked_up_wait_review"
+    assert blocked.verification_status == "pending_manual"
+    assert "не садятся после стирки" in str(blocked.verification_reason)
+
+    corrected = await buyer_service.submit_review_payload(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        payload_base64=_encode_review_payload(
+            task_uuid=str(reservation.task_uuid),
+            wb_product_id=5702,
+            review_text="Очень понравились, в размер и не садятся после стирки.",
+        ),
+    )
+
+    assert corrected.changed is True
+    assert corrected.status == "picked_up_wait_unlock"
+    assert corrected.verification_status == "verified_auto"
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT status
+                FROM assignments
+                WHERE id = %s
+                """,
+                (reservation.assignment_id,),
+            )
+            assignment = await cur.fetchone()
+            assert assignment["status"] == "picked_up_wait_unlock"
+
+            await cur.execute(
+                """
+                SELECT verification_status, verification_reason, review_text
+                FROM buyer_reviews
+                WHERE assignment_id = %s
+                """,
+                (reservation.assignment_id,),
+            )
+            review = await cur.fetchone()
+            assert review["verification_status"] == "verified_auto"
+            assert review["verification_reason"] is None
+            assert review["review_text"] == "Очень понравились, в размер и не садятся после стирки."
+
+
+@pytest.mark.asyncio
+async def test_admin_verify_review_payload_overrides_pending_manual(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="review-admin-shop",
+        wb_product_id=5703,
+        reward_usdt=Decimal("6.000000"),
+        slot_count=1,
+        available_slots=1,
+        review_phrases=["в размер", "не садятся после стирки"],
+    )
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870103, username="buyer_review_admin")
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:review:3",
+    )
+    await buyer_service.submit_purchase_payload(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        payload_base64=_encode_payload(
+            task_uuid=str(reservation.task_uuid),
+            order_id="ORD-REVIEW-ADMIN",
+            wb_product_id=5703,
+        ),
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                admin_user_id = await create_user(
+                    conn,
+                    telegram_id=900001,
+                    role="admin",
+                    username="admin_review",
+                )
+                await cur.execute(
+                    """
+                    UPDATE assignments
+                    SET status = 'picked_up_wait_review',
+                        review_phrases = ARRAY['в размер', 'не садятся после стирки'],
+                        unlock_at = timezone('utc', now()) + interval '10 days'
+                    WHERE id = %s
+                    """,
+                    (reservation.assignment_id,),
+                )
+
+    blocked = await buyer_service.submit_review_payload(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        payload_base64=_encode_review_payload(
+            task_uuid=str(reservation.task_uuid),
+            wb_product_id=5703,
+            rating=4,
+            review_text="Очень понравились, в размер.",
+        ),
+    )
+    assert blocked.verification_status == "pending_manual"
+
+    approved = await buyer_service.admin_verify_review_payload(
+        admin_user_id=admin_user_id,
+        assignment_id=reservation.assignment_id,
+        payload_base64=_encode_review_payload(
+            task_uuid=str(reservation.task_uuid),
+            wb_product_id=5703,
+            rating=4,
+            review_text="Очень понравились, в размер.",
+        ),
+        idempotency_key=f"test-admin-review:{reservation.assignment_id}",
+    )
+
+    assert approved.changed is True
+    assert approved.status == "picked_up_wait_unlock"
+    assert approved.verification_status == "verified_admin"
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT status
+                FROM assignments
+                WHERE id = %s
+                """,
+                (reservation.assignment_id,),
+            )
+            assignment = await cur.fetchone()
+            assert assignment["status"] == "picked_up_wait_unlock"
+
+            await cur.execute(
+                """
+                SELECT verification_status, verified_by_admin_user_id
+                FROM buyer_reviews
+                WHERE assignment_id = %s
+                """,
+                (reservation.assignment_id,),
+            )
+            review = await cur.fetchone()
+            assert review["verification_status"] == "verified_admin"
+            assert review["verified_by_admin_user_id"] == admin_user_id
+
+            await cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM admin_audit_actions
+                WHERE action = 'assignment_review_verified_admin'
+                  AND target_type = 'assignment'
+                  AND target_id = %s
+                """,
+                (str(reservation.assignment_id),),
+            )
+            audit_count = await cur.fetchone()
+            assert audit_count["count"] == 1
 
 
 @pytest.mark.asyncio
@@ -1164,7 +1448,15 @@ async def test_buyer_command_processor_smoke_flow(db_pool) -> None:
     assignment_fragment = reserve_response.text.split("assignment_id=")[1]
     assignment_fragment = assignment_fragment.split("\n", maxsplit=1)[0]
     assignment_id = int(assignment_fragment)
-    payload = _encode_payload(order_id="ORD-CMD")
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT task_uuid FROM assignments WHERE id = %s", (assignment_id,))
+            assignment_row = await cur.fetchone()
+    payload = _encode_payload(
+        task_uuid=str(assignment_row["task_uuid"]),
+        order_id="ORD-CMD",
+        wb_product_id=5601,
+    )
 
     submit_response = await processor.handle(
         telegram_id=880001,
@@ -1185,3 +1477,68 @@ async def test_buyer_command_processor_smoke_flow(db_pool) -> None:
     assert 'товар="' in orders_response.text
     assert "~600 ₽" in orders_response.text
     assert "USDT" not in orders_response.text
+
+
+@pytest.mark.asyncio
+async def test_buyer_command_processor_submit_review_flow(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="cmd-review-shop",
+        wb_product_id=5602,
+        reward_usdt=Decimal("6.000000"),
+        slot_count=1,
+        available_slots=1,
+        review_phrases=["в размер", "не садятся после стирки"],
+    )
+    processor = BuyerCommandProcessor(
+        buyer_service=buyer_service,
+        bot_username="qpi_marketplace_bot",
+        display_rub_per_usdt=Decimal("100"),
+    )
+
+    reserve_response = await processor.handle(
+        telegram_id=880002,
+        username="buyer_cmd_review",
+        text=f"/reserve {fixture['listing_id']}",
+    )
+    assignment_fragment = reserve_response.text.split("assignment_id=")[1]
+    assignment_fragment = assignment_fragment.split("\n", maxsplit=1)[0]
+    assignment_id = int(assignment_fragment)
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT task_uuid
+                    FROM assignments
+                    WHERE id = %s
+                    """,
+                    (assignment_id,),
+                )
+                assignment_row = await cur.fetchone()
+                await cur.execute(
+                    """
+                    UPDATE assignments
+                    SET status = 'picked_up_wait_review',
+                        review_phrases = ARRAY['в размер', 'не садятся после стирки'],
+                        unlock_at = timezone('utc', now()) + interval '10 days'
+                    WHERE id = %s
+                    """,
+                    (assignment_id,),
+                )
+
+    payload = _encode_review_payload(
+        task_uuid=str(assignment_row["task_uuid"]),
+        wb_product_id=5602,
+        review_text="Очень понравились, в размер и не садятся после стирки.",
+    )
+    submit_response = await processor.handle(
+        telegram_id=880002,
+        username="buyer_cmd_review",
+        text=f"/submit_review {assignment_id} {payload}",
+    )
+
+    assert "picked_up_wait_unlock" in submit_response.text
+    assert submit_response.delete_source_message is True

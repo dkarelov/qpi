@@ -616,9 +616,7 @@ async def test_reward_unlock_enqueues_buyer_and_seller_notifications(db_pool) ->
 
 
 @pytest.mark.asyncio
-async def test_runtime_dispatch_sends_and_marks_notification_sent(
-    db_pool, isolated_database: str
-) -> None:
+async def test_runtime_dispatch_sends_and_marks_notification_sent(db_pool, isolated_database: str) -> None:
     runtime = _build_runtime(isolated_database)
     runtime._notification_service = NotificationService(db_pool)
     transport = FakeTransport()
@@ -661,29 +659,29 @@ async def test_runtime_dispatch_sends_and_marks_notification_sent(
                     INSERT INTO assignments (
                         listing_id,
                         buyer_user_id,
+                        task_uuid,
                         wb_product_id,
                         status,
                         reward_usdt,
                         reservation_expires_at,
                         idempotency_key
                     )
-                    VALUES (%s, %s, %s, 'reserved', %s, timezone('utc', now()), %s)
+                    VALUES (%s, %s, %s, %s, 'reserved', %s, timezone('utc', now()), %s)
                     RETURNING id
                     """,
                     (
                         listing_id,
                         buyer_user_id,
+                        "11111111-1111-4111-8111-000000000001",
                         9303,
                         Decimal("3.000000"),
                         "dispatch-assignment",
                     ),
                 )
                 assignment_id = int((await cur.fetchone())["id"])
-                await (
-                    runtime._notification_service.enqueue_assignment_reservation_expired_for_buyer_locked(
-                        cur,
-                        assignment_id=assignment_id,
-                    )
+                await runtime._notification_service.enqueue_assignment_reservation_expired_for_buyer_locked(
+                    cur,
+                    assignment_id=assignment_id,
                 )
 
     await runtime._dispatch_notifications_once(bot=bot)
@@ -708,9 +706,7 @@ async def test_runtime_dispatch_sends_and_marks_notification_sent(
 
 
 @pytest.mark.asyncio
-async def test_runtime_dispatch_formats_buyer_reward_notification_in_rub(
-    db_pool, isolated_database: str
-) -> None:
+async def test_runtime_dispatch_formats_buyer_reward_notification_in_rub(db_pool, isolated_database: str) -> None:
     runtime = _build_runtime(isolated_database)
     runtime._notification_service = NotificationService(db_pool)
     transport = FakeTransport()

@@ -55,6 +55,7 @@ CREATE TABLE "public"."assignments" (
     "id" bigserial NOT NULL,
     "listing_id" bigint NOT NULL,
     "buyer_user_id" bigint NOT NULL,
+    "task_uuid" uuid NOT NULL,
     "wb_product_id" bigint NOT NULL,
     "status" text NOT NULL CONSTRAINT assignments_status_check CHECK (status = ANY (ARRAY['reserved'::text, 'order_verified'::text, 'picked_up_wait_review'::text, 'picked_up_wait_unlock'::text, 'withdraw_sent'::text, 'expired_2h'::text, 'buyer_cancelled'::text, 'wb_invalid'::text, 'returned_within_14d'::text, 'delivery_expired'::text])),
     "reward_usdt" numeric(20,6) NOT NULL CONSTRAINT assignments_reward_usdt_check CHECK (reward_usdt > 0::numeric),
@@ -76,6 +77,8 @@ CREATE TABLE "public"."assignments" (
 CREATE INDEX idx_assignments_buyer_status ON public.assignments USING btree (buyer_user_id, status);
 
 CREATE INDEX idx_assignments_listing_status ON public.assignments USING btree (listing_id, status);
+
+CREATE UNIQUE INDEX uq_assignments_task_uuid ON public.assignments USING btree (task_uuid);
 
 CREATE INDEX idx_assignments_buyer_product_status ON public.assignments USING btree (buyer_user_id, wb_product_id, status);
 
@@ -100,6 +103,7 @@ CREATE TABLE "public"."buyer_orders" (
     "assignment_id" bigint NOT NULL,
     "listing_id" bigint NOT NULL,
     "buyer_user_id" bigint NOT NULL,
+    "task_uuid" uuid NOT NULL,
     "order_id" text NOT NULL,
     "wb_product_id" bigint NOT NULL,
     "ordered_at" timestamp with time zone NOT NULL,
@@ -130,10 +134,15 @@ CREATE TABLE "public"."buyer_reviews" (
     "assignment_id" bigint NOT NULL,
     "listing_id" bigint NOT NULL,
     "buyer_user_id" bigint NOT NULL,
+    "task_uuid" uuid NOT NULL,
     "wb_product_id" bigint NOT NULL,
     "reviewed_at" timestamp with time zone NOT NULL,
-    "rating" integer NOT NULL CONSTRAINT buyer_reviews_rating_check CHECK (rating = 5),
+    "rating" integer NOT NULL CONSTRAINT buyer_reviews_rating_check CHECK (rating >= 1 AND rating <= 5),
     "review_text" text NOT NULL CONSTRAINT buyer_reviews_review_text_check CHECK (length(btrim(review_text)) > 0),
+    "verification_status" text NOT NULL CONSTRAINT buyer_reviews_verification_status_check CHECK (verification_status = ANY (ARRAY['pending_manual'::text, 'verified_auto'::text, 'verified_admin'::text])),
+    "verification_reason" text,
+    "verified_at" timestamp with time zone,
+    "verified_by_admin_user_id" bigint,
     "payload_version" integer NOT NULL,
     "raw_payload_json" jsonb NOT NULL DEFAULT '{}'::jsonb,
     "source" text NOT NULL DEFAULT 'plugin_base64'::text,
@@ -153,6 +162,8 @@ ALTER TABLE ONLY "public"."buyer_reviews" ADD CONSTRAINT "buyer_reviews_assignme
 ALTER TABLE ONLY "public"."buyer_reviews" ADD CONSTRAINT "buyer_reviews_buyer_user_id_fkey" FOREIGN KEY ("buyer_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 
 ALTER TABLE ONLY "public"."buyer_reviews" ADD CONSTRAINT "buyer_reviews_listing_id_fkey" FOREIGN KEY ("listing_id") REFERENCES "public"."listings" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+ALTER TABLE ONLY "public"."buyer_reviews" ADD CONSTRAINT "buyer_reviews_verified_by_admin_user_id_fkey" FOREIGN KEY ("verified_by_admin_user_id") REFERENCES "public"."users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
 
 CREATE TABLE "public"."buyer_saved_shops" (
     "id" bigserial NOT NULL,
