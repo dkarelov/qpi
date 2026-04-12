@@ -640,7 +640,7 @@ class BuyerService:
                             raw_payload_json,
                             source
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'plugin_base64')
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'plugin_base64')
                         """,
                         (
                             assignment_id,

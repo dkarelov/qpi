@@ -15,10 +15,18 @@ from tests.helpers import create_account, create_listing, create_shop, create_us
 
 def _encode_payload(
     *,
+    task_uuid: str,
+    wb_product_id: int,
     order_id: str,
     ordered_at: datetime,
 ) -> str:
-    payload = [order_id, ordered_at.replace(tzinfo=None).isoformat()]
+    payload = [
+        1,
+        task_uuid,
+        wb_product_id,
+        order_id,
+        ordered_at.replace(tzinfo=None).isoformat(),
+    ]
     return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
 
 
@@ -156,6 +164,8 @@ async def _prepare_order_verified_assignment(
                     (review_required, reservation.assignment_id),
                 )
     payload_base64 = _encode_payload(
+        task_uuid=str(reservation.task_uuid),
+        wb_product_id=wb_product_id,
         order_id=order_id,
         ordered_at=ordered_at,
     )
@@ -334,9 +344,7 @@ async def test_order_tracker_sale_moves_review_required_assignment_to_pickup_wai
             assert assignment["pickup_at"] is not None
             assert assignment["unlock_at"] is not None
             assert len(assignment["review_phrases"]) == 2
-            assert set(assignment["review_phrases"]).issubset(
-                {"в размер", "не садятся после стирки", "хорошая ткань"}
-            )
+            assert set(assignment["review_phrases"]).issubset({"в размер", "не садятся после стирки", "хорошая ткань"})
 
 
 @pytest.mark.asyncio
