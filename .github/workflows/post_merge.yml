@@ -383,7 +383,7 @@ jobs:
         run: uv sync --frozen --extra dev
 
       - name: Download runtime artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: ${{ needs.build-runtime-artifact.outputs.artifact_name }}
           path: ${{ runner.temp }}/runtime-artifact
@@ -436,7 +436,7 @@ jobs:
         run: uv sync --frozen --extra dev
 
       - name: Download function bundles
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: function-bundles-${{ github.sha }}
           path: ${{ runner.temp }}/function-bundles
