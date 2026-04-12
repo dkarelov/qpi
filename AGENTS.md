@@ -858,7 +858,7 @@ Private runner / workflow gotchas:
 - Workflow action references target Node24-ready `actions/checkout@v6` and `actions/setup-python@v6`; keep the private runner on `v2.329.0` or newer for `checkout@v6` compatibility.
 - Artifact handoff in deploy workflows is part of the supported CI/CD contract:
   - keep `actions/upload-artifact` / `actions/download-artifact` on Node24-ready majors,
-  - current qpi baseline is `upload-artifact@v4` with `download-artifact@v5`,
+  - current qpi baseline is `upload-artifact@v4` with `download-artifact@v8`,
   - if GitHub starts warning about deprecated runner Node runtimes again, check core action versions before changing any app/runtime assumptions.
 - Function bundle publishing requires `zip`; it is installed both in runner cloud-init and defensively in the GitHub-hosted deploy-functions workflow.
 - Runtime and function deploy wrappers prune old `.artifacts` outputs with retention knobs so the private runner workspace does not grow without bound.
