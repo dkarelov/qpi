@@ -290,7 +290,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Upload runtime artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.build.outputs.artifact_name }}
           path: ${{ runner.temp }}/${{ steps.build.outputs.archive_file }}
