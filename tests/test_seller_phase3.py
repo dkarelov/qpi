@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -8,7 +9,9 @@ from psycopg.rows import dict_row
 from libs.domain.errors import InvalidStateError
 from libs.domain.ledger import FinanceService
 from libs.domain.seller import SellerService
+from libs.domain.seller_workflow import SellerWorkflowService
 from libs.integrations.wb import WbPingResult
+from libs.integrations.wb_public import WbObservedBuyerPrice, WbProductSnapshot
 from libs.security.token_cipher import encrypt_token
 from services.bot_api.seller_handlers import SellerCommandProcessor
 from tests.helpers import create_listing, create_shop, create_user
@@ -23,6 +26,41 @@ class StubWbPingClient:
         if self._valid:
             return WbPingResult(valid=True, status_code=200, message="ok")
         return WbPingResult(valid=False, status_code=401, message=self._message)
+
+
+class StubWbPublicClient:
+    def __init__(self, *, buyer_price_rub: int | None) -> None:
+        self._buyer_price_rub = buyer_price_rub
+
+    async def fetch_product_snapshot(self, *, token: str, wb_product_id: int) -> WbProductSnapshot:
+        assert token == "valid-token"
+        return WbProductSnapshot(
+            wb_product_id=wb_product_id,
+            subject_name="Клей",
+            vendor_code="B7000",
+            brand="B7000",
+            name="B7000 Клей универсальный прозрачный",
+            description="Для ремонта",
+            photo_url="https://example.com/glue.webp",
+            tech_sizes=["30 мл"],
+            characteristics=[{"name": "Объем", "value": "30 мл"}],
+        )
+
+    async def lookup_buyer_price(
+        self,
+        *,
+        token: str,
+        wb_product_id: int,
+    ) -> WbObservedBuyerPrice | None:
+        assert token == "valid-token"
+        if self._buyer_price_rub is None:
+            return None
+        return WbObservedBuyerPrice(
+            buyer_price_rub=self._buyer_price_rub,
+            seller_price_rub=self._buyer_price_rub,
+            spp_percent=0,
+            observed_at=datetime.now(UTC),
+        )
 
 
 async def _set_account_balance(db_pool, *, account_id: int, balance: Decimal) -> None:
@@ -245,6 +283,52 @@ async def test_listing_draft_persists_buyer_visible_metadata(db_pool) -> None:
     assert loaded.wb_brand_name == "B7000"
     assert loaded.reference_price_rub == 392
     assert loaded.review_phrases == ["не течет", "удобный дозатор"]
+
+
+@pytest.mark.asyncio
+async def test_listing_create_command_matches_current_listing_create_contract(db_pool) -> None:
+    seller_service = SellerService(db_pool)
+    seller = await seller_service.bootstrap_seller(telegram_id=70031, username="seller_cmd_listing")
+    shop = await seller_service.create_shop(seller_user_id=seller.user_id, title="Command Shop")
+    await seller_service.save_validated_shop_token(
+        seller_user_id=seller.user_id,
+        shop_id=shop.shop_id,
+        token_ciphertext=encrypt_token("valid-token", "test-key"),
+    )
+    processor = SellerCommandProcessor(
+        seller_service=seller_service,
+        seller_workflow_service=SellerWorkflowService(
+            seller_service=seller_service,
+            wb_public_client=StubWbPublicClient(buyer_price_rub=None),
+            token_cipher_key="test-key",
+        ),
+        wb_ping_client=StubWbPingClient(valid=True),
+        token_cipher_key="test-key",
+        bot_username="qpi_bot",
+        display_rub_per_usdt=Decimal("100"),
+    )
+
+    response = await processor.handle(
+        telegram_id=70031,
+        username="seller_cmd_listing",
+        text=(
+            f"/listing_create {shop.shop_id} "
+            "225954014, 100, 2, клей b7000, не течет, удобный дозатор || 392 || Клей для ремонта"
+        ),
+    )
+
+    assert "Листинг создан" in response.text
+    assert "Клей для ремонта" in response.text
+    assert "Цена покупателя: 392 ₽ (manual)" in response.text
+    assert "Фразы для отзыва: не течет, удобный дозатор" in response.text
+
+    listings = await seller_service.list_listings(seller_user_id=seller.user_id, shop_id=shop.shop_id)
+    assert len(listings) == 1
+    assert listings[0].display_title == "Клей для ремонта"
+    assert listings[0].reference_price_rub == 392
+    assert listings[0].reference_price_source == "manual"
+    assert listings[0].review_phrases == ["не течет", "удобный дозатор"]
+    assert listings[0].reward_usdt == Decimal("1.000000")
 
 
 @pytest.mark.asyncio

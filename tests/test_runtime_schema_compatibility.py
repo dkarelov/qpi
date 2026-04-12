@@ -245,6 +245,121 @@ async def test_runtime_schema_compat_apply_backfills_legacy_assignment_product_i
 
 
 @pytest.mark.asyncio
+async def test_runtime_schema_compat_apply_migrates_review_phrases_to_text_arrays(
+    isolated_database: str,
+) -> None:
+    async with await psycopg.AsyncConnection.connect(isolated_database) as conn:
+        seller_user_id = await create_user(
+            conn,
+            telegram_id=992011,
+            role="seller",
+            username="compat_review_seller",
+        )
+        buyer_user_id = await create_user(
+            conn,
+            telegram_id=992012,
+            role="buyer",
+            username="compat_review_buyer",
+        )
+        shop_id = await create_shop(
+            conn,
+            seller_user_id=seller_user_id,
+            slug="compat-review-shop",
+            title="Compat Review Shop",
+        )
+        listing_id = await create_listing(
+            conn,
+            shop_id=shop_id,
+            seller_user_id=seller_user_id,
+            wb_product_id=552892534,
+            search_phrase="совместимость отзывов",
+            reward_usdt=Decimal("0.130000"),
+            slot_count=2,
+            available_slots=1,
+            status="active",
+            reference_price_rub=392,
+            reference_price_source="manual",
+            review_phrases=["в размер", "не садятся после стирки"],
+        )
+
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO assignments (
+                    listing_id,
+                    buyer_user_id,
+                    wb_product_id,
+                    status,
+                    reward_usdt,
+                    reservation_expires_at,
+                    review_required,
+                    review_phrases,
+                    idempotency_key
+                )
+                VALUES (%s, %s, %s, 'picked_up_wait_review', %s, %s, true, %s, %s)
+                RETURNING id
+                """,
+                (
+                    listing_id,
+                    buyer_user_id,
+                    552892534,
+                    Decimal("0.130000"),
+                    datetime.now(UTC) + timedelta(hours=2),
+                    ["в размер", "не садятся после стирки"],
+                    "compat-review-assignment",
+                ),
+            )
+            assignment_id = int((await cur.fetchone())[0])
+        await conn.commit()
+
+    with psycopg.connect(isolated_database, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "ALTER TABLE public.listings ADD COLUMN review_phrases_json jsonb NOT NULL DEFAULT '[]'::jsonb"
+            )
+            cur.execute("UPDATE public.listings SET review_phrases_json = to_jsonb(review_phrases)")
+            cur.execute("ALTER TABLE public.listings DROP COLUMN review_phrases")
+            cur.execute(
+                "ALTER TABLE public.assignments ADD COLUMN review_phrases_json jsonb NOT NULL DEFAULT '[]'::jsonb"
+            )
+            cur.execute(
+                "UPDATE public.assignments SET review_phrases_json = to_jsonb(review_phrases)"
+            )
+            cur.execute("ALTER TABLE public.assignments DROP COLUMN review_phrases")
+
+    run_runtime_schema_compat_apply(isolated_database)
+    run_runtime_schema_compat_apply(isolated_database)
+    run_schema_apply(isolated_database)
+
+    with psycopg.connect(isolated_database, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT data_type, udt_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'listings'
+                  AND column_name = 'review_phrases'
+                """
+            )
+            assert cur.fetchone() == ("ARRAY", "_text")
+            cur.execute(
+                """
+                SELECT data_type, udt_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'assignments'
+                  AND column_name = 'review_phrases'
+                """
+            )
+            assert cur.fetchone() == ("ARRAY", "_text")
+            cur.execute("SELECT review_phrases FROM public.listings WHERE id = %s", (listing_id,))
+            assert cur.fetchone()[0] == ["в размер", "не садятся после стирки"]
+            cur.execute("SELECT review_phrases FROM public.assignments WHERE id = %s", (assignment_id,))
+            assert cur.fetchone()[0] == ["в размер", "не садятся после стирки"]
+
+
+@pytest.mark.asyncio
 async def test_runtime_schema_compat_apply_widens_legacy_token_invalidation_sources(
     isolated_database: str,
 ) -> None:

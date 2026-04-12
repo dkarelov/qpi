@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from libs.domain.errors import ListingValidationError
 from libs.domain.models import StatusChangeResult
 from libs.domain.seller import SellerService
-from libs.integrations.wb_public import WbProductSnapshot, WbPublicApiError, WbPublicCatalogClient
+from libs.integrations.wb_public import (
+    WbObservedBuyerPrice,
+    WbProductSnapshot,
+    WbPublicApiError,
+    WbPublicCatalogClient,
+)
 from libs.security.token_cipher import decrypt_token
 
 
@@ -41,6 +48,58 @@ class SellerWorkflowService:
             raise ListingValidationError(
                 "Товар сейчас недоступен на WB или его карточка не читается. Попробуйте позже."
             ) from exc
+
+    async def load_listing_creation_snapshot(
+        self,
+        *,
+        seller_user_id: int,
+        shop_id: int,
+        wb_product_id: int,
+    ) -> WbProductSnapshot:
+        token = await self._load_shop_wb_token(
+            seller_user_id=seller_user_id,
+            shop_id=shop_id,
+        )
+        try:
+            return await self._wb_public_client.fetch_product_snapshot(
+                token=token,
+                wb_product_id=wb_product_id,
+            )
+        except WbPublicApiError as exc:
+            raise ListingValidationError(
+                "Не удалось получить данные о товаре WB. Проверьте артикул и попробуйте еще раз."
+            ) from exc
+
+    async def lookup_listing_buyer_price(
+        self,
+        *,
+        seller_user_id: int,
+        shop_id: int,
+        wb_product_id: int,
+    ) -> WbObservedBuyerPrice | None:
+        token = await self._load_shop_wb_token(
+            seller_user_id=seller_user_id,
+            shop_id=shop_id,
+        )
+        try:
+            return await self._wb_public_client.lookup_buyer_price(
+                token=token,
+                wb_product_id=wb_product_id,
+            )
+        except WbPublicApiError as exc:
+            raise ListingValidationError(
+                "Не удалось получить цену покупателя из WB. Попробуйте еще раз позже."
+            ) from exc
+
+    @staticmethod
+    def reference_price_updated_at(
+        *,
+        observed_buyer_price: WbObservedBuyerPrice | None,
+        reference_price_source: str,
+    ) -> datetime:
+        if reference_price_source == "orders" and observed_buyer_price is not None:
+            return observed_buyer_price.observed_at or datetime.now(UTC)
+        return datetime.now(UTC)
 
     async def activate_listing(
         self,

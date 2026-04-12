@@ -1073,7 +1073,7 @@ async def test_submit_review_payload_moves_assignment_to_pickup_wait_unlock_and_
                     """
                     UPDATE assignments
                     SET status = 'picked_up_wait_review',
-                        review_phrases_json = '["в размер","не садятся после стирки"]'::jsonb,
+                        review_phrases = ARRAY['в размер', 'не садятся после стирки'],
                         unlock_at = timezone('utc', now()) + interval '10 days'
                     WHERE id = %s
                     """,

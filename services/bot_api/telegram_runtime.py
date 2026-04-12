@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import csv
 import html
 import json
-import re
 import threading
 import urllib.parse
 from collections.abc import Callable
@@ -35,6 +33,7 @@ from libs.domain.errors import (
 )
 from libs.domain.fx_rates import FxRateService
 from libs.domain.ledger import FinanceService
+from libs.domain.listing_creation import parse_listing_create_csv, sanitize_buyer_display_title
 from libs.domain.notifications import NotificationService
 from libs.domain.public_refs import (
     build_support_deep_link,
@@ -135,7 +134,7 @@ _RUNTIME_REQUIRED_SCHEMA_COLUMNS = {
     "assignments": {
         "wb_product_id",
         "review_required",
-        "review_phrases_json",
+        "review_phrases",
     },
     "buyer_orders": {
         "wb_product_id",
@@ -158,7 +157,7 @@ _RUNTIME_REQUIRED_SCHEMA_COLUMNS = {
         "wb_photo_url",
         "wb_tech_sizes_json",
         "wb_characteristics_json",
-        "review_phrases_json",
+        "review_phrases",
         "reference_price_rub",
         "reference_price_source",
         "reference_price_updated_at",
@@ -392,6 +391,9 @@ class TelegramWebhookRuntime:
                 wb_ping_client=wb_ping_client,
                 token_cipher_key=self._settings.token_cipher_key,
                 bot_username=self._settings.telegram_bot_username,
+                display_rub_per_usdt=self._settings.display_rub_per_usdt,
+                fx_rate_service=self._fx_rate_service,
+                fx_rate_ttl_seconds=self._settings.fx_rate_ttl_seconds,
             )
             self._seller_workflow_service = seller_workflow_service
             self._buyer_processor = BuyerCommandProcessor(
@@ -1950,21 +1952,7 @@ class TelegramWebhookRuntime:
         self,
         text: str,
     ) -> tuple[int, Decimal, int, str, list[str]]:
-        try:
-            rows = list(csv.reader([text], skipinitialspace=True))
-        except csv.Error as exc:
-            raise ValueError("invalid csv") from exc
-        if len(rows) != 1 or len(rows[0]) < 4:
-            raise ValueError("listing create input must contain at least 4 fields")
-        fields = [field.strip() for field in rows[0]]
-        wb_product_id = int(fields[0])
-        cashback_rub = Decimal(fields[1])
-        slots = int(fields[2])
-        search_phrase = fields[3]
-        review_phrases = [field for field in fields[4:] if field]
-        if len(review_phrases) > 10:
-            raise ValueError("review_phrases must contain at most 10 entries")
-        return wb_product_id, cashback_rub, slots, search_phrase, review_phrases
+        return parse_listing_create_csv(text)
 
     def _listing_title_review_markup(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
@@ -8331,19 +8319,6 @@ class TelegramWebhookRuntime:
         normalized = (display_title or "").strip()
         return normalized or fallback.strip()
 
-    @staticmethod
-    def _normalize_match_text(value: str | None) -> str:
-        if value is None:
-            return ""
-        return re.sub(r"\s+", " ", value).strip().lower()
-
-    def _contains_brand_reference(self, *, text: str, brand_name: str | None) -> bool:
-        normalized_brand = self._normalize_match_text(brand_name)
-        normalized_text = self._normalize_match_text(text)
-        if not normalized_brand or not normalized_text:
-            return False
-        return normalized_brand in normalized_text
-
     def _sanitize_buyer_display_title(
         self,
         *,
@@ -8351,14 +8326,11 @@ class TelegramWebhookRuntime:
         source_title: str,
         brand_name: str | None,
     ) -> str:
-        title = source_title.strip()
-        brand = (brand_name or "").strip()
-        if brand:
-            title = re.sub(re.escape(brand), "", title, flags=re.IGNORECASE)
-        title = re.sub(r"\s{2,}", " ", title).strip(" -|,;:/")
-        if not title or self._contains_brand_reference(text=title, brand_name=brand):
-            return f"Товар {wb_product_id}"
-        return title
+        return sanitize_buyer_display_title(
+            wb_product_id=wb_product_id,
+            source_title=source_title,
+            brand_name=brand_name,
+        )
 
     def _format_cashback_rub_value(self, amount: Decimal) -> str:
         return self._format_decimal(amount * self._display_rub_per_usdt, quant=_RUB_QUANT)

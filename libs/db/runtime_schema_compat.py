@@ -18,7 +18,6 @@ _ACTIVE_ASSIGNMENT_STATUSES = (
 _LISTING_JSON_COLUMNS = (
     "wb_tech_sizes_json",
     "wb_characteristics_json",
-    "review_phrases_json",
 )
 _LISTING_OPTIONAL_COLUMNS = (
     "display_title",
@@ -106,6 +105,35 @@ def _table_exists(cur: psycopg.Cursor, *, table_name: str) -> bool:
     cur.execute("SELECT to_regclass(%s)", (f"public.{table_name}",))
     row = cur.fetchone()
     return row is not None and row[0] is not None
+
+
+def _ensure_review_phrases_array_column(
+    cur: psycopg.Cursor,
+    *,
+    table_name: str,
+    legacy_json_column: str = "review_phrases_json",
+) -> None:
+    if not _table_exists(cur, table_name=table_name):
+        return
+    if not _column_exists(cur, table_name=table_name, column_name="review_phrases"):
+        cur.execute(
+            f"ALTER TABLE public.{table_name} "
+            "ADD COLUMN review_phrases text[] NOT NULL DEFAULT '{}'::text[]"
+        )
+    if not _column_exists(cur, table_name=table_name, column_name=legacy_json_column):
+        return
+    cur.execute(
+        f"""
+        UPDATE public.{table_name}
+        SET review_phrases = COALESCE(
+            ARRAY(SELECT jsonb_array_elements_text({legacy_json_column})),
+            '{{}}'::text[]
+        )
+        WHERE review_phrases = '{{}}'::text[]
+          AND {legacy_json_column} IS NOT NULL
+          AND {legacy_json_column} <> '[]'::jsonb
+        """
+    )
 
 
 def _constraint_definition(
@@ -247,6 +275,8 @@ def _ensure_listing_metadata_columns(cur: psycopg.Cursor) -> None:
             f"ADD COLUMN {column_name} jsonb NOT NULL DEFAULT '[]'::jsonb"
         )
 
+    _ensure_review_phrases_array_column(cur, table_name="listings")
+
 
 def _ensure_token_invalidation_sources(cur: psycopg.Cursor) -> None:
     if _table_exists(cur, table_name="listings"):
@@ -383,11 +413,7 @@ def _ensure_assignment_review_columns(cur: psycopg.Cursor) -> None:
             "ALTER TABLE public.assignments "
             "ADD COLUMN review_required boolean NOT NULL DEFAULT false"
         )
-    if not _column_exists(cur, table_name="assignments", column_name="review_phrases_json"):
-        cur.execute(
-            "ALTER TABLE public.assignments "
-            "ADD COLUMN review_phrases_json jsonb NOT NULL DEFAULT '[]'::jsonb"
-        )
+    _ensure_review_phrases_array_column(cur, table_name="assignments")
 
 
 def _ensure_assignment_order_tracking_index(cur: psycopg.Cursor) -> None:

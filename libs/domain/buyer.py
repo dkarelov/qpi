@@ -876,7 +876,7 @@ class BuyerService:
                         a.reservation_expires_at,
                         a.order_id,
                         a.review_required,
-                        a.review_phrases_json,
+                        a.review_phrases,
                         l.wb_product_id,
                         l.display_title,
                         l.wb_source_title,
@@ -926,7 +926,7 @@ class BuyerService:
                         order_id=row["order_id"],
                         ordered_at=row["ordered_at"],
                         review_required=bool(row["review_required"]),
-                        review_phrases=list(row["review_phrases_json"] or []),
+                        review_phrases=list(row["review_phrases"] or []),
                     )
                     for row in rows
                 ]

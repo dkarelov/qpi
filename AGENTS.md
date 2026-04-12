@@ -149,6 +149,10 @@ Persistence and schema:
   - optional review phrase pool (`0..10` phrases).
 - Seller listing-create input is a single comma-separated message:
   - `wb_product_id, cashback_rub, slot_count, search_phrase, review_phrase_1, ... , review_phrase_10`.
+- Seller slash-command adapter `/listing_create` is a supported runtime surface, not a legacy fallback:
+  - it must stay aligned with the same listing-create contract as the button-driven UX,
+  - it accepts the same comma-separated listing payload after `<shop_id>`,
+  - when command mode needs to compress the interactive fallback steps into one message, it appends optional segments as `|| buyer_price_rub || display_title`.
 - Listing review phrase pool rules:
   - blank phrase cells are ignored,
   - at most 10 non-empty phrases are stored,
@@ -435,6 +439,7 @@ Transitions:
 - Release-grade marketplace runtime and function deploys now reuse the private runner after DB validation so the network-heavy rollout happens from the same YC region as the targets.
 - Marketplace deploy workflows now run an explicit predeploy gate before rollout and publish immutable runtime/function artifacts before the deploy step consumes them.
 - Marketplace bot runtime is webhook-based. Companion support-bot runtime uses long polling and remains private-only.
+- Seller and buyer slash-command adapters (`services/bot_api/seller_handlers.py`, `services/bot_api/buyer_handlers.py`, in-chat command dispatch, and `--seller-command` / `--buyer-command`) are supported interfaces, not legacy-only tooling; changes to shared bot flows must update these adapters in the same change whenever the operation remains available by command.
 - Support-bot images are now published to a dedicated Yandex Container Registry repository and pulled on the VM during rollout instead of being copied as `docker save` archives.
 - `SUPPORT_BOT_USERNAME` is an optional marketplace bot runtime env var; when set, seller/buyer screens can build deep links into the support-bot using the public ref contract above.
 - Expected load target: ~100 concurrent users.

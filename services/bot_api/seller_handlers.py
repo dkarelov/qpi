@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from libs.domain.errors import (
     DomainError,
@@ -10,6 +10,8 @@ from libs.domain.errors import (
     ListingValidationError,
     NotFoundError,
 )
+from libs.domain.fx_rates import FxRateService
+from libs.domain.listing_creation import parse_listing_create_csv, sanitize_buyer_display_title
 from libs.domain.seller import SellerService
 from libs.domain.seller_workflow import SellerWorkflowService
 from libs.integrations.wb import WbPingClient
@@ -33,12 +35,18 @@ class SellerCommandProcessor:
         token_cipher_key: str,
         bot_username: str,
         seller_workflow_service: SellerWorkflowService | None = None,
+        display_rub_per_usdt: Decimal = Decimal("100"),
+        fx_rate_service: FxRateService | None = None,
+        fx_rate_ttl_seconds: int = 900,
     ) -> None:
         self._seller_service = seller_service
         self._seller_workflow_service = seller_workflow_service
         self._wb_ping_client = wb_ping_client
         self._token_cipher_key = token_cipher_key
         self._bot_username = bot_username.lstrip("@")
+        self._display_rub_per_usdt = display_rub_per_usdt
+        self._fx_rate_service = fx_rate_service
+        self._fx_rate_ttl_seconds = fx_rate_ttl_seconds
 
     async def handle(
         self,
@@ -71,8 +79,9 @@ class SellerCommandProcessor:
                         "/shop_list\n"
                         "/shop_delete <shop_id> [confirm]\n"
                         "/token_set <shop_id> <wb_token>\n"
-                        "/listing_create <shop_id> <wb_product_id> "
-                        "<reward_usdt> <slots> <search_phrase>\n"
+                        "/listing_create <shop_id> <артикул ВБ, кэшбэк в рублях, макс. заказов, "
+                        "поисковая фраза, фраза для отзыва 1, ... , фраза для отзыва 10> "
+                        "[|| <цена покупателя в рублях> [|| <название для покупателей>]]\n"
                         "/listing_list [shop_id]\n"
                         "/listing_activate <listing_id> [idempotency_key]\n"
                         "/listing_pause <listing_id> [reason]\n"
@@ -182,32 +191,95 @@ class SellerCommandProcessor:
                 )
 
             if command == "/listing_create":
-                tokens = args.split(maxsplit=4)
-                if len(tokens) != 5:
+                if self._seller_workflow_service is None:
+                    return SellerCommandResponse(
+                        text="Команда /listing_create временно недоступна в этом режиме."
+                    )
+                try:
+                    shop_id, listing_input, manual_price_rub, display_title = (
+                        self._parse_listing_create_command_args(args)
+                    )
+                    wb_product_id, cashback_rub, slot_count, search_phrase, review_phrases = (
+                        parse_listing_create_csv(listing_input)
+                    )
+                except (ValueError, InvalidOperation):
+                    return SellerCommandResponse(text=self._listing_create_usage_text())
+                if wb_product_id < 1 or cashback_rub <= Decimal("0") or slot_count < 1 or not search_phrase:
+                    return SellerCommandResponse(text=self._listing_create_usage_text())
+
+                fx_rate = await self._resolve_display_rub_per_usdt()
+                reward_usdt = (cashback_rub / fx_rate).quantize(
+                    Decimal("0.000001"),
+                    rounding=ROUND_HALF_UP,
+                )
+                if reward_usdt <= Decimal("0"):
+                    return SellerCommandResponse(text=self._listing_create_usage_text())
+
+                snapshot = await self._seller_workflow_service.load_listing_creation_snapshot(
+                    seller_user_id=seller_user_id,
+                    shop_id=shop_id,
+                    wb_product_id=wb_product_id,
+                )
+                observed_buyer_price = await self._seller_workflow_service.lookup_listing_buyer_price(
+                    seller_user_id=seller_user_id,
+                    shop_id=shop_id,
+                    wb_product_id=wb_product_id,
+                )
+                reference_price_rub = (
+                    observed_buyer_price.buyer_price_rub
+                    if observed_buyer_price is not None
+                    else manual_price_rub
+                )
+                if reference_price_rub is None:
                     return SellerCommandResponse(
                         text=(
-                            "Использование: /listing_create <shop_id> <wb_product_id> "
-                            "<reward_usdt> <slots> <search_phrase>"
+                            "Не удалось определить цену покупателя по заказам WB за 30 дней.\n"
+                            "Повторите команду и после данных объявления добавьте "
+                            "`|| <цена покупателя в рублях>`."
                         )
                     )
-                shop_id = int(tokens[0])
-                wb_product_id = int(tokens[1])
-                reward_usdt = Decimal(tokens[2])
-                slot_count = int(tokens[3])
-                search_phrase = tokens[4].strip()
+                reference_price_source = "orders" if observed_buyer_price is not None else "manual"
+                resolved_display_title = (display_title or "").strip() or sanitize_buyer_display_title(
+                    wb_product_id=wb_product_id,
+                    source_title=snapshot.name,
+                    brand_name=snapshot.brand,
+                )
                 listing = await self._seller_service.create_listing_draft(
                     seller_user_id=seller_user_id,
                     shop_id=shop_id,
                     wb_product_id=wb_product_id,
+                    display_title=resolved_display_title,
+                    wb_source_title=snapshot.name,
+                    wb_subject_name=snapshot.subject_name,
+                    wb_brand_name=snapshot.brand,
+                    wb_vendor_code=snapshot.vendor_code,
+                    wb_description=snapshot.description,
+                    wb_photo_url=snapshot.photo_url,
+                    wb_tech_sizes=snapshot.tech_sizes,
+                    wb_characteristics=snapshot.characteristics,
+                    review_phrases=review_phrases,
+                    reference_price_rub=reference_price_rub,
+                    reference_price_source=reference_price_source,
+                    reference_price_updated_at=self._seller_workflow_service.reference_price_updated_at(
+                        observed_buyer_price=observed_buyer_price,
+                        reference_price_source=reference_price_source,
+                    ),
                     search_phrase=search_phrase,
                     reward_usdt=reward_usdt,
                     slot_count=slot_count,
                 )
+                review_phrases_text = ", ".join(review_phrases) if review_phrases else "—"
                 return SellerCommandResponse(
                     text=(
-                        f"Листинг создан: id={listing.listing_id}, status={listing.status}, "
-                        f"артикул={listing.wb_product_id}, поиск=\"{listing.search_phrase}\", "
-                        f"кэшбэк={listing.reward_usdt} USDT, slots={listing.slot_count}"
+                        f"Листинг создан: id={listing.listing_id}, status={listing.status}\n"
+                        f"Название: {listing.display_title}\n"
+                        f"Артикул WB: {listing.wb_product_id}\n"
+                        f"Поиск: \"{listing.search_phrase}\"\n"
+                        f"Кэшбэк: {cashback_rub.quantize(Decimal('1'), rounding=ROUND_HALF_UP)} ₽ "
+                        f"({listing.reward_usdt} USDT)\n"
+                        f"Цена покупателя: {reference_price_rub} ₽ ({reference_price_source})\n"
+                        f"Слоты: {listing.slot_count}\n"
+                        f"Фразы для отзыва: {review_phrases_text}"
                     )
                 )
 
@@ -352,3 +424,51 @@ class SellerCommandProcessor:
             return SellerCommandResponse(text=f"Операция недоступна: {exc}")
         except DomainError as exc:
             return SellerCommandResponse(text=f"Ошибка доменной логики: {exc}")
+
+    @staticmethod
+    def _listing_create_usage_text() -> str:
+        return (
+            "Использование: /listing_create <shop_id> "
+            "<артикул ВБ, кэшбэк в рублях, макс. заказов, поисковая фраза, "
+            "фраза для отзыва 1, ... , фраза для отзыва 10> "
+            "[|| <цена покупателя в рублях> [|| <название для покупателей>]]"
+        )
+
+    @staticmethod
+    def _parse_listing_create_command_args(
+        args: str,
+    ) -> tuple[int, str, int | None, str | None]:
+        shop_id_text, separator, remainder = args.partition(" ")
+        if not separator:
+            raise ValueError("missing listing payload")
+        shop_id = int(shop_id_text)
+        segments = [segment.strip() for segment in remainder.split("||")]
+        if not segments or not segments[0]:
+            raise ValueError("missing listing payload")
+        if len(segments) > 3:
+            raise ValueError("too many listing create segments")
+
+        manual_price_rub: int | None = None
+        if len(segments) >= 2 and segments[1]:
+            manual_price_rub = int(
+                Decimal(segments[1]).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            )
+            if manual_price_rub < 1:
+                raise ValueError("manual_price_rub must be >= 1")
+
+        display_title = None
+        if len(segments) == 3:
+            display_title = segments[2] or None
+
+        return shop_id, segments[0], manual_price_rub, display_title
+
+    async def _resolve_display_rub_per_usdt(self) -> Decimal:
+        if self._fx_rate_service is None:
+            return self._display_rub_per_usdt
+        try:
+            return await self._fx_rate_service.get_usdt_rub_rate(
+                max_age_seconds=self._fx_rate_ttl_seconds,
+                fallback_rate=self._display_rub_per_usdt,
+            )
+        except Exception:
+            return self._display_rub_per_usdt

@@ -323,7 +323,7 @@ async def test_order_tracker_sale_moves_review_required_assignment_to_pickup_wai
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                SELECT status, pickup_at, unlock_at, review_phrases_json
+                SELECT status, pickup_at, unlock_at, review_phrases
                 FROM assignments
                 WHERE id = %s
                 """,
@@ -333,8 +333,8 @@ async def test_order_tracker_sale_moves_review_required_assignment_to_pickup_wai
             assert assignment["status"] == "picked_up_wait_review"
             assert assignment["pickup_at"] is not None
             assert assignment["unlock_at"] is not None
-            assert len(assignment["review_phrases_json"]) == 2
-            assert set(assignment["review_phrases_json"]).issubset(
+            assert len(assignment["review_phrases"]) == 2
+            assert set(assignment["review_phrases"]).issubset(
                 {"в размер", "не садятся после стирки", "хорошая ткань"}
             )
 

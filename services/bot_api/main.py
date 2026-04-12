@@ -6,8 +6,10 @@ import asyncio
 from libs.config.settings import get_bot_api_settings
 from libs.db.pool import DatabasePool
 from libs.domain.buyer import BuyerService
+from libs.domain.fx_rates import FxRateService
 from libs.domain.seller import SellerService
 from libs.domain.seller_workflow import SellerWorkflowService
+from libs.integrations.fx_rates import CoinGeckoUsdtRubClient
 from libs.integrations.wb import WbPingClient
 from libs.integrations.wb_public import WbPublicCatalogClient
 from libs.logging.setup import configure_logging, get_logger
@@ -46,6 +48,14 @@ async def run_service(
 
         if seller_command:
             seller_service = SellerService(db_pool.pool)
+            fx_rate_service = FxRateService(
+                db_pool.pool,
+                provider=CoinGeckoUsdtRubClient(
+                    endpoint=settings.fx_rate_provider_url,
+                    timeout_seconds=settings.fx_rate_timeout_seconds,
+                ),
+                refresh_lock_id=settings.fx_rate_refresh_lock_id,
+            )
             wb_ping_client = WbPingClient(
                 timeout_seconds=settings.wb_ping_timeout_seconds,
                 max_requests=settings.wb_ping_rate_limit_count,
@@ -66,6 +76,9 @@ async def run_service(
                 wb_ping_client=wb_ping_client,
                 token_cipher_key=settings.token_cipher_key,
                 bot_username=settings.telegram_bot_username,
+                display_rub_per_usdt=settings.display_rub_per_usdt,
+                fx_rate_service=fx_rate_service,
+                fx_rate_ttl_seconds=settings.fx_rate_ttl_seconds,
             )
             response = await processor.handle(
                 telegram_id=telegram_id,

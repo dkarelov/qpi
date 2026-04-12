@@ -7,7 +7,6 @@ from typing import Any
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
-from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
 
 from libs.db.tx import run_in_transaction
@@ -376,7 +375,7 @@ class OrderTrackerService:
                     SELECT
                         a.status,
                         a.review_required,
-                        l.review_phrases_json
+                        l.review_phrases
                     FROM assignments a
                     JOIN listings l ON l.id = a.listing_id
                     WHERE a.id = %s
@@ -393,7 +392,7 @@ class OrderTrackerService:
                 review_phrases = []
                 if assignment["review_required"]:
                     review_phrases = self._pick_assignment_review_phrases(
-                        list(assignment["review_phrases_json"] or [])
+                        list(assignment["review_phrases"] or [])
                     )
                 await cur.execute(
                     """
@@ -401,13 +400,13 @@ class OrderTrackerService:
                     SET status = %s,
                         pickup_at = COALESCE(pickup_at, %s),
                         unlock_at = COALESCE(unlock_at, %s),
-                        review_phrases_json = %s,
+                        review_phrases = %s,
                         cancel_reason = NULL,
                         updated_at = timezone('utc', now())
                     WHERE id = %s
                       AND status = 'order_verified'
                     """,
-                    (next_status, pickup_at_utc, unlock_at, Json(review_phrases), assignment_id),
+                    (next_status, pickup_at_utc, unlock_at, review_phrases, assignment_id),
                 )
                 changed = cur.rowcount == 1
                 if changed:
