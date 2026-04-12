@@ -847,9 +847,13 @@ Private runner / workflow gotchas:
 - The shared-venv deploy optimization helps only after the target lock hash already exists on the VM. The first deploy for a new `uv.lock` / `pyproject.toml` fingerprint still has to build that environment once, so do not expect the first post-change rollout to show the full timing win.
 - After fixing workflow/env propagation for an optional runtime feature, verify the live target directly (`/etc/qpi/bot.env`, service health, and one relevant UX path) instead of trusting the workflow green status alone.
 - Workflow action references target Node24-ready `actions/checkout@v6` and `actions/setup-python@v6`; keep the private runner on `v2.329.0` or newer for `checkout@v6` compatibility.
+- Artifact handoff in deploy workflows is part of the supported CI/CD contract:
+  - keep `actions/upload-artifact` / `actions/download-artifact` on Node24-ready majors,
+  - current qpi baseline is `upload-artifact@v4` with `download-artifact@v5`,
+  - if GitHub starts warning about deprecated runner Node runtimes again, check core action versions before changing any app/runtime assumptions.
 - Function bundle publishing requires `zip`; it is installed both in runner cloud-init and defensively in the GitHub-hosted deploy-functions workflow.
 - Runtime and function deploy wrappers prune old `.artifacts` outputs with retention knobs so the private runner workspace does not grow without bound.
-- GitHub Actions `Node 20` deprecation warnings refer to GitHub-provided JavaScript actions such as `actions/checkout` / `actions/setup-python`, not to the QPI application stack.
+- GitHub Actions `Node 20` or future runner-runtime deprecation warnings refer to GitHub-provided JavaScript actions such as `actions/checkout`, `actions/setup-python`, or artifact actions, not to the QPI application stack.
 
 Active development rule:
 
