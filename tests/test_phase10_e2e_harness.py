@@ -474,9 +474,7 @@ async def test_phase10_e2e_seller_listing_create_and_activate_flow() -> None:
     harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
 
     pick_events = await harness.callback(flow="seller", action="listing_create_pick_shop")
-    assert any(
-        "Выберите магазин, для которого хотите создать объявление." in text for text in _event_texts(pick_events)
-    )
+    assert any("Выберите магазин для нового объявления." in text for text in _event_texts(pick_events))
 
     prompt_events = await harness.callback(flow="seller", action="listing_create_prompt", entity_id="11")
     assert any("Создание объявления для магазина" in text for text in _event_texts(prompt_events))
@@ -964,7 +962,7 @@ async def test_phase10_e2e_buyer_shop_screen_shows_purchases_button_when_no_othe
         labels.extend(_markup_labels(event))
 
     assert ("У вас уже есть активная покупка в этом магазине. Других объявлений здесь пока нет.") in text
-    assert "📋 Покупки" in labels
+    assert "📋 Покупки [1]" in labels
 
 
 @pytest.mark.asyncio
@@ -1025,7 +1023,7 @@ async def test_phase10_e2e_seller_listing_open_shows_photo_and_detail_card() -> 
     assert all("✏️ Редактировать" not in _markup_labels(event) for event in detail_events)
     detail_text = "\n".join(_event_texts(detail_events))
     assert "🟢 Бумага A4 для принтера" in detail_text
-    assert "План по заказам / В процессе:</b> 5 / 0" in detail_text
+    assert "План покупок / В процессе:</b> 5 / 0" in detail_text
     assert "Параметры" in detail_text
     assert "Ссылка на магазин:" in detail_text
 
@@ -1792,7 +1790,7 @@ async def test_phase10_e2e_admin_review_verification_flow() -> None:
     section_text = "\n".join(_event_texts(section_events))
     assert "Отзывы, требующие проверки:" in section_text
     assert "Покупка P31" in section_text
-    assert any("✅ Проверить отзыв" in _markup_labels(event) for event in section_events)
+    assert any("✅ Проверить отзыв [1]" in _markup_labels(event) for event in section_events)
 
     prompt_events = await harness.callback(flow="admin", action="review_verify_prompt")
     assert any("Введите: <код_покупки> <base64_review_token>." in text for text in _event_texts(prompt_events))

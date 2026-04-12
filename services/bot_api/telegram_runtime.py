@@ -923,18 +923,20 @@ class TelegramWebhookRuntime:
             )
             await self._replace_message(
                 query_message,
-                (
-                    f"Переименование магазина «{shop.title}».\n\n"
-                    "⚠️ Важно: при переименовании ссылка магазина изменится. "
-                    "Старая ссылка перестанет работать для покупателей.\n"
-                    "Название магазина видят покупатели, поэтому используйте нейтральное и "
-                    "понятное имя.\n\n"
-                    "Введите новое название магазина следующим сообщением."
+                self._screen_text(
+                    title=f"Переименование магазина «{html.escape(shop.title)}»",
+                    cta="Введите новое название магазина следующим сообщением ниже.",
+                    lines=[
+                        "При переименовании ссылка магазина изменится, старая перестанет работать.",
+                        "Название видят покупатели, поэтому используйте нейтральное и понятное имя.",
+                    ],
+                    warning=True,
                 ),
                 self._seller_shop_detail_markup(
                     shop_id=shop_id,
                     token_is_valid=self._is_valid_shop_token(shop.wb_token_status),
                 ),
+                parse_mode="HTML",
             )
             return
         if action == "shop_token_prompt":
@@ -1111,8 +1113,7 @@ class TelegramWebhookRuntime:
                 self._screen_text(
                     title="Редактирование отключено",
                     lines=[
-                        "Редактирование объявлений недоступно, чтобы не создавать конфликтов "
-                        "с уже начатыми заданиями покупателей.",
+                        "Редактирование объявлений недоступно, чтобы не создавать конфликтов с уже начатыми покупками.",
                     ],
                     note=("Если нужно изменить параметры, создайте новое объявление и удалите старое."),
                     warning=True,
@@ -1517,19 +1518,22 @@ class TelegramWebhookRuntime:
             lines=[
                 f"<b>Магазины:</b> {shops_total} · {shops_active} активно",
                 f"<b>Объявления:</b> {listings_total} · {listings_active} активно",
-                "<b>Задания:</b> "
+                "<b>Покупки:</b> "
                 f"ожидают заказа: {orders['awaiting_order']} · "
                 f"заказаны: {orders['ordered']} · "
                 f"выкуплены: {orders['picked_up']}",
                 f"<b>Баланс:</b> {self._format_usdt_with_rub(balance_total)}",
                 f"<b>Свободно:</b> {self._format_usdt_with_rub(balance_free)}",
             ],
-            note="Откройте объявления, магазины или баланс в зависимости от задачи.",
+            note="Откройте нужный раздел ниже.",
         )
         await self._replace_message(
             query_message,
             text,
-            self._seller_menu_markup(),
+            self._seller_menu_markup(
+                listings_count=listings_total,
+                shops_count=shops_total,
+            ),
             parse_mode="HTML",
         )
 
@@ -1542,20 +1546,26 @@ class TelegramWebhookRuntime:
         if topic == "guide":
             text = self._screen_text(
                 title="Инструкция продавца",
-                cta="Сначала запустите витрину, затем следите за статусами и балансом.",
+                cta=(
+                    "Купилка помогает выдать кэшбэк за покупку и отзыв, "
+                    "а обеспечение держит на балансе до завершения покупки."
+                ),
                 lines=[
                     (
-                        "<b>Счастливый путь</b>\n"
-                        "1. Создайте магазин и сохраните токен WB API.\n"
-                        "2. Создайте объявление: артикул WB, кэшбэк, слоты, поисковая фраза и до 10 фраз для отзыва.\n"
-                        "3. При необходимости пополните баланс для обеспечения.\n"
-                        "4. Активируйте объявление и поделитесь ссылкой на магазин.\n"
-                        "5. Следите за заказами и выводите доступный остаток."
+                        "<b>Как запустить витрину</b>\n"
+                        "1. Создайте магазин и добавьте WB API токен в режиме чтения.\n"
+                        "2. Создайте объявление: артикул WB, кэшбэк в ₽, число покупок, поисковая фраза "
+                        "и до 10 фраз для отзыва.\n"
+                        "3. Пополните баланс, если не хватает обеспечения.\n"
+                        "4. Активируйте объявление и отправьте покупателям ссылку на магазин.\n"
+                        "5. Следите за покупками и выводите свободный остаток."
                     ),
                     (
-                        "<b>Важно</b>\n"
-                        "Магазин видят покупатели. Объявление нельзя редактировать после создания: "
-                        "если условия меняются, создайте новое и удалите старое."
+                        "<b>Полезно знать</b>\n"
+                        "1. Покупатели видят название магазина и название объявления.\n"
+                        "2. Объявление нельзя менять после создания: если условия изменились, создайте новое "
+                        "и удалите старое.\n"
+                        "3. Деньги под активные объявления нельзя вывести, пока они зарезервированы."
                     ),
                 ],
                 note="Подробности по каждому разделу открываются кнопками ниже.",
@@ -1582,15 +1592,14 @@ class TelegramWebhookRuntime:
                 cta="Магазин — это ваша публичная витрина с отдельной ссылкой для покупателей.",
                 lines=[
                     (
-                        "<b>Что это</b>\n"
-                        "Внутри магазина живут объявления. Покупатель заходит по ссылке магазина "
-                        "и уже оттуда открывает нужный товар."
+                        "В магазине находятся объявления. Покупатель переходит по ссылке магазина, "
+                        "выбирает товар и начинает покупку."
                     ),
                     (
-                        "<b>FAQ</b>\n"
-                        "1. Название магазина видят покупатели, поэтому оно должно быть нейтральным.\n"
+                        "<b>Полезно знать</b>\n"
+                        "1. Название магазина видят покупатели, поэтому используйте нейтральное и понятное имя.\n"
                         "2. При переименовании ссылка меняется, старая перестает работать.\n"
-                        "3. Без валидного токена WB магазин не сможет нормально запускать объявления."
+                        "3. Без валидного WB API токена объявления нельзя активировать."
                     ),
                 ],
                 separate_blocks=True,
@@ -1613,19 +1622,18 @@ class TelegramWebhookRuntime:
         elif topic == "listings":
             text = self._screen_text(
                 title="Про объявления",
-                cta="Объявление описывает один товар WB, размер кэшбэка и число доступных слотов.",
+                cta="Объявление описывает один товар WB, размер кэшбэка и число доступных покупок.",
                 lines=[
                     (
-                        "<b>Что это</b>\n"
-                        "После создания бот фиксирует кэшбэк в USDT, проверяет карточку WB и "
-                        "показывает покупателю только нужные поля. После выкупа покупатель "
-                        "подтверждает обязательный отзыв на 5 звезд."
+                        "После создания бот фиксирует кэшбэк в USDT, проверяет карточку WB "
+                        "и показывает покупателю только нужные поля. После выкупа покупатель "
+                        "подтверждает отзыв на 5 звезд."
                     ),
                     (
-                        "<b>FAQ</b>\n"
+                        "<b>Полезно знать</b>\n"
                         "1. Если параметр нужно изменить, создайте новое объявление.\n"
                         "2. Активация требует валидный токен WB, достаточное обеспечение и живую карточку товара.\n"
-                        "3. Для отзыва можно указать до 10 фраз, из которых бот выберет до двух случайно.\n"
+                        "3. Для отзыва можно указать до 10 фраз; покупатель получит до двух случайных фраз.\n"
                         "4. Если средств не хватает, сначала пополните баланс продавца."
                     ),
                 ],
@@ -1652,12 +1660,11 @@ class TelegramWebhookRuntime:
                 cta="Баланс продавца делится на свободные средства, обеспечение объявлений и вывод.",
                 lines=[
                     (
-                        "<b>Что это</b>\n"
-                        "Свободный остаток идет на новые объявления и на вывод. Средства под "
-                        "активными объявлениями и в заявке на вывод недоступны до завершения процесса."
+                        "Свободный остаток можно использовать для новых объявлений или вывести. "
+                        "Обеспечение активных объявлений и сумма в заявке на вывод временно недоступны."
                     ),
                     (
-                        "<b>FAQ</b>\n"
+                        "<b>Полезно знать</b>\n"
                         "1. Пополнение и вывод работают в USDT в сети TON.\n"
                         "2. Если есть активная заявка на вывод, новую создать нельзя.\n"
                         "3. История показывает и пополнения, и выводы в одном разделе."
@@ -1894,7 +1901,7 @@ class TelegramWebhookRuntime:
         fx_text = self._format_decimal(self._display_rub_per_usdt, quant=Decimal("0.01"))
         return self._screen_text(
             title=f"Создание объявления для магазина «{html.escape(shop_title)}»",
-            cta="Отправьте сообщение с информацией об объявлении согласно формату ниже.",
+            cta="Отправьте данные объявления одним сообщением в формате ниже.",
             lines=[
                 (
                     "<b>Формат (через запятую):</b> "
@@ -1902,17 +1909,17 @@ class TelegramWebhookRuntime:
                     "фраза для отзыва 1, ... , фраза для отзыва 10</code>"
                 ),
                 ("<b>Пример:</b> <code>12345678, 100, 5, женские джинсы, в размер, не садятся после стирки</code>"),
-                (f"<b>Кэшбэк:</b> сумма для покупателя. Конвертация в $ произойдет по текущему курсу ~{fx_text}."),
+                f"<b>Кэшбэк:</b> сумма в ₽ для покупателя; бот зафиксирует ее в USDT по курсу ~{fx_text}.",
                 "<b>Макс заказов:</b> количество покупателей по этому объявлению.",
                 "<b>Поисковая фраза:</b> запрос, по которому покупатель будет искать товар.",
                 (
-                    "<b>Фразы для отзыва (необязательно):</b> 0-10 фраз, из которых случайным "
-                    "образом выбираются две для предложения покупателю вставить в отзыв о товаре."
+                    "<b>Фразы для отзыва (необязательно):</b> 0-10 фраз; покупатель получит "
+                    "до двух случайных фраз для отзыва."
                 ),
             ],
             note=(
-                "После этого бот подтянет карточку товара, попробует определить цену "
-                "покупателя по заказам за 30 дней и попросит подтвердить данные."
+                "После этого бот загрузит карточку WB, определит цену покупателя по заказам за 30 дней "
+                "или попросит ввести ее вручную."
             ),
         )
 
@@ -2025,7 +2032,7 @@ class TelegramWebhookRuntime:
             title="Нужна цена покупателя",
             cta="Введите текущую цену покупателя в рублях следующим сообщением ниже.",
             lines=[
-                "Карточка товара найдена, но по заказам за 30 дней цена не определилась.",
+                "Карточка товара найдена, но по заказам за 30 дней цену определить не удалось.",
                 f"<b>Артикул ВБ:</b> {wb_product_id}",
                 f"<b>Предмет:</b> {html.escape(snapshot.subject_name or '—')}",
                 f"<b>Бренд:</b> {html.escape(snapshot.brand or '—')}",
@@ -2342,7 +2349,7 @@ class TelegramWebhookRuntime:
             self._screen_text(
                 title="Проверьте объявление перед активацией",
                 lines=lines,
-                note=("Если все верно, активируйте объявление. После активации поделитесь ссылкой на магазин."),
+                note="Если все верно, активируйте объявление и отправьте покупателям ссылку на магазин.",
             )
             + "\n\n<b>Активировать объявление сейчас?</b>"
         )
@@ -2375,17 +2382,14 @@ class TelegramWebhookRuntime:
             title=f"Удаление магазина «{html.escape(shop.title)}» необратимо",
             lines=[
                 f"Активных объявлений: {preview.active_listings_count}",
-                f"Активных заданий: {preview.open_assignments_count}",
+                f"Незавершенных покупок: {preview.open_assignments_count}",
                 (
                     "Покупателям будет выплачен кэшбэк: "
                     f"{self._format_usdt_with_rub(preview.assignment_linked_reserved_usdt)}"
                 ),
                 (f"Продавцу вернется: {self._format_usdt_with_rub(preview.unassigned_collateral_usdt)}"),
             ],
-            note=(
-                "При удалении магазина активные задания будут считаться выполненными, "
-                "а кэшбэк будет выплачен покупателям."
-            ),
+            note=("При удалении магазина незавершенные покупки закроются с выплатой кэшбэка покупателям."),
             warning=True,
         )
         await self._replace_message(
@@ -2540,10 +2544,7 @@ class TelegramWebhookRuntime:
                 f"<b>Артикул WB:</b> {listing.wb_product_id}\n"
                 f"<b>Кэшбэк:</b> {cashback_text}\n"
                 f"<b>Поисковая фраза:</b> &quot;{html.escape(listing.search_phrase)}&quot;\n"
-                + (
-                    f"<b>План по заказам / В процессе:</b> "
-                    f"{listing.slot_count} / {listing.in_progress_assignments_count}"
-                )
+                + (f"<b>План покупок / В процессе:</b> {listing.slot_count} / {listing.in_progress_assignments_count}")
                 + "\n"
                 + f"<b>Ссылка на магазин:</b> {html.escape(shop_link)}\n"
                 + (
@@ -2567,7 +2568,7 @@ class TelegramWebhookRuntime:
                 title=title,
                 cta="Нажмите номер ниже, чтобы открыть карточку объявления.",
                 lines=lines,
-                note="Если нужно новое объявление, используйте кнопку создания ниже.",
+                note="Новое объявление создается кнопкой ниже.",
                 separate_blocks=True,
             ),
             self._numbered_page_markup(
@@ -2862,10 +2863,17 @@ class TelegramWebhookRuntime:
             )
             return
 
+        listings = await self._seller_service.list_listing_collateral_views(seller_user_id=seller_user_id)
+        listing_counts_by_shop: dict[int, int] = {}
+        for listing in listings:
+            listing_counts_by_shop[listing.shop_id] = listing_counts_by_shop.get(listing.shop_id, 0) + 1
         keyboard_rows = [
             [
                 InlineKeyboardButton(
-                    text=f"🏬 {shop.title}",
+                    text=self._button_label_with_count(
+                        f"🏬 {shop.title}",
+                        listing_counts_by_shop.get(shop.shop_id, 0),
+                    ),
                     callback_data=build_callback(
                         flow=_ROLE_SELLER,
                         action="listing_create_prompt",
@@ -2887,7 +2895,7 @@ class TelegramWebhookRuntime:
             query_message,
             self._screen_text(
                 title="Новое объявление",
-                lines=["Выберите магазин, для которого хотите создать объявление."],
+                cta="Выберите магазин для нового объявления.",
             ),
             InlineKeyboardMarkup(keyboard_rows),
             parse_mode="HTML",
@@ -3105,17 +3113,14 @@ class TelegramWebhookRuntime:
         text = self._screen_text(
             title="Удаление объявления необратимо",
             lines=[
-                f"Активных заданий по объявлению: {preview.open_assignments_count}",
+                f"Незавершенных покупок: {preview.open_assignments_count}",
                 (
                     "Покупателям будет выплачен кэшбэк: "
                     f"{self._format_usdt_with_rub(preview.assignment_linked_reserved_usdt)}"
                 ),
                 (f"Продавцу вернется: {self._format_usdt_with_rub(preview.unassigned_collateral_usdt)}"),
             ],
-            note=(
-                "При удалении объявления все активные задания будут считаться выполненными, "
-                "кэшбэк будет выплачен покупателям."
-            ),
+            note=("При удалении объявления незавершенные покупки закроются с выплатой кэшбэка покупателям."),
             warning=True,
         )
         await self._replace_message(
@@ -3421,7 +3426,8 @@ class TelegramWebhookRuntime:
                     ),
                     (
                         "2. Пополните Крипто Кошелек, купив необходимый объем USDT, "
-                        'например на <a href="https://help.ru.wallet.tg/article/80-kak-kupit-kriptovalutu-na-p2p-markete">'
+                        'например на <a href="https://help.ru.wallet.tg/article/'
+                        '80-kak-kupit-kriptovalutu-na-p2p-markete">'
                         "P2P Маркете</a>.\n"
                         "Самый простой и быстрый способ: "
                         "Крипто Кошелек > Пополнить > P2P Экспресс."
@@ -4264,6 +4270,7 @@ class TelegramWebhookRuntime:
         assignments = self._buyer_visible_assignments(
             await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
         )
+        saved_shops = await self._buyer_service.list_saved_shops(buyer_user_id=buyer_user_id, limit=1000)
         snapshot = await self._finance_service.get_buyer_balance_snapshot(buyer_user_id=buyer_user_id)
         bucket_counts = {
             "awaiting_order": 0,
@@ -4291,7 +4298,10 @@ class TelegramWebhookRuntime:
         await self._replace_message(
             query_message,
             text,
-            self._buyer_menu_markup(),
+            self._buyer_menu_markup(
+                shops_count=len(saved_shops),
+                purchases_count=len(assignments),
+            ),
             parse_mode="HTML",
         )
 
@@ -4835,7 +4845,7 @@ class TelegramWebhookRuntime:
             [
                 [
                     InlineKeyboardButton(
-                        text="📋 Покупки",
+                        text=self._button_label_with_count("📋 Покупки", len(assignments)),
                         callback_data=build_callback(
                             flow=_ROLE_BUYER,
                             action="assignments",
@@ -5443,6 +5453,8 @@ class TelegramWebhookRuntime:
         pending_review_confirmations = await self._buyer_service.list_admin_pending_review_confirmations(limit=1000)
         review_txs = await self._deposit_service.list_admin_review_txs(limit=1000)
         expired_intents = await self._deposit_service.list_admin_expired_intents(limit=1000)
+        deposit_exceptions_count = len(review_txs) + len(expired_intents)
+        exceptions_count = len(pending_review_confirmations) + deposit_exceptions_count
 
         text = self._screen_text(
             title="Кабинет администратора",
@@ -5458,11 +5470,17 @@ class TelegramWebhookRuntime:
         await self._replace_message(
             query_message,
             text,
-            self._admin_menu_markup(),
+            self._admin_menu_markup(
+                pending_withdrawals_count=len(pending_withdrawals),
+                deposit_exceptions_count=deposit_exceptions_count,
+                exceptions_count=exceptions_count,
+            ),
             parse_mode="HTML",
         )
 
     async def _render_admin_withdrawals_section(self, *, query_message: Message | None) -> None:
+        pending_count = len(await self._finance_service.list_pending_withdrawals(limit=1000))
+        history_count = await self._finance_service.count_processed_withdrawals()
         await self._replace_message(
             query_message,
             self._screen_text(
@@ -5475,7 +5493,7 @@ class TelegramWebhookRuntime:
                 [
                     [
                         InlineKeyboardButton(
-                            text="📋 Ожидают обработки",
+                            text=self._button_label_with_count("📋 Ожидают обработки", pending_count),
                             callback_data=build_callback(
                                 flow=_ROLE_ADMIN,
                                 action="withdrawals",
@@ -5484,7 +5502,7 @@ class TelegramWebhookRuntime:
                     ],
                     [
                         InlineKeyboardButton(
-                            text="🧾 История выводов",
+                            text=self._button_label_with_count("🧾 История выводов", history_count, style="middot"),
                             callback_data=build_callback(
                                 flow=_ROLE_ADMIN,
                                 action="withdrawals_history",
@@ -5512,6 +5530,10 @@ class TelegramWebhookRuntime:
         )
 
     async def _render_admin_deposits_section(self, *, query_message: Message | None) -> None:
+        pending_reviews = await self._buyer_service.list_admin_pending_review_confirmations(limit=1000)
+        review_txs = await self._deposit_service.list_admin_review_txs(limit=1000)
+        expired_intents = await self._deposit_service.list_admin_expired_intents(limit=1000)
+        exceptions_count = len(pending_reviews) + len(review_txs) + len(expired_intents)
         await self._replace_message(
             query_message,
             self._screen_text(
@@ -5533,7 +5555,7 @@ class TelegramWebhookRuntime:
                     ],
                     [
                         InlineKeyboardButton(
-                            text="⚠️ Нужна проверка",
+                            text=self._button_label_with_count("⚠️ Нужна проверка", exceptions_count, style="paren"),
                             callback_data=build_callback(
                                 flow=_ROLE_ADMIN,
                                 action="deposit_exceptions",
@@ -6013,14 +6035,14 @@ class TelegramWebhookRuntime:
         *,
         query_message: Message | None,
     ) -> None:
-        pending_reviews = await self._buyer_service.list_admin_pending_review_confirmations(limit=20)
-        review_txs = await self._deposit_service.list_admin_review_txs(limit=20)
-        expired_intents = await self._deposit_service.list_admin_expired_intents(limit=20)
+        pending_reviews = await self._buyer_service.list_admin_pending_review_confirmations(limit=1000)
+        review_txs = await self._deposit_service.list_admin_review_txs(limit=1000)
+        expired_intents = await self._deposit_service.list_admin_expired_intents(limit=1000)
 
         lines: list[str] = []
         if pending_reviews:
             lines.append("Отзывы, требующие проверки:")
-            for item in pending_reviews:
+            for item in pending_reviews[:20]:
                 phrases_text = html.escape(self._format_review_phrases_text(item.review_phrases))
                 lines.append(
                     f"Покупка {self._assignment_ref(item.assignment_id)}\n"
@@ -6038,7 +6060,7 @@ class TelegramWebhookRuntime:
         lines.append("⚠️ Пополнения, требующие проверки:")
         if review_txs:
             lines.append("Платежи на ручной разбор:")
-            for tx in review_txs:
+            for tx in review_txs[:20]:
                 suffix = f"{tx.suffix_code:03d}" if tx.suffix_code is not None else "нет"
                 account_hint = (
                     f"Счет: {self._deposit_ref(tx.matched_intent_id)}" if tx.matched_intent_id else "Счет: не найден"
@@ -6056,7 +6078,7 @@ class TelegramWebhookRuntime:
 
         if expired_intents:
             lines.append("Просроченные счета:")
-            for intent in expired_intents:
+            for intent in expired_intents[:20]:
                 lines.append(
                     f"Счет {self._deposit_ref(intent.deposit_intent_id)}\n"
                     f"Продавец: {intent.seller_telegram_id}\n"
@@ -6072,7 +6094,7 @@ class TelegramWebhookRuntime:
             [
                 [
                     InlineKeyboardButton(
-                        text="✅ Проверить отзыв",
+                        text=self._button_label_with_count("✅ Проверить отзыв", len(pending_reviews)),
                         callback_data=build_callback(
                             flow=_ROLE_ADMIN,
                             action="review_verify_prompt",
@@ -6081,14 +6103,18 @@ class TelegramWebhookRuntime:
                 ],
                 [
                     InlineKeyboardButton(
-                        text="🔗 Привязать платеж к счету",
+                        text=self._button_label_with_count(
+                            "🔗 Привязать платеж к счету",
+                            len(review_txs),
+                            style="middot",
+                        ),
                         callback_data=build_callback(
                             flow=_ROLE_ADMIN,
                             action="deposit_attach_prompt",
                         ),
                     ),
                     InlineKeyboardButton(
-                        text="🛑 Отменить счет",
+                        text=self._button_label_with_count("🛑 Отменить счет", len(expired_intents), style="paren"),
                         callback_data=build_callback(
                             flow=_ROLE_ADMIN,
                             action="deposit_cancel_prompt",
@@ -7989,10 +8015,12 @@ class TelegramWebhookRuntime:
                 )
 
         active_shop_purchase = None
+        active_shop_purchases_count = 0
         if buyer_user_id is not None:
             buyer_assignments = self._buyer_visible_assignments(
                 await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
             )
+            active_shop_purchases_count = sum(1 for item in buyer_assignments if item.shop_slug == shop.slug)
             active_shop_purchase = next(
                 (item for item in buyer_assignments if item.shop_slug == shop.slug),
                 None,
@@ -8011,7 +8039,7 @@ class TelegramWebhookRuntime:
                 keyboard_rows = [
                     [
                         InlineKeyboardButton(
-                            text="📋 Покупки",
+                            text=self._button_label_with_count("📋 Покупки", active_shop_purchases_count),
                             callback_data=build_callback(
                                 flow=_ROLE_BUYER,
                                 action="assignments",
@@ -8382,7 +8410,9 @@ class TelegramWebhookRuntime:
             decorated_title = f"🧑‍💼 {title}"
         elif plain_title.startswith("Кабинет покупателя"):
             decorated_title = f"🛍️ {title}"
-        elif plain_title.startswith(("Магазины", "Магазин", "Токен WB API", "Создание магазина", "Удаление магазина")):
+        elif plain_title.startswith(
+            ("Магазины", "Магазин", "Токен WB API", "Создание магазина", "Переименование магазина", "Удаление магазина")
+        ):
             decorated_title = f"🏪 {title}"
         elif plain_title.startswith(
             (
@@ -8421,6 +8451,17 @@ class TelegramWebhookRuntime:
         if note:
             parts.append(f"<i>{note}</i>")
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _button_label_with_count(label: str, count: int | None, *, style: str = "brackets") -> str:
+        if count is None:
+            return label
+        normalized_count = max(0, int(count))
+        if style == "middot":
+            return f"{label} · {normalized_count}"
+        if style == "paren":
+            return f"{label} ({normalized_count})"
+        return f"{label} [{normalized_count}]"
 
     @staticmethod
     def _format_datetime_msk(value: datetime | None) -> str:
@@ -9112,7 +9153,7 @@ class TelegramWebhookRuntime:
                 f"<b>Артикул WB:</b> {listing.wb_product_id}",
                 f"<b>Кэшбэк:</b> {html.escape(cashback_text)}",
                 f"<b>Поисковая фраза:</b> &quot;{html.escape(listing.search_phrase)}&quot;",
-                f"<b>План по заказам / В процессе:</b> {planned} / {in_progress}",
+                f"<b>План покупок / В процессе:</b> {planned} / {in_progress}",
             ]
         )
         if shop_link:
@@ -9325,15 +9366,20 @@ class TelegramWebhookRuntime:
             )
         return InlineKeyboardMarkup(keyboard)
 
-    def _seller_menu_markup(self) -> InlineKeyboardMarkup:
+    def _seller_menu_markup(
+        self,
+        *,
+        listings_count: int | None = None,
+        shops_count: int | None = None,
+    ) -> InlineKeyboardMarkup:
         keyboard = [
             [
                 InlineKeyboardButton(
-                    text="📦 Объявления",
+                    text=self._button_label_with_count("📦 Объявления", listings_count),
                     callback_data=build_callback(flow=_ROLE_SELLER, action="listings"),
                 ),
                 InlineKeyboardButton(
-                    text="🏬 Магазины",
+                    text=self._button_label_with_count("🏬 Магазины", shops_count),
                     callback_data=build_callback(flow=_ROLE_SELLER, action="shops"),
                 ),
             ],
@@ -9421,18 +9467,23 @@ class TelegramWebhookRuntime:
         keyboard.append([self._knowledge_button(role=_ROLE_SELLER, topic="balance")])
         return InlineKeyboardMarkup(keyboard)
 
-    def _buyer_menu_markup(self) -> InlineKeyboardMarkup:
+    def _buyer_menu_markup(
+        self,
+        *,
+        shops_count: int | None = None,
+        purchases_count: int | None = None,
+    ) -> InlineKeyboardMarkup:
         keyboard = [
             [
                 InlineKeyboardButton(
-                    text="🏪 Магазины",
+                    text=self._button_label_with_count("🏪 Магазины", shops_count),
                     callback_data=build_callback(
                         flow=_ROLE_BUYER,
                         action="shops",
                     ),
                 ),
                 InlineKeyboardButton(
-                    text="📋 Покупки",
+                    text=self._button_label_with_count("📋 Покупки", purchases_count),
                     callback_data=build_callback(flow=_ROLE_BUYER, action="assignments"),
                 ),
             ],
@@ -9459,19 +9510,25 @@ class TelegramWebhookRuntime:
         keyboard.extend(self._buyer_menu_markup().inline_keyboard)
         return InlineKeyboardMarkup(keyboard)
 
-    def _admin_menu_markup(self) -> InlineKeyboardMarkup:
+    def _admin_menu_markup(
+        self,
+        *,
+        pending_withdrawals_count: int | None = None,
+        deposit_exceptions_count: int | None = None,
+        exceptions_count: int | None = None,
+    ) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
             [
                 [
                     InlineKeyboardButton(
-                        text="💸 Выводы",
+                        text=self._button_label_with_count("💸 Выводы", pending_withdrawals_count),
                         callback_data=build_callback(
                             flow=_ROLE_ADMIN,
                             action="withdrawals_section",
                         ),
                     ),
                     InlineKeyboardButton(
-                        text="🏦 Депозиты",
+                        text=self._button_label_with_count("🏦 Депозиты", deposit_exceptions_count, style="middot"),
                         callback_data=build_callback(
                             flow=_ROLE_ADMIN,
                             action="deposits_section",
@@ -9480,7 +9537,7 @@ class TelegramWebhookRuntime:
                 ],
                 [
                     InlineKeyboardButton(
-                        text="⚠️ Исключения",
+                        text=self._button_label_with_count("⚠️ Исключения", exceptions_count, style="paren"),
                         callback_data=build_callback(
                             flow=_ROLE_ADMIN,
                             action="exceptions_section",

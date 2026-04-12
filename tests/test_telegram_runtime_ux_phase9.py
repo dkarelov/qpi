@@ -67,6 +67,25 @@ def test_seller_menu_puts_listings_before_shops() -> None:
     assert [button.text for button in first_row] == ["📦 Объявления", "🏬 Магазины"]
 
 
+def test_counted_button_labels_use_plain_suffix_options() -> None:
+    runtime = _build_runtime()
+
+    seller_labels = _flatten_labels(runtime._seller_menu_markup(listings_count=3, shops_count=2))
+    admin_labels = _flatten_labels(
+        runtime._admin_menu_markup(
+            pending_withdrawals_count=4,
+            deposit_exceptions_count=5,
+            exceptions_count=6,
+        )
+    )
+
+    assert "📦 Объявления [3]" in seller_labels
+    assert "🏬 Магазины [2]" in seller_labels
+    assert "💸 Выводы [4]" in admin_labels
+    assert "🏦 Депозиты · 5" in admin_labels
+    assert "⚠️ Исключения (6)" in admin_labels
+
+
 def test_buyer_menu_is_dashboard_sections() -> None:
     runtime = _build_runtime()
 
@@ -209,15 +228,15 @@ def test_listing_create_instruction_contains_new_fields_and_fx_reference() -> No
 
     text = runtime._listing_create_instruction_text(shop_title="Тушенка")
     assert "Создание объявления для магазина «Тушенка»" in text
-    assert "<i>Отправьте сообщение с информацией об объявлении согласно формату ниже.</i>" in text
+    assert "<i>Отправьте данные объявления одним сообщением в формате ниже.</i>" in text
     assert ("артикул ВБ, кэшбэк в рублях, макс. заказов, поисковая фраза") in text
     assert "фраза для отзыва 1" in text
     assert "12345678, 100, 5, женские джинсы" in text
-    assert "Конвертация в $" in text
+    assert "бот зафиксирует ее в USDT" in text
     assert "~100" in text
     assert "Фразы для отзыва" in text
-    assert "подтянет карточку товара" in text
-    assert "попробует определить цену покупателя" in text
+    assert "загрузит карточку WB" in text
+    assert "определит цену покупателя" in text
 
 
 def test_screen_text_places_cta_after_title_and_separates_lines() -> None:
@@ -267,7 +286,7 @@ def test_listing_created_prompt_activation_explains_activation_effect() -> None:
     )
 
     assert "Активировать объявление сейчас?" in text
-    assert "После активации поделитесь ссылкой на магазин." in text
+    assert "отправьте покупателям ссылку на магазин" in text
     assert "Товар:</b> Джинсы женские прямые" in text
     assert "Источник цены:</b> рассчитана по заказам за 30 дней." in text
     assert "Артикул продавца:</b> sku-1" in text

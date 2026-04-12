@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-04-02 UTC
+Last updated: 2026-04-12 UTC
 
 ## 0. Completion Gate
 
@@ -322,6 +322,11 @@ Transitions:
   - message edit, new reply, or alert.
 - Silent no-op callback behavior is forbidden.
 - Menus are tree-structured (no flat action panel).
+- Dashboard and queue navigation buttons show entity counts when the count is already loaded for that screen:
+  - seller dashboard: announcements and shops,
+  - buyer dashboard: saved shops and purchases,
+  - admin dashboard/sections: pending withdrawals and exception queues.
+- Telegram inline keyboard labels are plain text; count suffixes must not rely on HTML/Markdown formatting.
 - Callback-driven navigation is immutable/linear:
   - button presses retire the old inline keyboard,
   - the bot sends a new screen message instead of editing the previous one.
