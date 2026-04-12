@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 
 from psycopg import AsyncConnection
@@ -26,6 +27,7 @@ from libs.domain.notifications import NotificationService
 from libs.logging.setup import EventLogger, get_logger
 
 _ACTIVE_SUFFIX_STATUSES = ("pending", "matched", "manual_review")
+_CHAIN_TIMESTAMP_DRIFT_TOLERANCE = timedelta(seconds=1)
 
 
 @dataclass(frozen=True)
@@ -563,6 +565,7 @@ class DepositIntentService:
         *,
         shard_id: int,
         suffix_code: int,
+        occurred_at=None,
     ) -> DepositIntentRow | None:
         async def operation(conn: AsyncConnection) -> DepositIntentRow | None:
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -576,15 +579,23 @@ class DepositIntentService:
                         status,
                         expected_amount_usdt,
                         suffix_code,
-                        expires_at
+                        expires_at,
+                        created_at
                     FROM deposit_intents
                     WHERE shard_id = %s
                       AND suffix_code = %s
                       AND status IN ('pending', 'matched', 'manual_review')
+                      AND (
+                            %s::timestamptz IS NULL
+                            OR (
+                                created_at <= %s + interval '1 second'
+                                AND expires_at >= %s
+                            )
+                      )
                     ORDER BY created_at DESC, id DESC
                     LIMIT 1
                     """,
-                    (shard_id, suffix_code),
+                    (shard_id, suffix_code, occurred_at, occurred_at, occurred_at),
                 )
                 row = await cur.fetchone()
                 if row is None:
@@ -598,6 +609,7 @@ class DepositIntentService:
                     expected_amount_usdt=_normalize_amount(row["expected_amount_usdt"]),
                     suffix_code=int(row["suffix_code"]),
                     expires_at=row["expires_at"],
+                    created_at=row["created_at"],
                 )
 
         return await run_in_transaction(self._pool, operation, read_only=True)
@@ -620,7 +632,8 @@ class DepositIntentService:
                         status,
                         expected_amount_usdt,
                         suffix_code,
-                        expires_at
+                        expires_at,
+                        created_at
                     FROM deposit_intents
                     WHERE shard_id = %s
                       AND suffix_code = %s
@@ -641,6 +654,7 @@ class DepositIntentService:
                     expected_amount_usdt=_normalize_amount(row["expected_amount_usdt"]),
                     suffix_code=int(row["suffix_code"]),
                     expires_at=row["expires_at"],
+                    created_at=row["created_at"],
                 )
 
         return await run_in_transaction(self._pool, operation, read_only=True)
@@ -729,7 +743,9 @@ class DepositIntentService:
                         target_account_id,
                         status,
                         matched_chain_tx_id,
-                        credited_ledger_entry_id
+                        credited_ledger_entry_id,
+                        expires_at,
+                        created_at
                     FROM deposit_intents
                     WHERE id = %s
                     FOR UPDATE
@@ -748,7 +764,8 @@ class DepositIntentService:
                         amount_usdt,
                         status,
                         matched_intent_id,
-                        credited_ledger_entry_id
+                        credited_ledger_entry_id,
+                        occurred_at
                     FROM chain_incoming_txs
                     WHERE id = %s
                     FOR UPDATE
@@ -786,6 +803,10 @@ class DepositIntentService:
                     raise InvalidStateError(
                         "deposit intent cannot be credited from current status"
                     )
+                if tx["occurred_at"] + _CHAIN_TIMESTAMP_DRIFT_TOLERANCE < intent["created_at"]:
+                    raise InvalidStateError("chain tx occurred before deposit intent was created")
+                if not allow_expired and tx["occurred_at"] > intent["expires_at"]:
+                    raise InvalidStateError("chain tx occurred after deposit intent expired")
 
                 amount = _normalize_amount(tx["amount_usdt"])
                 system_payout_account_id = await self._finance.ensure_system_account_locked(

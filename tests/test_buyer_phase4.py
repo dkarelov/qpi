@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -965,6 +965,41 @@ async def test_submit_payload_rejects_task_uuid_mismatch(db_pool) -> None:
                 task_uuid=_TASK_UUID,
                 order_id="ORD-UUID-MISMATCH",
                 wb_product_id=5312,
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_submit_payload_rejects_future_ordered_at(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="payload-future-order-shop",
+        wb_product_id=5313,
+        reward_usdt=Decimal("8.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+    buyer = await buyer_service.bootstrap_buyer(
+        telegram_id=850013,
+        username="buyer_payload_future_order",
+    )
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:buyer:850013:future-order",
+    )
+    future_ordered_at = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+
+    with pytest.raises(PayloadValidationError, match="ordered_at"):
+        await buyer_service.submit_purchase_payload(
+            buyer_user_id=buyer.user_id,
+            assignment_id=reservation.assignment_id,
+            payload_base64=_encode_payload(
+                task_uuid=str(reservation.task_uuid),
+                order_id="ORD-FUTURE",
+                ordered_at=future_ordered_at,
+                wb_product_id=5313,
             ),
         )
 

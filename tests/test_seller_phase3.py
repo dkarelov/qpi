@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 from psycopg.rows import dict_row
 
+from libs.domain.buyer import BuyerService
 from libs.domain.errors import InvalidStateError
 from libs.domain.ledger import FinanceService
 from libs.domain.seller import SellerService
@@ -631,6 +632,101 @@ async def test_listing_delete_warning_and_transfer_split(db_pool) -> None:
             listing_row = await cur.fetchone()
             assert listing_row["status"] == "paused"
             assert listing_row["deleted_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_listing_delete_refunds_only_remaining_collateral_after_completed_reward(db_pool) -> None:
+    seller_service = SellerService(db_pool)
+    finance_service = FinanceService(db_pool)
+
+    seller = await seller_service.bootstrap_seller(telegram_id=7006, username="seller_f")
+    buyer = await BuyerService(db_pool).bootstrap_buyer(telegram_id=7102, username="buyer_completed")
+    shop = await seller_service.create_shop(seller_user_id=seller.user_id, title="Completed Delete Shop")
+    await seller_service.save_validated_shop_token(
+        seller_user_id=seller.user_id,
+        shop_id=shop.shop_id,
+        token_ciphertext=encrypt_token("valid-token", "test-key"),
+    )
+    listing = await seller_service.create_listing_draft(
+        seller_user_id=seller.user_id,
+        shop_id=shop.shop_id,
+        wb_product_id=30002,
+        search_phrase="удаление после выплаты",
+        reward_usdt=Decimal("10.000000"),
+        slot_count=2,
+    )
+    await _set_account_balance(
+        db_pool,
+        account_id=seller.seller_available_account_id,
+        balance=Decimal("20.200000"),
+    )
+    await seller_service.activate_listing(
+        seller_user_id=seller.user_id,
+        listing_id=listing.listing_id,
+        idempotency_key="activate-delete-completed-case",
+    )
+
+    reward_reserved_account_id = await _ensure_reward_reserved_account(db_pool)
+    reservation = await finance_service.create_assignment_reservation(
+        listing_id=listing.listing_id,
+        buyer_user_id=buyer.user_id,
+        seller_collateral_account_id=seller.seller_collateral_account_id,
+        reward_reserved_account_id=reward_reserved_account_id,
+        idempotency_key="reserve-delete-completed-case",
+    )
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE assignments
+                    SET status = 'picked_up_wait_unlock',
+                        unlock_at = %s,
+                        updated_at = timezone('utc', now())
+                    WHERE id = %s
+                    """,
+                    (datetime.now(UTC) - timedelta(minutes=1), reservation.assignment_id),
+                )
+
+    await finance_service.unlock_assignment_reward(
+        assignment_id=reservation.assignment_id,
+        buyer_available_account_id=buyer.buyer_available_account_id,
+        reward_reserved_account_id=reward_reserved_account_id,
+        idempotency_key="unlock-delete-completed-case",
+    )
+
+    preview = await seller_service.get_listing_delete_preview(
+        seller_user_id=seller.user_id,
+        listing_id=listing.listing_id,
+    )
+    assert preview.assignment_linked_reserved_usdt == Decimal("0.000000")
+    assert preview.unassigned_collateral_usdt == Decimal("10.200000")
+
+    deleted = await seller_service.delete_listing(
+        seller_user_id=seller.user_id,
+        listing_id=listing.listing_id,
+        deleted_by_user_id=seller.user_id,
+        idempotency_key="delete-listing-completed-case",
+    )
+    assert deleted.changed is True
+    assert deleted.assignment_transfers_count == 0
+    assert deleted.unassigned_collateral_returned_usdt == Decimal("10.200000")
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT current_balance_usdt FROM accounts WHERE id = %s",
+                (seller.seller_available_account_id,),
+            )
+            seller_available = await cur.fetchone()
+            assert seller_available["current_balance_usdt"] == Decimal("10.200000")
+
+            await cur.execute(
+                "SELECT current_balance_usdt FROM accounts WHERE id = %s",
+                (seller.seller_collateral_account_id,),
+            )
+            seller_collateral = await cur.fetchone()
+            assert seller_collateral["current_balance_usdt"] == Decimal("0.000000")
 
 
 @pytest.mark.asyncio

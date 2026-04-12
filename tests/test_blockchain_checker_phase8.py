@@ -500,6 +500,149 @@ async def test_blockchain_checker_partial_and_late_go_to_manual_review(
 
 
 @pytest.mark.asyncio
+async def test_blockchain_checker_does_not_credit_pre_invoice_payment_to_reused_suffix(
+    db_pool,
+    isolated_database: str,
+) -> None:
+    deposit_service = DepositIntentService(db_pool)
+    shard = await deposit_service.ensure_default_shard(
+        shard_key="mvp-1",
+        deposit_address="UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH",
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            seller_one_id = await create_user(
+                conn,
+                telegram_id=930014,
+                role="seller",
+                username="seller930014",
+            )
+            seller_two_id = await create_user(
+                conn,
+                telegram_id=930015,
+                role="seller",
+                username="seller930015",
+            )
+            for seller_id in (seller_one_id, seller_two_id):
+                await create_account(
+                    conn,
+                    owner_user_id=seller_id,
+                    account_code=f"user:{seller_id}:seller_available",
+                    account_kind="seller_available",
+                    balance=Decimal("0.000000"),
+                )
+            await create_account(
+                conn,
+                owner_user_id=None,
+                account_code="system:system_payout",
+                account_kind="system_payout",
+                balance=Decimal("1000.000000"),
+            )
+
+    old_intent = await deposit_service.create_seller_deposit_intent(
+        seller_user_id=seller_one_id,
+        request_amount_usdt=Decimal("1.23"),
+        shard_id=shard.shard_id,
+        idempotency_key="intent:old-reused-suffix",
+    )
+    now = datetime.now(UTC)
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE deposit_intents
+                    SET created_at = %s,
+                        expires_at = %s,
+                        updated_at = timezone('utc', now())
+                    WHERE id = %s
+                    """,
+                    (
+                        now - timedelta(hours=3),
+                        now - timedelta(hours=2),
+                        old_intent.deposit_intent_id,
+                    ),
+                )
+
+    new_intent = await deposit_service.create_seller_deposit_intent(
+        seller_user_id=seller_two_id,
+        request_amount_usdt=Decimal("1.23"),
+        shard_id=shard.shard_id,
+        idempotency_key="intent:new-reused-suffix",
+    )
+    assert new_intent.suffix_code == old_intent.suffix_code
+
+    pre_invoice_op = _op(
+        tx_hash="tx-reused-suffix-pre-invoice",
+        lt=301,
+        query_id="qr1",
+        trace_id="tr1",
+        amount_raw="1300100",
+        utime=now - timedelta(hours=1),
+        src="0:source",
+        dst="0:shard",
+    )
+    checker = BlockchainCheckerService(
+        db_pool,
+        advisory_lock_conninfo=isolated_database,
+        advisory_lock_id=7008014,
+        shard_key="mvp-1",
+        shard_address=shard.deposit_address,
+        shard_chain="ton_mainnet",
+        shard_asset="USDT",
+        usdt_jetton_master="EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+        page_limit=100,
+        max_pages_per_shard=5,
+        match_batch_size=50,
+        confirmations_required=1,
+        tonapi_client=StubTonapiClient([pre_invoice_op], shard_raw="0:shard"),
+        deposit_service=deposit_service,
+    )
+
+    result = await checker.run_once()
+
+    assert result.tx_credited_count == 0
+    assert result.tx_manual_review_count == 1
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT current_balance_usdt
+                FROM accounts
+                WHERE account_code = %s
+                """,
+                (f"user:{seller_two_id}:seller_available",),
+            )
+            seller_two_balance = await cur.fetchone()
+            assert seller_two_balance["current_balance_usdt"] == Decimal("0.000000")
+
+            await cur.execute(
+                """
+                SELECT status
+                FROM deposit_intents
+                WHERE id = %s
+                """,
+                (new_intent.deposit_intent_id,),
+            )
+            new_intent_row = await cur.fetchone()
+            assert new_intent_row["status"] == "pending"
+
+            await cur.execute(
+                """
+                SELECT status, matched_intent_id, review_reason
+                FROM chain_incoming_txs
+                WHERE tx_hash = 'tx-reused-suffix-pre-invoice'
+                """
+            )
+            tx_row = await cur.fetchone()
+            assert tx_row["status"] == "manual_review"
+            assert tx_row["matched_intent_id"] == new_intent.deposit_intent_id
+            assert tx_row["review_reason"] == "no_active_intent_for_suffix"
+
+
+@pytest.mark.asyncio
 async def test_blockchain_checker_does_not_advance_cursor_on_page_cap(
     db_pool,
     isolated_database: str,

@@ -63,6 +63,9 @@ cleanup() {
   if [[ "${generated_ssh_key}" == "1" && -n "${ssh_key_path}" && -f "${ssh_key_path}" ]]; then
     rm -f "${ssh_key_path}"
   fi
+  if [[ "${remote_uploaded:-0}" == "1" && -n "${support_bot_host:-}" && "${#ssh_args[@]}" -gt 0 ]]; then
+    remote_exec "rm -f /tmp/support-bot-config.yaml /tmp/support-bot-config.previous.yaml /tmp/remote_rollout_support_bot.sh /tmp/$(basename "${release_archive:-}")" >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 
@@ -193,6 +196,7 @@ scp "${scp_args[@]}" \
 scp "${scp_args[@]}" \
   "${rendered_config}" \
   "${SUPPORT_BOT_VM_SSH_USER}@${support_bot_host}:/tmp/support-bot-config.yaml"
+remote_uploaded=1
 qpi_phase_end
 
 qpi_phase_start "rollout"

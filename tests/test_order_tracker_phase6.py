@@ -52,6 +52,7 @@ def _build_tracker_service(
 async def _insert_wb_report_row(
     db_pool,
     *,
+    shop_id: int,
     rrd_id: int,
     srid: str,
     supplier_oper_name: str,
@@ -65,6 +66,7 @@ async def _insert_wb_report_row(
                 await cur.execute(
                     """
                     INSERT INTO wb_report_rows (
+                        shop_id,
                         rrd_id,
                         wb_srid,
                         order_uid,
@@ -74,9 +76,10 @@ async def _insert_wb_report_row(
                         order_dt,
                         create_dt
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
+                        shop_id,
                         rrd_id,
                         srid,
                         order_uid,
@@ -177,6 +180,7 @@ async def _prepare_order_verified_assignment(
     return {
         "seller_user_id": seller_user_id,
         "buyer_user_id": buyer.user_id,
+        "shop_id": shop_id,
         "listing_id": listing_id,
         "assignment_id": reservation.assignment_id,
         "wb_product_id": wb_product_id,
@@ -244,6 +248,7 @@ async def _prepare_reserved_assignment(
     return {
         "seller_user_id": seller_user_id,
         "buyer_user_id": buyer.user_id,
+        "shop_id": shop_id,
         "listing_id": listing_id,
         "assignment_id": reservation.assignment_id,
         "wb_product_id": wb_product_id,
@@ -268,6 +273,7 @@ async def test_order_tracker_sale_matches_order_uid_when_wb_srid_has_prefix(
     )
     await _insert_wb_report_row(
         db_pool,
+        shop_id=fixture["shop_id"],
         rrd_id=810011,
         srid=f"ebs.{order_uid}.0.0",
         order_uid=order_uid,
@@ -316,6 +322,7 @@ async def test_order_tracker_sale_moves_review_required_assignment_to_pickup_wai
     )
     await _insert_wb_report_row(
         db_pool,
+        shop_id=fixture["shop_id"],
         rrd_id=810021,
         srid="order-sale-review",
         supplier_oper_name="Продажа",
@@ -364,6 +371,7 @@ async def test_order_tracker_sale_moves_to_pickup_and_unlocks_after_15_days(
     )
     await _insert_wb_report_row(
         db_pool,
+        shop_id=fixture["shop_id"],
         rrd_id=810001,
         srid="order-sale-1",
         supplier_oper_name="Продажа",
@@ -433,6 +441,7 @@ async def test_order_tracker_return_cancels_order_verified_assignment(
     )
     await _insert_wb_report_row(
         db_pool,
+        shop_id=fixture["shop_id"],
         rrd_id=810002,
         srid="order-return-1",
         supplier_oper_name="Возврат",
@@ -505,6 +514,7 @@ async def test_order_tracker_ignores_return_after_unlock_window_and_unlocks(
 
     await _insert_wb_report_row(
         db_pool,
+        shop_id=fixture["shop_id"],
         rrd_id=810003,
         srid="order-return-late-1",
         supplier_oper_name="Возврат",
@@ -545,6 +555,7 @@ async def test_order_tracker_ignores_sale_when_nm_id_mismatches_listing_product(
     )
     await _insert_wb_report_row(
         db_pool,
+        shop_id=fixture["shop_id"],
         rrd_id=810031,
         srid="order-sale-mismatch-1",
         supplier_oper_name="Продажа",
@@ -569,6 +580,113 @@ async def test_order_tracker_ignores_sale_when_nm_id_mismatches_listing_product(
 
 
 @pytest.mark.asyncio
+async def test_order_tracker_ignores_wb_rows_from_other_shop(
+    db_pool,
+    isolated_database: str,
+) -> None:
+    now = datetime.now(UTC)
+    fixture = await _prepare_order_verified_assignment(
+        db_pool,
+        seller_telegram_id=910032,
+        buyer_telegram_id=920032,
+        order_id="order-sale-wrong-shop",
+        wb_product_id=670032,
+        ordered_at=now - timedelta(days=20),
+        reward_usdt=Decimal("8.000000"),
+    )
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            other_seller_id = await create_user(
+                conn,
+                telegram_id=910033,
+                role="seller",
+                username="seller_910033",
+            )
+            other_shop_id = await create_shop(
+                conn,
+                seller_user_id=other_seller_id,
+                slug="shop-910033",
+                title="Other Shop",
+            )
+    await _insert_wb_report_row(
+        db_pool,
+        shop_id=other_shop_id,
+        rrd_id=810032,
+        srid="order-sale-wrong-shop",
+        supplier_oper_name="Продажа",
+        event_at=now - timedelta(days=16),
+        nm_id=fixture["wb_product_id"],
+    )
+
+    service = _build_tracker_service(db_pool, lock_conninfo=isolated_database, lock_id=500632)
+    result = await service.run_once()
+
+    assert result.wb_pickup_count == 0
+    assert result.unlock_changed_count == 0
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT status FROM assignments WHERE id = %s",
+                (fixture["assignment_id"],),
+            )
+            assignment = await cur.fetchone()
+            assert assignment["status"] == "order_verified"
+
+
+@pytest.mark.asyncio
+async def test_order_tracker_ignores_late_return_after_missed_sale_unlock_window(
+    db_pool,
+    isolated_database: str,
+) -> None:
+    now = datetime.now(UTC)
+    fixture = await _prepare_order_verified_assignment(
+        db_pool,
+        seller_telegram_id=910034,
+        buyer_telegram_id=920034,
+        order_id="order-missed-sale-late-return",
+        wb_product_id=670034,
+        ordered_at=now - timedelta(days=20),
+        reward_usdt=Decimal("8.000000"),
+    )
+    await _insert_wb_report_row(
+        db_pool,
+        shop_id=fixture["shop_id"],
+        rrd_id=810034,
+        srid="order-missed-sale-late-return",
+        supplier_oper_name="Продажа",
+        event_at=now - timedelta(days=20),
+        nm_id=fixture["wb_product_id"],
+    )
+    await _insert_wb_report_row(
+        db_pool,
+        shop_id=fixture["shop_id"],
+        rrd_id=810035,
+        srid="order-missed-sale-late-return",
+        supplier_oper_name="Возврат",
+        event_at=now,
+        nm_id=fixture["wb_product_id"],
+    )
+
+    service = _build_tracker_service(db_pool, lock_conninfo=isolated_database, lock_id=500634)
+    result = await service.run_once()
+
+    assert result.wb_pickup_count == 1
+    assert result.wb_return_ignored_after_unlock_count == 1
+    assert result.wb_return_cancelled_count == 0
+    assert result.unlock_changed_count == 1
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT status FROM assignments WHERE id = %s",
+                (fixture["assignment_id"],),
+            )
+            assignment = await cur.fetchone()
+            assert assignment["status"] == "withdraw_sent"
+
+
+@pytest.mark.asyncio
 async def test_order_tracker_marks_delivery_expired_after_60_days_without_pickup(
     db_pool,
     isolated_database: str,
@@ -583,6 +701,18 @@ async def test_order_tracker_marks_delivery_expired_after_60_days_without_pickup
         ordered_at=now - timedelta(days=61),
         reward_usdt=Decimal("7.000000"),
     )
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE assignments
+                    SET order_submitted_at = %s,
+                        updated_at = timezone('utc', now())
+                    WHERE id = %s
+                    """,
+                    (now - timedelta(days=61), fixture["assignment_id"]),
+                )
 
     service = _build_tracker_service(db_pool, lock_conninfo=isolated_database, lock_id=500604)
     result = await service.run_once()
@@ -627,6 +757,7 @@ async def test_order_tracker_ignores_correction_operations_in_mvp(
     )
     await _insert_wb_report_row(
         db_pool,
+        shop_id=fixture["shop_id"],
         rrd_id=810005,
         srid="order-correction-1",
         supplier_oper_name="Коррекция продаж",

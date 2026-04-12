@@ -393,6 +393,7 @@ class DepositIntentRow:
     expected_amount_usdt: Decimal
     suffix_code: int
     expires_at: datetime
+    created_at: datetime
 
 
 @dataclass(frozen=True)

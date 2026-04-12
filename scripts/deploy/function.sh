@@ -141,9 +141,11 @@ build_bundle() {
   local bundle_path
   local requirements_path
   local staged_requirements_path
+  local wheels_dir
 
   resolve_git_token
   qpi_require_env "GH_TOKEN"
+  "${repo_root}/scripts/common/setup_private_git_auth.sh" >&2
 
   manifest_hash="$(bundle_manifest_hash)"
   bundle_dir="${cache_root}/${service_name}"
@@ -151,6 +153,7 @@ build_bundle() {
   bundle_path="${bundle_dir}/${manifest_hash}.zip"
   requirements_path="${bundle_dir}/${manifest_hash}.requirements.txt"
   staged_requirements_path="${stage_dir}/requirements.txt"
+  wheels_dir="${stage_dir}/vendor/wheels"
 
   mkdir -p "${bundle_dir}"
   prune_bundle_dir "${bundle_dir}"
@@ -170,8 +173,49 @@ build_bundle() {
     --no-emit-project \
     --no-hashes \
     --output-file "${requirements_path}" >&2
-  sed "s#https://github.com/#https://x-access-token:${GH_TOKEN}@github.com/#g" \
-    "${requirements_path}" > "${staged_requirements_path}"
+
+  mkdir -p "${wheels_dir}"
+  python3 -m pip wheel --no-cache-dir --requirement "${requirements_path}" --wheel-dir "${wheels_dir}" >&2
+
+  python3 - "${requirements_path}" "${staged_requirements_path}" "${wheels_dir}" <<'PY'
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+requirements_path = Path(sys.argv[1])
+staged_path = Path(sys.argv[2])
+wheels_dir = Path(sys.argv[3])
+
+
+def normalize_name(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+
+wheel_versions: dict[str, str] = {}
+for wheel in wheels_dir.glob("*.whl"):
+    parts = wheel.name.split("-")
+    if len(parts) >= 2:
+        wheel_versions[normalize_name(parts[0])] = parts[1]
+
+lines = ["--no-index", "--find-links ./vendor/wheels"]
+for raw_line in requirements_path.read_text(encoding="utf-8").splitlines():
+    stripped = raw_line.strip()
+    if " @ git+" in stripped and not stripped.startswith("#"):
+        package_name = stripped.split(" @ ", 1)[0].strip()
+        version = wheel_versions.get(normalize_name(package_name))
+        if version is None:
+            raise SystemExit(f"Missing local wheel for direct URL requirement: {package_name}")
+        lines.append(f"{package_name}=={version}")
+        continue
+    lines.append(raw_line)
+
+payload = "\n".join(lines)
+if "x-access-token" in payload or "GH_TOKEN" in payload:
+    raise SystemExit("Generated function requirements contain secret markers")
+staged_path.write_text(payload + "\n", encoding="utf-8")
+PY
 
   cp -R "${repo_root}/libs" "${stage_dir}/libs"
   cp "${repo_root}/services/__init__.py" "${stage_dir}/services/__init__.py"

@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-04-12 UTC
+Last updated: 2026-04-13 UTC
 
 ## 0. Completion Gate
 
@@ -141,6 +141,7 @@ Persistence and schema:
 - On confirmed delete:
   - assignment-linked reserved funds go to buyers irreversibly,
   - unassigned collateral returns to seller.
+- Delete-time unassigned collateral is computed after deducting active assignment rewards and rewards already paid for that listing; already-paid buyer cashback is never refundable seller collateral.
 - Listing creation input:
   - `wb_product_id`,
   - cashback in RUB,
@@ -196,6 +197,7 @@ Persistence and schema:
   - `[1, task_uuid, search_phrase, wb_product_id, 1, wb_brand_name]`, where `task_uuid` is the immutable assignment UUID and `wb_brand_name` is an empty string when unavailable.
 - Buyer submits verification token (base64 JSON array):
   - `[1, task_uuid, wb_product_id, order_id, ordered_at]`, where `ordered_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
+- Verification token `ordered_at` values more than 15 minutes in the future are rejected.
 - After pickup, buyer receives review setup token (base64 JSON array):
   - `[2, task_uuid, wb_product_id, review_phrase_1?, review_phrase_2?]`, where phrases are omitted when the seller did not provide them.
 - Buyer submits review confirmation token (base64 JSON array):
@@ -249,6 +251,7 @@ Transitions:
 - Valid review confirmation token transitions `picked_up_wait_review -> picked_up_wait_unlock`.
 - WB event `Возврат` within unlock window transitions to `returned_within_14d`.
 - `order_verified -> delivery_expired` after 60 days without pickup.
+- Delivery expiry uses server-side submission time (`assignment.order_submitted_at`) rather than buyer-provided `ordered_at`.
 - Unlock timer credits buyer balance and transitions assignment to `withdraw_sent` (`Выплачен`).
 
 ### 4.4 Admin and finance rules
@@ -285,7 +288,7 @@ Transitions:
 - Active invoice uniqueness: one active suffix per `(shard_id, suffix)`.
 - Invoice TTL: 24h.
 - Match rule:
-  - incoming amount must be `>= expected_amount`, on-time.
+  - incoming amount must be `>= expected_amount`, on-time, and not earlier than the invoice creation timestamp.
 - Overpayment:
   - full received amount is credited.
 - Partial/late payments:
@@ -315,6 +318,8 @@ Transitions:
 - Order tracking matches buyer-submitted `order_id` against WB report identifiers in both forms:
   - exact WB `srid` / stored `wb_srid`,
   - WB `order_uid` and the plain UID segment embedded inside prefixed `srid` values such as `ebu.<uid>.7.0`.
+- WB report rows are derived cache and are scoped by `shop_id`; lifecycle matching must require the report row to belong to the same shop as the listing.
+- If the report cache schema changes from unscoped to scoped rows, old unscoped cache rows are purged and refilled by the hourly scrapper.
 
 ### 4.7 Telegram UX rules (must be preserved)
 
@@ -448,6 +453,8 @@ Transitions:
 - DB-backed CI/deploy execution is designed around a dedicated private self-hosted GitHub runner VM; GitHub-hosted runners only handle fast suites and bootstrap/start-stop orchestration.
 - Release-grade marketplace runtime and function deploys now reuse the private runner after DB validation so the network-heavy rollout happens from the same YC region as the targets.
 - Marketplace deploy workflows now run an explicit predeploy gate before rollout and publish immutable runtime/function artifacts before the deploy step consumes them.
+- Runtime release archives are built from tracked repository files only; ignored local files such as `.env*`, Terraform state/vars, and `.artifacts` must never enter deploy artifacts.
+- Cloud Function bundles must not contain tokenized GitHub URLs; private Git dependencies are resolved during bundling into a local wheelhouse, and bundled requirements install from those local wheels.
 - Marketplace bot runtime is webhook-based. Companion support-bot runtime uses long polling and remains private-only.
 - Seller and buyer slash-command adapters (`services/bot_api/seller_handlers.py`, `services/bot_api/buyer_handlers.py`, in-chat command dispatch, and `--seller-command` / `--buyer-command`) are supported interfaces, not legacy-only tooling; changes to shared bot flows must update these adapters in the same change whenever the operation remains available by command.
 - Support-bot images are now published to a dedicated Yandex Container Registry repository and pulled on the VM during rollout instead of being copied as `docker save` archives.

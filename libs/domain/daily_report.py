@@ -26,6 +26,7 @@ _ALLOWED_SUPPLIER_OPER_NAMES = {
 }
 
 _REPORT_COLUMN_NAMES = (
+    "shop_id",
     "realizationreport_id",
     "create_dt",
     "currency_name",
@@ -61,7 +62,7 @@ def _build_report_upsert_query() -> str:
         "INSERT INTO wb_report_rows "
         f"({', '.join(column_names)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in column_names)}) "
-        "ON CONFLICT (rrd_id, wb_srid) DO UPDATE SET "
+        "ON CONFLICT (shop_id, rrd_id, wb_srid) DO UPDATE SET "
         + ", ".join(
             f"{column} = EXCLUDED.{column}"
             for column in column_names
@@ -338,7 +339,7 @@ class DailyReportScrapperService:
                 if rrd_id is not None and rrd_id > last_rrd_id:
                     last_rrd_id = rrd_id
 
-                projected = project_report_row(entry)
+                projected = project_report_row(entry, shop_id=shop.shop_id)
                 if projected is None:
                     rows_skipped += 1
                     continue
@@ -504,7 +505,7 @@ def classify_token_invalidation_source(status_code: int | None, message: str | N
     return _SCRAPPER_UNAUTHORIZED_SOURCE
 
 
-def project_report_row(row: dict[str, Any]) -> dict[str, Any] | None:
+def project_report_row(row: dict[str, Any], *, shop_id: int) -> dict[str, Any] | None:
     rrd_id = _to_int(row.get("rrd_id"))
     wb_srid = _to_text(row.get("srid"))
     supplier_oper_name = _to_text(row.get("supplier_oper_name"))
@@ -517,6 +518,7 @@ def project_report_row(row: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     return {
+        "shop_id": shop_id,
         "realizationreport_id": _to_int(row.get("realizationreport_id")),
         "create_dt": _to_datetime(row.get("create_dt")),
         "currency_name": _to_text(row.get("currency_name")),

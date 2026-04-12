@@ -15,6 +15,7 @@ from libs.security.token_cipher import encrypt_token
 from tests.helpers import create_listing, create_user
 
 _EXPECTED_REPORT_COLUMNS = {
+    "shop_id",
     "realizationreport_id",
     "create_dt",
     "currency_name",
@@ -128,7 +129,7 @@ async def _prepare_shop_with_token(
 @pytest.mark.asyncio
 async def test_daily_report_scrapper_ingests_projected_columns_and_deduplicates(db_pool) -> None:
     cipher_key = "phase5-test-key"
-    await _prepare_shop_with_token(
+    shop_id = await _prepare_shop_with_token(
         db_pool,
         seller_telegram_id=860001,
         slug="phase5-shop",
@@ -234,6 +235,7 @@ async def test_daily_report_scrapper_ingests_projected_columns_and_deduplicates(
                 """
                 SELECT
                     realizationreport_id,
+                    shop_id,
                     currency_name,
                     rrd_id,
                     wb_srid,
@@ -248,6 +250,7 @@ async def test_daily_report_scrapper_ingests_projected_columns_and_deduplicates(
             )
             row = await cur.fetchone()
             assert row["realizationreport_id"] == 401
+            assert row["shop_id"] == shop_id
             assert row["currency_name"] == "RUB"
             assert row["rrd_id"] == 100001
             assert row["wb_srid"] == "order-srid-1"

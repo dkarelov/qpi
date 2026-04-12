@@ -37,6 +37,7 @@ _OPEN_ASSIGNMENT_STATES = (
     "picked_up_wait_review",
     "picked_up_wait_unlock",
 )
+_COLLATERAL_DEDUCTING_ASSIGNMENT_STATES = (*_OPEN_ASSIGNMENT_STATES, "withdraw_sent")
 _MANUAL_SOURCE = "manual"
 _SCRAPPER_WITHDRAWN_SOURCE = "scrapper_401_withdrawn"
 _SCRAPPER_EXPIRED_SOURCE = "scrapper_401_token_expired"
@@ -1469,6 +1470,10 @@ class SellerService:
             (listing_id,),
         )
         active_slot_holds = await cur.fetchall()
+        assigned_reward_deduction = await self._load_listing_collateral_deduction_locked(
+            cur,
+            listing_id=listing_id,
+        )
 
         assignment_transfers_count = 0
         assignment_transferred_usdt = Decimal("0.000000")
@@ -1550,7 +1555,7 @@ class SellerService:
         for hold in collateral_holds:
             collateral_sum += _normalize_amount(hold["amount_usdt"])
 
-        unassigned_collateral = collateral_sum - assignment_transferred_usdt
+        unassigned_collateral = collateral_sum - assigned_reward_deduction
         if unassigned_collateral < Decimal("0.000000"):
             unassigned_collateral = Decimal("0.000000")
 
@@ -1568,6 +1573,9 @@ class SellerService:
                 metadata={
                     "listing_id": listing_id,
                     "total_collateral": str(_normalize_amount(collateral_sum)),
+                    "assigned_reward_deduction_usdt": str(
+                        _normalize_amount(assigned_reward_deduction)
+                    ),
                     "assignment_transferred_usdt": str(
                         _normalize_amount(assignment_transferred_usdt)
                     ),
@@ -1681,7 +1689,11 @@ class SellerService:
 
         assignment_linked_reserved = _normalize_amount(row["assignment_linked_reserved_usdt"])
         collateral = _normalize_amount(row["collateral_usdt"])
-        unassigned_collateral = collateral - assignment_linked_reserved
+        assigned_reward_deduction = await self._load_listing_collateral_deduction_locked(
+            cur,
+            listing_id=listing_id,
+        )
+        unassigned_collateral = collateral - assigned_reward_deduction
         if unassigned_collateral < Decimal("0.000000"):
             unassigned_collateral = Decimal("0.000000")
 
@@ -1691,6 +1703,19 @@ class SellerService:
             assignment_linked_reserved_usdt=assignment_linked_reserved,
             unassigned_collateral_usdt=_normalize_amount(unassigned_collateral),
         )
+
+    async def _load_listing_collateral_deduction_locked(self, cur, *, listing_id: int) -> Decimal:
+        await cur.execute(
+            """
+            SELECT COALESCE(SUM(reward_usdt), 0) AS assigned_reward_usdt
+            FROM assignments
+            WHERE listing_id = %s
+              AND status = ANY(%s)
+            """,
+            (listing_id, list(_COLLATERAL_DEDUCTING_ASSIGNMENT_STATES)),
+        )
+        row = await cur.fetchone()
+        return _normalize_amount(row["assigned_reward_usdt"])
 
     async def _load_shop_delete_preview(self, cur, *, shop_id: int) -> DeletePreview:
         await cur.execute(
@@ -1736,7 +1761,20 @@ class SellerService:
 
         assignment_linked_reserved = _normalize_amount(row["assignment_linked_reserved_usdt"])
         collateral = _normalize_amount(row["collateral_usdt"])
-        unassigned_collateral = collateral - assignment_linked_reserved
+        await cur.execute(
+            """
+            SELECT COALESCE(SUM(a.reward_usdt), 0) AS assigned_reward_usdt
+            FROM assignments a
+            JOIN listings l ON l.id = a.listing_id
+            WHERE l.shop_id = %s
+              AND l.deleted_at IS NULL
+              AND a.status = ANY(%s)
+            """,
+            (shop_id, list(_COLLATERAL_DEDUCTING_ASSIGNMENT_STATES)),
+        )
+        deduction_row = await cur.fetchone()
+        assigned_reward_deduction = _normalize_amount(deduction_row["assigned_reward_usdt"])
+        unassigned_collateral = collateral - assigned_reward_deduction
         if unassigned_collateral < Decimal("0.000000"):
             unassigned_collateral = Decimal("0.000000")
 

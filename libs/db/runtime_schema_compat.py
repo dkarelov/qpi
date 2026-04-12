@@ -798,11 +798,12 @@ def _normalize_withdrawal_and_assignment_statuses(cur: psycopg.Cursor) -> None:
         )
 
 
-def _ensure_wb_report_rows_wb_srid(cur: psycopg.Cursor) -> None:
+def _ensure_wb_report_rows_scoped(cur: psycopg.Cursor) -> None:
     if not _table_exists(cur, table_name="wb_report_rows"):
         return
 
     has_legacy_srid = _column_exists(cur, table_name="wb_report_rows", column_name="srid")
+    has_shop_id = _column_exists(cur, table_name="wb_report_rows", column_name="shop_id")
     if not _column_exists(cur, table_name="wb_report_rows", column_name="wb_srid"):
         cur.execute("ALTER TABLE public.wb_report_rows ADD COLUMN wb_srid text")
 
@@ -815,6 +816,18 @@ def _ensure_wb_report_rows_wb_srid(cur: psycopg.Cursor) -> None:
             """
         )
 
+    primary_key_def = _constraint_definition(
+        cur,
+        table_name="wb_report_rows",
+        constraint_name="wb_report_rows_pkey",
+    )
+    needs_scoped_key = primary_key_def is None or "shop_id" not in primary_key_def
+    if not has_shop_id or needs_scoped_key:
+        cur.execute("TRUNCATE TABLE public.wb_report_rows")
+
+    if not has_shop_id:
+        cur.execute("ALTER TABLE public.wb_report_rows ADD COLUMN shop_id bigint")
+
     cur.execute("SELECT COUNT(*) FROM public.wb_report_rows WHERE wb_srid IS NULL")
     missing_count = int(cur.fetchone()[0])
     if missing_count:
@@ -823,19 +836,22 @@ def _ensure_wb_report_rows_wb_srid(cur: psycopg.Cursor) -> None:
             f"still has {missing_count} NULL rows after backfill"
         )
 
+    cur.execute("DELETE FROM public.wb_report_rows WHERE shop_id IS NULL")
     cur.execute("ALTER TABLE public.wb_report_rows ALTER COLUMN wb_srid SET NOT NULL")
+    cur.execute("ALTER TABLE public.wb_report_rows ALTER COLUMN shop_id SET NOT NULL")
 
     primary_key_def = _constraint_definition(
         cur,
         table_name="wb_report_rows",
         constraint_name="wb_report_rows_pkey",
     )
-    if primary_key_def and "srid" in primary_key_def and "wb_srid" not in primary_key_def:
-        cur.execute("ALTER TABLE public.wb_report_rows DROP CONSTRAINT wb_report_rows_pkey")
+    if primary_key_def != "PRIMARY KEY (shop_id, rrd_id, wb_srid)":
+        if primary_key_def is not None:
+            cur.execute("ALTER TABLE public.wb_report_rows DROP CONSTRAINT wb_report_rows_pkey")
         cur.execute(
             """
             ALTER TABLE public.wb_report_rows
-            ADD CONSTRAINT wb_report_rows_pkey PRIMARY KEY (rrd_id, wb_srid)
+            ADD CONSTRAINT wb_report_rows_pkey PRIMARY KEY (shop_id, rrd_id, wb_srid)
             """
         )
 
@@ -843,11 +859,36 @@ def _ensure_wb_report_rows_wb_srid(cur: psycopg.Cursor) -> None:
         cur.execute("DROP INDEX public.idx_wb_report_rows_srid")
     cur.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_wb_report_rows_srid
-        ON public.wb_report_rows USING btree (wb_srid)
+        CREATE INDEX IF NOT EXISTS idx_wb_report_rows_shop_product_srid
+        ON public.wb_report_rows USING btree (shop_id, nm_id, wb_srid)
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_wb_report_rows_shop_product_order_uid
+        ON public.wb_report_rows USING btree (shop_id, nm_id, order_uid)
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_wb_report_rows_shop_product_srid_uid_segment
+        ON public.wb_report_rows USING btree (shop_id, nm_id, split_part(wb_srid, '.'::text, 2))
         """
     )
 
+    fk_def = _constraint_definition(
+        cur,
+        table_name="wb_report_rows",
+        constraint_name="wb_report_rows_shop_id_fkey",
+    )
+    if fk_def is None and _table_exists(cur, table_name="shops"):
+        cur.execute(
+            """
+            ALTER TABLE public.wb_report_rows
+            ADD CONSTRAINT wb_report_rows_shop_id_fkey
+            FOREIGN KEY (shop_id) REFERENCES public.shops(id) ON DELETE CASCADE
+            """
+        )
 
 def apply_runtime_schema_compatibility(database_url: str) -> None:
     normalized_database_url = normalize_database_url(database_url)
@@ -868,7 +909,7 @@ def apply_runtime_schema_compatibility(database_url: str) -> None:
             _ensure_buyer_review_verification_columns(cur)
             _ensure_withdrawal_request_requester_columns(cur)
             _normalize_withdrawal_and_assignment_statuses(cur)
-            _ensure_wb_report_rows_wb_srid(cur)
+            _ensure_wb_report_rows_scoped(cur)
         conn.commit()
 
 

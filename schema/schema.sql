@@ -194,6 +194,7 @@ CREATE TABLE "public"."fx_rates" (
 );
 
 CREATE TABLE "public"."wb_report_rows" (
+    "shop_id" bigint NOT NULL,
     "realizationreport_id" bigint,
     "create_dt" timestamp with time zone,
     "currency_name" text,
@@ -222,14 +223,20 @@ CREATE TABLE "public"."wb_report_rows" (
     "delivery_method" text,
     "uuid_promocode" text,
     "sale_price_promocode_discount_prc" numeric(20,6),
-    CONSTRAINT wb_report_rows_pkey PRIMARY KEY ("rrd_id", "wb_srid")
+    CONSTRAINT wb_report_rows_pkey PRIMARY KEY ("shop_id", "rrd_id", "wb_srid")
 );
 
-CREATE INDEX idx_wb_report_rows_srid ON public.wb_report_rows USING btree (wb_srid);
+CREATE INDEX idx_wb_report_rows_shop_product_order_uid ON public.wb_report_rows USING btree (shop_id, nm_id, order_uid);
+
+CREATE INDEX idx_wb_report_rows_shop_product_srid ON public.wb_report_rows USING btree (shop_id, nm_id, wb_srid);
+
+CREATE INDEX idx_wb_report_rows_shop_product_srid_uid_segment ON public.wb_report_rows USING btree (shop_id, nm_id, split_part(wb_srid, '.'::text, 2));
 
 CREATE INDEX idx_wb_report_rows_sale_dt ON public.wb_report_rows USING btree (sale_dt);
 
 CREATE INDEX idx_wb_report_rows_order_dt ON public.wb_report_rows USING btree (order_dt);
+
+ALTER TABLE ONLY "public"."wb_report_rows" ADD CONSTRAINT "wb_report_rows_shop_id_fkey" FOREIGN KEY ("shop_id") REFERENCES "public"."shops" ("id") ON UPDATE NO ACTION ON DELETE CASCADE;
 
 CREATE TABLE "public"."balance_holds" (
     "id" bigserial NOT NULL,

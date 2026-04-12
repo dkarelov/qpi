@@ -281,6 +281,7 @@ class BlockchainCheckerService:
             intent = await self._deposit_service.get_active_intent_by_suffix(
                 shard_id=tx.shard_id,
                 suffix_code=tx.suffix_code,
+                occurred_at=tx.occurred_at,
             )
             if intent is None:
                 fallback = await self._deposit_service.get_latest_intent_by_suffix(

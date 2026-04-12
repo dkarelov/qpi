@@ -30,8 +30,8 @@ class _WbEventCandidate:
     assignment_status: str
     seller_collateral_account_id: int
     reward_reserved_account_id: int
-    supplier_oper_name: str
-    event_at: datetime | None
+    sale_at: datetime | None
+    return_at: datetime | None
     unlock_at: datetime | None
 
 
@@ -247,30 +247,40 @@ class OrderTrackerService:
         return_skipped_count = 0
 
         for candidate in candidates:
-            if candidate.supplier_oper_name == _PICKUP_OPERATION:
-                if candidate.assignment_status != "order_verified" or candidate.event_at is None:
-                    pickup_skipped_count += 1
-                    continue
+            sale_unlock_at = (
+                candidate.sale_at + timedelta(days=self._unlock_days)
+                if candidate.sale_at is not None
+                else None
+            )
+            current_status = candidate.assignment_status
+
+            if candidate.sale_at is not None and current_status == "order_verified":
                 if await self._mark_assignment_picked_up(
                     assignment_id=candidate.assignment_id,
-                    pickup_at=candidate.event_at,
+                    pickup_at=candidate.sale_at,
                 ):
                     pickup_count += 1
+                    current_status = "picked_up_wait_unlock"
                 else:
                     pickup_skipped_count += 1
+            elif candidate.sale_at is not None and current_status != "order_verified":
+                pickup_skipped_count += 1
+
+            if candidate.return_at is None:
                 continue
 
-            if candidate.supplier_oper_name != _RETURN_OPERATION:
-                continue
-
-            if candidate.assignment_status in {"picked_up_wait_review", "picked_up_wait_unlock"}:
-                if (
-                    candidate.unlock_at is None
-                    or candidate.event_at is None
-                    or candidate.event_at > candidate.unlock_at
-                ):
+            if sale_unlock_at is not None:
+                if candidate.return_at > sale_unlock_at:
                     return_ignored_after_unlock_count += 1
                     continue
+            elif current_status in {"picked_up_wait_review", "picked_up_wait_unlock"}:
+                if candidate.unlock_at is None or candidate.return_at > candidate.unlock_at:
+                    return_ignored_after_unlock_count += 1
+                    continue
+
+            if current_status not in {"order_verified", "picked_up_wait_review", "picked_up_wait_unlock"}:
+                return_skipped_count += 1
+                continue
 
             try:
                 result = await self._finance_service.cancel_assignment_reservation(
@@ -309,8 +319,8 @@ class OrderTrackerService:
                         a.unlock_at,
                         sc.id AS seller_collateral_account_id,
                         rr.id AS reward_reserved_account_id,
-                        wr.supplier_oper_name,
-                        COALESCE(wr.sale_dt, wr.order_dt, wr.create_dt) AS event_at
+                        sale.event_at AS sale_at,
+                        ret.event_at AS return_at
                     FROM assignments a
                     JOIN listings l ON l.id = a.listing_id
                     JOIN accounts sc
@@ -319,16 +329,14 @@ class OrderTrackerService:
                         )
                     JOIN accounts rr
                         ON rr.account_code = 'system:reward_reserved'
-                    JOIN LATERAL (
+                    LEFT JOIN LATERAL (
                         SELECT
-                            supplier_oper_name,
-                            sale_dt,
-                            order_dt,
-                            create_dt,
-                            rrd_id
+                            COALESCE(wr.sale_dt, wr.order_dt, wr.create_dt) AS event_at,
+                            wr.rrd_id
                         FROM wb_report_rows wr
-                        WHERE wr.nm_id = l.wb_product_id
-                          AND wr.supplier_oper_name IN (%s, %s)
+                        WHERE wr.shop_id = l.shop_id
+                          AND wr.nm_id = l.wb_product_id
+                          AND wr.supplier_oper_name = %s
                           AND (
                                 wr.wb_srid = a.order_id
                                 OR wr.order_uid = a.order_id
@@ -338,9 +346,28 @@ class OrderTrackerService:
                             COALESCE(wr.sale_dt, wr.order_dt, wr.create_dt) DESC NULLS LAST,
                             wr.rrd_id DESC
                         LIMIT 1
-                    ) wr ON TRUE
+                    ) sale ON TRUE
+                    LEFT JOIN LATERAL (
+                        SELECT
+                            COALESCE(wr.sale_dt, wr.order_dt, wr.create_dt) AS event_at,
+                            wr.rrd_id
+                        FROM wb_report_rows wr
+                        WHERE wr.shop_id = l.shop_id
+                          AND wr.nm_id = l.wb_product_id
+                          AND wr.supplier_oper_name = %s
+                          AND (
+                                wr.wb_srid = a.order_id
+                                OR wr.order_uid = a.order_id
+                                OR split_part(wr.wb_srid, '.', 2) = a.order_id
+                          )
+                        ORDER BY
+                            COALESCE(wr.sale_dt, wr.order_dt, wr.create_dt) DESC NULLS LAST,
+                            wr.rrd_id DESC
+                        LIMIT 1
+                    ) ret ON TRUE
                     WHERE a.status IN ('order_verified', 'picked_up_wait_review', 'picked_up_wait_unlock')
                       AND a.order_id IS NOT NULL
+                      AND (sale.event_at IS NOT NULL OR ret.event_at IS NOT NULL)
                     ORDER BY a.updated_at ASC, a.id ASC
                     LIMIT %s
                     """,
@@ -353,8 +380,8 @@ class OrderTrackerService:
                         assignment_status=row["assignment_status"],
                         seller_collateral_account_id=row["seller_collateral_account_id"],
                         reward_reserved_account_id=row["reward_reserved_account_id"],
-                        supplier_oper_name=row["supplier_oper_name"],
-                        event_at=row["event_at"],
+                        sale_at=row["sale_at"],
+                        return_at=row["return_at"],
                         unlock_at=row["unlock_at"],
                     )
                     for row in rows
@@ -464,13 +491,11 @@ class OrderTrackerService:
                         )
                     JOIN accounts rr
                         ON rr.account_code = 'system:reward_reserved'
-                    LEFT JOIN buyer_orders bo
-                        ON bo.assignment_id = a.id
                     WHERE a.status = 'order_verified'
-                      AND COALESCE(bo.ordered_at, a.order_submitted_at, a.created_at)
+                      AND COALESCE(a.order_submitted_at, a.created_at)
                           <= timezone('utc', now()) - (%s * interval '1 day')
                     ORDER BY
-                        COALESCE(bo.ordered_at, a.order_submitted_at, a.created_at) ASC,
+                        COALESCE(a.order_submitted_at, a.created_at) ASC,
                         a.id ASC
                     LIMIT %s
                     """,

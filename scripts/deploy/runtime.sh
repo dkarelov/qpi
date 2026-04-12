@@ -100,6 +100,9 @@ cleanup() {
   if [[ "${generated_ssh_key:-0}" == "1" && -n "${ssh_key_path:-}" && -f "${ssh_key_path}" ]]; then
     rm -f "${ssh_key_path}"
   fi
+  if [[ "${remote_uploaded:-0}" == "1" && -n "${ssh_key_path:-}" && -n "${BOT_VM_HOST:-}" ]]; then
+    remote_exec "rm -f /tmp/qpi-bot-overrides.env /tmp/qpi-rollout.env /tmp/remote_rollout_bot.sh /tmp/merge_bot_env.py /tmp/$(basename "${runtime_archive_path:-}")" >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 
@@ -172,19 +175,10 @@ build_archive() {
   release_id="${QPI_RELEASE_ID:-${release_stamp}-${release_sha}}"
   archive_path="${artifacts_dir}/qpi-bot-${release_id}.tar.gz"
 
-  tar \
-    --exclude=.git \
-    --exclude=.venv \
-    --exclude=.pytest_cache \
-    --exclude=.ruff_cache \
-    --exclude=.mypy_cache \
-    --exclude=.artifacts \
-    --exclude=infra/.terraform \
-    --exclude='infra/*.tfstate' \
-    --exclude='infra/*.tfstate.*' \
-    --exclude='infra/*.tfplan' \
-    -czf "${archive_path}" \
-    -C "${repo_root}" .
+  (
+    cd "${repo_root}"
+    git ls-files -z | tar --null -czf "${archive_path}" -C "${repo_root}" --files-from -
+  )
 
   printf '%s\n' "${archive_path}"
 }
@@ -292,6 +286,7 @@ scp -P "${BOT_VM_SSH_PORT}" -i "${ssh_key_path}" \
 scp -P "${BOT_VM_SSH_PORT}" -i "${ssh_key_path}" \
   "${rollout_env}" \
   "${BOT_VM_SSH_USER}@${BOT_VM_HOST}:/tmp/qpi-rollout.env"
+remote_uploaded=1
 qpi_phase_end
 
 qpi_phase_start "schema"

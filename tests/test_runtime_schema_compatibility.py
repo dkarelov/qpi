@@ -829,3 +829,57 @@ async def test_schema_cleanup_apply_drops_obsolete_legacy_columns(
             )
             report_columns = {row[0] for row in cur.fetchall()}
             assert "srid" not in report_columns
+            assert "shop_id" in report_columns
+
+
+@pytest.mark.asyncio
+async def test_runtime_schema_compat_scopes_wb_report_rows_by_purging_legacy_cache(
+    isolated_database: str,
+) -> None:
+    with psycopg.connect(isolated_database, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("ALTER TABLE public.wb_report_rows DROP COLUMN shop_id CASCADE")
+            cur.execute(
+                """
+                ALTER TABLE public.wb_report_rows
+                ADD CONSTRAINT wb_report_rows_pkey PRIMARY KEY (rrd_id, wb_srid)
+                """
+            )
+            cur.execute(
+                """
+                INSERT INTO public.wb_report_rows (
+                    rrd_id,
+                    wb_srid,
+                    supplier_oper_name
+                )
+                VALUES (900001, 'legacy-unscoped-srid', 'Продажа')
+                """
+            )
+
+    run_runtime_schema_compat_apply(isolated_database)
+    run_runtime_schema_compat_apply(isolated_database)
+
+    with psycopg.connect(isolated_database, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM public.wb_report_rows
+                """
+            )
+            assert cur.fetchone()[0] == 0
+
+            cur.execute(
+                """
+                SELECT pg_get_constraintdef(c.oid)
+                FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                WHERE n.nspname = 'public'
+                  AND t.relname = 'wb_report_rows'
+                  AND c.conname = 'wb_report_rows_pkey'
+                """
+            )
+            assert cur.fetchone()[0] == "PRIMARY KEY (shop_id, rrd_id, wb_srid)"
+
+    run_schema_apply(isolated_database)

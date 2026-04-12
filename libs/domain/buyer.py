@@ -5,7 +5,7 @@ import binascii
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -54,6 +54,7 @@ _PURCHASE_PAYLOAD_VERSION = 3
 _REVIEW_PAYLOAD_VERSION = 2
 _PURCHASE_TOKEN_TYPE = 1
 _REVIEW_TOKEN_TYPE = 2
+_ORDERED_AT_FUTURE_TOLERANCE = timedelta(minutes=15)
 _REVIEW_STATUS_PENDING_MANUAL = "pending_manual"
 _REVIEW_STATUS_VERIFIED_AUTO = "verified_auto"
 _REVIEW_STATUS_VERIFIED_ADMIN = "verified_admin"
@@ -567,6 +568,8 @@ class BuyerService:
                 await cur.execute("SELECT now() AS current_time")
                 now_row = await cur.fetchone()
                 current_time = now_row["current_time"]
+                if decoded.ordered_at > current_time + _ORDERED_AT_FUTURE_TOLERANCE:
+                    raise PayloadValidationError("payload field 'ordered_at' cannot be in the future")
                 if assignment["status"] == "reserved" and assignment["reservation_expires_at"] <= current_time:
                     raise InvalidStateError("reservation window has expired")
 
