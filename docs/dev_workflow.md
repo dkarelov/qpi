@@ -261,6 +261,15 @@ terraform -chdir=infra plan
 
 Use Terraform only for intentional infra changes. If only Python/runtime code changed, use the direct deploy wrappers instead.
 
+Schema-affecting marketplace changes must be applied before runtime/function rollout:
+
+```bash
+BOT_VM_HOST=<bot-vm-host> \
+scripts/deploy/schema_remote.sh apply
+```
+
+The post-merge `predeploy-marketplace` gate treats schema drift as a hard blocker for runtime/function rollout.
+
 Support-bot deploys:
 
 - `scripts/deploy/support_bot.sh` is the canonical support-bot rollout wrapper.
@@ -302,6 +311,7 @@ Deploy wrapper failures:
 
 - Runtime deploy failures before upload usually indicate folder/target mismatch, bad SSH, or low disk on the bot VM.
 - Function deploy failures after create usually indicate critical config drift or bad `YC_FOLDER_ID` / auth.
+- If preflight fails with `Schema drift detected. Run python -m libs.db.schema_cli cleanup-apply first.`, apply the marketplace schema through `scripts/deploy/schema_remote.sh apply` before rerunning the workflow.
 - If runtime deploy target verification fails unexpectedly, verify that `BOT_VM_HOST` still belongs to the expected bot instance group in the configured YC folder.
 - If function deploy fails during bundling with `zip: command not found`, the runner host drifted from the expected base packages; install `zip` and keep the runner cloud-init/workflow package step aligned.
 
