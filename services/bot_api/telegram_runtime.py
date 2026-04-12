@@ -5502,7 +5502,7 @@ class TelegramWebhookRuntime:
                     ],
                     [
                         InlineKeyboardButton(
-                            text=self._button_label_with_count("🧾 История выводов", history_count, style="middot"),
+                            text=self._button_label_with_count("🧾 История выводов", history_count),
                             callback_data=build_callback(
                                 flow=_ROLE_ADMIN,
                                 action="withdrawals_history",
@@ -5555,7 +5555,7 @@ class TelegramWebhookRuntime:
                     ],
                     [
                         InlineKeyboardButton(
-                            text=self._button_label_with_count("⚠️ Нужна проверка", exceptions_count, style="paren"),
+                            text=self._button_label_with_count("⚠️ Нужна проверка", exceptions_count),
                             callback_data=build_callback(
                                 flow=_ROLE_ADMIN,
                                 action="deposit_exceptions",
@@ -6106,7 +6106,6 @@ class TelegramWebhookRuntime:
                         text=self._button_label_with_count(
                             "🔗 Привязать платеж к счету",
                             len(review_txs),
-                            style="middot",
                         ),
                         callback_data=build_callback(
                             flow=_ROLE_ADMIN,
@@ -6114,7 +6113,7 @@ class TelegramWebhookRuntime:
                         ),
                     ),
                     InlineKeyboardButton(
-                        text=self._button_label_with_count("🛑 Отменить счет", len(expired_intents), style="paren"),
+                        text=self._button_label_with_count("🛑 Отменить счет", len(expired_intents)),
                         callback_data=build_callback(
                             flow=_ROLE_ADMIN,
                             action="deposit_cancel_prompt",
@@ -8453,15 +8452,11 @@ class TelegramWebhookRuntime:
         return "\n\n".join(parts)
 
     @staticmethod
-    def _button_label_with_count(label: str, count: int | None, *, style: str = "brackets") -> str:
+    def _button_label_with_count(label: str, count: int | None) -> str:
         if count is None:
             return label
         normalized_count = max(0, int(count))
-        if style == "middot":
-            return f"{label} · {normalized_count}"
-        if style == "paren":
-            return f"{label} ({normalized_count})"
-        return f"{label} [{normalized_count}]"
+        return f"{label} · {normalized_count}"
 
     @staticmethod
     def _format_datetime_msk(value: datetime | None) -> str:
@@ -9528,7 +9523,7 @@ class TelegramWebhookRuntime:
                         ),
                     ),
                     InlineKeyboardButton(
-                        text=self._button_label_with_count("🏦 Депозиты", deposit_exceptions_count, style="middot"),
+                        text=self._button_label_with_count("🏦 Депозиты", deposit_exceptions_count),
                         callback_data=build_callback(
                             flow=_ROLE_ADMIN,
                             action="deposits_section",
@@ -9537,7 +9532,7 @@ class TelegramWebhookRuntime:
                 ],
                 [
                     InlineKeyboardButton(
-                        text=self._button_label_with_count("⚠️ Исключения", exceptions_count, style="paren"),
+                        text=self._button_label_with_count("⚠️ Исключения", exceptions_count),
                         callback_data=build_callback(
                             flow=_ROLE_ADMIN,
                             action="exceptions_section",

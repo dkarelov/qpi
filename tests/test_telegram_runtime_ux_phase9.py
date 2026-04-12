@@ -67,7 +67,7 @@ def test_seller_menu_puts_listings_before_shops() -> None:
     assert [button.text for button in first_row] == ["📦 Объявления", "🏬 Магазины"]
 
 
-def test_counted_button_labels_use_plain_suffix_options() -> None:
+def test_counted_button_labels_use_middot_suffix() -> None:
     runtime = _build_runtime()
 
     seller_labels = _flatten_labels(runtime._seller_menu_markup(listings_count=3, shops_count=2))
@@ -79,11 +79,11 @@ def test_counted_button_labels_use_plain_suffix_options() -> None:
         )
     )
 
-    assert "📦 Объявления [3]" in seller_labels
-    assert "🏬 Магазины [2]" in seller_labels
-    assert "💸 Выводы [4]" in admin_labels
+    assert "📦 Объявления · 3" in seller_labels
+    assert "🏬 Магазины · 2" in seller_labels
+    assert "💸 Выводы · 4" in admin_labels
     assert "🏦 Депозиты · 5" in admin_labels
-    assert "⚠️ Исключения (6)" in admin_labels
+    assert "⚠️ Исключения · 6" in admin_labels
 
 
 def test_buyer_menu_is_dashboard_sections() -> None:

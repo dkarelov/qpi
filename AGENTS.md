@@ -326,6 +326,7 @@ Transitions:
   - seller dashboard: announcements and shops,
   - buyer dashboard: saved shops and purchases,
   - admin dashboard/sections: pending withdrawals and exception queues.
+- Count suffix format is `· n` (for example `Магазины · 2`) across all roles.
 - Telegram inline keyboard labels are plain text; count suffixes must not rely on HTML/Markdown formatting.
 - Callback-driven navigation is immutable/linear:
   - button presses retire the old inline keyboard,

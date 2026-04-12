@@ -962,7 +962,7 @@ async def test_phase10_e2e_buyer_shop_screen_shows_purchases_button_when_no_othe
         labels.extend(_markup_labels(event))
 
     assert ("У вас уже есть активная покупка в этом магазине. Других объявлений здесь пока нет.") in text
-    assert "📋 Покупки [1]" in labels
+    assert "📋 Покупки · 1" in labels
 
 
 @pytest.mark.asyncio
@@ -1790,7 +1790,7 @@ async def test_phase10_e2e_admin_review_verification_flow() -> None:
     section_text = "\n".join(_event_texts(section_events))
     assert "Отзывы, требующие проверки:" in section_text
     assert "Покупка P31" in section_text
-    assert any("✅ Проверить отзыв [1]" in _markup_labels(event) for event in section_events)
+    assert any("✅ Проверить отзыв · 1" in _markup_labels(event) for event in section_events)
 
     prompt_events = await harness.callback(flow="admin", action="review_verify_prompt")
     assert any("Введите: <код_покупки> <base64_review_token>." in text for text in _event_texts(prompt_events))
