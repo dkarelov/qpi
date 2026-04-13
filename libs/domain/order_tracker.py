@@ -252,6 +252,7 @@ class OrderTrackerService:
                 if candidate.sale_at is not None
                 else None
             )
+            effective_unlock_at = candidate.unlock_at or sale_unlock_at
             current_status = candidate.assignment_status
 
             if candidate.sale_at is not None and current_status == "order_verified":
@@ -269,14 +270,13 @@ class OrderTrackerService:
             if candidate.return_at is None:
                 continue
 
-            if sale_unlock_at is not None:
-                if candidate.return_at > sale_unlock_at:
+            if effective_unlock_at is not None:
+                if candidate.return_at > effective_unlock_at:
                     return_ignored_after_unlock_count += 1
                     continue
             elif current_status in {"picked_up_wait_review", "picked_up_wait_unlock"}:
-                if candidate.unlock_at is None or candidate.return_at > candidate.unlock_at:
-                    return_ignored_after_unlock_count += 1
-                    continue
+                return_ignored_after_unlock_count += 1
+                continue
 
             if current_status not in {"order_verified", "picked_up_wait_review", "picked_up_wait_unlock"}:
                 return_skipped_count += 1

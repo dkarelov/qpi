@@ -144,10 +144,14 @@ build_bundle() {
   local requirements_path
   local staged_requirements_path
   local wheels_dir
+  local git_config_global
 
   resolve_git_token
   qpi_require_env "GH_TOKEN"
-  "${repo_root}/scripts/common/setup_private_git_auth.sh" >&2
+  git_config_global="$(mktemp)"
+  trap 'rm -f -- "$git_config_global"' RETURN
+  GIT_CONFIG_GLOBAL="${git_config_global}" \
+    "${repo_root}/scripts/common/setup_private_git_auth.sh" >&2
 
   manifest_hash="$(bundle_manifest_hash)"
   bundle_dir="${cache_root}/${service_name}"
@@ -168,7 +172,7 @@ build_bundle() {
   rm -rf "${stage_dir}"
   mkdir -p "${stage_dir}/services"
 
-  uv export \
+  GIT_CONFIG_GLOBAL="${git_config_global}" uv export \
     --project "${repo_root}" \
     --frozen \
     --no-dev \
@@ -195,7 +199,8 @@ direct_lines = [
 direct_path.write_text("\n".join(direct_lines) + ("\n" if direct_lines else ""), encoding="utf-8")
 PY
   if [[ -s "${direct_requirements_path}" ]]; then
-    python3 -m pip wheel --no-cache-dir --requirement "${direct_requirements_path}" --wheel-dir "${wheels_dir}" >&2
+    GIT_CONFIG_GLOBAL="${git_config_global}" \
+      python3 -m pip wheel --no-cache-dir --requirement "${direct_requirements_path}" --wheel-dir "${wheels_dir}" >&2
   fi
 
   python3 - "${requirements_path}" "${staged_requirements_path}" "${wheels_dir}" <<'PY'

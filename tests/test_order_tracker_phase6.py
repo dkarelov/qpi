@@ -539,6 +539,72 @@ async def test_order_tracker_ignores_return_after_unlock_window_and_unlocks(
 
 
 @pytest.mark.asyncio
+async def test_order_tracker_uses_stored_unlock_at_for_return_window_checks(
+    db_pool,
+    isolated_database: str,
+) -> None:
+    now = datetime.now(UTC)
+    fixture = await _prepare_order_verified_assignment(
+        db_pool,
+        seller_telegram_id=910035,
+        buyer_telegram_id=920035,
+        order_id="order-stored-unlock-return",
+        wb_product_id=670035,
+        ordered_at=now - timedelta(days=20),
+        reward_usdt=Decimal("8.500000"),
+    )
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE assignments
+                    SET status = 'picked_up_wait_unlock',
+                        pickup_at = %s,
+                        unlock_at = %s,
+                        updated_at = timezone('utc', now())
+                    WHERE id = %s
+                    """,
+                    (now - timedelta(days=20), now + timedelta(days=5), fixture["assignment_id"]),
+                )
+
+    await _insert_wb_report_row(
+        db_pool,
+        shop_id=fixture["shop_id"],
+        rrd_id=810035,
+        srid="order-stored-unlock-return",
+        supplier_oper_name="Продажа",
+        event_at=now - timedelta(days=20),
+        nm_id=fixture["wb_product_id"],
+    )
+    await _insert_wb_report_row(
+        db_pool,
+        shop_id=fixture["shop_id"],
+        rrd_id=810036,
+        srid="order-stored-unlock-return",
+        supplier_oper_name="Возврат",
+        event_at=now,
+        nm_id=fixture["wb_product_id"],
+    )
+
+    service = _build_tracker_service(db_pool, lock_conninfo=isolated_database, lock_id=500635)
+    result = await service.run_once()
+
+    assert result.wb_return_cancelled_count == 1
+    assert result.wb_return_ignored_after_unlock_count == 0
+    assert result.unlock_changed_count == 0
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT status FROM assignments WHERE id = %s",
+                (fixture["assignment_id"],),
+            )
+            assignment = await cur.fetchone()
+            assert assignment["status"] == "returned_within_14d"
+
+
+@pytest.mark.asyncio
 async def test_order_tracker_ignores_sale_when_nm_id_mismatches_listing_product(
     db_pool,
     isolated_database: str,
