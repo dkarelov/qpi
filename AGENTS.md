@@ -112,6 +112,7 @@ Shared layers:
 - `libs/integrations/*`: WB/TonAPI/FX clients.
 - `libs/config/settings.py`: runtime settings contracts.
 - `libs/logging/setup.py`: YC-compatible structured logging.
+- `services/bot_api/seller_listing_creation_flow.py`: transport-neutral seller listing creation flow shared by button UX and `/listing_create`; the webhook runtime maps its effects to Telegram.
 - `services/bot_api/telegram_notifications.py`: bot-runtime-only Telegram notification renderer; shared outbox enqueue/claim logic stays in `libs/domain/notifications.py`.
 - `libs/db/*`: pool and schema tooling.
 - `scripts/dev/*`: canonical local reset/test/export wrappers.

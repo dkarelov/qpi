@@ -69,6 +69,17 @@ from services.bot_api.callback_data import (
     parse_callback,
 )
 from services.bot_api.seller_handlers import SellerCommandProcessor
+from services.bot_api.seller_listing_creation_flow import (
+    ButtonSpec,
+    ClearPrompt,
+    FlowResult,
+    LogEvent,
+    ReplaceText,
+    ReplyPhoto,
+    ReplyText,
+    SellerListingCreationFlow,
+    SetPrompt,
+)
 from services.bot_api.telegram_notifications import render_telegram_notification
 
 try:
@@ -190,6 +201,47 @@ class TelegramIdentity:
     username: str | None
 
 
+class _RuntimeSellerListingWorkflowAdapter:
+    def __init__(self, runtime: TelegramWebhookRuntime) -> None:
+        self._runtime = runtime
+
+    async def load_listing_creation_snapshot(
+        self,
+        *,
+        seller_user_id: int,
+        shop_id: int,
+        wb_product_id: int,
+    ) -> WbProductSnapshot:
+        return await self._runtime._load_listing_creation_snapshot(
+            seller_user_id=seller_user_id,
+            shop_id=shop_id,
+            wb_product_id=wb_product_id,
+        )
+
+    async def lookup_listing_buyer_price(
+        self,
+        *,
+        seller_user_id: int,
+        shop_id: int,
+        wb_product_id: int,
+    ) -> WbObservedBuyerPrice | None:
+        return await self._runtime._lookup_listing_buyer_price(
+            seller_user_id=seller_user_id,
+            shop_id=shop_id,
+            wb_product_id=wb_product_id,
+        )
+
+    @staticmethod
+    def reference_price_updated_at(
+        *,
+        observed_buyer_price: WbObservedBuyerPrice | None,
+        reference_price_source: str,
+    ) -> datetime:
+        if reference_price_source == "orders" and observed_buyer_price is not None:
+            return observed_buyer_price.observed_at or datetime.now(UTC)
+        return datetime.now(UTC)
+
+
 class _BotHealthServer:
     def __init__(
         self,
@@ -273,6 +325,7 @@ class TelegramWebhookRuntime:
         self._fx_rate_service: FxRateService | None = None
         self._seller_processor: SellerCommandProcessor | None = None
         self._buyer_processor: BuyerCommandProcessor | None = None
+        self._seller_listing_creation_flow: SellerListingCreationFlow | None = None
         self._wb_ping_client: WbPingClient | None = None
         self._wb_public_client: WbPublicCatalogClient | None = None
         self._tonapi_client: TonapiClient | None = None
@@ -405,6 +458,13 @@ class TelegramWebhookRuntime:
                 fx_rate_ttl_seconds=self._settings.fx_rate_ttl_seconds,
             )
             self._seller_workflow_service = seller_workflow_service
+            self._seller_listing_creation_flow = SellerListingCreationFlow(
+                seller_service=self._seller_service,
+                seller_workflow=seller_workflow_service,
+                display_rub_per_usdt=self._settings.display_rub_per_usdt,
+                fx_rate_service=self._fx_rate_service,
+                fx_rate_ttl_seconds=self._settings.fx_rate_ttl_seconds,
+            )
             self._buyer_processor = BuyerCommandProcessor(
                 buyer_service=self._buyer_service,
                 bot_username=self._settings.telegram_bot_username,
@@ -1017,32 +1077,15 @@ class TelegramWebhookRuntime:
                     notice="Магазин не найден или уже удален.",
                 )
                 return
-            self._set_prompt(
-                context,
-                role=_ROLE_SELLER,
-                prompt_type="seller_listing_create",
-                sensitive=False,
-                extra={
-                    "shop_id": shop_id,
-                    "shop_title": shop.title,
-                    "seller_user_id": seller.user_id,
-                },
-            )
-            await self._refresh_display_rub_per_usdt()
-            await self._replace_message(
-                query_message,
-                self._listing_create_instruction_text(shop_title=shop.title),
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к объявлениям",
-                                callback_data=build_callback(flow=_ROLE_SELLER, action="listings"),
-                            )
-                        ]
-                    ]
+            await self._apply_seller_listing_creation_effects(
+                context=context,
+                query_message=query_message,
+                message=None,
+                result=self._get_seller_listing_creation_flow().start_prompt(
+                    seller_user_id=seller.user_id,
+                    shop_id=shop_id,
+                    shop_title=shop.title,
                 ),
-                parse_mode="HTML",
             )
             return
         if action == "listing_open":
@@ -1076,10 +1119,22 @@ class TelegramWebhookRuntime:
             )
             return
         if action == "listing_title_keep":
-            await self._create_listing_from_prompt(
+            prompt_state = context.user_data.get(_PROMPT_STATE_KEY)
+            if not isinstance(prompt_state, dict):
+                await self._replace_message(
+                    query_message,
+                    "Не удалось продолжить создание объявления. Откройте раздел заново.",
+                    self._seller_back_markup(action="listings", label="↩️ К объявлениям"),
+                )
+                return
+            result = await self._get_seller_listing_creation_flow().create_draft_from_prompt(
+                prompt_state=prompt_state,
+            )
+            await self._apply_seller_listing_creation_effects(
                 context=context,
                 query_message=query_message,
-                seller_user_id=seller.user_id,
+                message=None,
+                result=result,
             )
             return
         if action == "listing_title_edit_prompt":
@@ -1091,20 +1146,13 @@ class TelegramWebhookRuntime:
                     self._seller_back_markup(action="listings", label="↩️ К объявлениям"),
                 )
                 return
-            self._set_prompt(
-                context,
-                role=_ROLE_SELLER,
-                prompt_type="seller_listing_title_edit",
-                sensitive=False,
-                extra={key: value for key, value in prompt_state.items() if key not in {"role", "type", "sensitive"}},
-            )
-            await self._replace_message(
-                query_message,
-                self._listing_title_edit_prompt_text(
-                    current_title=str(prompt_state.get("suggested_display_title", "")).strip()
+            await self._apply_seller_listing_creation_effects(
+                context=context,
+                query_message=query_message,
+                message=None,
+                result=self._get_seller_listing_creation_flow().title_edit_prompt(
+                    prompt_state=prompt_state,
                 ),
-                self._seller_back_markup(action="listings", label="↩️ К объявлениям"),
-                parse_mode="HTML",
             )
             return
         if action == "listing_edit":
@@ -1898,30 +1946,7 @@ class TelegramWebhookRuntime:
         )
 
     def _listing_create_instruction_text(self, *, shop_title: str) -> str:
-        fx_text = self._format_decimal(self._display_rub_per_usdt, quant=Decimal("0.01"))
-        return self._screen_text(
-            title=f"Создание объявления для магазина «{html.escape(shop_title)}»",
-            cta="Отправьте данные объявления одним сообщением в формате ниже.",
-            lines=[
-                (
-                    "<b>Формат (через запятую):</b> "
-                    "<code>артикул ВБ, кэшбэк в рублях, макс. заказов, поисковая фраза, "
-                    "фраза для отзыва 1, ... , фраза для отзыва 10</code>"
-                ),
-                ("<b>Пример:</b> <code>12345678, 100, 5, женские джинсы, в размер, не садятся после стирки</code>"),
-                f"<b>Кэшбэк:</b> сумма в ₽ для покупателя; бот зафиксирует ее в USDT по курсу ~{fx_text}.",
-                "<b>Макс заказов:</b> количество покупателей по этому объявлению.",
-                "<b>Поисковая фраза:</b> запрос, по которому покупатель будет искать товар.",
-                (
-                    "<b>Фразы для отзыва (необязательно):</b> 0-10 фраз; покупатель получит "
-                    "до двух случайных фраз для отзыва."
-                ),
-            ],
-            note=(
-                "После этого бот загрузит карточку WB, определит цену покупателя по заказам за 30 дней "
-                "или попросит ввести ее вручную."
-            ),
-        )
+        return self._get_seller_listing_creation_flow().instruction_text(shop_title=shop_title)
 
     def _parse_listing_create_input(
         self,
@@ -1960,14 +1985,7 @@ class TelegramWebhookRuntime:
         )
 
     def _listing_title_edit_prompt_text(self, *, current_title: str) -> str:
-        return self._screen_text(
-            title="Название объявления",
-            cta="Отправьте новое название следующим сообщением ниже.",
-            lines=[
-                f"<b>Текущее название:</b> {html.escape(current_title)}",
-            ],
-            note="Название увидят покупатели.",
-        )
+        return self._get_seller_listing_creation_flow().title_edit_prompt_text(current_title=current_title)
 
     def _listing_title_confirmation_text(
         self,
@@ -1983,43 +2001,17 @@ class TelegramWebhookRuntime:
         reference_price_source: str,
         observed_buyer_price: WbObservedBuyerPrice | None = None,
     ) -> str:
-        reward_usdt = (cashback_rub / self._display_rub_per_usdt).quantize(
-            _USDT_EXACT_QUANT,
-            rounding=ROUND_HALF_UP,
-        )
-        collateral_required_usdt = (reward_usdt * Decimal(slot_count) * _LISTING_COLLATERAL_FEE_MULTIPLIER).quantize(
-            _USDT_EXACT_QUANT, rounding=ROUND_HALF_UP
-        )
-        cashback_percent = self._format_listing_cashback_percent(
-            reference_price_rub=buyer_price_rub,
+        return self._get_seller_listing_creation_flow().title_confirmation_text(
+            wb_product_id=wb_product_id,
+            search_phrase=search_phrase,
+            review_phrases=review_phrases,
             cashback_rub=cashback_rub,
-        )
-        lines = [
-            f"<b>Товар:</b> {html.escape(snapshot.name)}",
-            f"<b>Артикул ВБ:</b> {wb_product_id}",
-            f"<b>Поисковая фраза:</b> &quot;{html.escape(search_phrase)}&quot;",
-            f"<b>Цена покупателя:</b> {self._format_price_rub(buyer_price_rub)}",
-            f"<b>Кэшбэк:</b> {self._format_usdt_with_rub(reward_usdt)}",
-            f"<b>Кэшбэк, %:</b> {cashback_percent}",
-            f"<b>Макс. заказов:</b> {slot_count}",
-            f"<b>Обеспечение:</b> {self._format_usdt_with_rub(collateral_required_usdt)}",
-            f"<b>Фразы для отзыва:</b> {html.escape(self._format_review_phrases_text(review_phrases))}",
-            f"<b>Название для покупателей:</b> {html.escape(suggested_display_title)}",
-        ]
-        if observed_buyer_price is not None and reference_price_source == "orders":
-            lines.append(
-                "<b>Источник цены:</b> заказы за 30 дней, "
-                f"цена продавца "
-                f"{self._format_price_rub(observed_buyer_price.seller_price_rub)}, "
-                f"СПП {observed_buyer_price.spp_percent}%."
-            )
-        if reference_price_source == "manual":
-            lines.append("<b>Источник цены:</b> введена вручную.")
-        return self._screen_text(
-            title="Проверьте объявление",
-            cta="Проверьте данные объявления и выберите следующее действие ниже.",
-            lines=lines,
-            note="Если название подходит, сохраните его. Если нет, отредактируйте название.",
+            slot_count=slot_count,
+            snapshot=snapshot,
+            suggested_display_title=suggested_display_title,
+            buyer_price_rub=buyer_price_rub,
+            reference_price_source=reference_price_source,
+            observed_buyer_price=observed_buyer_price,
         )
 
     def _listing_manual_price_prompt_text(
@@ -2028,18 +2020,9 @@ class TelegramWebhookRuntime:
         wb_product_id: int,
         snapshot: WbProductSnapshot,
     ) -> str:
-        return self._screen_text(
-            title="Нужна цена покупателя",
-            cta="Введите текущую цену покупателя в рублях следующим сообщением ниже.",
-            lines=[
-                "Карточка товара найдена, но по заказам за 30 дней цену определить не удалось.",
-                f"<b>Артикул ВБ:</b> {wb_product_id}",
-                f"<b>Предмет:</b> {html.escape(snapshot.subject_name or '—')}",
-                f"<b>Бренд:</b> {html.escape(snapshot.brand or '—')}",
-                f"<b>Артикул продавца:</b> {html.escape(snapshot.vendor_code or '—')}",
-                f"<b>Название WB:</b> {html.escape(snapshot.name)}",
-            ],
-            note="Укажите цену с учетом всех скидок. Пример: 392.",
+        return self._get_seller_listing_creation_flow().manual_price_prompt_text(
+            wb_product_id=wb_product_id,
+            snapshot=snapshot,
         )
 
     def _format_listing_cashback_percent(
@@ -2318,40 +2301,21 @@ class TelegramWebhookRuntime:
         slot_count: int,
         collateral_required_usdt: Decimal,
     ) -> str:
-        cashback_percent = self._format_listing_cashback_percent(
+        return self._get_seller_listing_creation_flow().created_prompt_activation_text(
+            display_title=display_title,
+            wb_product_id=wb_product_id,
+            wb_subject_name=wb_subject_name,
+            wb_vendor_code=wb_vendor_code,
+            wb_source_title=wb_source_title,
+            wb_brand_name=wb_brand_name,
             reference_price_rub=reference_price_rub,
+            reference_price_source=reference_price_source,
+            search_phrase=search_phrase,
+            review_phrases=review_phrases,
             cashback_rub=cashback_rub,
-        )
-        lines = [
-            f"<b>Товар:</b> {html.escape(display_title)}",
-            f"<b>Артикул ВБ:</b> {wb_product_id}",
-            f"<b>Поисковая фраза:</b> &quot;{html.escape(search_phrase)}&quot;",
-            f"<b>Цена покупателя:</b> {self._format_price_optional_rub(reference_price_rub)}",
-            f"<b>Кэшбэк:</b> {self._format_usdt_with_rub(reward_usdt)}",
-            f"<b>Кэшбэк, %:</b> {cashback_percent}",
-            f"<b>Макс. заказов:</b> {slot_count}",
-            f"<b>Обеспечение:</b> {self._format_usdt_with_rub(collateral_required_usdt)}",
-            f"<b>Фразы для отзыва:</b> {html.escape(self._format_review_phrases_text(review_phrases))}",
-        ]
-        if wb_subject_name:
-            lines.append(f"<b>Предмет:</b> {html.escape(wb_subject_name)}")
-        if wb_vendor_code:
-            lines.append(f"<b>Артикул продавца:</b> {html.escape(wb_vendor_code)}")
-        if wb_source_title:
-            lines.append(f"<b>Название WB:</b> {html.escape(wb_source_title)}")
-        if wb_brand_name:
-            lines.append(f"<b>Бренд WB:</b> {html.escape(wb_brand_name)}")
-        if reference_price_source == "manual":
-            lines.append("<b>Источник цены:</b> введена вручную.")
-        elif reference_price_source == "orders":
-            lines.append("<b>Источник цены:</b> рассчитана по заказам за 30 дней.")
-        return (
-            self._screen_text(
-                title="Проверьте объявление перед активацией",
-                lines=lines,
-                note="Если все верно, активируйте объявление и отправьте покупателям ссылку на магазин.",
-            )
-            + "\n\n<b>Активировать объявление сейчас?</b>"
+            reward_usdt=reward_usdt,
+            slot_count=slot_count,
+            collateral_required_usdt=collateral_required_usdt,
         )
 
     async def _render_shop_delete_preview(
@@ -2539,6 +2503,10 @@ class TelegramWebhookRuntime:
             shop_link = (
                 f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop_slug}" if shop_slug else "—"
             )
+            collateral_line = self._format_listing_collateral_line(
+                collateral_view=listing,
+                seller_available_usdt=balance_snapshot.seller_available_usdt,
+            )
             lines.append(
                 f"<b>{number}. {html.escape(display_title)}</b>\n"
                 f"<b>Артикул WB:</b> {listing.wb_product_id}\n"
@@ -2547,15 +2515,7 @@ class TelegramWebhookRuntime:
                 + (f"<b>План покупок / В процессе:</b> {listing.slot_count} / {listing.in_progress_assignments_count}")
                 + "\n"
                 + f"<b>Ссылка на магазин:</b> {html.escape(shop_link)}\n"
-                + (
-                    "<b>Обеспечение:</b> "
-                    f"{
-                        self._format_listing_collateral_line(
-                            collateral_view=listing,
-                            seller_available_usdt=balance_snapshot.seller_available_usdt,
-                        )
-                    }"
-                )
+                + f"<b>Обеспечение:</b> {collateral_line}"
                 + "\n"
                 + (f"<b>Статус:</b> {self._listing_activity_badge(is_active=listing.status == 'active')}")
             )
@@ -6968,235 +6928,48 @@ class TelegramWebhookRuntime:
             seller_user_id = int(prompt_state.get("seller_user_id", 0))
             shop_id = int(prompt_state.get("shop_id", 0))
             shop_title = str(prompt_state.get("shop_title", "магазин"))
-            back_markup = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            text="↩️ Назад к объявлениям",
-                            callback_data=build_callback(
-                                flow=_ROLE_SELLER,
-                                action="listings",
-                            ),
-                        )
-                    ]
-                ]
-            )
             if seller_user_id < 1 or shop_id < 1:
                 self._clear_prompt(context)
                 await message.reply_text(
                     ("Не удалось продолжить создание объявления. Откройте раздел «📦 Объявления» заново."),
-                    reply_markup=back_markup,
+                    reply_markup=self._seller_back_markup(action="listings", label="↩️ К объявлениям"),
                 )
                 return
-            try:
-                (
-                    wb_product_id,
-                    cashback_rub,
-                    slots,
-                    search_phrase,
-                    review_phrases,
-                ) = self._parse_listing_create_input(text)
-                if wb_product_id < 1:
-                    raise ValueError("wb_product_id must be >= 1")
-                if cashback_rub <= Decimal("0"):
-                    raise ValueError("cashback_rub must be > 0")
-                if slots < 1:
-                    raise ValueError("slots must be >= 1")
-                if not search_phrase:
-                    raise ValueError("search_phrase must not be empty")
-                await self._refresh_display_rub_per_usdt()
-                fx_rate = self._display_rub_per_usdt
-                reward_usdt = (cashback_rub / fx_rate).quantize(
-                    _USDT_EXACT_QUANT,
-                    rounding=ROUND_HALF_UP,
-                )
-                if reward_usdt <= Decimal("0"):
-                    raise ValueError("reward_usdt must be > 0")
-                snapshot = await self._load_listing_creation_snapshot(
-                    seller_user_id=seller_user_id,
-                    shop_id=shop_id,
-                    wb_product_id=wb_product_id,
-                )
-                observed_buyer_price = await self._lookup_listing_buyer_price(
-                    seller_user_id=seller_user_id,
-                    shop_id=shop_id,
-                    wb_product_id=wb_product_id,
-                )
-                suggested_display_title = self._sanitize_buyer_display_title(
-                    wb_product_id=wb_product_id,
-                    source_title=snapshot.name,
-                    brand_name=snapshot.brand,
-                )
-            except (ValueError, InvalidOperation):
-                await message.reply_text(
-                    self._listing_create_instruction_text(shop_title=shop_title),
-                    reply_markup=back_markup,
-                    parse_mode="HTML",
-                )
-                return
-            except ListingValidationError as exc:
-                await message.reply_text(str(exc), reply_markup=back_markup)
-                return
-            except (NotFoundError, InvalidStateError, InsufficientFundsError):
-                await message.reply_text(
-                    ("Не удалось создать объявление.\nПроверьте токен магазина, баланс и введенные значения."),
-                    reply_markup=back_markup,
-                )
-                return
-
-            next_prompt_type = "seller_listing_create_review"
-            prompt_reply_text = self._listing_title_confirmation_text(
-                wb_product_id=wb_product_id,
-                search_phrase=search_phrase,
-                review_phrases=review_phrases,
-                cashback_rub=cashback_rub,
-                slot_count=slots,
-                snapshot=snapshot,
-                suggested_display_title=suggested_display_title,
-                buyer_price_rub=(observed_buyer_price.buyer_price_rub if observed_buyer_price is not None else 0),
-                reference_price_source="orders" if observed_buyer_price is not None else "manual",
-                observed_buyer_price=observed_buyer_price,
+            result = await self._get_seller_listing_creation_flow().submit_listing_input(
+                seller_user_id=seller_user_id,
+                shop_id=shop_id,
+                shop_title=shop_title,
+                text=text,
             )
-            if observed_buyer_price is None:
-                next_prompt_type = "seller_listing_manual_price"
-                prompt_reply_text = self._listing_manual_price_prompt_text(
-                    wb_product_id=wb_product_id,
-                    snapshot=snapshot,
-                )
-
-            self._set_prompt(
+            await self._apply_seller_listing_creation_effects(
                 context,
-                role=_ROLE_SELLER,
-                prompt_type=next_prompt_type,
-                sensitive=False,
-                extra={
-                    "seller_user_id": seller_user_id,
-                    "shop_id": shop_id,
-                    "shop_title": shop_title,
-                    "wb_product_id": wb_product_id,
-                    "cashback_rub": str(cashback_rub),
-                    "reward_usdt": str(reward_usdt),
-                    "slot_count": slots,
-                    "search_phrase": search_phrase,
-                    "review_phrases": review_phrases,
-                    "wb_source_title": snapshot.name,
-                    "wb_subject_name": snapshot.subject_name,
-                    "wb_brand_name": snapshot.brand,
-                    "wb_vendor_code": snapshot.vendor_code,
-                    "wb_description": snapshot.description,
-                    "wb_photo_url": snapshot.photo_url,
-                    "wb_tech_sizes": snapshot.tech_sizes,
-                    "wb_characteristics": snapshot.characteristics,
-                    "reference_price_rub": (
-                        observed_buyer_price.buyer_price_rub if observed_buyer_price is not None else None
-                    ),
-                    "reference_price_source": ("orders" if observed_buyer_price is not None else None),
-                    "reference_price_updated_at": (
-                        observed_buyer_price.observed_at.isoformat()
-                        if (observed_buyer_price is not None and observed_buyer_price.observed_at is not None)
-                        else None
-                    ),
-                    "seller_price_rub": (
-                        observed_buyer_price.seller_price_rub if observed_buyer_price is not None else None
-                    ),
-                    "spp_percent": (observed_buyer_price.spp_percent if observed_buyer_price is not None else None),
-                    "suggested_display_title": suggested_display_title,
-                },
+                query_message=None,
+                message=message,
+                result=result,
             )
-            if next_prompt_type == "seller_listing_create_review":
-                await self._reply_with_photo_if_available(
-                    message,
-                    photo_url=snapshot.photo_url,
-                )
-                await message.reply_text(
-                    prompt_reply_text,
-                    reply_markup=self._listing_title_review_markup(),
-                    parse_mode="HTML",
-                )
-            else:
-                await message.reply_text(
-                    prompt_reply_text,
-                    reply_markup=back_markup,
-                    parse_mode="HTML",
-                )
             return
 
         if prompt_type == "seller_listing_manual_price":
-            back_markup = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            text="↩️ Назад к объявлениям",
-                            callback_data=build_callback(
-                                flow=_ROLE_SELLER,
-                                action="listings",
-                            ),
-                        )
-                    ]
-                ]
-            )
-            try:
-                buyer_price_rub = int(Decimal(text.strip()).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-            except (InvalidOperation, ValueError):
-                await message.reply_text(
-                    "Неверный формат цены. Введите сумму в рублях, например 392.",
-                    reply_markup=back_markup,
-                )
-                return
-            if buyer_price_rub < 1:
-                await message.reply_text(
-                    "Цена должна быть больше 0.",
-                    reply_markup=back_markup,
-                )
-                return
-            prompt_state["reference_price_rub"] = buyer_price_rub
-            prompt_state["reference_price_source"] = "manual"
-            prompt_state["reference_price_updated_at"] = datetime.now(UTC).isoformat()
-            self._set_prompt(
-                context,
-                role=_ROLE_SELLER,
-                prompt_type="seller_listing_create_review",
-                sensitive=False,
-                extra={key: value for key, value in prompt_state.items() if key not in {"role", "type", "sensitive"}},
-            )
-            await self._render_pending_listing_title_review(
-                query_message=message,
-                prompt_state=context.user_data[_PROMPT_STATE_KEY],
+            await self._apply_seller_listing_creation_effects(
+                context=context,
+                query_message=None,
+                message=message,
+                result=self._get_seller_listing_creation_flow().submit_manual_price(
+                    prompt_state=prompt_state,
+                    text=text,
+                ),
             )
             return
 
         if prompt_type == "seller_listing_title_edit":
-            suggested_display_title = text.strip()
-            back_markup = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            text="↩️ Назад к объявлениям",
-                            callback_data=build_callback(
-                                flow=_ROLE_SELLER,
-                                action="listings",
-                            ),
-                        )
-                    ]
-                ]
-            )
-            if not suggested_display_title:
-                await message.reply_text(
-                    "Название для покупателей не может быть пустым. Отправьте новый текст.",
-                    reply_markup=back_markup,
-                )
-                return
-            self._set_prompt(
-                context,
-                role=_ROLE_SELLER,
-                prompt_type="seller_listing_create_review",
-                sensitive=False,
-                extra={key: value for key, value in prompt_state.items() if key not in {"role", "type", "sensitive"}},
-            )
-            context.user_data[_PROMPT_STATE_KEY]["suggested_display_title"] = suggested_display_title
-            await self._render_pending_listing_title_review(
-                query_message=message,
-                prompt_state=context.user_data[_PROMPT_STATE_KEY],
+            await self._apply_seller_listing_creation_effects(
+                context=context,
+                query_message=None,
+                message=message,
+                result=self._get_seller_listing_creation_flow().submit_edited_title(
+                    prompt_state=prompt_state,
+                    text=text,
+                ),
             )
             return
 
@@ -7959,6 +7732,89 @@ class TelegramWebhookRuntime:
 
         self._clear_prompt(context)
         await message.reply_text("Неизвестный тип ввода. Отправьте /start.")
+
+    def _get_seller_listing_creation_flow(self) -> SellerListingCreationFlow:
+        if self._seller_listing_creation_flow is not None:
+            return self._seller_listing_creation_flow
+        seller_workflow = self._seller_workflow_service or _RuntimeSellerListingWorkflowAdapter(self)
+        self._seller_listing_creation_flow = SellerListingCreationFlow(
+            seller_service=self._seller_service,
+            seller_workflow=seller_workflow,
+            display_rub_per_usdt=self._display_rub_per_usdt,
+            fx_rate_service=self._fx_rate_service,
+            fx_rate_ttl_seconds=self._settings.fx_rate_ttl_seconds,
+        )
+        return self._seller_listing_creation_flow
+
+    async def _apply_seller_listing_creation_effects(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        *,
+        query_message: Message | None,
+        message: Message | None,
+        result: FlowResult,
+    ) -> None:
+        for effect in result.effects:
+            if isinstance(effect, SetPrompt):
+                self._set_prompt(
+                    context,
+                    role=_ROLE_SELLER,
+                    prompt_type=effect.prompt_type,
+                    sensitive=effect.sensitive,
+                    extra=effect.data,
+                )
+                continue
+            if isinstance(effect, ClearPrompt):
+                self._clear_prompt(context)
+                continue
+            if isinstance(effect, ReplyPhoto):
+                await self._reply_with_photo_if_available(
+                    message or query_message,
+                    photo_url=effect.photo_url,
+                )
+                continue
+            if isinstance(effect, ReplyText):
+                target = message or query_message
+                if target is not None:
+                    await target.reply_text(
+                        effect.text,
+                        reply_markup=self._flow_buttons_markup(effect.buttons),
+                        parse_mode=effect.parse_mode,
+                    )
+                continue
+            if isinstance(effect, ReplaceText):
+                await self._replace_message(
+                    query_message or message,
+                    effect.text,
+                    self._flow_buttons_markup(effect.buttons),
+                    parse_mode=effect.parse_mode,
+                )
+                continue
+            if isinstance(effect, LogEvent):
+                self._logger.info(effect.event_name, **effect.fields)
+
+    def _flow_buttons_markup(
+        self,
+        rows: tuple[tuple[ButtonSpec, ...], ...],
+    ) -> InlineKeyboardMarkup | None:
+        if not rows:
+            return None
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        text=button.text,
+                        callback_data=build_callback(
+                            flow=button.flow,
+                            action=button.action,
+                            entity_id=button.entity_id,
+                        ),
+                    )
+                    for button in row
+                ]
+                for row in rows
+            ]
+        )
 
     async def _send_buyer_shop_catalog(
         self,
@@ -9153,17 +9009,13 @@ class TelegramWebhookRuntime:
         )
         if shop_link:
             lines.append(f"<b>Ссылка на магазин:</b>\n{html.escape(shop_link)}")
+        collateral_line = self._format_listing_collateral_line(
+            collateral_view=collateral_view,
+            seller_available_usdt=seller_available_usdt,
+        )
         lines.extend(
             [
-                (
-                    "<b>Обеспечение:</b> "
-                    f"{
-                        self._format_listing_collateral_line(
-                            collateral_view=collateral_view,
-                            seller_available_usdt=seller_available_usdt,
-                        )
-                    }"
-                ),
+                f"<b>Обеспечение:</b> {collateral_line}",
                 (f"<b>Статус:</b> {self._listing_activity_badge(is_active=is_active)}"),
             ]
         )
