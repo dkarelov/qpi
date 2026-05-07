@@ -626,6 +626,11 @@ class TelegramWebhookRuntime:
         self._seller_processor: SellerCommandProcessor | None = None
         self._buyer_processor: BuyerCommandProcessor | None = None
         self._seller_listing_creation_flow: SellerListingCreationFlow | None = None
+        self._seller_withdrawal_creation_flow_cache: WithdrawalRequestCreationFlow | None = None
+        self._buyer_withdrawal_creation_flow_cache: WithdrawalRequestCreationFlow | None = None
+        self._buyer_marketplace_flow_cache: BuyerMarketplaceFlow | None = None
+        self._buyer_marketplace_flow_rate: Decimal | None = None
+        self._admin_exceptions_flow_cache: AdminExceptionsFlow | None = None
         self._wb_ping_client: WbPingClient | None = None
         self._wb_public_client: WbPublicCatalogClient | None = None
         self._tonapi_client: TonapiClient | None = None
@@ -5937,21 +5942,32 @@ class TelegramWebhookRuntime:
         return self._seller_listing_creation_flow
 
     def _seller_withdrawal_creation_flow(self) -> WithdrawalRequestCreationFlow:
-        return WithdrawalRequestCreationFlow(
+        if self._seller_withdrawal_creation_flow_cache is not None:
+            return self._seller_withdrawal_creation_flow_cache
+        self._seller_withdrawal_creation_flow_cache = WithdrawalRequestCreationFlow(
             config=SELLER_WITHDRAWAL_CONFIG,
             requester_adapter=_RuntimeSellerWithdrawalAdapter(self),
             address_validator=_RuntimeTonMainnetAddressValidator(self),
         )
+        return self._seller_withdrawal_creation_flow_cache
 
     def _buyer_withdrawal_creation_flow(self) -> WithdrawalRequestCreationFlow:
-        return WithdrawalRequestCreationFlow(
+        if self._buyer_withdrawal_creation_flow_cache is not None:
+            return self._buyer_withdrawal_creation_flow_cache
+        self._buyer_withdrawal_creation_flow_cache = WithdrawalRequestCreationFlow(
             config=BUYER_WITHDRAWAL_CONFIG,
             requester_adapter=_RuntimeBuyerWithdrawalAdapter(self),
             address_validator=_RuntimeTonMainnetAddressValidator(self),
         )
+        return self._buyer_withdrawal_creation_flow_cache
 
     def _buyer_marketplace_flow(self) -> BuyerMarketplaceFlow:
-        return BuyerMarketplaceFlow(
+        if (
+            self._buyer_marketplace_flow_cache is not None
+            and self._buyer_marketplace_flow_rate == self._display_rub_per_usdt
+        ):
+            return self._buyer_marketplace_flow_cache
+        self._buyer_marketplace_flow_cache = BuyerMarketplaceFlow(
             adapter=_RuntimeBuyerMarketplaceAdapter(self),
             config=BuyerMarketplaceFlowConfig(
                 display_rub_per_usdt=self._display_rub_per_usdt,
@@ -5959,9 +5975,13 @@ class TelegramWebhookRuntime:
                 last_shop_slug_key=_LAST_BUYER_SHOP_SLUG_KEY,
             ),
         )
+        self._buyer_marketplace_flow_rate = self._display_rub_per_usdt
+        return self._buyer_marketplace_flow_cache
 
     def _admin_exceptions_flow(self) -> AdminExceptionsFlow:
-        return AdminExceptionsFlow(adapter=_RuntimeAdminExceptionsAdapter(self))
+        if self._admin_exceptions_flow_cache is None:
+            self._admin_exceptions_flow_cache = AdminExceptionsFlow(adapter=_RuntimeAdminExceptionsAdapter(self))
+        return self._admin_exceptions_flow_cache
 
     async def _apply_transport_effects(
         self,
@@ -5995,6 +6015,12 @@ class TelegramWebhookRuntime:
                         text=effect.text,
                         show_alert=effect.show_alert,
                     )
+                else:
+                    self._warn_dropped_transport_effect(
+                        effect=effect,
+                        reason="missing_callback_query",
+                        default_role=default_role,
+                    )
                 continue
             if isinstance(effect, DeleteSourceMessage):
                 target = message or query_message
@@ -6002,10 +6028,18 @@ class TelegramWebhookRuntime:
                     await self._delete_sensitive_message(target, notify=False)
                 continue
             if isinstance(effect, ReplyPhoto):
-                await self._reply_with_photo_if_available(
-                    message or query_message,
-                    photo_url=effect.photo_url,
-                )
+                target = message or query_message
+                if target is None:
+                    self._warn_dropped_transport_effect(
+                        effect=effect,
+                        reason="missing_message",
+                        default_role=default_role,
+                    )
+                else:
+                    await self._reply_with_photo_if_available(
+                        target,
+                        photo_url=effect.photo_url,
+                    )
                 continue
             if isinstance(effect, ReplyText):
                 target = message or query_message
@@ -6014,6 +6048,12 @@ class TelegramWebhookRuntime:
                         effect.text,
                         reply_markup=self._flow_buttons_markup(effect.buttons),
                         parse_mode=effect.parse_mode,
+                    )
+                else:
+                    self._warn_dropped_transport_effect(
+                        effect=effect,
+                        reason="missing_message",
+                        default_role=default_role,
                     )
                 continue
             if isinstance(effect, ReplyRoleMenuText):
@@ -6024,10 +6064,24 @@ class TelegramWebhookRuntime:
                         reply_markup=self._role_menu_markup(effect.role),
                         parse_mode=effect.parse_mode,
                     )
+                else:
+                    self._warn_dropped_transport_effect(
+                        effect=effect,
+                        reason="missing_message",
+                        default_role=default_role,
+                    )
                 continue
             if isinstance(effect, ReplaceText):
+                target = query_message or message
+                if target is None:
+                    self._warn_dropped_transport_effect(
+                        effect=effect,
+                        reason="missing_message",
+                        default_role=default_role,
+                    )
+                    continue
                 await self._replace_message(
-                    query_message or message,
+                    target,
                     effect.text,
                     self._flow_buttons_markup(effect.buttons),
                     parse_mode=effect.parse_mode,
@@ -6035,6 +6089,20 @@ class TelegramWebhookRuntime:
                 continue
             if isinstance(effect, LogEvent):
                 self._logger.info(effect.event_name, **effect.fields)
+
+    def _warn_dropped_transport_effect(
+        self,
+        *,
+        effect: object,
+        reason: str,
+        default_role: str,
+    ) -> None:
+        self._logger.warning(
+            "telegram_transport_effect_dropped",
+            effect_type=type(effect).__name__,
+            reason=reason,
+            default_role=default_role,
+        )
 
     def _role_menu_markup(self, role: str) -> InlineKeyboardMarkup:
         if role == _ROLE_SELLER:

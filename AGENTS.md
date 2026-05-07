@@ -127,7 +127,7 @@ Shared layers:
 - `libs/config/settings.py`: runtime settings contracts.
 - `libs/logging/setup.py`: YC-compatible structured logging.
 - `services/bot_api/seller_listing_creation_flow.py`: transport-neutral seller listing creation flow shared by button UX and `/listing_create`; the webhook runtime maps its effects to Telegram.
-- `services/bot_api/transport_effects.py`: shared transport-neutral effect vocabulary for role flows; `TelegramWebhookRuntime` remains the Telegram adapter that executes those effects.
+- `services/bot_api/transport_effects.py`: shared transport-neutral effect vocabulary for role flows; `TelegramWebhookRuntime` remains the Telegram adapter that executes those effects. `SetPrompt.role`, when set, intentionally overrides executor `default_role` for the stored prompt context.
 - `services/bot_api/withdrawal_flow.py`: shared transport-neutral seller/buyer withdrawal request creation and cancellation flow; the webhook runtime supplies role-specific account and TON validation adapters.
 - `services/bot_api/buyer_marketplace_flow.py`: transport-neutral buyer marketplace and purchase lifecycle flow for dashboard, knowledge screens, saved shops, shop catalog, announcement detail, reservation, proof/review submission, and purchase cancellation screens.
 - `services/bot_api/admin_exceptions_flow.py`: transport-neutral admin exception flow for blocked buyer review confirmations, seller deposit anomalies, manual review verification, deposit attach, and expired invoice cancellation prompts.

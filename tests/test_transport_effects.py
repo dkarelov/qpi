@@ -17,7 +17,9 @@ from services.bot_api.transport_effects import (
     DeleteSourceMessage,
     FlowResult,
     LogEvent,
+    ReplaceText,
     ReplyPhoto,
+    ReplyRoleMenuText,
     ReplyText,
     SetPrompt,
     SetUserData,
@@ -67,6 +69,23 @@ def test_seller_listing_creation_start_prompt_uses_shared_transport_effects() ->
         "services.bot_api.transport_effects",
     ]
     assert isinstance(result.effects[0], SetPrompt)
+
+
+def test_runtime_caches_stateless_flow_factories_and_refreshes_buyer_marketplace_rate() -> None:
+    runtime = _build_runtime()
+
+    assert runtime._seller_withdrawal_creation_flow() is runtime._seller_withdrawal_creation_flow()
+    assert runtime._buyer_withdrawal_creation_flow() is runtime._buyer_withdrawal_creation_flow()
+    assert runtime._admin_exceptions_flow() is runtime._admin_exceptions_flow()
+
+    buyer_flow = runtime._buyer_marketplace_flow()
+    assert runtime._buyer_marketplace_flow() is buyer_flow
+
+    runtime._display_rub_per_usdt = Decimal("101")
+    refreshed_buyer_flow = runtime._buyer_marketplace_flow()
+
+    assert refreshed_buyer_flow is not buyer_flow
+    assert refreshed_buyer_flow._config.display_rub_per_usdt == Decimal("101")
 
 
 @pytest.mark.asyncio
@@ -150,3 +169,44 @@ async def test_runtime_applies_prompt_clear_callback_feedback_and_source_delete_
     assert [event.kind for event in transport.events] == ["callback_answer", "delete"]
     assert transport.events[0].text == "Готово"
     assert transport.events[0].show_alert is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_warns_when_user_visible_transport_effect_has_no_target() -> None:
+    runtime = _build_runtime()
+    runtime._logger = SimpleNamespace(info=Mock(), warning=Mock(), exception=Mock())
+    context = FakeContext(bot=FakeBot(transport=FakeTransport()))
+
+    await runtime._apply_transport_effects(
+        context=context,
+        query_message=None,
+        message=None,
+        default_role="admin",
+        result=FlowResult(
+            effects=(
+                AnswerCallback(text="Готово"),
+                ReplyPhoto(photo_url="https://example.com/photo.webp"),
+                ReplyText(text="Экран"),
+                ReplyRoleMenuText(text="Меню", role="admin"),
+                ReplaceText(text="Новый экран"),
+            )
+        ),
+    )
+
+    assert runtime._logger.warning.call_count == 5
+    warning_calls = runtime._logger.warning.call_args_list
+    assert [call.args[0] for call in warning_calls] == ["telegram_transport_effect_dropped"] * 5
+    assert [call.kwargs["effect_type"] for call in warning_calls] == [
+        "AnswerCallback",
+        "ReplyPhoto",
+        "ReplyText",
+        "ReplyRoleMenuText",
+        "ReplaceText",
+    ]
+    assert [call.kwargs["reason"] for call in warning_calls] == [
+        "missing_callback_query",
+        "missing_message",
+        "missing_message",
+        "missing_message",
+        "missing_message",
+    ]

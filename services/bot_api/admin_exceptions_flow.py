@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -71,9 +72,11 @@ class AdminExceptionsFlow:
         self._adapter = adapter
 
     async def render_queue(self) -> FlowResult:
-        pending_reviews = await self._adapter.list_pending_review_confirmations(limit=1000)
-        review_txs = await self._adapter.list_admin_review_txs(limit=1000)
-        expired_intents = await self._adapter.list_admin_expired_intents(limit=1000)
+        pending_reviews, review_txs, expired_intents = await asyncio.gather(
+            self._adapter.list_pending_review_confirmations(limit=1000),
+            self._adapter.list_admin_review_txs(limit=1000),
+            self._adapter.list_admin_expired_intents(limit=1000),
+        )
         lines = _review_exception_lines(pending_reviews)
         lines.extend(_deposit_exception_lines(review_txs, expired_intents))
         return FlowResult(
