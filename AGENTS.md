@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-04-13 UTC
+Last updated: 2026-05-07 UTC
 
 ## 0. Completion Gate
 
@@ -53,6 +53,20 @@ Glossary for Telegram UX:
 - `Объявление` = seller-created buyer-facing offer for one WB product.
 - `Покупка` = buyer reservation/work item tied to one announcement.
 - `Активно` = user-facing wording for active/open availability or status.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked in GitHub Issues for `dkarelov/qpi`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Agent triage uses the canonical `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix` labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repo with root `CONTEXT.md` and root `docs/adr/`. See `docs/agents/domain.md`.
 
 ## 2. Product Scope (Current MVP)
 
