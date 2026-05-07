@@ -69,18 +69,20 @@ from services.bot_api.callback_data import (
     parse_callback,
 )
 from services.bot_api.seller_handlers import SellerCommandProcessor
-from services.bot_api.seller_listing_creation_flow import (
+from services.bot_api.seller_listing_creation_flow import SellerListingCreationFlow
+from services.bot_api.telegram_notifications import render_telegram_notification
+from services.bot_api.transport_effects import (
+    AnswerCallback,
     ButtonSpec,
     ClearPrompt,
+    DeleteSourceMessage,
     FlowResult,
     LogEvent,
     ReplaceText,
     ReplyPhoto,
     ReplyText,
-    SellerListingCreationFlow,
     SetPrompt,
 )
-from services.bot_api.telegram_notifications import render_telegram_notification
 
 try:
     from telegram import (
@@ -1077,10 +1079,11 @@ class TelegramWebhookRuntime:
                     notice="Магазин не найден или уже удален.",
                 )
                 return
-            await self._apply_seller_listing_creation_effects(
+            await self._apply_transport_effects(
                 context=context,
                 query_message=query_message,
                 message=None,
+                default_role=_ROLE_SELLER,
                 result=self._get_seller_listing_creation_flow().start_prompt(
                     seller_user_id=seller.user_id,
                     shop_id=shop_id,
@@ -1130,10 +1133,11 @@ class TelegramWebhookRuntime:
             result = await self._get_seller_listing_creation_flow().create_draft_from_prompt(
                 prompt_state=prompt_state,
             )
-            await self._apply_seller_listing_creation_effects(
+            await self._apply_transport_effects(
                 context=context,
                 query_message=query_message,
                 message=None,
+                default_role=_ROLE_SELLER,
                 result=result,
             )
             return
@@ -1146,10 +1150,11 @@ class TelegramWebhookRuntime:
                     self._seller_back_markup(action="listings", label="↩️ К объявлениям"),
                 )
                 return
-            await self._apply_seller_listing_creation_effects(
+            await self._apply_transport_effects(
                 context=context,
                 query_message=query_message,
                 message=None,
+                default_role=_ROLE_SELLER,
                 result=self._get_seller_listing_creation_flow().title_edit_prompt(
                     prompt_state=prompt_state,
                 ),
@@ -6941,19 +6946,21 @@ class TelegramWebhookRuntime:
                 shop_title=shop_title,
                 text=text,
             )
-            await self._apply_seller_listing_creation_effects(
+            await self._apply_transport_effects(
                 context,
                 query_message=None,
                 message=message,
+                default_role=_ROLE_SELLER,
                 result=result,
             )
             return
 
         if prompt_type == "seller_listing_manual_price":
-            await self._apply_seller_listing_creation_effects(
+            await self._apply_transport_effects(
                 context=context,
                 query_message=None,
                 message=message,
+                default_role=_ROLE_SELLER,
                 result=self._get_seller_listing_creation_flow().submit_manual_price(
                     prompt_state=prompt_state,
                     text=text,
@@ -6962,10 +6969,11 @@ class TelegramWebhookRuntime:
             return
 
         if prompt_type == "seller_listing_title_edit":
-            await self._apply_seller_listing_creation_effects(
+            await self._apply_transport_effects(
                 context=context,
                 query_message=None,
                 message=message,
+                default_role=_ROLE_SELLER,
                 result=self._get_seller_listing_creation_flow().submit_edited_title(
                     prompt_state=prompt_state,
                     text=text,
@@ -7746,19 +7754,21 @@ class TelegramWebhookRuntime:
         )
         return self._seller_listing_creation_flow
 
-    async def _apply_seller_listing_creation_effects(
+    async def _apply_transport_effects(
         self,
         context: ContextTypes.DEFAULT_TYPE,
         *,
         query_message: Message | None,
         message: Message | None,
         result: FlowResult,
+        default_role: str,
+        callback_query: Any | None = None,
     ) -> None:
         for effect in result.effects:
             if isinstance(effect, SetPrompt):
                 self._set_prompt(
                     context,
-                    role=_ROLE_SELLER,
+                    role=effect.role or default_role,
                     prompt_type=effect.prompt_type,
                     sensitive=effect.sensitive,
                     extra=effect.data,
@@ -7766,6 +7776,18 @@ class TelegramWebhookRuntime:
                 continue
             if isinstance(effect, ClearPrompt):
                 self._clear_prompt(context)
+                continue
+            if isinstance(effect, AnswerCallback):
+                if callback_query is not None:
+                    await callback_query.answer(
+                        text=effect.text,
+                        show_alert=effect.show_alert,
+                    )
+                continue
+            if isinstance(effect, DeleteSourceMessage):
+                target = message or query_message
+                if target is not None:
+                    await self._delete_sensitive_message(target, notify=False)
                 continue
             if isinstance(effect, ReplyPhoto):
                 await self._reply_with_photo_if_available(
@@ -7804,10 +7826,15 @@ class TelegramWebhookRuntime:
                 [
                     InlineKeyboardButton(
                         text=button.text,
-                        callback_data=build_callback(
-                            flow=button.flow,
-                            action=button.action,
-                            entity_id=button.entity_id,
+                        url=button.url,
+                        callback_data=(
+                            None
+                            if button.url
+                            else build_callback(
+                                flow=str(button.flow),
+                                action=str(button.action),
+                                entity_id=button.entity_id,
+                            )
                         ),
                     )
                     for button in row

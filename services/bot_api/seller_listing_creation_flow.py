@@ -16,6 +16,16 @@ from libs.domain.fx_rates import FxRateService
 from libs.domain.listing_creation import parse_listing_create_csv, sanitize_buyer_display_title
 from libs.domain.seller import SellerService
 from libs.integrations.wb_public import WbObservedBuyerPrice, WbProductSnapshot
+from services.bot_api.transport_effects import (
+    ButtonSpec,
+    ClearPrompt,
+    FlowResult,
+    ReplaceText,
+    ReplyPhoto,
+    ReplyText,
+    SetPrompt,
+    TransportEffect,
+)
 
 SELLER_LISTING_CREATE_PROMPT = "seller_listing_create"
 SELLER_LISTING_MANUAL_PRICE_PROMPT = "seller_listing_manual_price"
@@ -52,59 +62,6 @@ class SellerListingWorkflow(Protocol):
         observed_buyer_price: WbObservedBuyerPrice | None,
         reference_price_source: str,
     ) -> datetime: ...
-
-
-@dataclass(frozen=True)
-class ButtonSpec:
-    text: str
-    flow: str
-    action: str
-    entity_id: str = ""
-
-
-@dataclass(frozen=True)
-class ReplyText:
-    text: str
-    buttons: tuple[tuple[ButtonSpec, ...], ...] = ()
-    parse_mode: str | None = "HTML"
-
-
-@dataclass(frozen=True)
-class ReplaceText:
-    text: str
-    buttons: tuple[tuple[ButtonSpec, ...], ...] = ()
-    parse_mode: str | None = "HTML"
-
-
-@dataclass(frozen=True)
-class ReplyPhoto:
-    photo_url: str | None
-
-
-@dataclass(frozen=True)
-class SetPrompt:
-    prompt_type: str
-    data: dict[str, Any]
-    sensitive: bool = False
-
-
-@dataclass(frozen=True)
-class ClearPrompt:
-    pass
-
-
-@dataclass(frozen=True)
-class LogEvent:
-    event_name: str
-    fields: dict[str, Any]
-
-
-TransportEffect = ReplyText | ReplaceText | ReplyPhoto | SetPrompt | ClearPrompt | LogEvent
-
-
-@dataclass(frozen=True)
-class FlowResult:
-    effects: tuple[TransportEffect, ...]
 
 
 @dataclass(frozen=True)
