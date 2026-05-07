@@ -130,6 +130,7 @@ Shared layers:
 - `services/bot_api/transport_effects.py`: shared transport-neutral effect vocabulary for role flows; `TelegramWebhookRuntime` remains the Telegram adapter that executes those effects.
 - `services/bot_api/withdrawal_flow.py`: shared transport-neutral seller/buyer withdrawal request creation and cancellation flow; the webhook runtime supplies role-specific account and TON validation adapters.
 - `services/bot_api/buyer_marketplace_flow.py`: transport-neutral buyer marketplace and purchase lifecycle flow for dashboard, knowledge screens, saved shops, shop catalog, announcement detail, reservation, proof/review submission, and purchase cancellation screens.
+- `services/bot_api/admin_exceptions_flow.py`: transport-neutral admin exception flow for blocked buyer review confirmations and manual verification prompts; deposit anomaly handling remains in the webhook runtime.
 - `services/bot_api/telegram_notifications.py`: bot-runtime-only Telegram notification renderer; shared outbox enqueue/claim logic stays in `libs/domain/notifications.py`.
 - `libs/db/*`: pool and schema tooling.
 - `scripts/dev/*`: canonical local reset/test/export wrappers.

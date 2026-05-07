@@ -27,7 +27,6 @@ from libs.domain.errors import (
     InvalidStateError,
     ListingValidationError,
     NotFoundError,
-    PayloadValidationError,
 )
 from libs.domain.fx_rates import FxRateService
 from libs.domain.ledger import FinanceService
@@ -41,7 +40,6 @@ from libs.domain.public_refs import (
     format_listing_ref,
     format_shop_ref,
     format_withdrawal_ref,
-    parse_assignment_ref,
     parse_chain_tx_ref,
     parse_deposit_ref,
     parse_withdrawal_ref,
@@ -59,6 +57,11 @@ from libs.integrations.wb_public import (
 )
 from libs.logging.setup import EventLogger, get_logger
 from libs.security.token_cipher import decrypt_token, encrypt_token
+from services.bot_api.admin_exceptions_flow import (
+    AdminDepositExceptionSummary,
+    AdminExceptionsFlow,
+    AdminReviewExceptionsAdapter,
+)
 from services.bot_api.buyer_handlers import BuyerCommandProcessor
 from services.bot_api.buyer_marketplace_flow import (
     BuyerMarketplaceAdapter,
@@ -478,6 +481,29 @@ class _RuntimeBuyerMarketplaceAdapter(BuyerMarketplaceAdapter):
         return await self._runtime._buyer_service.cancel_assignment_by_buyer(
             buyer_user_id=buyer_user_id,
             assignment_id=assignment_id,
+            idempotency_key=idempotency_key,
+        )
+
+
+class _RuntimeAdminExceptionsAdapter(AdminReviewExceptionsAdapter):
+    def __init__(self, runtime: TelegramWebhookRuntime) -> None:
+        self._runtime = runtime
+
+    async def list_pending_review_confirmations(self, *, limit: int = 1000) -> list[Any]:
+        return await self._runtime._buyer_service.list_admin_pending_review_confirmations(limit=limit)
+
+    async def admin_verify_review_payload(
+        self,
+        *,
+        admin_user_id: int,
+        assignment_id: int,
+        payload_base64: str,
+        idempotency_key: str,
+    ) -> Any:
+        return await self._runtime._buyer_service.admin_verify_review_payload(
+            admin_user_id=admin_user_id,
+            assignment_id=assignment_id,
+            payload_base64=payload_base64,
             idempotency_key=idempotency_key,
         )
 
@@ -4768,31 +4794,31 @@ class TelegramWebhookRuntime:
     async def _render_admin_deposit_exceptions(
         self,
         *,
+        context: ContextTypes.DEFAULT_TYPE,
         query_message: Message | None,
     ) -> None:
-        pending_reviews = await self._buyer_service.list_admin_pending_review_confirmations(limit=1000)
         review_txs = await self._deposit_service.list_admin_review_txs(limit=1000)
         expired_intents = await self._deposit_service.list_admin_expired_intents(limit=1000)
-
-        lines: list[str] = []
-        if pending_reviews:
-            lines.append("Отзывы, требующие проверки:")
-            for item in pending_reviews[:20]:
-                phrases_text = html.escape(self._format_review_phrases_text(item.review_phrases))
-                lines.append(
-                    f"Покупка {self._assignment_ref(item.assignment_id)}\n"
-                    f"Покупатель: {item.buyer_telegram_id} "
-                    f"(@{html.escape(item.buyer_username or '-')})\n"
-                    f"Товар: {html.escape(item.display_title)}\n"
-                    f"Оценка: {item.rating} / 5\n"
-                    f"Фразы: {phrases_text}\n"
-                    f"Причина: {html.escape(item.verification_reason or '-')}\n"
-                    f"Текст: {html.escape(item.review_text)}"
+        await self._apply_transport_effects(
+            context=context,
+            query_message=query_message,
+            message=None,
+            default_role=_ROLE_ADMIN,
+            result=await self._admin_exceptions_flow().render_queue(
+                deposit_summary=self._admin_deposit_exception_summary(
+                    review_txs=review_txs,
+                    expired_intents=expired_intents,
                 )
-        else:
-            lines.append("Отзывов на ручную проверку нет.")
+            ),
+        )
 
-        lines.append("⚠️ Пополнения, требующие проверки:")
+    def _admin_deposit_exception_summary(
+        self,
+        *,
+        review_txs: list[Any],
+        expired_intents: list[Any],
+    ) -> AdminDepositExceptionSummary:
+        lines: list[str] = ["⚠️ Пополнения, требующие проверки:"]
         if review_txs:
             lines.append("Платежи на ручной разбор:")
             for tx in review_txs[:20]:
@@ -4825,54 +4851,10 @@ class TelegramWebhookRuntime:
         else:
             lines.append("Просроченных счетов нет.")
 
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        text=self._button_label_with_count("✅ Проверить отзыв", len(pending_reviews)),
-                        callback_data=build_callback(
-                            flow=_ROLE_ADMIN,
-                            action="review_verify_prompt",
-                        ),
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text=self._button_label_with_count(
-                            "🔗 Привязать платеж к счету",
-                            len(review_txs),
-                        ),
-                        callback_data=build_callback(
-                            flow=_ROLE_ADMIN,
-                            action="deposit_attach_prompt",
-                        ),
-                    ),
-                    InlineKeyboardButton(
-                        text=self._button_label_with_count("🛑 Отменить счет", len(expired_intents)),
-                        callback_data=build_callback(
-                            flow=_ROLE_ADMIN,
-                            action="deposit_cancel_prompt",
-                        ),
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="↩️ Назад",
-                        callback_data=build_callback(flow=_ROLE_ADMIN, action="deposits_section"),
-                    )
-                ],
-            ]
-        )
-        await self._replace_message(
-            query_message,
-            self._screen_text(
-                title="Исключения",
-                cta="Проверьте отзывы и пополнения, которым нужна ручная обработка.",
-                lines=lines,
-                separate_blocks=True,
-            ),
-            keyboard,
-            parse_mode="HTML",
+        return AdminDepositExceptionSummary(
+            lines=tuple(lines),
+            review_txs_count=len(review_txs),
+            expired_intents_count=len(expired_intents),
         )
 
     async def _execute_admin_deposit_attach(
@@ -4963,57 +4945,6 @@ class TelegramWebhookRuntime:
             deposit_intent_id=deposit_intent_id,
             deposit_ref=self._deposit_ref(deposit_intent_id),
             changed=changed,
-        )
-
-    async def _execute_admin_review_verification(
-        self,
-        *,
-        query_message: Message | None,
-        admin_user_id: int,
-        assignment_id: int,
-        payload_base64: str,
-    ) -> None:
-        try:
-            result = await self._buyer_service.admin_verify_review_payload(
-                admin_user_id=admin_user_id,
-                assignment_id=assignment_id,
-                payload_base64=payload_base64,
-                idempotency_key=f"tg-admin-review-verify:{admin_user_id}:{assignment_id}",
-            )
-        except PayloadValidationError:
-            await self._replace_message(
-                query_message,
-                (
-                    "Не удалось подтвердить отзыв.\n"
-                    "Проверьте, что токен относится к этой покупке и скопирован полностью."
-                ),
-                self._admin_menu_markup(),
-            )
-            return
-        except (NotFoundError, InvalidStateError):
-            await self._replace_message(
-                query_message,
-                "Не удалось подтвердить отзыв. Откройте исключения и попробуйте снова.",
-                self._admin_menu_markup(),
-            )
-            return
-
-        assignment_ref = self._assignment_ref(result.assignment_id)
-        if result.changed:
-            message = (
-                "Отзыв подтвержден вручную.\n"
-                f"Покупка: {assignment_ref}\n"
-                "Кэшбэк будет разблокирован по стандартному сроку после выкупа."
-            )
-        else:
-            message = f"Отзыв для покупки {assignment_ref} уже был подтвержден ранее."
-        await self._replace_message(query_message, message, self._admin_menu_markup())
-        self._logger.info(
-            "admin_review_verified",
-            assignment_id=result.assignment_id,
-            assignment_ref=assignment_ref,
-            changed=result.changed,
-            verification_status=result.verification_status,
         )
 
     async def _resolve_manual_deposit_target(
@@ -5228,7 +5159,7 @@ class TelegramWebhookRuntime:
             await self._render_admin_deposits_section(query_message=query_message)
             return
         if action == "exceptions_section":
-            await self._render_admin_deposit_exceptions(query_message=query_message)
+            await self._render_admin_deposit_exceptions(context=context, query_message=query_message)
             return
         if action == "withdrawals":
             await self._render_admin_pending_withdrawals(query_message=query_message)
@@ -5383,31 +5314,16 @@ class TelegramWebhookRuntime:
             )
             return
         if action == "deposit_exceptions":
-            await self._render_admin_deposit_exceptions(query_message=query_message)
+            await self._render_admin_deposit_exceptions(context=context, query_message=query_message)
             return
         if action == "review_verify_prompt":
-            self._set_prompt(
-                context,
-                role=_ROLE_ADMIN,
-                prompt_type="admin_review_verify",
-                sensitive=True,
-                extra={"admin_user_id": admin_user_id},
-            )
-            await self._replace_message(
-                query_message,
-                "Введите: <код_покупки> <base64_review_token>.\nНапример: P31 eyJ...==",
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к исключениям",
-                                callback_data=build_callback(
-                                    flow=_ROLE_ADMIN,
-                                    action="exceptions_section",
-                                ),
-                            )
-                        ]
-                    ]
+            await self._apply_transport_effects(
+                context=context,
+                query_message=query_message,
+                message=None,
+                default_role=_ROLE_ADMIN,
+                result=self._admin_exceptions_flow().start_review_verification_prompt(
+                    admin_user_id=admin_user_id,
                 ),
             )
             return
@@ -6104,27 +6020,15 @@ class TelegramWebhookRuntime:
             return
 
         if prompt_type == "admin_review_verify":
-            admin_user_id = int(prompt_state.get("admin_user_id", 0))
-            tokens = text.split(maxsplit=1)
-            if len(tokens) != 2:
-                await message.reply_text("Формат: <код_покупки> <base64_review_token>")
-                return
-            assignment_raw, payload_base64 = tokens
-            try:
-                assignment_id = self._parse_assignment_reference(assignment_raw)
-            except ValueError:
-                await message.reply_text("Используйте код покупки вида P31 или обычное число.")
-                return
-            if admin_user_id < 1:
-                self._clear_prompt(context)
-                await message.reply_text("Ошибка контекста админа. Откройте меню заново.")
-                return
-            self._clear_prompt(context)
-            await self._execute_admin_review_verification(
-                query_message=message,
-                admin_user_id=admin_user_id,
-                assignment_id=assignment_id,
-                payload_base64=payload_base64.strip(),
+            await self._apply_transport_effects(
+                context=context,
+                query_message=None,
+                message=message,
+                default_role=_ROLE_ADMIN,
+                result=await self._admin_exceptions_flow().submit_review_verification(
+                    prompt_state=prompt_state,
+                    text=text,
+                ),
             )
             return
 
@@ -6221,6 +6125,9 @@ class TelegramWebhookRuntime:
                 last_shop_slug_key=_LAST_BUYER_SHOP_SLUG_KEY,
             ),
         )
+
+    def _admin_exceptions_flow(self) -> AdminExceptionsFlow:
+        return AdminExceptionsFlow(adapter=_RuntimeAdminExceptionsAdapter(self))
 
     async def _apply_transport_effects(
         self,
@@ -6706,10 +6613,6 @@ class TelegramWebhookRuntime:
     @staticmethod
     def _assignment_ref(assignment_id: int) -> str:
         return format_assignment_ref(assignment_id)
-
-    @staticmethod
-    def _parse_assignment_reference(value: str) -> int:
-        return parse_assignment_ref(value)
 
     @staticmethod
     def _withdrawal_ref(withdrawal_request_id: int) -> str:
