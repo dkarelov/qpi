@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import html
-from dataclasses import dataclass
+from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Protocol
+from zoneinfo import ZoneInfo
 
-from libs.domain.errors import InvalidStateError, NotFoundError, PayloadValidationError
-from libs.domain.public_refs import format_assignment_ref, parse_assignment_ref
+from libs.domain.errors import InsufficientFundsError, InvalidStateError, NotFoundError, PayloadValidationError
+from libs.domain.public_refs import (
+    format_assignment_ref,
+    format_chain_tx_ref,
+    format_deposit_ref,
+    parse_assignment_ref,
+    parse_chain_tx_ref,
+    parse_deposit_ref,
+)
 from services.bot_api.transport_effects import (
     ButtonSpec,
     ClearPrompt,
@@ -17,10 +26,16 @@ from services.bot_api.transport_effects import (
 )
 
 _ROLE_ADMIN = "admin"
+_USDT_EXACT_QUANT = Decimal("0.000001")
+_MSK_TZ = ZoneInfo("Europe/Moscow")
 
 
-class AdminReviewExceptionsAdapter(Protocol):
+class AdminExceptionsAdapter(Protocol):
     async def list_pending_review_confirmations(self, *, limit: int = 1000) -> list[Any]: ...
+
+    async def list_admin_review_txs(self, *, limit: int = 1000) -> list[Any]: ...
+
+    async def list_admin_expired_intents(self, *, limit: int = 1000) -> list[Any]: ...
 
     async def admin_verify_review_payload(
         self,
@@ -31,27 +46,36 @@ class AdminReviewExceptionsAdapter(Protocol):
         idempotency_key: str,
     ) -> Any: ...
 
+    async def credit_intent_from_chain_tx(
+        self,
+        *,
+        deposit_intent_id: int,
+        chain_tx_id: int,
+        idempotency_key: str,
+        admin_user_id: int,
+        allow_expired: bool,
+    ) -> Any: ...
 
-@dataclass(frozen=True)
-class AdminDepositExceptionSummary:
-    lines: tuple[str, ...] = ()
-    review_txs_count: int = 0
-    expired_intents_count: int = 0
+    async def cancel_deposit_intent(
+        self,
+        *,
+        deposit_intent_id: int,
+        admin_user_id: int,
+        reason: str,
+        idempotency_key: str,
+    ) -> bool: ...
 
 
 class AdminExceptionsFlow:
-    def __init__(self, *, adapter: AdminReviewExceptionsAdapter) -> None:
+    def __init__(self, *, adapter: AdminExceptionsAdapter) -> None:
         self._adapter = adapter
 
-    async def render_queue(
-        self,
-        *,
-        deposit_summary: AdminDepositExceptionSummary | None = None,
-    ) -> FlowResult:
-        deposit_summary = deposit_summary or AdminDepositExceptionSummary()
+    async def render_queue(self) -> FlowResult:
         pending_reviews = await self._adapter.list_pending_review_confirmations(limit=1000)
+        review_txs = await self._adapter.list_admin_review_txs(limit=1000)
+        expired_intents = await self._adapter.list_admin_expired_intents(limit=1000)
         lines = _review_exception_lines(pending_reviews)
-        lines.extend(deposit_summary.lines)
+        lines.extend(_deposit_exception_lines(review_txs, expired_intents))
         return FlowResult(
             effects=(
                 ReplaceText(
@@ -63,8 +87,8 @@ class AdminExceptionsFlow:
                     ),
                     buttons=_exception_queue_buttons(
                         pending_reviews_count=len(pending_reviews),
-                        review_txs_count=deposit_summary.review_txs_count,
-                        expired_intents_count=deposit_summary.expired_intents_count,
+                        review_txs_count=len(review_txs),
+                        expired_intents_count=len(expired_intents),
                     ),
                     parse_mode="HTML",
                 ),
@@ -82,6 +106,40 @@ class AdminExceptionsFlow:
                 ),
                 ReplaceText(
                     text="Введите: <код_покупки> <base64_review_token>.\nНапример: P31 eyJ...==",
+                    buttons=_back_to_exceptions_buttons(),
+                    parse_mode=None,
+                ),
+            )
+        )
+
+    def start_deposit_attach_prompt(self, *, admin_user_id: int) -> FlowResult:
+        return FlowResult(
+            effects=(
+                SetPrompt(
+                    role=_ROLE_ADMIN,
+                    prompt_type="admin_deposit_attach",
+                    sensitive=False,
+                    data={"admin_user_id": admin_user_id},
+                ),
+                ReplaceText(
+                    text="Введите: <код_транзакции> <код_счета>.\nНапример: TX11 D22",
+                    buttons=_back_to_exceptions_buttons(),
+                    parse_mode=None,
+                ),
+            )
+        )
+
+    def start_deposit_cancel_prompt(self, *, admin_user_id: int) -> FlowResult:
+        return FlowResult(
+            effects=(
+                SetPrompt(
+                    role=_ROLE_ADMIN,
+                    prompt_type="admin_deposit_cancel",
+                    sensitive=False,
+                    data={"admin_user_id": admin_user_id},
+                ),
+                ReplaceText(
+                    text="Введите: <код_счета> <причина>.\nНапример: D22 late_payment",
                     buttons=_back_to_exceptions_buttons(),
                     parse_mode=None,
                 ),
@@ -192,6 +250,196 @@ class AdminExceptionsFlow:
             )
         )
 
+    async def submit_deposit_attach(
+        self,
+        *,
+        prompt_state: dict[str, Any],
+        text: str,
+    ) -> FlowResult:
+        admin_user_id = int(prompt_state.get("admin_user_id", 0))
+        tokens = text.split(maxsplit=1)
+        if len(tokens) != 2:
+            return FlowResult(
+                effects=(
+                    ReplyText(
+                        text="Формат: <код_транзакции> <код_счета>",
+                        parse_mode=None,
+                    ),
+                )
+            )
+
+        chain_tx_raw, intent_raw = tokens
+        try:
+            chain_tx_id = parse_chain_tx_ref(chain_tx_raw)
+            deposit_intent_id = parse_deposit_ref(intent_raw)
+        except ValueError:
+            return FlowResult(
+                effects=(
+                    ReplyText(
+                        text="Используйте коды вида TX11 D22 или обычные числа.",
+                        parse_mode=None,
+                    ),
+                )
+            )
+
+        if admin_user_id < 1:
+            return _invalid_admin_context_result()
+
+        try:
+            result = await self._adapter.credit_intent_from_chain_tx(
+                deposit_intent_id=deposit_intent_id,
+                chain_tx_id=chain_tx_id,
+                idempotency_key=f"tg-admin-deposit-attach:{admin_user_id}:{chain_tx_id}:{deposit_intent_id}",
+                admin_user_id=admin_user_id,
+                allow_expired=True,
+            )
+        except (NotFoundError, InvalidStateError, ValueError):
+            return FlowResult(
+                effects=(
+                    ClearPrompt(),
+                    ReplyText(
+                        text="Не удалось привязать платеж к счету. Проверьте номера и попробуйте снова.",
+                        buttons=_admin_menu_buttons(),
+                        parse_mode=None,
+                    ),
+                )
+            )
+        except InsufficientFundsError:
+            return FlowResult(
+                effects=(
+                    ClearPrompt(),
+                    ReplyText(
+                        text="Недостаточно средств на системном счете для зачисления.",
+                        buttons=_admin_menu_buttons(),
+                        parse_mode=None,
+                    ),
+                )
+            )
+
+        deposit_ref = format_deposit_ref(deposit_intent_id)
+        chain_tx_ref = format_chain_tx_ref(chain_tx_id)
+        if result.changed:
+            message = (
+                "Платеж привязан к счету и зачислен.\n"
+                f"Счет: {deposit_ref}\n"
+                f"Транзакция: {chain_tx_ref}"
+            )
+        else:
+            message = (
+                "Эта операция уже была выполнена ранее.\n"
+                f"Счет: {deposit_ref}\n"
+                f"Транзакция: {chain_tx_ref}"
+            )
+        return FlowResult(
+            effects=(
+                ClearPrompt(),
+                ReplyText(
+                    text=message,
+                    buttons=_admin_menu_buttons(),
+                    parse_mode=None,
+                ),
+                LogEvent(
+                    event_name="admin_deposit_attach_processed",
+                    fields={
+                        "chain_tx_id": chain_tx_id,
+                        "chain_tx_ref": chain_tx_ref,
+                        "deposit_intent_id": deposit_intent_id,
+                        "deposit_ref": deposit_ref,
+                        "changed": result.changed,
+                        "ledger_entry_id": result.ledger_entry_id,
+                    },
+                ),
+            )
+        )
+
+    async def submit_deposit_cancel(
+        self,
+        *,
+        prompt_state: dict[str, Any],
+        text: str,
+    ) -> FlowResult:
+        admin_user_id = int(prompt_state.get("admin_user_id", 0))
+        tokens = text.split(maxsplit=1)
+        if len(tokens) != 2:
+            return FlowResult(
+                effects=(
+                    ReplyText(
+                        text="Формат: <код_счета> <причина>",
+                        parse_mode=None,
+                    ),
+                )
+            )
+
+        intent_raw, reason = tokens
+        try:
+            deposit_intent_id = parse_deposit_ref(intent_raw)
+        except ValueError:
+            return FlowResult(
+                effects=(
+                    ReplyText(
+                        text="Код счета должен быть вида D22 или числом.",
+                        parse_mode=None,
+                    ),
+                )
+            )
+        normalized_reason = reason.strip()
+        if not normalized_reason:
+            return FlowResult(
+                effects=(
+                    ReplyText(
+                        text="Причина не может быть пустой.",
+                        parse_mode=None,
+                    ),
+                )
+            )
+
+        if admin_user_id < 1:
+            return _invalid_admin_context_result()
+
+        try:
+            changed = await self._adapter.cancel_deposit_intent(
+                deposit_intent_id=deposit_intent_id,
+                admin_user_id=admin_user_id,
+                reason=normalized_reason,
+                idempotency_key=f"tg-admin-deposit-cancel:{admin_user_id}:{deposit_intent_id}",
+            )
+        except (NotFoundError, InvalidStateError, ValueError):
+            return FlowResult(
+                effects=(
+                    ClearPrompt(),
+                    ReplyText(
+                        text="Не удалось отменить счет. Проверьте номер и попробуйте снова.",
+                        buttons=_admin_menu_buttons(),
+                        parse_mode=None,
+                    ),
+                )
+            )
+
+        deposit_ref = format_deposit_ref(deposit_intent_id)
+        message = (
+            f"Счет {deposit_ref} отменен."
+            if changed
+            else f"Счет {deposit_ref} уже был отменен ранее."
+        )
+        return FlowResult(
+            effects=(
+                ClearPrompt(),
+                ReplyText(
+                    text=message,
+                    buttons=_admin_menu_buttons(),
+                    parse_mode=None,
+                ),
+                LogEvent(
+                    event_name="admin_deposit_cancel_processed",
+                    fields={
+                        "deposit_intent_id": deposit_intent_id,
+                        "deposit_ref": deposit_ref,
+                        "changed": changed,
+                    },
+                ),
+            )
+        )
+
 
 def _review_exception_lines(pending_reviews: list[Any]) -> list[str]:
     lines: list[str] = []
@@ -212,6 +460,53 @@ def _review_exception_lines(pending_reviews: list[Any]) -> list[str]:
     else:
         lines.append("Отзывов на ручную проверку нет.")
     return lines
+
+
+def _deposit_exception_lines(review_txs: list[Any], expired_intents: list[Any]) -> list[str]:
+    lines: list[str] = ["⚠️ Пополнения, требующие проверки:"]
+    if review_txs:
+        lines.append("Платежи на ручной разбор:")
+        for tx in review_txs[:20]:
+            suffix = f"{tx.suffix_code:03d}" if tx.suffix_code is not None else "нет"
+            account_hint = (
+                f"Счет: {format_deposit_ref(tx.matched_intent_id)}" if tx.matched_intent_id else "Счет: не найден"
+            )
+            lines.append(
+                f"Транзакция {format_chain_tx_ref(tx.chain_tx_id)}\n"
+                f"Сумма: {_format_usdt_value(tx.amount_usdt, precise=True)} USDT\n"
+                f"Суффикс: {suffix}\n"
+                f"Хэш: {tx.tx_hash}\n"
+                f"Причина: {tx.review_reason or '-'}\n"
+                f"{account_hint}"
+            )
+    else:
+        lines.append("Платежей на ручной разбор нет.")
+
+    if expired_intents:
+        lines.append("Просроченные счета:")
+        for intent in expired_intents[:20]:
+            lines.append(
+                f"Счет {format_deposit_ref(intent.deposit_intent_id)}\n"
+                f"Продавец: {intent.seller_telegram_id}\n"
+                f"Ожидалось: {_format_usdt_value(intent.expected_amount_usdt, precise=True)} USDT\n"
+                f"Суффикс: {intent.suffix_code:03d}\n"
+                f"Истек: {_format_datetime_msk(intent.expires_at)}"
+            )
+    else:
+        lines.append("Просроченных счетов нет.")
+    return lines
+
+
+def _invalid_admin_context_result() -> FlowResult:
+    return FlowResult(
+        effects=(
+            ClearPrompt(),
+            ReplyText(
+                text="Ошибка контекста админа. Откройте меню заново.",
+                parse_mode=None,
+            ),
+        )
+    )
 
 
 def _exception_queue_buttons(
@@ -278,6 +573,27 @@ def _normalize_review_phrases(review_phrases: list[str] | None) -> list[str]:
         if text:
             normalized.append(text)
     return normalized
+
+
+def _format_usdt_value(amount: Decimal, *, precise: bool = False) -> str:
+    quant = _USDT_EXACT_QUANT if precise else Decimal("0.1")
+    return _format_decimal(amount, quant=quant)
+
+
+def _format_decimal(amount: Decimal, *, quant: Decimal) -> str:
+    normalized = amount.quantize(quant, rounding=ROUND_HALF_UP)
+    text = format(normalized, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
+
+
+def _format_datetime_msk(value: datetime | None) -> str:
+    if value is None:
+        return "—"
+    normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    localized = normalized.astimezone(_MSK_TZ)
+    return localized.strftime("%d.%m.%Y %H:%M MSK")
 
 
 def _screen_text(

@@ -35,13 +35,10 @@ from libs.domain.notifications import NotificationService
 from libs.domain.public_refs import (
     build_support_deep_link,
     format_assignment_ref,
-    format_chain_tx_ref,
     format_deposit_ref,
     format_listing_ref,
     format_shop_ref,
     format_withdrawal_ref,
-    parse_chain_tx_ref,
-    parse_deposit_ref,
     parse_withdrawal_ref,
 )
 from libs.domain.seller import SellerService
@@ -58,9 +55,8 @@ from libs.integrations.wb_public import (
 from libs.logging.setup import EventLogger, get_logger
 from libs.security.token_cipher import decrypt_token, encrypt_token
 from services.bot_api.admin_exceptions_flow import (
-    AdminDepositExceptionSummary,
+    AdminExceptionsAdapter,
     AdminExceptionsFlow,
-    AdminReviewExceptionsAdapter,
 )
 from services.bot_api.buyer_handlers import BuyerCommandProcessor
 from services.bot_api.buyer_marketplace_flow import (
@@ -485,12 +481,18 @@ class _RuntimeBuyerMarketplaceAdapter(BuyerMarketplaceAdapter):
         )
 
 
-class _RuntimeAdminExceptionsAdapter(AdminReviewExceptionsAdapter):
+class _RuntimeAdminExceptionsAdapter(AdminExceptionsAdapter):
     def __init__(self, runtime: TelegramWebhookRuntime) -> None:
         self._runtime = runtime
 
     async def list_pending_review_confirmations(self, *, limit: int = 1000) -> list[Any]:
         return await self._runtime._buyer_service.list_admin_pending_review_confirmations(limit=limit)
+
+    async def list_admin_review_txs(self, *, limit: int = 1000) -> list[Any]:
+        return await self._runtime._deposit_service.list_admin_review_txs(limit=limit)
+
+    async def list_admin_expired_intents(self, *, limit: int = 1000) -> list[Any]:
+        return await self._runtime._deposit_service.list_admin_expired_intents(limit=limit)
 
     async def admin_verify_review_payload(
         self,
@@ -504,6 +506,38 @@ class _RuntimeAdminExceptionsAdapter(AdminReviewExceptionsAdapter):
             admin_user_id=admin_user_id,
             assignment_id=assignment_id,
             payload_base64=payload_base64,
+            idempotency_key=idempotency_key,
+        )
+
+    async def credit_intent_from_chain_tx(
+        self,
+        *,
+        deposit_intent_id: int,
+        chain_tx_id: int,
+        idempotency_key: str,
+        admin_user_id: int,
+        allow_expired: bool,
+    ) -> Any:
+        return await self._runtime._deposit_service.credit_intent_from_chain_tx(
+            deposit_intent_id=deposit_intent_id,
+            chain_tx_id=chain_tx_id,
+            idempotency_key=idempotency_key,
+            admin_user_id=admin_user_id,
+            allow_expired=allow_expired,
+        )
+
+    async def cancel_deposit_intent(
+        self,
+        *,
+        deposit_intent_id: int,
+        admin_user_id: int,
+        reason: str,
+        idempotency_key: str,
+    ) -> bool:
+        return await self._runtime._deposit_service.cancel_deposit_intent(
+            deposit_intent_id=deposit_intent_id,
+            admin_user_id=admin_user_id,
+            reason=reason,
             idempotency_key=idempotency_key,
         )
 
@@ -4797,154 +4831,12 @@ class TelegramWebhookRuntime:
         context: ContextTypes.DEFAULT_TYPE,
         query_message: Message | None,
     ) -> None:
-        review_txs = await self._deposit_service.list_admin_review_txs(limit=1000)
-        expired_intents = await self._deposit_service.list_admin_expired_intents(limit=1000)
         await self._apply_transport_effects(
             context=context,
             query_message=query_message,
             message=None,
             default_role=_ROLE_ADMIN,
-            result=await self._admin_exceptions_flow().render_queue(
-                deposit_summary=self._admin_deposit_exception_summary(
-                    review_txs=review_txs,
-                    expired_intents=expired_intents,
-                )
-            ),
-        )
-
-    def _admin_deposit_exception_summary(
-        self,
-        *,
-        review_txs: list[Any],
-        expired_intents: list[Any],
-    ) -> AdminDepositExceptionSummary:
-        lines: list[str] = ["⚠️ Пополнения, требующие проверки:"]
-        if review_txs:
-            lines.append("Платежи на ручной разбор:")
-            for tx in review_txs[:20]:
-                suffix = f"{tx.suffix_code:03d}" if tx.suffix_code is not None else "нет"
-                account_hint = (
-                    f"Счет: {self._deposit_ref(tx.matched_intent_id)}" if tx.matched_intent_id else "Счет: не найден"
-                )
-                lines.append(
-                    f"Транзакция {self._chain_tx_ref(tx.chain_tx_id)}\n"
-                    f"Сумма: {self._format_usdt_value(tx.amount_usdt, precise=True)} USDT\n"
-                    f"Суффикс: {suffix}\n"
-                    f"Хэш: {tx.tx_hash}\n"
-                    f"Причина: {tx.review_reason or '-'}\n"
-                    f"{account_hint}"
-                )
-        else:
-            lines.append("Платежей на ручной разбор нет.")
-
-        if expired_intents:
-            lines.append("Просроченные счета:")
-            for intent in expired_intents[:20]:
-                lines.append(
-                    f"Счет {self._deposit_ref(intent.deposit_intent_id)}\n"
-                    f"Продавец: {intent.seller_telegram_id}\n"
-                    "Ожидалось: "
-                    f"{self._format_usdt_value(intent.expected_amount_usdt, precise=True)} USDT\n"
-                    f"Суффикс: {intent.suffix_code:03d}\n"
-                    f"Истек: {self._format_datetime_msk(intent.expires_at)}"
-                )
-        else:
-            lines.append("Просроченных счетов нет.")
-
-        return AdminDepositExceptionSummary(
-            lines=tuple(lines),
-            review_txs_count=len(review_txs),
-            expired_intents_count=len(expired_intents),
-        )
-
-    async def _execute_admin_deposit_attach(
-        self,
-        *,
-        query_message: Message | None,
-        admin_user_id: int,
-        chain_tx_id: int,
-        deposit_intent_id: int,
-    ) -> None:
-        try:
-            result = await self._deposit_service.credit_intent_from_chain_tx(
-                deposit_intent_id=deposit_intent_id,
-                chain_tx_id=chain_tx_id,
-                idempotency_key=(f"tg-admin-deposit-attach:{admin_user_id}:{chain_tx_id}:{deposit_intent_id}"),
-                admin_user_id=admin_user_id,
-                allow_expired=True,
-            )
-        except (NotFoundError, InvalidStateError, ValueError):
-            await self._replace_message(
-                query_message,
-                "Не удалось привязать платеж к счету. Проверьте номера и попробуйте снова.",
-                self._admin_menu_markup(),
-            )
-            return
-        except InsufficientFundsError:
-            await self._replace_message(
-                query_message,
-                "Недостаточно средств на системном счете для зачисления.",
-                self._admin_menu_markup(),
-            )
-            return
-
-        if result.changed:
-            message = (
-                "Платеж привязан к счету и зачислен.\n"
-                f"Счет: {self._deposit_ref(deposit_intent_id)}\n"
-                f"Транзакция: {self._chain_tx_ref(chain_tx_id)}"
-            )
-        else:
-            message = (
-                "Эта операция уже была выполнена ранее.\n"
-                f"Счет: {self._deposit_ref(deposit_intent_id)}\n"
-                f"Транзакция: {self._chain_tx_ref(chain_tx_id)}"
-            )
-        await self._replace_message(query_message, message, self._admin_menu_markup())
-        self._logger.info(
-            "admin_deposit_attach_processed",
-            chain_tx_id=chain_tx_id,
-            chain_tx_ref=self._chain_tx_ref(chain_tx_id),
-            deposit_intent_id=deposit_intent_id,
-            deposit_ref=self._deposit_ref(deposit_intent_id),
-            changed=result.changed,
-            ledger_entry_id=result.ledger_entry_id,
-        )
-
-    async def _execute_admin_deposit_cancel(
-        self,
-        *,
-        query_message: Message | None,
-        admin_user_id: int,
-        deposit_intent_id: int,
-        reason: str,
-    ) -> None:
-        try:
-            changed = await self._deposit_service.cancel_deposit_intent(
-                deposit_intent_id=deposit_intent_id,
-                admin_user_id=admin_user_id,
-                reason=reason,
-                idempotency_key=f"tg-admin-deposit-cancel:{admin_user_id}:{deposit_intent_id}",
-            )
-        except (NotFoundError, InvalidStateError, ValueError):
-            await self._replace_message(
-                query_message,
-                "Не удалось отменить счет. Проверьте номер и попробуйте снова.",
-                self._admin_menu_markup(),
-            )
-            return
-
-        message = (
-            f"Счет {self._deposit_ref(deposit_intent_id)} отменен."
-            if changed
-            else f"Счет {self._deposit_ref(deposit_intent_id)} уже был отменен ранее."
-        )
-        await self._replace_message(query_message, message, self._admin_menu_markup())
-        self._logger.info(
-            "admin_deposit_cancel_processed",
-            deposit_intent_id=deposit_intent_id,
-            deposit_ref=self._deposit_ref(deposit_intent_id),
-            changed=changed,
+            result=await self._admin_exceptions_flow().render_queue(),
         )
 
     async def _resolve_manual_deposit_target(
@@ -5328,54 +5220,24 @@ class TelegramWebhookRuntime:
             )
             return
         if action == "deposit_attach_prompt":
-            self._set_prompt(
-                context,
-                role=_ROLE_ADMIN,
-                prompt_type="admin_deposit_attach",
-                sensitive=False,
-                extra={"admin_user_id": admin_user_id},
-            )
-            await self._replace_message(
-                query_message,
-                "Введите: <код_транзакции> <код_счета>.\nНапример: TX11 D22",
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к исключениям",
-                                callback_data=build_callback(
-                                    flow=_ROLE_ADMIN,
-                                    action="exceptions_section",
-                                ),
-                            )
-                        ]
-                    ]
+            await self._apply_transport_effects(
+                context=context,
+                query_message=query_message,
+                message=None,
+                default_role=_ROLE_ADMIN,
+                result=self._admin_exceptions_flow().start_deposit_attach_prompt(
+                    admin_user_id=admin_user_id,
                 ),
             )
             return
         if action == "deposit_cancel_prompt":
-            self._set_prompt(
-                context,
-                role=_ROLE_ADMIN,
-                prompt_type="admin_deposit_cancel",
-                sensitive=False,
-                extra={"admin_user_id": admin_user_id},
-            )
-            await self._replace_message(
-                query_message,
-                "Введите: <код_счета> <причина>.\nНапример: D22 late_payment",
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к исключениям",
-                                callback_data=build_callback(
-                                    flow=_ROLE_ADMIN,
-                                    action="exceptions_section",
-                                ),
-                            )
-                        ]
-                    ]
+            await self._apply_transport_effects(
+                context=context,
+                query_message=query_message,
+                message=None,
+                default_role=_ROLE_ADMIN,
+                result=self._admin_exceptions_flow().start_deposit_cancel_prompt(
+                    admin_user_id=admin_user_id,
                 ),
             )
             return
@@ -6033,56 +5895,28 @@ class TelegramWebhookRuntime:
             return
 
         if prompt_type == "admin_deposit_attach":
-            admin_user_id = int(prompt_state.get("admin_user_id", 0))
-            tokens = text.split(maxsplit=1)
-            if len(tokens) != 2:
-                await message.reply_text("Формат: <код_транзакции> <код_счета>")
-                return
-            chain_tx_raw, intent_raw = tokens
-            try:
-                chain_tx_id = self._parse_chain_tx_reference(chain_tx_raw)
-                deposit_intent_id = self._parse_deposit_reference(intent_raw)
-            except ValueError:
-                await message.reply_text("Используйте коды вида TX11 D22 или обычные числа.")
-                return
-            if admin_user_id < 1:
-                self._clear_prompt(context)
-                await message.reply_text("Ошибка контекста админа. Откройте меню заново.")
-                return
-            self._clear_prompt(context)
-            await self._execute_admin_deposit_attach(
-                query_message=message,
-                admin_user_id=admin_user_id,
-                chain_tx_id=chain_tx_id,
-                deposit_intent_id=deposit_intent_id,
+            await self._apply_transport_effects(
+                context=context,
+                query_message=None,
+                message=message,
+                default_role=_ROLE_ADMIN,
+                result=await self._admin_exceptions_flow().submit_deposit_attach(
+                    prompt_state=prompt_state,
+                    text=text,
+                ),
             )
             return
 
         if prompt_type == "admin_deposit_cancel":
-            admin_user_id = int(prompt_state.get("admin_user_id", 0))
-            tokens = text.split(maxsplit=1)
-            if len(tokens) != 2:
-                await message.reply_text("Формат: <код_счета> <причина>")
-                return
-            intent_raw, reason = tokens
-            try:
-                deposit_intent_id = self._parse_deposit_reference(intent_raw)
-            except ValueError:
-                await message.reply_text("Код счета должен быть вида D22 или числом.")
-                return
-            if not reason.strip():
-                await message.reply_text("Причина не может быть пустой.")
-                return
-            if admin_user_id < 1:
-                self._clear_prompt(context)
-                await message.reply_text("Ошибка контекста админа. Откройте меню заново.")
-                return
-            self._clear_prompt(context)
-            await self._execute_admin_deposit_cancel(
-                query_message=message,
-                admin_user_id=admin_user_id,
-                deposit_intent_id=deposit_intent_id,
-                reason=reason,
+            await self._apply_transport_effects(
+                context=context,
+                query_message=None,
+                message=message,
+                default_role=_ROLE_ADMIN,
+                result=await self._admin_exceptions_flow().submit_deposit_cancel(
+                    prompt_state=prompt_state,
+                    text=text,
+                ),
             )
             return
 
@@ -6623,20 +6457,8 @@ class TelegramWebhookRuntime:
         return format_deposit_ref(deposit_intent_id)
 
     @staticmethod
-    def _chain_tx_ref(chain_tx_id: int) -> str:
-        return format_chain_tx_ref(chain_tx_id)
-
-    @staticmethod
     def _parse_withdrawal_reference(value: str) -> int:
         return parse_withdrawal_ref(value)
-
-    @staticmethod
-    def _parse_deposit_reference(value: str) -> int:
-        return parse_deposit_ref(value)
-
-    @staticmethod
-    def _parse_chain_tx_reference(value: str) -> int:
-        return parse_chain_tx_ref(value)
 
     def _build_support_link(
         self,
