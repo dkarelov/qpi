@@ -307,6 +307,23 @@ class _RuntimeSellerWithdrawalAdapter(WithdrawalRequesterAdapter):
             idempotency_key=idempotency_key,
         )
 
+    async def get_withdrawal_request_detail(self, *, request_id: int) -> Any:
+        return await self._runtime._finance_service.get_withdrawal_request_detail(request_id=request_id)
+
+    async def cancel_withdrawal_request(
+        self,
+        *,
+        request_id: int,
+        requester_user_id: int,
+        idempotency_key: str,
+    ) -> Any:
+        return await self._runtime._finance_service.cancel_withdrawal_request(
+            request_id=request_id,
+            requester_user_id=requester_user_id,
+            requester_role="seller",
+            idempotency_key=idempotency_key,
+        )
+
 
 class _RuntimeBuyerWithdrawalAdapter(WithdrawalRequesterAdapter):
     def __init__(self, runtime: TelegramWebhookRuntime) -> None:
@@ -345,6 +362,23 @@ class _RuntimeBuyerWithdrawalAdapter(WithdrawalRequesterAdapter):
             pending_account_id=requester.pending_account_id,
             amount_usdt=amount_usdt,
             payout_address=payout_address,
+            idempotency_key=idempotency_key,
+        )
+
+    async def get_withdrawal_request_detail(self, *, request_id: int) -> Any:
+        return await self._runtime._finance_service.get_withdrawal_request_detail(request_id=request_id)
+
+    async def cancel_withdrawal_request(
+        self,
+        *,
+        request_id: int,
+        requester_user_id: int,
+        idempotency_key: str,
+    ) -> Any:
+        return await self._runtime._finance_service.cancel_withdrawal_request(
+            request_id=request_id,
+            requester_user_id=requester_user_id,
+            requester_role="buyer",
             idempotency_key=idempotency_key,
         )
 
@@ -1414,151 +1448,26 @@ class TelegramWebhookRuntime:
             )
             return
         if action == "withdraw_cancel_prompt":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось определить заявку на вывод. Откройте баланс заново.",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к балансу",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_SELLER,
-                                        action="balance",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            detail = await self._finance_service.get_withdrawal_request_detail(request_id=int(payload.entity_id))
-            if (
-                detail.requester_user_id != seller.user_id
-                or detail.requester_role != "seller"
-                or detail.status != "withdraw_pending_admin"
-            ):
-                await self._replace_message(
-                    query_message,
-                    "Эту заявку уже нельзя отменить.",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к балансу",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_SELLER,
-                                        action="balance",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            await self._replace_message(
-                query_message,
-                self._screen_text(
-                    title="Отмена вывода",
-                    cta="Подтвердите действие ниже.",
-                    lines=[
-                        (f"<b>Сумма:</b> {self._format_usdt_value(detail.amount_usdt, precise=True)} USDT"),
-                        f"<b>Адрес:</b> {html.escape(detail.payout_address)}",
-                        "Средства вернутся в доступный баланс продавца.",
-                    ],
+            await self._apply_transport_effects(
+                context=context,
+                query_message=query_message,
+                message=None,
+                default_role=_ROLE_SELLER,
+                result=await self._seller_withdrawal_creation_flow().start_cancel_prompt(
+                    requester_user_id=seller.user_id,
+                    request_id=int(payload.entity_id) if payload.entity_id else None,
                 ),
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="✅ Отменить заявку",
-                                callback_data=build_callback(
-                                    flow=_ROLE_SELLER,
-                                    action="withdraw_cancel_confirm",
-                                    entity_id=str(detail.withdrawal_request_id),
-                                ),
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к балансу",
-                                callback_data=build_callback(
-                                    flow=_ROLE_SELLER,
-                                    action="balance",
-                                ),
-                            )
-                        ],
-                    ]
-                ),
-                parse_mode="HTML",
             )
             return
         if action == "withdraw_cancel_confirm":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось определить заявку на вывод. Откройте баланс заново.",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к балансу",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_SELLER,
-                                        action="balance",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            try:
-                result = await self._finance_service.cancel_withdrawal_request(
-                    request_id=int(payload.entity_id),
+            await self._apply_transport_effects(
+                context=context,
+                query_message=query_message,
+                message=None,
+                default_role=_ROLE_SELLER,
+                result=await self._seller_withdrawal_creation_flow().confirm_cancel(
                     requester_user_id=seller.user_id,
-                    requester_role="seller",
-                    idempotency_key=f"tg-seller-withdraw-cancel:{seller.user_id}:{payload.entity_id}",
-                )
-            except (NotFoundError, InvalidStateError):
-                await self._replace_message(
-                    query_message,
-                    "Эту заявку уже нельзя отменить.",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к балансу",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_SELLER,
-                                        action="balance",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            await self._replace_message(
-                query_message,
-                (
-                    "Заявка на вывод отменена. Средства вернулись в доступный баланс продавца."
-                    if result.changed
-                    else "Заявка уже была отменена ранее."
-                ),
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="💰 Баланс",
-                                callback_data=build_callback(
-                                    flow=_ROLE_SELLER,
-                                    action="balance",
-                                ),
-                            )
-                        ]
-                    ]
+                    request_id=int(payload.entity_id) if payload.entity_id else None,
                 ),
             )
             return
@@ -4030,151 +3939,26 @@ class TelegramWebhookRuntime:
             )
             return
         if action == "withdraw_cancel_prompt":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось определить заявку на вывод. Откройте баланс заново.",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к балансу",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_BUYER,
-                                        action="balance",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            detail = await self._finance_service.get_withdrawal_request_detail(request_id=int(payload.entity_id))
-            if (
-                detail.requester_user_id != buyer.user_id
-                or detail.requester_role != "buyer"
-                or detail.status != "withdraw_pending_admin"
-            ):
-                await self._replace_message(
-                    query_message,
-                    "Эту заявку уже нельзя отменить.",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к балансу",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_BUYER,
-                                        action="balance",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            await self._replace_message(
-                query_message,
-                self._screen_text(
-                    title="Отмена вывода",
-                    cta="Подтвердите действие ниже.",
-                    lines=[
-                        (f"<b>Сумма:</b> {self._format_usdt_value(detail.amount_usdt, precise=True)} USDT"),
-                        f"<b>Адрес:</b> {html.escape(detail.payout_address)}",
-                        "Средства вернутся в доступный баланс покупателя.",
-                    ],
+            await self._apply_transport_effects(
+                context=context,
+                query_message=query_message,
+                message=None,
+                default_role=_ROLE_BUYER,
+                result=await self._buyer_withdrawal_creation_flow().start_cancel_prompt(
+                    requester_user_id=buyer.user_id,
+                    request_id=int(payload.entity_id) if payload.entity_id else None,
                 ),
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="✅ Отменить заявку",
-                                callback_data=build_callback(
-                                    flow=_ROLE_BUYER,
-                                    action="withdraw_cancel_confirm",
-                                    entity_id=str(detail.withdrawal_request_id),
-                                ),
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к балансу",
-                                callback_data=build_callback(
-                                    flow=_ROLE_BUYER,
-                                    action="balance",
-                                ),
-                            )
-                        ],
-                    ]
-                ),
-                parse_mode="HTML",
             )
             return
         if action == "withdraw_cancel_confirm":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось определить заявку на вывод. Откройте баланс заново.",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к балансу",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_BUYER,
-                                        action="balance",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            try:
-                result = await self._finance_service.cancel_withdrawal_request(
-                    request_id=int(payload.entity_id),
+            await self._apply_transport_effects(
+                context=context,
+                query_message=query_message,
+                message=None,
+                default_role=_ROLE_BUYER,
+                result=await self._buyer_withdrawal_creation_flow().confirm_cancel(
                     requester_user_id=buyer.user_id,
-                    requester_role="buyer",
-                    idempotency_key=f"tg-buyer-withdraw-cancel:{buyer.user_id}:{payload.entity_id}",
-                )
-            except (NotFoundError, InvalidStateError):
-                await self._replace_message(
-                    query_message,
-                    "Эту заявку уже нельзя отменить.",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к балансу",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_BUYER,
-                                        action="balance",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            await self._replace_message(
-                query_message,
-                (
-                    "Заявка на вывод отменена. Средства вернулись в доступный баланс."
-                    if result.changed
-                    else "Заявка уже была отменена ранее."
-                ),
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="💳 Баланс и вывод",
-                                callback_data=build_callback(
-                                    flow=_ROLE_BUYER,
-                                    action="balance",
-                                ),
-                            )
-                        ]
-                    ]
+                    request_id=int(payload.entity_id) if payload.entity_id else None,
                 ),
             )
             return

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from libs.domain.errors import InsufficientFundsError, InvalidStateError
+from libs.domain.errors import InsufficientFundsError, InvalidStateError, NotFoundError
 from services.bot_api.transport_effects import ClearPrompt, ReplaceText, ReplyRoleMenuText, ReplyText, SetPrompt
 from services.bot_api.withdrawal_flow import (
     BUYER_WITHDRAWAL_CONFIG,
@@ -26,11 +26,17 @@ class FakeWithdrawalAdapter:
     requester: WithdrawalRequester = field(
         default_factory=lambda: WithdrawalRequester(user_id=101, available_account_id=301, pending_account_id=303)
     )
+    detail: object | None = None
+    cancel_result: object = field(default_factory=lambda: SimpleNamespace(changed=True))
     create_side_effect: Exception | None = None
+    detail_side_effect: Exception | None = None
+    cancel_side_effect: Exception | None = None
     active_calls: list[int] = field(default_factory=list)
     balance_calls: list[int] = field(default_factory=list)
     load_calls: list[tuple[int, str | None]] = field(default_factory=list)
     create_calls: list[dict[str, object]] = field(default_factory=list)
+    detail_calls: list[int] = field(default_factory=list)
+    cancel_calls: list[dict[str, object]] = field(default_factory=list)
 
     async def get_active_request(self, *, requester_user_id: int) -> object | None:
         self.active_calls.append(requester_user_id)
@@ -63,6 +69,32 @@ class FakeWithdrawalAdapter:
         if self.create_side_effect is not None:
             raise self.create_side_effect
         return SimpleNamespace(withdrawal_request_id=77)
+
+    async def get_withdrawal_request_detail(self, *, request_id: int) -> object:
+        self.detail_calls.append(request_id)
+        if self.detail_side_effect is not None:
+            raise self.detail_side_effect
+        if self.detail is None:
+            raise NotFoundError("withdrawal not found")
+        return self.detail
+
+    async def cancel_withdrawal_request(
+        self,
+        *,
+        request_id: int,
+        requester_user_id: int,
+        idempotency_key: str,
+    ) -> object:
+        self.cancel_calls.append(
+            {
+                "request_id": request_id,
+                "requester_user_id": requester_user_id,
+                "idempotency_key": idempotency_key,
+            }
+        )
+        if self.cancel_side_effect is not None:
+            raise self.cancel_side_effect
+        return self.cancel_result
 
 
 @dataclass
@@ -255,3 +287,122 @@ async def test_withdrawal_flow_maps_domain_creation_errors(error: Exception, exp
 
     assert isinstance(result.effects[0], ReplyRoleMenuText)
     assert result.effects[0].text == expected_text
+
+
+@pytest.mark.parametrize("config", [SELLER_WITHDRAWAL_CONFIG, BUYER_WITHDRAWAL_CONFIG])
+@pytest.mark.asyncio
+async def test_withdrawal_flow_renders_cancel_prompt_for_owned_pending_request(config: WithdrawalFlowConfig) -> None:
+    detail = SimpleNamespace(
+        withdrawal_request_id=77,
+        requester_user_id=101,
+        requester_role=config.role,
+        status="withdraw_pending_admin",
+        amount_usdt=Decimal("1.250000"),
+        payout_address="UQ-wallet",
+    )
+    adapter = FakeWithdrawalAdapter(role=config.role, detail=detail)
+    flow, _, _ = _flow(config, adapter=adapter)
+
+    result = await flow.start_cancel_prompt(requester_user_id=101, request_id=77)
+
+    assert adapter.detail_calls == [77]
+    assert isinstance(result.effects[0], ReplaceText)
+    assert "<b>💳 Отмена вывода</b>" in result.effects[0].text
+    assert "<b>Сумма:</b> 1.25 USDT" in result.effects[0].text
+    assert config.cancel_return_line in result.effects[0].text
+    assert result.effects[0].buttons[0][0].action == "withdraw_cancel_confirm"
+    assert result.effects[0].buttons[0][0].entity_id == "77"
+
+
+@pytest.mark.parametrize("config", [SELLER_WITHDRAWAL_CONFIG, BUYER_WITHDRAWAL_CONFIG])
+@pytest.mark.asyncio
+async def test_withdrawal_flow_cancel_prompt_rejects_wrong_owner_and_processed_request(
+    config: WithdrawalFlowConfig,
+) -> None:
+    wrong_owner = SimpleNamespace(
+        withdrawal_request_id=77,
+        requester_user_id=999,
+        requester_role=config.role,
+        status="withdraw_pending_admin",
+        amount_usdt=Decimal("1.250000"),
+        payout_address="UQ-wallet",
+    )
+    processed = SimpleNamespace(
+        withdrawal_request_id=77,
+        requester_user_id=101,
+        requester_role=config.role,
+        status="withdraw_sent",
+        amount_usdt=Decimal("1.250000"),
+        payout_address="UQ-wallet",
+    )
+
+    wrong_owner_flow, _, _ = _flow(config, adapter=FakeWithdrawalAdapter(role=config.role, detail=wrong_owner))
+    processed_flow, _, _ = _flow(config, adapter=FakeWithdrawalAdapter(role=config.role, detail=processed))
+
+    wrong_owner_result = await wrong_owner_flow.start_cancel_prompt(requester_user_id=101, request_id=77)
+    processed_result = await processed_flow.start_cancel_prompt(requester_user_id=101, request_id=77)
+
+    assert isinstance(wrong_owner_result.effects[0], ReplaceText)
+    assert wrong_owner_result.effects[0].text == "Эту заявку уже нельзя отменить."
+    assert isinstance(processed_result.effects[0], ReplaceText)
+    assert processed_result.effects[0].text == "Эту заявку уже нельзя отменить."
+
+
+@pytest.mark.parametrize("config", [SELLER_WITHDRAWAL_CONFIG, BUYER_WITHDRAWAL_CONFIG])
+@pytest.mark.asyncio
+async def test_withdrawal_flow_cancel_prompt_handles_missing_request_id(config: WithdrawalFlowConfig) -> None:
+    flow, adapter, _ = _flow(config)
+
+    result = await flow.start_cancel_prompt(requester_user_id=101, request_id=None)
+
+    assert adapter.detail_calls == []
+    assert isinstance(result.effects[0], ReplaceText)
+    assert result.effects[0].text == "Не удалось определить заявку на вывод. Откройте баланс заново."
+
+
+@pytest.mark.parametrize(
+    ("config", "expected_key"),
+    [
+        (SELLER_WITHDRAWAL_CONFIG, "tg-seller-withdraw-cancel:101:77"),
+        (BUYER_WITHDRAWAL_CONFIG, "tg-buyer-withdraw-cancel:101:77"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_withdrawal_flow_confirms_cancel_for_role(config: WithdrawalFlowConfig, expected_key: str) -> None:
+    flow, adapter, _ = _flow(config, adapter=FakeWithdrawalAdapter(role=config.role))
+
+    result = await flow.confirm_cancel(requester_user_id=101, request_id=77)
+
+    assert adapter.cancel_calls == [
+        {
+            "request_id": 77,
+            "requester_user_id": 101,
+            "idempotency_key": expected_key,
+        }
+    ]
+    assert isinstance(result.effects[0], ReplaceText)
+    assert result.effects[0].text == config.cancel_success_text
+    assert result.effects[0].buttons[0][0].text == config.balance_button_text
+
+
+@pytest.mark.asyncio
+async def test_withdrawal_flow_confirm_cancel_is_idempotent_when_domain_reports_no_change() -> None:
+    adapter = FakeWithdrawalAdapter(role="seller", cancel_result=SimpleNamespace(changed=False))
+    flow, _, _ = _flow(SELLER_WITHDRAWAL_CONFIG, adapter=adapter)
+
+    result = await flow.confirm_cancel(requester_user_id=101, request_id=77)
+
+    assert isinstance(result.effects[0], ReplaceText)
+    assert result.effects[0].text == "Заявка уже была отменена ранее."
+
+
+@pytest.mark.parametrize("error", [NotFoundError("missing"), InvalidStateError("processed")])
+@pytest.mark.asyncio
+async def test_withdrawal_flow_confirm_cancel_maps_no_longer_cancellable(error: Exception) -> None:
+    adapter = FakeWithdrawalAdapter(role="seller", cancel_side_effect=error)
+    flow, _, _ = _flow(SELLER_WITHDRAWAL_CONFIG, adapter=adapter)
+
+    result = await flow.confirm_cancel(requester_user_id=101, request_id=77)
+
+    assert isinstance(result.effects[0], ReplaceText)
+    assert result.effects[0].text == "Эту заявку уже нельзя отменить."

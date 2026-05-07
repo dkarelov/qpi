@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import html
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Protocol
 
-from libs.domain.errors import InsufficientFundsError, InvalidStateError
+from libs.domain.errors import InsufficientFundsError, InvalidStateError, NotFoundError
 from libs.domain.public_refs import format_withdrawal_ref
 from services.bot_api.transport_effects import (
     ButtonSpec,
@@ -48,6 +49,16 @@ class WithdrawalRequesterAdapter(Protocol):
         idempotency_key: str,
     ) -> Any: ...
 
+    async def get_withdrawal_request_detail(self, *, request_id: int) -> Any: ...
+
+    async def cancel_withdrawal_request(
+        self,
+        *,
+        request_id: int,
+        requester_user_id: int,
+        idempotency_key: str,
+    ) -> Any: ...
+
 
 class TonMainnetAddressValidator(Protocol):
     async def validate(self, *, address: str) -> None: ...
@@ -68,6 +79,10 @@ class WithdrawalFlowConfig:
     requested_event_name: str
     create_failed_event_name: str
     idempotency_key_prefix: str
+    cancel_idempotency_key_prefix: str
+    cancel_return_line: str
+    cancel_success_text: str
+    balance_button_text: str
 
 
 SELLER_WITHDRAWAL_CONFIG = WithdrawalFlowConfig(
@@ -87,6 +102,10 @@ SELLER_WITHDRAWAL_CONFIG = WithdrawalFlowConfig(
     requested_event_name="seller_withdraw_requested",
     create_failed_event_name="seller_withdraw_request_create_failed",
     idempotency_key_prefix="tg-seller-withdraw",
+    cancel_idempotency_key_prefix="tg-seller-withdraw-cancel",
+    cancel_return_line="Средства вернутся в доступный баланс продавца.",
+    cancel_success_text="Заявка на вывод отменена. Средства вернулись в доступный баланс продавца.",
+    balance_button_text="💰 Баланс",
 )
 
 BUYER_WITHDRAWAL_CONFIG = WithdrawalFlowConfig(
@@ -106,6 +125,10 @@ BUYER_WITHDRAWAL_CONFIG = WithdrawalFlowConfig(
     requested_event_name="buyer_withdraw_requested",
     create_failed_event_name="buyer_withdraw_request_create_failed",
     idempotency_key_prefix="tg-withdraw",
+    cancel_idempotency_key_prefix="tg-buyer-withdraw-cancel",
+    cancel_return_line="Средства вернутся в доступный баланс покупателя.",
+    cancel_success_text="Заявка на вывод отменена. Средства вернулись в доступный баланс.",
+    balance_button_text="💳 Баланс и вывод",
 )
 
 
@@ -350,6 +373,77 @@ class WithdrawalRequestCreationFlow:
             )
         )
 
+    async def start_cancel_prompt(self, *, requester_user_id: int, request_id: int | None) -> FlowResult:
+        if request_id is None:
+            return self._missing_request_result()
+        try:
+            detail = await self._requester_adapter.get_withdrawal_request_detail(request_id=request_id)
+        except NotFoundError:
+            return self._no_longer_cancellable_result()
+        if (
+            detail.requester_user_id != requester_user_id
+            or detail.requester_role != self._config.role
+            or detail.status != "withdraw_pending_admin"
+        ):
+            return self._no_longer_cancellable_result()
+
+        return FlowResult(
+            effects=(
+                ReplaceText(
+                    text=_screen_text(
+                        title="Отмена вывода",
+                        cta="Подтвердите действие ниже.",
+                        lines=[
+                            f"<b>Сумма:</b> {_format_usdt_value(detail.amount_usdt, precise=True)} USDT",
+                            f"<b>Адрес:</b> {html.escape(detail.payout_address)}",
+                            self._config.cancel_return_line,
+                        ],
+                    ),
+                    buttons=(
+                        (
+                            ButtonSpec(
+                                text="✅ Отменить заявку",
+                                flow=self._config.role,
+                                action="withdraw_cancel_confirm",
+                                entity_id=str(detail.withdrawal_request_id),
+                            ),
+                        ),
+                        _back_to_balance_buttons(role=self._config.role)[0],
+                    ),
+                ),
+            )
+        )
+
+    async def confirm_cancel(self, *, requester_user_id: int, request_id: int | None) -> FlowResult:
+        if request_id is None:
+            return self._missing_request_result()
+        try:
+            result = await self._requester_adapter.cancel_withdrawal_request(
+                request_id=request_id,
+                requester_user_id=requester_user_id,
+                idempotency_key=f"{self._config.cancel_idempotency_key_prefix}:{requester_user_id}:{request_id}",
+            )
+        except (NotFoundError, InvalidStateError):
+            return self._no_longer_cancellable_result()
+
+        return FlowResult(
+            effects=(
+                ReplaceText(
+                    text=self._config.cancel_success_text if result.changed else "Заявка уже была отменена ранее.",
+                    buttons=(
+                        (
+                            ButtonSpec(
+                                text=self._config.balance_button_text,
+                                flow=self._config.role,
+                                action="balance",
+                            ),
+                        ),
+                    ),
+                    parse_mode=None,
+                ),
+            )
+        )
+
     def _address_prompt_result(self, *, requester_user_id: int, amount: Decimal, replace: bool) -> FlowResult:
         text = f"Введите адрес кошелька в сети TON для вывода {_format_usdt_value(amount, precise=True)} USDT."
         prompt = SetPrompt(
@@ -373,6 +467,28 @@ class WithdrawalRequestCreationFlow:
             )
         )
 
+    def _missing_request_result(self) -> FlowResult:
+        return FlowResult(
+            effects=(
+                ReplaceText(
+                    text="Не удалось определить заявку на вывод. Откройте баланс заново.",
+                    buttons=_back_to_balance_buttons(role=self._config.role),
+                    parse_mode=None,
+                ),
+            )
+        )
+
+    def _no_longer_cancellable_result(self) -> FlowResult:
+        return FlowResult(
+            effects=(
+                ReplaceText(
+                    text="Эту заявку уже нельзя отменить.",
+                    buttons=_back_to_balance_buttons(role=self._config.role),
+                    parse_mode=None,
+                ),
+            )
+        )
+
 
 def _back_to_balance_buttons(*, role: str) -> tuple[tuple[ButtonSpec, ...], ...]:
     return ((ButtonSpec(text="↩️ Назад к балансу", flow=role, action="balance"),),)
@@ -385,3 +501,20 @@ def _format_usdt_value(amount: Decimal, *, precise: bool = False) -> str:
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return text
+
+
+def _screen_text(
+    *,
+    title: str,
+    lines: list[str] | None = None,
+    cta: str | None = None,
+) -> str:
+    decorated_title = f"💳 {title}" if title.startswith("Отмена вывода") else title
+    parts: list[str] = [f"<b>{decorated_title}</b>"]
+    if cta:
+        parts.append(f"<i>{cta}</i>")
+    if lines:
+        filtered = [line for line in lines if line]
+        if filtered:
+            parts.append("\n".join(filtered))
+    return "\n\n".join(parts)
