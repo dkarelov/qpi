@@ -23,11 +23,9 @@ from libs.domain.buyer import BuyerService
 from libs.domain.deposit_intents import DepositIntentService
 from libs.domain.errors import (
     DomainError,
-    DuplicateOrderError,
     InsufficientFundsError,
     InvalidStateError,
     ListingValidationError,
-    NoSlotsAvailableError,
     NotFoundError,
     PayloadValidationError,
 )
@@ -430,6 +428,58 @@ class _RuntimeBuyerMarketplaceAdapter(BuyerMarketplaceAdapter):
 
     async def remove_saved_shop(self, *, buyer_user_id: int, shop_id: int) -> Any:
         return await self._runtime._buyer_service.remove_saved_shop(buyer_user_id=buyer_user_id, shop_id=shop_id)
+
+    async def reserve_listing_slot(
+        self,
+        *,
+        buyer_user_id: int,
+        listing_id: int,
+        idempotency_key: str,
+    ) -> Any:
+        return await self._runtime._buyer_service.reserve_listing_slot(
+            buyer_user_id=buyer_user_id,
+            listing_id=listing_id,
+            idempotency_key=idempotency_key,
+        )
+
+    async def submit_purchase_payload(
+        self,
+        *,
+        buyer_user_id: int,
+        assignment_id: int,
+        payload_base64: str,
+    ) -> Any:
+        return await self._runtime._buyer_service.submit_purchase_payload(
+            buyer_user_id=buyer_user_id,
+            assignment_id=assignment_id,
+            payload_base64=payload_base64,
+        )
+
+    async def submit_review_payload(
+        self,
+        *,
+        buyer_user_id: int,
+        assignment_id: int,
+        payload_base64: str,
+    ) -> Any:
+        return await self._runtime._buyer_service.submit_review_payload(
+            buyer_user_id=buyer_user_id,
+            assignment_id=assignment_id,
+            payload_base64=payload_base64,
+        )
+
+    async def cancel_assignment_by_buyer(
+        self,
+        *,
+        buyer_user_id: int,
+        assignment_id: int,
+        idempotency_key: str,
+    ) -> Any:
+        return await self._runtime._buyer_service.cancel_assignment_by_buyer(
+            buyer_user_id=buyer_user_id,
+            assignment_id=assignment_id,
+            idempotency_key=idempotency_key,
+        )
 
 
 class _BotHealthServer:
@@ -3640,262 +3690,86 @@ class TelegramWebhookRuntime:
             )
             return
         if action == "reserve":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось открыть выбранный товар. Попробуйте снова.",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к магазинам",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_BUYER,
-                                        action="shops",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            await self._execute_buyer_reserve(
+            try:
+                listing_id = int(payload.entity_id) if payload.entity_id else None
+            except ValueError:
+                listing_id = None
+            await self._apply_transport_effects(
+                context=context,
                 query_message=query_message,
-                buyer_user_id=buyer.user_id,
-                listing_id=int(payload.entity_id),
-                callback_query_id=callback_query_id,
+                message=None,
+                default_role=_ROLE_BUYER,
+                result=await self._buyer_marketplace_flow().reserve_listing(
+                    buyer_user_id=buyer.user_id,
+                    listing_id=listing_id,
+                    callback_query_id=callback_query_id,
+                ),
             )
             return
         if action == "assignments":
             await self._render_buyer_assignments(
+                context=context,
                 query_message=query_message,
                 buyer_user_id=buyer.user_id,
             )
             return
         if action == "submit_payload_prompt":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось открыть покупку. Попробуйте снова.",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к покупкам",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_BUYER,
-                                        action="assignments",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            assignment_id = int(payload.entity_id)
-            self._set_prompt(
-                context,
-                role=_ROLE_BUYER,
-                prompt_type="buyer_submit_payload",
-                sensitive=True,
-                extra={"assignment_id": assignment_id},
-            )
-            await self._replace_message(
-                query_message,
-                self._screen_text(
-                    title="Токен-подтверждение",
-                    cta="Вставьте токен из расширения следующим сообщением ниже.",
-                ),
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к покупкам",
-                                callback_data=build_callback(
-                                    flow=_ROLE_BUYER,
-                                    action="assignments",
-                                ),
-                            )
-                        ]
-                    ]
-                ),
-                parse_mode="HTML",
+            try:
+                assignment_id = int(payload.entity_id) if payload.entity_id else None
+            except ValueError:
+                assignment_id = None
+            await self._apply_transport_effects(
+                context=context,
+                query_message=query_message,
+                message=None,
+                default_role=_ROLE_BUYER,
+                result=self._buyer_marketplace_flow().start_purchase_payload_prompt(assignment_id=assignment_id),
             )
             return
         if action == "submit_review_payload_prompt":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось открыть покупку. Попробуйте снова.",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к покупкам",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_BUYER,
-                                        action="assignments",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            assignment_id = int(payload.entity_id)
-            self._set_prompt(
-                context,
-                role=_ROLE_BUYER,
-                prompt_type="buyer_submit_review_payload",
-                sensitive=True,
-                extra={"assignment_id": assignment_id},
-            )
-            await self._replace_message(
-                query_message,
-                self._screen_text(
-                    title="Токен отзыва",
-                    cta="Вставьте токен из расширения следующим сообщением ниже.",
-                ),
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к покупкам",
-                                callback_data=build_callback(
-                                    flow=_ROLE_BUYER,
-                                    action="assignments",
-                                ),
-                            )
-                        ]
-                    ]
-                ),
-                parse_mode="HTML",
+            try:
+                assignment_id = int(payload.entity_id) if payload.entity_id else None
+            except ValueError:
+                assignment_id = None
+            await self._apply_transport_effects(
+                context=context,
+                query_message=query_message,
+                message=None,
+                default_role=_ROLE_BUYER,
+                result=self._buyer_marketplace_flow().start_review_payload_prompt(assignment_id=assignment_id),
             )
             return
         if action == "assignment_cancel_prompt":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось открыть покупку. Попробуйте снова.",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к покупкам",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_BUYER,
-                                        action="assignments",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            assignment_id = int(payload.entity_id)
-            assignments = self._buyer_visible_assignments(
-                await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer.user_id)
-            )
-            assignment = next(
-                (item for item in assignments if item.assignment_id == assignment_id),
-                None,
-            )
-            if assignment is None:
-                await self._replace_message(
-                    query_message,
-                    "Покупка не найдена.",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к покупкам",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_BUYER,
-                                        action="assignments",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            if assignment.status != "reserved":
-                await self._replace_message(
-                    query_message,
-                    "Эту покупку уже нельзя отменить.",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к покупкам",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_BUYER,
-                                        action="assignments",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            await self._replace_message(
-                query_message,
-                self._screen_text(
-                    title="Отмена покупки",
-                    cta="Подтвердите действие ниже.",
-                    lines=["Бронь будет снята, а покупка снова станет доступна другим покупателям."],
+            try:
+                assignment_id = int(payload.entity_id) if payload.entity_id else None
+            except ValueError:
+                assignment_id = None
+            await self._apply_transport_effects(
+                context=context,
+                query_message=query_message,
+                message=None,
+                default_role=_ROLE_BUYER,
+                result=await self._buyer_marketplace_flow().start_assignment_cancel_prompt(
+                    buyer_user_id=buyer.user_id,
+                    assignment_id=assignment_id,
                 ),
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="✅ Отказаться от покупки",
-                                callback_data=build_callback(
-                                    flow=_ROLE_BUYER,
-                                    action="assignment_cancel_confirm",
-                                    entity_id=str(assignment_id),
-                                ),
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к покупкам",
-                                callback_data=build_callback(
-                                    flow=_ROLE_BUYER,
-                                    action="assignments",
-                                ),
-                            )
-                        ],
-                    ]
-                ),
-                parse_mode="HTML",
             )
             return
         if action == "assignment_cancel_confirm":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось отменить покупку. Попробуйте снова.",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к покупкам",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_BUYER,
-                                        action="assignments",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            await self._execute_buyer_assignment_cancel(
+            try:
+                assignment_id = int(payload.entity_id) if payload.entity_id else None
+            except ValueError:
+                assignment_id = None
+            await self._apply_transport_effects(
+                context=context,
                 query_message=query_message,
-                buyer_user_id=buyer.user_id,
-                assignment_id=int(payload.entity_id),
-                callback_query_id=callback_query_id,
+                message=None,
+                default_role=_ROLE_BUYER,
+                result=await self._buyer_marketplace_flow().confirm_assignment_cancel(
+                    buyer_user_id=buyer.user_id,
+                    assignment_id=assignment_id,
+                    callback_query_id=callback_query_id,
+                ),
             )
             return
         if action == "balance":
@@ -4031,245 +3905,6 @@ class TelegramWebhookRuntime:
             ),
         )
 
-    async def _execute_buyer_reserve(
-        self,
-        *,
-        query_message: Message | None,
-        buyer_user_id: int,
-        listing_id: int,
-        callback_query_id: str,
-    ) -> None:
-        try:
-            reservation = await self._buyer_service.reserve_listing_slot(
-                buyer_user_id=buyer_user_id,
-                listing_id=listing_id,
-                idempotency_key=f"tg-reserve:{buyer_user_id}:{listing_id}:{callback_query_id}",
-            )
-        except NotFoundError:
-            await self._replace_message(
-                query_message,
-                "Товар больше недоступен.",
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к магазинам",
-                                callback_data=build_callback(flow=_ROLE_BUYER, action="shops"),
-                            )
-                        ]
-                    ]
-                ),
-            )
-            return
-        except NoSlotsAvailableError:
-            active_same_listing: bool = False
-            assignments = self._buyer_visible_assignments(
-                await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
-            )
-            for item in assignments:
-                if item.listing_id == listing_id and item.status not in {
-                    "wb_invalid",
-                    "returned_within_14d",
-                    "delivery_expired",
-                }:
-                    active_same_listing = True
-                    break
-
-            if active_same_listing:
-                await self._replace_message(
-                    query_message,
-                    "У вас уже есть активная покупка по этому товару.\nПродолжить можно в разделе «📋 Покупки».",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="📋 Покупки",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_BUYER,
-                                        action="assignments",
-                                    ),
-                                )
-                            ],
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к магазинам",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_BUYER,
-                                        action="shops",
-                                    ),
-                                )
-                            ],
-                        ]
-                    ),
-                )
-                return
-
-            await self._replace_message(
-                query_message,
-                "Свободных покупок по этому товару нет. Попробуйте выбрать другой товар.",
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к магазинам",
-                                callback_data=build_callback(flow=_ROLE_BUYER, action="shops"),
-                            )
-                        ]
-                    ]
-                ),
-            )
-            return
-        except InvalidStateError as exc:
-            details = str(exc).strip().lower()
-            if "already purchased" in details:
-                await self._replace_message(
-                    query_message,
-                    "Этот товар уже был куплен с вашего аккаунта. Повторно забронировать нельзя.",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к магазинам",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_BUYER,
-                                        action="shops",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            if "already has assignment" in details:
-                await self._replace_message(
-                    query_message,
-                    "У вас уже есть активная покупка по этому товару.\nПродолжить можно в разделе «📋 Покупки».",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="📋 Покупки",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_BUYER,
-                                        action="assignments",
-                                    ),
-                                )
-                            ],
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к магазинам",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_BUYER,
-                                        action="shops",
-                                    ),
-                                )
-                            ],
-                        ]
-                    ),
-                )
-                return
-            await self._replace_message(
-                query_message,
-                "Не удалось открыть покупку. Попробуйте снова.",
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к магазинам",
-                                callback_data=build_callback(flow=_ROLE_BUYER, action="shops"),
-                            )
-                        ]
-                    ]
-                ),
-            )
-            return
-
-        assignments = self._buyer_visible_assignments(
-            await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
-        )
-        assignment = next(
-            (item for item in assignments if item.assignment_id == reservation.assignment_id),
-            None,
-        )
-        if assignment is None:
-            text = self._screen_text(
-                title="Покупка создана",
-                cta="Откройте раздел «📋 Покупки», чтобы продолжить.",
-            )
-        elif reservation.created:
-            text = self._screen_text(
-                title="Покупка создана",
-                lines=[
-                    self._buyer_task_instruction_text(assignment),
-                ],
-            )
-        else:
-            text = self._screen_text(
-                title="Покупка уже активна",
-                lines=[
-                    self._buyer_task_instruction_text(assignment),
-                ],
-            )
-        self._logger.info(
-            "buyer_slot_reserved",
-            listing_id=listing_id,
-            listing_ref=self._listing_ref(listing_id),
-            assignment_id=reservation.assignment_id,
-            assignment_ref=self._assignment_ref(reservation.assignment_id),
-            reservation_created=reservation.created,
-        )
-        keyboard_rows: list[list[InlineKeyboardButton]] = [
-            [
-                InlineKeyboardButton(
-                    text="Ввести токен-подтверждение",
-                    callback_data=build_callback(
-                        flow=_ROLE_BUYER,
-                        action="submit_payload_prompt",
-                        entity_id=str(reservation.assignment_id),
-                    ),
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🚫 Отказаться от покупки",
-                    callback_data=build_callback(
-                        flow=_ROLE_BUYER,
-                        action="assignment_cancel_prompt",
-                        entity_id=str(reservation.assignment_id),
-                    ),
-                )
-            ],
-        ]
-        keyboard_rows.extend(
-            [
-                [
-                    InlineKeyboardButton(
-                        text=self._button_label_with_count("📋 Покупки", len(assignments)),
-                        callback_data=build_callback(
-                            flow=_ROLE_BUYER,
-                            action="assignments",
-                        ),
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="↩️ Назад к магазинам",
-                        callback_data=build_callback(
-                            flow=_ROLE_BUYER,
-                            action="shops",
-                        ),
-                    )
-                ],
-            ]
-        )
-        keyboard_rows.append([self._knowledge_button(role=_ROLE_BUYER, topic="purchases")])
-        await self._replace_message(
-            query_message,
-            text,
-            InlineKeyboardMarkup(keyboard_rows),
-            parse_mode="HTML",
-        )
-
     async def _render_buyer_listing_detail(
         self,
         *,
@@ -4294,218 +3929,20 @@ class TelegramWebhookRuntime:
             ),
         )
 
-    async def _execute_buyer_assignment_cancel(
-        self,
-        *,
-        query_message: Message | None,
-        buyer_user_id: int,
-        assignment_id: int,
-        callback_query_id: str,
-    ) -> None:
-        try:
-            result = await self._buyer_service.cancel_assignment_by_buyer(
-                buyer_user_id=buyer_user_id,
-                assignment_id=assignment_id,
-                idempotency_key=(f"tg-assignment-cancel:{buyer_user_id}:{assignment_id}:{callback_query_id}"),
-            )
-        except NotFoundError:
-            await self._replace_message(
-                query_message,
-                "Покупка не найдена.",
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к покупкам",
-                                callback_data=build_callback(
-                                    flow=_ROLE_BUYER,
-                                    action="assignments",
-                                ),
-                            )
-                        ]
-                    ]
-                ),
-            )
-            return
-        except InvalidStateError:
-            await self._replace_message(
-                query_message,
-                "Эту покупку уже нельзя отменить.",
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к покупкам",
-                                callback_data=build_callback(
-                                    flow=_ROLE_BUYER,
-                                    action="assignments",
-                                ),
-                            )
-                        ]
-                    ]
-                ),
-            )
-            return
-
-        text = (
-            "Покупка отменена. Она снова доступна другим покупателям."
-            if result.changed
-            else "Покупка уже была отменена ранее."
-        )
-        await self._replace_message(
-            query_message,
-            text,
-            InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            text="📋 Покупки",
-                            callback_data=build_callback(flow=_ROLE_BUYER, action="assignments"),
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text="↩️ К магазинам",
-                            callback_data=build_callback(flow=_ROLE_BUYER, action="shops"),
-                        )
-                    ],
-                ]
-            ),
-        )
-
     async def _render_buyer_assignments(
         self,
         *,
+        context: ContextTypes.DEFAULT_TYPE,
         query_message: Message | None,
         buyer_user_id: int,
     ) -> None:
         await self._refresh_display_rub_per_usdt()
-        assignments = self._buyer_visible_assignments(
-            await self._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
-        )
-        if not assignments:
-            await self._replace_message(
-                query_message,
-                self._screen_text(
-                    title="Покупки",
-                    cta="У вас пока нет покупок.",
-                ),
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад",
-                                callback_data=build_callback(
-                                    flow=_ROLE_BUYER,
-                                    action="menu",
-                                ),
-                            )
-                        ],
-                        [self._knowledge_button(role=_ROLE_BUYER, topic="purchases")],
-                    ]
-                ),
-                parse_mode="HTML",
-            )
-            return
-
-        lines: list[str] = []
-        keyboard_rows: list[list[InlineKeyboardButton]] = []
-        for item in assignments:
-            display_title = self._listing_display_title(
-                display_title=item.display_title,
-                fallback=item.search_phrase,
-            )
-            shop_title = html.escape(self._buyer_shop_title(item))
-            cashback_text = self._format_buyer_cashback_with_percent(
-                reward_usdt=item.reward_usdt,
-                reference_price_rub=item.reference_price_rub,
-            )
-            block_lines = [
-                self._entity_block_heading_with_ref(
-                    label="Покупка",
-                    ref=self._assignment_ref(item.assignment_id),
-                ),
-                f"<b>Товар:</b> {html.escape(display_title)}",
-                f"<b>Магазин:</b> {shop_title}",
-                f"<b>Кэшбэк:</b> {cashback_text}",
-            ]
-            if item.order_id:
-                block_lines.append(f"<b>Номер заказа:</b> {html.escape(item.order_id)}")
-            block_lines.append(f"<b>Статус:</b> {self._buyer_purchase_status_badge(item.status)}")
-            if item.status == "reserved":
-                block_lines.append(self._buyer_task_instruction_text(item, include_title=False))
-                keyboard_rows.append(
-                    [
-                        InlineKeyboardButton(
-                            text="Ввести токен-подтверждение",
-                            callback_data=build_callback(
-                                flow=_ROLE_BUYER,
-                                action="submit_payload_prompt",
-                                entity_id=str(item.assignment_id),
-                            ),
-                        )
-                    ]
-                )
-                keyboard_rows.append(
-                    [
-                        InlineKeyboardButton(
-                            text="🚫 Отказаться от покупки",
-                            callback_data=build_callback(
-                                flow=_ROLE_BUYER,
-                                action="assignment_cancel_prompt",
-                                entity_id=str(item.assignment_id),
-                            ),
-                        )
-                    ]
-                )
-            elif item.status == "picked_up_wait_review":
-                if getattr(item, "review_verification_status", None) == "pending_manual":
-                    reason = str(getattr(item, "review_verification_reason", "") or "").strip()
-                    if reason:
-                        block_lines.append(
-                            "<b>Проверка отзыва:</b> "
-                            + html.escape(reason)
-                            + " Исправьте отзыв или напишите в поддержку со скриншотом."
-                        )
-                    else:
-                        block_lines.append(
-                            "<b>Проверка отзыва:</b> "
-                            "Автоматическая проверка не пройдена. "
-                            "Исправьте отзыв или напишите в поддержку со скриншотом."
-                        )
-                block_lines.append(self._buyer_review_instruction_text(item, include_title=False))
-                keyboard_rows.append(
-                    [
-                        InlineKeyboardButton(
-                            text="✍️ Ввести токен отзыва",
-                            callback_data=build_callback(
-                                flow=_ROLE_BUYER,
-                                action="submit_review_payload_prompt",
-                                entity_id=str(item.assignment_id),
-                            ),
-                        )
-                    ]
-                )
-            lines.append("\n".join(block_lines))
-        keyboard_rows.append(
-            [
-                InlineKeyboardButton(
-                    text="↩️ Назад",
-                    callback_data=build_callback(flow=_ROLE_BUYER, action="menu"),
-                )
-            ]
-        )
-        keyboard_rows.append([self._knowledge_button(role=_ROLE_BUYER, topic="purchases")])
-        await self._replace_message(
-            query_message,
-            self._screen_text(
-                title="Покупки",
-                cta="Проверьте статус покупок и выберите следующее действие ниже.",
-                lines=lines,
-                separate_blocks=True,
-            ),
-            InlineKeyboardMarkup(keyboard_rows),
-            parse_mode="HTML",
+        await self._apply_transport_effects(
+            context=context,
+            query_message=query_message,
+            message=None,
+            default_role=_ROLE_BUYER,
+            result=await self._buyer_marketplace_flow().render_assignments(buyer_user_id=buyer_user_id),
         )
 
     async def _render_buyer_balance(
@@ -6508,134 +5945,41 @@ class TelegramWebhookRuntime:
             return
 
         if prompt_type == "buyer_submit_payload":
-            assignment_id = int(prompt_state.get("assignment_id", 0))
-            if assignment_id < 1:
-                self._clear_prompt(context)
-                await message.reply_text("Покупка не найдена. Откройте список покупок заново.")
-                return
-            try:
-                buyer = await self._buyer_service.bootstrap_buyer(
-                    telegram_id=identity.telegram_id,
-                    username=identity.username,
-                )
-                result = await self._buyer_service.submit_purchase_payload(
-                    buyer_user_id=buyer.user_id,
-                    assignment_id=assignment_id,
-                    payload_base64=text,
-                )
-            except NotFoundError:
-                await message.reply_text("Покупка не найдена.")
-                return
-            except PayloadValidationError as exc:
-                details = str(exc).strip().lower()
-                base = (
-                    "Токен-подтверждение не принят.\n"
-                    "Проверьте, что вы скопировали его полностью из расширения для этой покупки."
-                )
-                if any(token in details for token in ("task_uuid", "wb_product_id", "token_type")):
-                    await message.reply_text(f"{base}\nПохоже, токен относится к другой покупке или устарел.")
-                elif details and "timezone" in details:
-                    await message.reply_text(
-                        f"{base}\nПроверьте дату и время на устройстве и сформируйте токен заново."
-                    )
-                else:
-                    await message.reply_text(base)
-                return
-            except DuplicateOrderError:
-                await message.reply_text("Этот номер заказа уже использован в другой покупке.")
-                return
-            except InvalidStateError:
-                await message.reply_text("Сейчас нельзя отправить токен-подтверждение для этой покупки.")
-                return
-
-            self._clear_prompt(context)
-            if result.changed:
-                reply = (
-                    "Токен-подтверждение принят.\n"
-                    f"Номер заказа: {result.order_id}\n"
-                    "Дальше мы автоматически проверим выкуп и начисление кэшбэка."
-                )
-            else:
-                reply = f"Этот токен-подтверждение уже отправлен ранее.\nНомер заказа: {result.order_id}"
-            self._logger.info(
-                "buyer_payload_submitted",
-                telegram_update_id=update.update_id,
-                assignment_id=result.assignment_id,
-                assignment_ref=self._assignment_ref(result.assignment_id),
-                changed=result.changed,
+            buyer = await self._buyer_service.bootstrap_buyer(
+                telegram_id=identity.telegram_id,
+                username=identity.username,
             )
-            await message.reply_text(reply, reply_markup=self._buyer_menu_markup())
+            await self._apply_transport_effects(
+                context=context,
+                query_message=None,
+                message=message,
+                default_role=_ROLE_BUYER,
+                result=await self._buyer_marketplace_flow().submit_purchase_payload(
+                    prompt_state=prompt_state,
+                    text=text,
+                    buyer_user_id=buyer.user_id,
+                    update_id=update.update_id,
+                ),
+            )
             return
 
         if prompt_type == "buyer_submit_review_payload":
-            assignment_id = int(prompt_state.get("assignment_id", 0))
-            if assignment_id < 1:
-                self._clear_prompt(context)
-                await message.reply_text("Покупка не найдена. Откройте список покупок заново.")
-                return
-            try:
-                buyer = await self._buyer_service.bootstrap_buyer(
-                    telegram_id=identity.telegram_id,
-                    username=identity.username,
-                )
-                result = await self._buyer_service.submit_review_payload(
-                    buyer_user_id=buyer.user_id,
-                    assignment_id=assignment_id,
-                    payload_base64=text,
-                )
-            except NotFoundError:
-                await message.reply_text("Покупка не найдена.")
-                return
-            except PayloadValidationError as exc:
-                details = str(exc).strip().lower()
-                base = (
-                    "Токен отзыва не принят.\n"
-                    "Проверьте, что вы скопировали его полностью из расширения для этой покупки."
-                )
-                if any(token in details for token in ("task_uuid", "wb_product_id", "token_type")):
-                    await message.reply_text(f"{base}\nПохоже, токен относится к другой покупке или устарел.")
-                elif "timezone" in details:
-                    await message.reply_text(
-                        f"{base}\nПроверьте дату и время на устройстве и сформируйте токен заново."
-                    )
-                else:
-                    await message.reply_text(base)
-                return
-            except InvalidStateError:
-                await message.reply_text("Сейчас нельзя отправить токен отзыва для этой покупки.")
-                return
-
-            self._clear_prompt(context)
-            reply_markup = self._buyer_menu_markup()
-            if result.verification_status != "pending_manual":
-                if result.changed:
-                    reply = "Отзыв подтвержден. Ожидайте начисления кэшбэка через 15 дней после выкупа товара."
-                else:
-                    reply = "Этот токен отзыва уже был отправлен ранее."
-            else:
-                reason = str(result.verification_reason or "").strip()
-                if result.changed:
-                    reply = (
-                        "Токен отзыва сохранен, но автоматическая проверка не пройдена.\nКэшбэк пока не будет выплачен."
-                    )
-                else:
-                    reply = "Этот токен отзыва уже был отправлен ранее.\nКэшбэк по покупке все еще заблокирован."
-                if reason:
-                    reply += f"\nПричина: {reason}"
-                reply += (
-                    "\nИсправьте отзыв и отправьте новый токен "
-                    "или напишите в поддержку со скриншотом опубликованного отзыва."
-                )
-                reply_markup = self._buyer_review_followup_markup(assignment_id=result.assignment_id)
-            self._logger.info(
-                "buyer_review_payload_submitted",
-                telegram_update_id=update.update_id,
-                assignment_id=result.assignment_id,
-                assignment_ref=self._assignment_ref(result.assignment_id),
-                changed=result.changed,
-                verification_status=result.verification_status,
+            buyer = await self._buyer_service.bootstrap_buyer(
+                telegram_id=identity.telegram_id,
+                username=identity.username,
             )
-            await message.reply_text(reply, reply_markup=reply_markup)
+            await self._apply_transport_effects(
+                context=context,
+                query_message=None,
+                message=message,
+                default_role=_ROLE_BUYER,
+                result=await self._buyer_marketplace_flow().submit_review_payload(
+                    prompt_state=prompt_state,
+                    text=text,
+                    buyer_user_id=buyer.user_id,
+                    update_id=update.update_id,
+                ),
+            )
             return
 
         if prompt_type == "buyer_withdraw_amount":

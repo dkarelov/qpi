@@ -1,16 +1,33 @@
 from __future__ import annotations
 
+import base64
 import html
+import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 from typing import Any, Protocol
+from zoneinfo import ZoneInfo
 
-from libs.domain.errors import DomainError, InvalidStateError, NotFoundError
-from libs.domain.public_refs import build_support_deep_link, format_listing_ref, format_shop_ref
+from libs.domain.errors import (
+    DomainError,
+    DuplicateOrderError,
+    InvalidStateError,
+    NoSlotsAvailableError,
+    NotFoundError,
+    PayloadValidationError,
+)
+from libs.domain.public_refs import (
+    build_support_deep_link,
+    format_assignment_ref,
+    format_listing_ref,
+    format_shop_ref,
+)
 from services.bot_api.transport_effects import (
     ButtonSpec,
     ClearPrompt,
     FlowResult,
+    LogEvent,
     ReplaceText,
     ReplyPhoto,
     ReplyText,
@@ -21,8 +38,10 @@ from services.bot_api.transport_effects import (
 _ROLE_BUYER = "buyer"
 _QPILKA_EXTENSION_URL = "https://chromewebstore.google.com/detail/qpilka/joefinmgneknnaejambgbaclobeedaga"
 _NUMBERED_PAGE_SIZE = 10
+_BUYER_TASK_COMPANION_PRODUCTS = 1
 _USDT_EXACT_QUANT = Decimal("0.000001")
 _RUB_QUANT = Decimal("1")
+_MSK_TZ = ZoneInfo("Europe/Moscow")
 
 
 class BuyerMarketplaceAdapter(Protocol):
@@ -46,6 +65,38 @@ class BuyerMarketplaceAdapter(Protocol):
     async def resolve_saved_shop_for_buyer(self, *, buyer_user_id: int, shop_id: int) -> Any: ...
 
     async def remove_saved_shop(self, *, buyer_user_id: int, shop_id: int) -> Any: ...
+
+    async def reserve_listing_slot(
+        self,
+        *,
+        buyer_user_id: int,
+        listing_id: int,
+        idempotency_key: str,
+    ) -> Any: ...
+
+    async def submit_purchase_payload(
+        self,
+        *,
+        buyer_user_id: int,
+        assignment_id: int,
+        payload_base64: str,
+    ) -> Any: ...
+
+    async def submit_review_payload(
+        self,
+        *,
+        buyer_user_id: int,
+        assignment_id: int,
+        payload_base64: str,
+    ) -> Any: ...
+
+    async def cancel_assignment_by_buyer(
+        self,
+        *,
+        buyer_user_id: int,
+        assignment_id: int,
+        idempotency_key: str,
+    ) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -454,6 +505,519 @@ class BuyerMarketplaceFlow:
             notice=f"Магазин «{shop.title}» удален из списка.",
         )
 
+    async def reserve_listing(
+        self,
+        *,
+        buyer_user_id: int,
+        listing_id: int | None,
+        callback_query_id: str,
+    ) -> FlowResult:
+        if listing_id is None:
+            return FlowResult(
+                effects=(
+                    ReplaceText(
+                        text="Не удалось открыть выбранный товар. Попробуйте снова.",
+                        buttons=_rows([[_button("↩️ Назад к магазинам", action="shops")]]),
+                        parse_mode=None,
+                    ),
+                )
+            )
+
+        try:
+            reservation = await self._adapter.reserve_listing_slot(
+                buyer_user_id=buyer_user_id,
+                listing_id=listing_id,
+                idempotency_key=f"tg-reserve:{buyer_user_id}:{listing_id}:{callback_query_id}",
+            )
+        except NotFoundError:
+            return FlowResult(
+                effects=(
+                    ReplaceText(
+                        text="Товар больше недоступен.",
+                        buttons=_rows([[_button("↩️ Назад к магазинам", action="shops")]]),
+                        parse_mode=None,
+                    ),
+                )
+            )
+        except NoSlotsAvailableError:
+            assignments = _buyer_visible_assignments(
+                await self._adapter.list_buyer_assignments(buyer_user_id=buyer_user_id)
+            )
+            active_same_listing = any(
+                item.listing_id == listing_id
+                and item.status not in {
+                    "wb_invalid",
+                    "returned_within_14d",
+                    "delivery_expired",
+                }
+                for item in assignments
+            )
+            if active_same_listing:
+                return _active_purchase_exists_result()
+            return FlowResult(
+                effects=(
+                    ReplaceText(
+                        text="Свободных покупок по этому товару нет. Попробуйте выбрать другой товар.",
+                        buttons=_rows([[_button("↩️ Назад к магазинам", action="shops")]]),
+                        parse_mode=None,
+                    ),
+                )
+            )
+        except InvalidStateError as exc:
+            details = str(exc).strip().lower()
+            if "already purchased" in details:
+                return FlowResult(
+                    effects=(
+                        ReplaceText(
+                            text="Этот товар уже был куплен с вашего аккаунта. Повторно забронировать нельзя.",
+                            buttons=_rows([[_button("↩️ Назад к магазинам", action="shops")]]),
+                            parse_mode=None,
+                        ),
+                    )
+                )
+            if "already has assignment" in details:
+                return _active_purchase_exists_result()
+            return FlowResult(
+                effects=(
+                    ReplaceText(
+                        text="Не удалось открыть покупку. Попробуйте снова.",
+                        buttons=_rows([[_button("↩️ Назад к магазинам", action="shops")]]),
+                        parse_mode=None,
+                    ),
+                )
+            )
+
+        assignments = _buyer_visible_assignments(
+            await self._adapter.list_buyer_assignments(buyer_user_id=buyer_user_id)
+        )
+        assignment = next((item for item in assignments if item.assignment_id == reservation.assignment_id), None)
+        if assignment is None:
+            text = _screen_text(
+                title="Покупка создана",
+                cta="Откройте раздел «📋 Покупки», чтобы продолжить.",
+            )
+        elif reservation.created:
+            text = _screen_text(
+                title="Покупка создана",
+                lines=[buyer_task_instruction_text(assignment)],
+            )
+        else:
+            text = _screen_text(
+                title="Покупка уже активна",
+                lines=[buyer_task_instruction_text(assignment)],
+            )
+        return FlowResult(
+            effects=(
+                LogEvent(
+                    event_name="buyer_slot_reserved",
+                    fields={
+                        "listing_id": listing_id,
+                        "listing_ref": format_listing_ref(listing_id),
+                        "assignment_id": reservation.assignment_id,
+                        "assignment_ref": format_assignment_ref(reservation.assignment_id),
+                        "reservation_created": reservation.created,
+                    },
+                ),
+                ReplaceText(
+                    text=text,
+                    buttons=_rows(
+                        [
+                            [
+                                _button(
+                                    "Ввести токен-подтверждение",
+                                    action="submit_payload_prompt",
+                                    entity_id=reservation.assignment_id,
+                                )
+                            ],
+                            [
+                                _button(
+                                    "🚫 Отказаться от покупки",
+                                    action="assignment_cancel_prompt",
+                                    entity_id=reservation.assignment_id,
+                                )
+                            ],
+                            [
+                                _button(
+                                    _button_label_with_count("📋 Покупки", len(assignments)),
+                                    action="assignments",
+                                )
+                            ],
+                            [_button("↩️ Назад к магазинам", action="shops")],
+                            [_knowledge_button(topic="purchases")],
+                        ]
+                    ),
+                    parse_mode="HTML",
+                ),
+            )
+        )
+
+    async def render_assignments(self, *, buyer_user_id: int) -> FlowResult:
+        assignments = _buyer_visible_assignments(
+            await self._adapter.list_buyer_assignments(buyer_user_id=buyer_user_id)
+        )
+        if not assignments:
+            return FlowResult(
+                effects=(
+                    ReplaceText(
+                        text=_screen_text(title="Покупки", cta="У вас пока нет покупок."),
+                        buttons=_rows(
+                            [
+                                [_button("↩️ Назад", action="menu")],
+                                [_knowledge_button(topic="purchases")],
+                            ]
+                        ),
+                        parse_mode="HTML",
+                    ),
+                )
+            )
+
+        lines: list[str] = []
+        keyboard_rows: list[list[ButtonSpec]] = []
+        for item in assignments:
+            display_title = _listing_display_title(
+                display_title=item.display_title,
+                fallback=item.search_phrase,
+            )
+            shop_title = html.escape(_buyer_shop_title(item))
+            cashback_text = self._format_buyer_cashback_with_percent(
+                reward_usdt=item.reward_usdt,
+                reference_price_rub=item.reference_price_rub,
+            )
+            block_lines = [
+                _entity_block_heading_with_ref(
+                    label="Покупка",
+                    ref=format_assignment_ref(item.assignment_id),
+                ),
+                f"<b>Товар:</b> {html.escape(display_title)}",
+                f"<b>Магазин:</b> {shop_title}",
+                f"<b>Кэшбэк:</b> {cashback_text}",
+            ]
+            if item.order_id:
+                block_lines.append(f"<b>Номер заказа:</b> {html.escape(item.order_id)}")
+            block_lines.append(f"<b>Статус:</b> {buyer_purchase_status_badge(item.status)}")
+            if item.status == "reserved":
+                block_lines.append(buyer_task_instruction_text(item, include_title=False))
+                keyboard_rows.append(
+                    [
+                        _button(
+                            "Ввести токен-подтверждение",
+                            action="submit_payload_prompt",
+                            entity_id=item.assignment_id,
+                        )
+                    ]
+                )
+                keyboard_rows.append(
+                    [
+                        _button(
+                            "🚫 Отказаться от покупки",
+                            action="assignment_cancel_prompt",
+                            entity_id=item.assignment_id,
+                        )
+                    ]
+                )
+            elif item.status == "picked_up_wait_review":
+                if getattr(item, "review_verification_status", None) == "pending_manual":
+                    reason = str(getattr(item, "review_verification_reason", "") or "").strip()
+                    if reason:
+                        block_lines.append(
+                            "<b>Проверка отзыва:</b> "
+                            + html.escape(reason)
+                            + " Исправьте отзыв или напишите в поддержку со скриншотом."
+                        )
+                    else:
+                        block_lines.append(
+                            "<b>Проверка отзыва:</b> "
+                            "Автоматическая проверка не пройдена. "
+                            "Исправьте отзыв или напишите в поддержку со скриншотом."
+                        )
+                block_lines.append(buyer_review_instruction_text(item, include_title=False))
+                keyboard_rows.append(
+                    [
+                        _button(
+                            "✍️ Ввести токен отзыва",
+                            action="submit_review_payload_prompt",
+                            entity_id=item.assignment_id,
+                        )
+                    ]
+                )
+            lines.append("\n".join(block_lines))
+        keyboard_rows.extend(
+            [
+                [_button("↩️ Назад", action="menu")],
+                [_knowledge_button(topic="purchases")],
+            ]
+        )
+        return FlowResult(
+            effects=(
+                ReplaceText(
+                    text=_screen_text(
+                        title="Покупки",
+                        cta="Проверьте статус покупок и выберите следующее действие ниже.",
+                        lines=lines,
+                        separate_blocks=True,
+                    ),
+                    buttons=_rows(keyboard_rows),
+                    parse_mode="HTML",
+                ),
+            )
+        )
+
+    def start_purchase_payload_prompt(self, *, assignment_id: int | None) -> FlowResult:
+        if assignment_id is None:
+            return _missing_assignment_result(text="Не удалось открыть покупку. Попробуйте снова.")
+        return FlowResult(
+            effects=(
+                SetPrompt(
+                    role=_ROLE_BUYER,
+                    prompt_type="buyer_submit_payload",
+                    sensitive=True,
+                    data={"assignment_id": assignment_id},
+                ),
+                ReplaceText(
+                    text=_screen_text(
+                        title="Токен-подтверждение",
+                        cta="Вставьте токен из расширения следующим сообщением ниже.",
+                    ),
+                    buttons=_rows([[_button("↩️ Назад к покупкам", action="assignments")]]),
+                    parse_mode="HTML",
+                ),
+            )
+        )
+
+    def start_review_payload_prompt(self, *, assignment_id: int | None) -> FlowResult:
+        if assignment_id is None:
+            return _missing_assignment_result(text="Не удалось открыть покупку. Попробуйте снова.")
+        return FlowResult(
+            effects=(
+                SetPrompt(
+                    role=_ROLE_BUYER,
+                    prompt_type="buyer_submit_review_payload",
+                    sensitive=True,
+                    data={"assignment_id": assignment_id},
+                ),
+                ReplaceText(
+                    text=_screen_text(
+                        title="Токен отзыва",
+                        cta="Вставьте токен из расширения следующим сообщением ниже.",
+                    ),
+                    buttons=_rows([[_button("↩️ Назад к покупкам", action="assignments")]]),
+                    parse_mode="HTML",
+                ),
+            )
+        )
+
+    async def start_assignment_cancel_prompt(
+        self,
+        *,
+        buyer_user_id: int,
+        assignment_id: int | None,
+    ) -> FlowResult:
+        if assignment_id is None:
+            return _missing_assignment_result(text="Не удалось открыть покупку. Попробуйте снова.")
+        assignments = _buyer_visible_assignments(
+            await self._adapter.list_buyer_assignments(buyer_user_id=buyer_user_id)
+        )
+        assignment = next((item for item in assignments if item.assignment_id == assignment_id), None)
+        if assignment is None:
+            return _missing_assignment_result(text="Покупка не найдена.")
+        if assignment.status != "reserved":
+            return _missing_assignment_result(text="Эту покупку уже нельзя отменить.")
+        return FlowResult(
+            effects=(
+                ReplaceText(
+                    text=_screen_text(
+                        title="Отмена покупки",
+                        cta="Подтвердите действие ниже.",
+                        lines=["Бронь будет снята, а покупка снова станет доступна другим покупателям."],
+                    ),
+                    buttons=_rows(
+                        [
+                            [
+                                _button(
+                                    "✅ Отказаться от покупки",
+                                    action="assignment_cancel_confirm",
+                                    entity_id=assignment_id,
+                                )
+                            ],
+                            [_button("↩️ Назад к покупкам", action="assignments")],
+                        ]
+                    ),
+                    parse_mode="HTML",
+                ),
+            )
+        )
+
+    async def confirm_assignment_cancel(
+        self,
+        *,
+        buyer_user_id: int,
+        assignment_id: int | None,
+        callback_query_id: str,
+    ) -> FlowResult:
+        if assignment_id is None:
+            return _missing_assignment_result(text="Не удалось отменить покупку. Попробуйте снова.")
+        try:
+            result = await self._adapter.cancel_assignment_by_buyer(
+                buyer_user_id=buyer_user_id,
+                assignment_id=assignment_id,
+                idempotency_key=f"tg-assignment-cancel:{buyer_user_id}:{assignment_id}:{callback_query_id}",
+            )
+        except NotFoundError:
+            return _missing_assignment_result(text="Покупка не найдена.")
+        except InvalidStateError:
+            return _missing_assignment_result(text="Эту покупку уже нельзя отменить.")
+
+        text = (
+            "Покупка отменена. Она снова доступна другим покупателям."
+            if result.changed
+            else "Покупка уже была отменена ранее."
+        )
+        return FlowResult(
+            effects=(
+                ReplaceText(
+                    text=text,
+                    buttons=_rows(
+                        [
+                            [_button("📋 Покупки", action="assignments")],
+                            [_button("↩️ К магазинам", action="shops")],
+                        ]
+                    ),
+                    parse_mode=None,
+                ),
+            )
+        )
+
+    async def submit_purchase_payload(
+        self,
+        *,
+        prompt_state: dict[str, Any],
+        text: str,
+        buyer_user_id: int,
+        update_id: int,
+    ) -> FlowResult:
+        assignment_id = int(prompt_state.get("assignment_id", 0))
+        if assignment_id < 1:
+            return FlowResult(
+                effects=(
+                    ClearPrompt(),
+                    ReplyText(text="Покупка не найдена. Откройте список покупок заново.", parse_mode=None),
+                )
+            )
+        try:
+            result = await self._adapter.submit_purchase_payload(
+                buyer_user_id=buyer_user_id,
+                assignment_id=assignment_id,
+                payload_base64=text,
+            )
+        except NotFoundError:
+            return FlowResult(effects=(ReplyText(text="Покупка не найдена.", parse_mode=None),))
+        except PayloadValidationError as exc:
+            return FlowResult(effects=(ReplyText(text=_purchase_payload_validation_text(exc), parse_mode=None),))
+        except DuplicateOrderError:
+            return FlowResult(
+                effects=(ReplyText(text="Этот номер заказа уже использован в другой покупке.", parse_mode=None),)
+            )
+        except InvalidStateError:
+            return FlowResult(
+                effects=(
+                    ReplyText(
+                        text="Сейчас нельзя отправить токен-подтверждение для этой покупки.",
+                        parse_mode=None,
+                    ),
+                )
+            )
+
+        if result.changed:
+            reply = (
+                "Токен-подтверждение принят.\n"
+                f"Номер заказа: {result.order_id}\n"
+                "Дальше мы автоматически проверим выкуп и начисление кэшбэка."
+            )
+        else:
+            reply = f"Этот токен-подтверждение уже отправлен ранее.\nНомер заказа: {result.order_id}"
+        return FlowResult(
+            effects=(
+                ClearPrompt(),
+                LogEvent(
+                    event_name="buyer_payload_submitted",
+                    fields={
+                        "telegram_update_id": update_id,
+                        "assignment_id": result.assignment_id,
+                        "assignment_ref": format_assignment_ref(result.assignment_id),
+                        "changed": result.changed,
+                    },
+                ),
+                ReplyText(text=reply, buttons=_buyer_menu_buttons(), parse_mode=None),
+            )
+        )
+
+    async def submit_review_payload(
+        self,
+        *,
+        prompt_state: dict[str, Any],
+        text: str,
+        buyer_user_id: int,
+        update_id: int,
+    ) -> FlowResult:
+        assignment_id = int(prompt_state.get("assignment_id", 0))
+        if assignment_id < 1:
+            return FlowResult(
+                effects=(
+                    ClearPrompt(),
+                    ReplyText(text="Покупка не найдена. Откройте список покупок заново.", parse_mode=None),
+                )
+            )
+        try:
+            result = await self._adapter.submit_review_payload(
+                buyer_user_id=buyer_user_id,
+                assignment_id=assignment_id,
+                payload_base64=text,
+            )
+        except NotFoundError:
+            return FlowResult(effects=(ReplyText(text="Покупка не найдена.", parse_mode=None),))
+        except PayloadValidationError as exc:
+            return FlowResult(effects=(ReplyText(text=_review_payload_validation_text(exc), parse_mode=None),))
+        except InvalidStateError:
+            return FlowResult(
+                effects=(ReplyText(text="Сейчас нельзя отправить токен отзыва для этой покупки.", parse_mode=None),)
+            )
+
+        buttons = _buyer_menu_buttons()
+        if result.verification_status != "pending_manual":
+            if result.changed:
+                reply = "Отзыв подтвержден. Ожидайте начисления кэшбэка через 15 дней после выкупа товара."
+            else:
+                reply = "Этот токен отзыва уже был отправлен ранее."
+        else:
+            reason = str(result.verification_reason or "").strip()
+            if result.changed:
+                reply = "Токен отзыва сохранен, но автоматическая проверка не пройдена.\nКэшбэк пока не будет выплачен."
+            else:
+                reply = "Этот токен отзыва уже был отправлен ранее.\nКэшбэк по покупке все еще заблокирован."
+            if reason:
+                reply += f"\nПричина: {reason}"
+            reply += (
+                "\nИсправьте отзыв и отправьте новый токен "
+                "или напишите в поддержку со скриншотом опубликованного отзыва."
+            )
+            buttons = self._buyer_review_followup_buttons(assignment_id=result.assignment_id)
+        return FlowResult(
+            effects=(
+                ClearPrompt(),
+                LogEvent(
+                    event_name="buyer_review_payload_submitted",
+                    fields={
+                        "telegram_update_id": update_id,
+                        "assignment_id": result.assignment_id,
+                        "assignment_ref": format_assignment_ref(result.assignment_id),
+                        "changed": result.changed,
+                        "verification_status": result.verification_status,
+                    },
+                ),
+                ReplyText(text=reply, buttons=buttons, parse_mode=None),
+            )
+        )
+
     async def submit_shop_slug(self, *, buyer_user_id: int, slug: str) -> FlowResult:
         catalog = await self.render_shop_catalog(
             slug=slug,
@@ -674,6 +1238,26 @@ class BuyerMarketplaceFlow:
             ),
         )
 
+    def _buyer_review_followup_buttons(self, *, assignment_id: int) -> tuple[tuple[ButtonSpec, ...], ...]:
+        keyboard_rows: list[list[ButtonSpec]] = []
+        support_bot_username = self._config.support_bot_username
+        if support_bot_username:
+            keyboard_rows.append(
+                [
+                    ButtonSpec(
+                        text="🆘 Поддержка",
+                        url=build_support_deep_link(
+                            bot_username=support_bot_username,
+                            role=_ROLE_BUYER,
+                            topic="review",
+                            refs=(format_assignment_ref(assignment_id),),
+                        ),
+                    )
+                ]
+            )
+        keyboard_rows.extend([list(row) for row in _buyer_menu_buttons()])
+        return _rows(keyboard_rows)
+
     def _format_rub_approx(self, amount: Decimal) -> str:
         rub = amount * self._config.display_rub_per_usdt
         return f"~{_format_decimal(rub, quant=_RUB_QUANT)} ₽"
@@ -743,6 +1327,70 @@ def buyer_listing_detail_html(
     )
 
 
+def buyer_task_instruction_text(assignment: Any, *, include_title: bool = True) -> str:
+    listing_token = _build_buyer_listing_token(
+        task_uuid=str(assignment.task_uuid),
+        search_phrase=assignment.search_phrase,
+        wb_product_id=assignment.wb_product_id,
+        brand_name=getattr(assignment, "wb_brand_name", None),
+    )
+    reservation_deadline = _format_datetime_msk(getattr(assignment, "reservation_expires_at", None))
+    display_title = _listing_display_title(
+        display_title=getattr(assignment, "display_title", None),
+        fallback=assignment.search_phrase,
+    )
+    lines: list[str] = []
+    if include_title:
+        lines.append(f"<b>Товар:</b> {html.escape(display_title)}")
+    lines.extend(
+        [
+            (
+                '1. Введите токен в <a href="'
+                f"{_QPILKA_EXTENSION_URL}"
+                '">расширении для браузера Chrome / Яндекс Qpilka</a>:'
+            ),
+            f"<code>{listing_token}</code>",
+            (
+                "2. Выполните шаги, описанные в расширении, и оформите заказ "
+                f"до {reservation_deadline} (по истечении срока бронь отменится)."
+            ),
+            "3. Отправьте токен-подтверждение сюда.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def buyer_review_instruction_text(assignment: Any, *, include_title: bool = True) -> str:
+    review_token = _build_buyer_review_token(
+        task_uuid=str(assignment.task_uuid),
+        wb_product_id=assignment.wb_product_id,
+        review_phrases=getattr(assignment, "review_phrases", None),
+    )
+    display_title = _listing_display_title(
+        display_title=getattr(assignment, "display_title", None),
+        fallback=assignment.search_phrase,
+    )
+    lines: list[str] = []
+    if include_title:
+        lines.append(f"<b>Товар:</b> {html.escape(display_title)}")
+    lines.append("<b>Следующий шаг:</b> оставьте отзыв на 5 звезд через Qpilka.")
+    selected_phrases = _normalize_review_phrases(getattr(assignment, "review_phrases", None))
+    if selected_phrases:
+        lines.append("<b>Фразы для отзыва:</b> " + html.escape(_format_review_phrases_text(selected_phrases)))
+    lines.extend(
+        [
+            (
+                '1. Введите токен в <a href="'
+                f"{_QPILKA_EXTENSION_URL}"
+                '">расширении для браузера Chrome / Яндекс Qpilka</a>:'
+            ),
+            f"<code>{review_token}</code>",
+            "2. Следуйте подсказкам расширения и отправьте токен-подтверждение отзыва сюда.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def buyer_shop_activity_badge(active_listings_count: int) -> str:
     return "🟢" if active_listings_count > 0 else "🔴"
 
@@ -770,6 +1418,159 @@ def _buyer_visible_assignments(assignments: list[Any]) -> list[Any]:
         "withdraw_sent",
     }
     return [item for item in assignments if item.status in visible_statuses]
+
+
+def _buyer_shop_title(assignment: Any) -> str:
+    title = str(getattr(assignment, "shop_title", "") or "").strip()
+    if title:
+        return title
+    return str(getattr(assignment, "shop_slug", "") or "").strip()
+
+
+def buyer_purchase_status_badge(status: str) -> str:
+    bucket = buyer_dashboard_status_bucket(status)
+    if bucket == "awaiting_order":
+        color = "red"
+    elif bucket == "ordered":
+        color = "yellow"
+    elif bucket == "picked_up":
+        color = "green"
+    else:
+        color = "blue"
+    return _status_badge(_humanize_assignment_status(status), color=color)
+
+
+def _humanize_assignment_status(status: str) -> str:
+    mapping = {
+        "reserved": "Ожидает заказа",
+        "order_verified": "Заказан",
+        "picked_up_wait_review": "Нужно оставить отзыв",
+        "picked_up_wait_unlock": "Выкуплен",
+        "withdraw_sent": "Выплачен",
+        "expired_2h": "Бронь истекла",
+        "buyer_cancelled": "Покупка отменена",
+        "wb_invalid": "Не подтвержден",
+        "returned_within_14d": "Возвращен",
+        "delivery_expired": "Срок выкупа истек",
+    }
+    return mapping.get(status, status)
+
+
+def _status_badge(label: str, *, color: str) -> str:
+    marker = {
+        "green": "🟢",
+        "red": "🔴",
+        "yellow": "🟡",
+        "blue": "🔵",
+    }.get(color, "⚪")
+    return f"{marker} {html.escape(label)}"
+
+
+def _format_datetime_msk(value: datetime | None) -> str:
+    if value is None:
+        return "—"
+    normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    localized = normalized.astimezone(_MSK_TZ)
+    return localized.strftime("%d.%m.%Y %H:%M MSK")
+
+
+def _normalize_review_phrases(review_phrases: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    for phrase in review_phrases or []:
+        cleaned = str(phrase).strip()
+        if cleaned:
+            normalized.append(cleaned)
+    return normalized
+
+
+def _format_review_phrases_text(review_phrases: list[str] | None) -> str:
+    normalized = _normalize_review_phrases(review_phrases)
+    if not normalized:
+        return "не заданы"
+    return "; ".join(normalized)
+
+
+def _build_buyer_listing_token(
+    *,
+    task_uuid: str,
+    search_phrase: str,
+    wb_product_id: int,
+    brand_name: str | None,
+) -> str:
+    payload = [
+        1,
+        task_uuid,
+        search_phrase,
+        wb_product_id,
+        _BUYER_TASK_COMPANION_PRODUCTS,
+        (brand_name or "").strip(),
+    ]
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return base64.b64encode(raw.encode("utf-8")).decode("ascii")
+
+
+def _build_buyer_review_token(
+    *,
+    task_uuid: str,
+    wb_product_id: int,
+    review_phrases: list[str] | None,
+) -> str:
+    payload: list[Any] = [2, task_uuid, wb_product_id]
+    payload.extend(_normalize_review_phrases(review_phrases)[:2])
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return base64.b64encode(raw.encode("utf-8")).decode("ascii")
+
+
+def _active_purchase_exists_result() -> FlowResult:
+    return FlowResult(
+        effects=(
+            ReplaceText(
+                text="У вас уже есть активная покупка по этому товару.\nПродолжить можно в разделе «📋 Покупки».",
+                buttons=_rows(
+                    [
+                        [_button("📋 Покупки", action="assignments")],
+                        [_button("↩️ Назад к магазинам", action="shops")],
+                    ]
+                ),
+                parse_mode=None,
+            ),
+        )
+    )
+
+
+def _missing_assignment_result(*, text: str) -> FlowResult:
+    return FlowResult(
+        effects=(
+            ReplaceText(
+                text=text,
+                buttons=_rows([[_button("↩️ Назад к покупкам", action="assignments")]]),
+                parse_mode=None,
+            ),
+        )
+    )
+
+
+def _purchase_payload_validation_text(exc: PayloadValidationError) -> str:
+    details = str(exc).strip().lower()
+    base = (
+        "Токен-подтверждение не принят.\n"
+        "Проверьте, что вы скопировали его полностью из расширения для этой покупки."
+    )
+    if any(token in details for token in ("task_uuid", "wb_product_id", "token_type")):
+        return f"{base}\nПохоже, токен относится к другой покупке или устарел."
+    if details and "timezone" in details:
+        return f"{base}\nПроверьте дату и время на устройстве и сформируйте токен заново."
+    return base
+
+
+def _review_payload_validation_text(exc: PayloadValidationError) -> str:
+    details = str(exc).strip().lower()
+    base = "Токен отзыва не принят.\nПроверьте, что вы скопировали его полностью из расширения для этой покупки."
+    if any(token in details for token in ("task_uuid", "wb_product_id", "token_type")):
+        return f"{base}\nПохоже, токен относится к другой покупке или устарел."
+    if "timezone" in details:
+        return f"{base}\nПроверьте дату и время на устройстве и сформируйте токен заново."
+    return base
 
 
 def _button(text: str, *, action: str, entity_id: int | str = "") -> ButtonSpec:
@@ -1031,3 +1832,14 @@ def _title_ref_suffix(value: str | None) -> str | None:
     if not value:
         return None
     return f" · {_format_copyable_code(value)}"
+
+
+def _entity_block_heading(label: str) -> str:
+    return f"<b>{html.escape(label)}</b>"
+
+
+def _entity_block_heading_with_ref(*, label: str, ref: str | None = None) -> str:
+    heading = _entity_block_heading(label)
+    if not ref:
+        return heading
+    return f"{heading} · {_format_copyable_code(ref)}"
