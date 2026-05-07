@@ -80,8 +80,18 @@ from services.bot_api.transport_effects import (
     LogEvent,
     ReplaceText,
     ReplyPhoto,
+    ReplyRoleMenuText,
     ReplyText,
     SetPrompt,
+)
+from services.bot_api.withdrawal_flow import (
+    BUYER_WITHDRAWAL_CONFIG,
+    SELLER_WITHDRAWAL_CONFIG,
+    AddressValidationUnavailable,
+    TonMainnetAddressValidator,
+    WithdrawalRequestCreationFlow,
+    WithdrawalRequester,
+    WithdrawalRequesterAdapter,
 )
 
 try:
@@ -242,6 +252,101 @@ class _RuntimeSellerListingWorkflowAdapter:
         if reference_price_source == "orders" and observed_buyer_price is not None:
             return observed_buyer_price.observed_at or datetime.now(UTC)
         return datetime.now(UTC)
+
+
+class _RuntimeTonMainnetAddressValidator(TonMainnetAddressValidator):
+    def __init__(self, runtime: TelegramWebhookRuntime) -> None:
+        self._runtime = runtime
+
+    async def validate(self, *, address: str) -> None:
+        try:
+            await self._runtime._parse_ton_mainnet_address(address=address)
+        except TonapiApiError as exc:
+            raise AddressValidationUnavailable from exc
+
+
+class _RuntimeSellerWithdrawalAdapter(WithdrawalRequesterAdapter):
+    def __init__(self, runtime: TelegramWebhookRuntime) -> None:
+        self._runtime = runtime
+
+    async def get_active_request(self, *, requester_user_id: int) -> Any | None:
+        return await self._runtime._finance_service.get_active_seller_withdrawal_request(
+            seller_user_id=requester_user_id
+        )
+
+    async def get_available_balance(self, *, requester_user_id: int) -> Decimal:
+        snapshot = await self._runtime._seller_service.get_seller_balance_snapshot(seller_user_id=requester_user_id)
+        return snapshot.seller_available_usdt
+
+    async def load_requester(self, *, telegram_id: int, username: str | None) -> WithdrawalRequester:
+        seller = await self._runtime._seller_service.bootstrap_seller(
+            telegram_id=telegram_id,
+            username=username,
+        )
+        return WithdrawalRequester(
+            user_id=seller.user_id,
+            available_account_id=seller.seller_available_account_id,
+            pending_account_id=seller.seller_withdraw_pending_account_id,
+        )
+
+    async def create_withdrawal_request(
+        self,
+        *,
+        requester: WithdrawalRequester,
+        amount_usdt: Decimal,
+        payout_address: str,
+        idempotency_key: str,
+    ) -> Any:
+        return await self._runtime._finance_service.create_withdrawal_request(
+            requester_user_id=requester.user_id,
+            requester_role="seller",
+            from_account_id=requester.available_account_id,
+            pending_account_id=requester.pending_account_id,
+            amount_usdt=amount_usdt,
+            payout_address=payout_address,
+            idempotency_key=idempotency_key,
+        )
+
+
+class _RuntimeBuyerWithdrawalAdapter(WithdrawalRequesterAdapter):
+    def __init__(self, runtime: TelegramWebhookRuntime) -> None:
+        self._runtime = runtime
+
+    async def get_active_request(self, *, requester_user_id: int) -> Any | None:
+        return await self._runtime._finance_service.get_active_buyer_withdrawal_request(buyer_user_id=requester_user_id)
+
+    async def get_available_balance(self, *, requester_user_id: int) -> Decimal:
+        snapshot = await self._runtime._finance_service.get_buyer_balance_snapshot(buyer_user_id=requester_user_id)
+        return snapshot.buyer_available_usdt
+
+    async def load_requester(self, *, telegram_id: int, username: str | None) -> WithdrawalRequester:
+        buyer = await self._runtime._buyer_service.bootstrap_buyer(
+            telegram_id=telegram_id,
+            username=username,
+        )
+        return WithdrawalRequester(
+            user_id=buyer.user_id,
+            available_account_id=buyer.buyer_available_account_id,
+            pending_account_id=buyer.buyer_withdraw_pending_account_id,
+        )
+
+    async def create_withdrawal_request(
+        self,
+        *,
+        requester: WithdrawalRequester,
+        amount_usdt: Decimal,
+        payout_address: str,
+        idempotency_key: str,
+    ) -> Any:
+        return await self._runtime._finance_service.create_withdrawal_request(
+            requester_user_id=requester.user_id,
+            requester_role="buyer",
+            from_account_id=requester.available_account_id,
+            pending_account_id=requester.pending_account_id,
+            amount_usdt=amount_usdt,
+            payout_address=payout_address,
+            idempotency_key=idempotency_key,
+        )
 
 
 class _BotHealthServer:
@@ -1298,53 +1403,13 @@ class TelegramWebhookRuntime:
             )
             return
         if action == "withdraw_prompt_amount":
-            active_request = await self._finance_service.get_active_seller_withdrawal_request(
-                seller_user_id=seller.user_id
-            )
-            if active_request is not None:
-                await self._replace_message(
-                    query_message,
-                    (
-                        "У вас уже есть активная заявка на вывод. "
-                        "Откройте баланс и отмените ее, если нужно создать новую."
-                    ),
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к балансу",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_SELLER,
-                                        action="balance",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            self._set_prompt(
-                context,
-                role=_ROLE_SELLER,
-                prompt_type="seller_withdraw_amount",
-                sensitive=False,
-                extra={"seller_user_id": seller.user_id},
-            )
-            await self._replace_message(
-                query_message,
-                "Введите сумму вывода в USDT (например, 4.5).",
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к балансу",
-                                callback_data=build_callback(
-                                    flow=_ROLE_SELLER,
-                                    action="balance",
-                                ),
-                            )
-                        ]
-                    ]
+            await self._apply_transport_effects(
+                context=context,
+                query_message=query_message,
+                message=None,
+                default_role=_ROLE_SELLER,
+                result=await self._seller_withdrawal_creation_flow().start_manual_amount_prompt(
+                    requester_user_id=seller.user_id
                 ),
             )
             return
@@ -3439,71 +3504,13 @@ class TelegramWebhookRuntime:
         query_message: Message | None,
         seller_user_id: int,
     ) -> None:
-        active_request = await self._finance_service.get_active_seller_withdrawal_request(seller_user_id=seller_user_id)
-        if active_request is not None:
-            await self._replace_message(
-                query_message,
-                ("У вас уже есть активная заявка на вывод. Дождитесь обработки или отмените ее на экране баланса."),
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к балансу",
-                                callback_data=build_callback(
-                                    flow=_ROLE_SELLER,
-                                    action="balance",
-                                ),
-                            )
-                        ]
-                    ]
-                ),
-            )
-            return
-
-        snapshot = await self._seller_service.get_seller_balance_snapshot(seller_user_id=seller_user_id)
-        amount = snapshot.seller_available_usdt
-        if amount <= Decimal("0.000000"):
-            await self._replace_message(
-                query_message,
-                "Нет доступного баланса для вывода.",
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к балансу",
-                                callback_data=build_callback(
-                                    flow=_ROLE_SELLER,
-                                    action="balance",
-                                ),
-                            )
-                        ]
-                    ]
-                ),
-            )
-            return
-
-        self._set_prompt(
-            context,
-            role=_ROLE_SELLER,
-            prompt_type="seller_withdraw_address",
-            sensitive=False,
-            extra={
-                "seller_user_id": seller_user_id,
-                "amount_usdt": str(amount),
-            },
-        )
-        await self._replace_message(
-            query_message,
-            (f"Введите адрес кошелька в сети TON для вывода {self._format_usdt_value(amount, precise=True)} USDT."),
-            InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            text="↩️ Назад к балансу",
-                            callback_data=build_callback(flow=_ROLE_SELLER, action="balance"),
-                        )
-                    ]
-                ]
+        await self._apply_transport_effects(
+            context=context,
+            query_message=query_message,
+            message=None,
+            default_role=_ROLE_SELLER,
+            result=await self._seller_withdrawal_creation_flow().start_full_amount_prompt(
+                requester_user_id=seller_user_id
             ),
         )
 
@@ -4012,53 +4019,13 @@ class TelegramWebhookRuntime:
             )
             return
         if action == "withdraw_prompt_amount":
-            active_request = await self._finance_service.get_active_buyer_withdrawal_request(
-                buyer_user_id=buyer.user_id
-            )
-            if active_request is not None:
-                await self._replace_message(
-                    query_message,
-                    (
-                        "У вас уже есть активная заявка на вывод. "
-                        "Откройте баланс и отмените ее, если нужно создать новую."
-                    ),
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    text="↩️ Назад к балансу",
-                                    callback_data=build_callback(
-                                        flow=_ROLE_BUYER,
-                                        action="balance",
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
-                return
-            self._set_prompt(
-                context,
-                role=_ROLE_BUYER,
-                prompt_type="buyer_withdraw_amount",
-                sensitive=False,
-                extra={"buyer_user_id": buyer.user_id},
-            )
-            await self._replace_message(
-                query_message,
-                "Введите сумму вывода в USDT (например, 4.5).",
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к балансу",
-                                callback_data=build_callback(
-                                    flow=_ROLE_BUYER,
-                                    action="balance",
-                                ),
-                            )
-                        ]
-                    ]
+            await self._apply_transport_effects(
+                context=context,
+                query_message=query_message,
+                message=None,
+                default_role=_ROLE_BUYER,
+                result=await self._buyer_withdrawal_creation_flow().start_manual_amount_prompt(
+                    requester_user_id=buyer.user_id
                 ),
             )
             return
@@ -5220,71 +5187,13 @@ class TelegramWebhookRuntime:
         query_message: Message | None,
         buyer_user_id: int,
     ) -> None:
-        active_request = await self._finance_service.get_active_buyer_withdrawal_request(buyer_user_id=buyer_user_id)
-        if active_request is not None:
-            await self._replace_message(
-                query_message,
-                ("У вас уже есть активная заявка на вывод. Дождитесь обработки или отмените ее на экране баланса."),
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к балансу",
-                                callback_data=build_callback(
-                                    flow=_ROLE_BUYER,
-                                    action="balance",
-                                ),
-                            )
-                        ]
-                    ]
-                ),
-            )
-            return
-
-        snapshot = await self._finance_service.get_buyer_balance_snapshot(buyer_user_id=buyer_user_id)
-        amount = snapshot.buyer_available_usdt
-        if amount <= Decimal("0.000000"):
-            await self._replace_message(
-                query_message,
-                "Нет доступного баланса для вывода.",
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к балансу",
-                                callback_data=build_callback(
-                                    flow=_ROLE_BUYER,
-                                    action="balance",
-                                ),
-                            )
-                        ]
-                    ]
-                ),
-            )
-            return
-
-        self._set_prompt(
-            context,
-            role=_ROLE_BUYER,
-            prompt_type="buyer_withdraw_address",
-            sensitive=False,
-            extra={
-                "buyer_user_id": buyer_user_id,
-                "amount_usdt": str(amount),
-            },
-        )
-        await self._replace_message(
-            query_message,
-            (f"Введите адрес кошелька в сети TON для вывода {self._format_usdt_value(amount, precise=True)} USDT."),
-            InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            text="↩️ Назад к балансу",
-                            callback_data=build_callback(flow=_ROLE_BUYER, action="balance"),
-                        )
-                    ]
-                ]
+        await self._apply_transport_effects(
+            context=context,
+            query_message=query_message,
+            message=None,
+            default_role=_ROLE_BUYER,
+            result=await self._buyer_withdrawal_creation_flow().start_full_amount_prompt(
+                requester_user_id=buyer_user_id
             ),
         )
 
@@ -7004,152 +6913,32 @@ class TelegramWebhookRuntime:
             return
 
         if prompt_type == "seller_withdraw_amount":
-            seller_user_id = int(prompt_state.get("seller_user_id", 0))
-            if seller_user_id < 1:
-                self._clear_prompt(context)
-                await message.reply_text(
-                    "Ошибка контекста вывода. Откройте баланс заново.",
-                    reply_markup=self._seller_balance_menu_markup(),
-                )
-                return
-            active_request = await self._finance_service.get_active_seller_withdrawal_request(
-                seller_user_id=seller_user_id
-            )
-            if active_request is not None:
-                self._clear_prompt(context)
-                await message.reply_text(
-                    (
-                        "У вас уже есть активная заявка на вывод. "
-                        "Откройте баланс и отмените ее, если нужно создать новую."
-                    ),
-                    reply_markup=self._seller_menu_markup(),
-                )
-                return
-            try:
-                amount = Decimal(text)
-            except InvalidOperation:
-                await message.reply_text("Неверный формат суммы. Повторите ввод.")
-                return
-            if amount <= Decimal("0.000000"):
-                await message.reply_text("Сумма должна быть больше 0.")
-                return
-            snapshot = await self._seller_service.get_seller_balance_snapshot(seller_user_id=seller_user_id)
-            if amount > snapshot.seller_available_usdt:
-                await message.reply_text(
-                    "Сумма превышает доступный баланс.\n"
-                    f"Сейчас доступно: "
-                    f"{self._format_usdt_value(snapshot.seller_available_usdt, precise=True)} USDT."
-                )
-                return
-
-            self._set_prompt(
-                context,
-                role=_ROLE_SELLER,
-                prompt_type="seller_withdraw_address",
-                sensitive=False,
-                extra={"seller_user_id": seller_user_id, "amount_usdt": str(amount)},
-            )
-            await message.reply_text(
-                (f"Введите адрес кошелька в сети TON для вывода {self._format_usdt_value(amount, precise=True)} USDT."),
-                reply_markup=InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к балансу",
-                                callback_data=build_callback(
-                                    flow=_ROLE_SELLER,
-                                    action="balance",
-                                ),
-                            )
-                        ]
-                    ]
+            await self._apply_transport_effects(
+                context=context,
+                query_message=None,
+                message=message,
+                default_role=_ROLE_SELLER,
+                result=await self._seller_withdrawal_creation_flow().submit_manual_amount(
+                    prompt_state=prompt_state,
+                    text=text,
                 ),
             )
             return
 
         if prompt_type == "seller_withdraw_address":
-            seller_user_id = int(prompt_state.get("seller_user_id", 0))
-            amount_raw = str(prompt_state.get("amount_usdt", "0"))
-            try:
-                amount = Decimal(amount_raw)
-            except InvalidOperation:
-                self._clear_prompt(context)
-                await message.reply_text("Ошибка контекста суммы. Откройте баланс заново.")
-                return
-            payout_address = text.strip()
-            if not payout_address:
-                await message.reply_text("Адрес не может быть пустым. Повторите ввод.")
-                return
-            if seller_user_id < 1:
-                self._clear_prompt(context)
-                await message.reply_text("Ошибка контекста пользователя. Откройте баланс заново.")
-                return
-            try:
-                await self._parse_ton_mainnet_address(address=payout_address)
-            except ValueError as exc:
-                await message.reply_text(str(exc))
-                return
-            except TonapiApiError:
-                await message.reply_text("Не удалось проверить адрес через TonAPI. Повторите попытку позже.")
-                return
-
-            seller = await self._seller_service.bootstrap_seller(
-                telegram_id=identity.telegram_id,
-                username=identity.username,
+            await self._apply_transport_effects(
+                context=context,
+                query_message=None,
+                message=message,
+                default_role=_ROLE_SELLER,
+                result=await self._seller_withdrawal_creation_flow().submit_address(
+                    prompt_state=prompt_state,
+                    text=text,
+                    telegram_id=identity.telegram_id,
+                    username=identity.username,
+                    update_id=update.update_id,
+                ),
             )
-            if seller.user_id != seller_user_id:
-                self._clear_prompt(context)
-                await message.reply_text("Контекст вывода устарел. Откройте баланс заново.")
-                return
-
-            try:
-                withdrawal = await self._finance_service.create_withdrawal_request(
-                    requester_user_id=seller.user_id,
-                    requester_role="seller",
-                    from_account_id=seller.seller_available_account_id,
-                    pending_account_id=seller.seller_withdraw_pending_account_id,
-                    amount_usdt=amount,
-                    payout_address=payout_address,
-                    idempotency_key=f"tg-seller-withdraw:{seller.user_id}:{update.update_id}",
-                )
-            except InsufficientFundsError:
-                await message.reply_text(
-                    "Недостаточно доступного баланса для вывода.",
-                    reply_markup=self._seller_menu_markup(),
-                )
-                return
-            except InvalidStateError:
-                await message.reply_text(
-                    (
-                        "У вас уже есть активная заявка на вывод. "
-                        "Откройте баланс и отмените ее, если нужно создать новую."
-                    ),
-                    reply_markup=self._seller_menu_markup(),
-                )
-                return
-            except Exception:
-                self._logger.exception(
-                    "seller_withdraw_request_create_failed",
-                    seller_user_id=seller.user_id,
-                    telegram_update_id=update.update_id,
-                    amount_usdt=str(amount),
-                )
-                self._clear_prompt(context)
-                await message.reply_text(
-                    "Техническая ошибка при создании заявки на вывод. Баланс не изменен.",
-                    reply_markup=self._seller_menu_markup(),
-                )
-                return
-
-            self._clear_prompt(context)
-            reply = "Заявка на вывод создана.\nСтатус: на проверке у администратора."
-            self._logger.info(
-                "seller_withdraw_requested",
-                telegram_update_id=update.update_id,
-                withdrawal_request_id=withdrawal.withdrawal_request_id,
-                withdrawal_ref=self._withdrawal_ref(withdrawal.withdrawal_request_id),
-            )
-            await message.reply_text(reply, reply_markup=self._seller_menu_markup())
             return
 
         if prompt_type == "seller_topup_amount":
@@ -7422,149 +7211,32 @@ class TelegramWebhookRuntime:
             return
 
         if prompt_type == "buyer_withdraw_amount":
-            buyer_user_id = int(prompt_state.get("buyer_user_id", 0))
-            if buyer_user_id < 1:
-                self._clear_prompt(context)
-                await message.reply_text("Ошибка контекста вывода. Откройте баланс заново.")
-                return
-            active_request = await self._finance_service.get_active_buyer_withdrawal_request(
-                buyer_user_id=buyer_user_id
-            )
-            if active_request is not None:
-                self._clear_prompt(context)
-                await message.reply_text(
-                    (
-                        "У вас уже есть активная заявка на вывод. "
-                        "Откройте баланс и отмените ее, если нужно создать новую."
-                    ),
-                    reply_markup=self._buyer_menu_markup(),
-                )
-                return
-            try:
-                amount = Decimal(text)
-            except InvalidOperation:
-                await message.reply_text("Неверный формат суммы. Повторите ввод.")
-                return
-            if amount <= Decimal("0.000000"):
-                await message.reply_text("Сумма должна быть больше 0.")
-                return
-            snapshot = await self._finance_service.get_buyer_balance_snapshot(buyer_user_id=buyer_user_id)
-            if amount > snapshot.buyer_available_usdt:
-                await message.reply_text(
-                    "Сумма превышает доступный баланс.\n"
-                    f"Сейчас доступно: "
-                    f"{self._format_usdt_value(snapshot.buyer_available_usdt, precise=True)} USDT."
-                )
-                return
-
-            self._set_prompt(
-                context,
-                role=_ROLE_BUYER,
-                prompt_type="buyer_withdraw_address",
-                sensitive=False,
-                extra={"buyer_user_id": buyer_user_id, "amount_usdt": str(amount)},
-            )
-            await message.reply_text(
-                (f"Введите адрес кошелька в сети TON для вывода {self._format_usdt_value(amount, precise=True)} USDT."),
-                reply_markup=InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к балансу",
-                                callback_data=build_callback(
-                                    flow=_ROLE_BUYER,
-                                    action="balance",
-                                ),
-                            )
-                        ]
-                    ]
+            await self._apply_transport_effects(
+                context=context,
+                query_message=None,
+                message=message,
+                default_role=_ROLE_BUYER,
+                result=await self._buyer_withdrawal_creation_flow().submit_manual_amount(
+                    prompt_state=prompt_state,
+                    text=text,
                 ),
             )
             return
 
         if prompt_type == "buyer_withdraw_address":
-            buyer_user_id = int(prompt_state.get("buyer_user_id", 0))
-            amount_raw = str(prompt_state.get("amount_usdt", "0"))
-            try:
-                amount = Decimal(amount_raw)
-            except InvalidOperation:
-                self._clear_prompt(context)
-                await message.reply_text("Ошибка контекста суммы. Откройте баланс заново.")
-                return
-            payout_address = text.strip()
-            if not payout_address:
-                await message.reply_text("Адрес не может быть пустым. Повторите ввод.")
-                return
-            if buyer_user_id < 1:
-                self._clear_prompt(context)
-                await message.reply_text("Ошибка контекста пользователя. Откройте баланс заново.")
-                return
-            try:
-                await self._parse_ton_mainnet_address(address=payout_address)
-            except ValueError as exc:
-                await message.reply_text(str(exc))
-                return
-            except TonapiApiError:
-                await message.reply_text("Не удалось проверить адрес через TonAPI. Повторите попытку позже.")
-                return
-
-            buyer = await self._buyer_service.bootstrap_buyer(
-                telegram_id=identity.telegram_id,
-                username=identity.username,
+            await self._apply_transport_effects(
+                context=context,
+                query_message=None,
+                message=message,
+                default_role=_ROLE_BUYER,
+                result=await self._buyer_withdrawal_creation_flow().submit_address(
+                    prompt_state=prompt_state,
+                    text=text,
+                    telegram_id=identity.telegram_id,
+                    username=identity.username,
+                    update_id=update.update_id,
+                ),
             )
-            if buyer.user_id != buyer_user_id:
-                self._clear_prompt(context)
-                await message.reply_text("Контекст вывода устарел. Откройте баланс заново.")
-                return
-
-            try:
-                withdrawal = await self._finance_service.create_withdrawal_request(
-                    requester_user_id=buyer.user_id,
-                    requester_role="buyer",
-                    from_account_id=buyer.buyer_available_account_id,
-                    pending_account_id=buyer.buyer_withdraw_pending_account_id,
-                    amount_usdt=amount,
-                    payout_address=payout_address,
-                    idempotency_key=f"tg-withdraw:{buyer.user_id}:{update.update_id}",
-                )
-            except InsufficientFundsError:
-                await message.reply_text(
-                    "Недостаточно доступного баланса для вывода.",
-                    reply_markup=self._buyer_menu_markup(),
-                )
-                return
-            except InvalidStateError:
-                await message.reply_text(
-                    (
-                        "У вас уже есть активная заявка на вывод. "
-                        "Откройте баланс и отмените ее, если нужно создать новую."
-                    ),
-                    reply_markup=self._buyer_menu_markup(),
-                )
-                return
-            except Exception:
-                self._logger.exception(
-                    "buyer_withdraw_request_create_failed",
-                    buyer_user_id=buyer.user_id,
-                    telegram_update_id=update.update_id,
-                    amount_usdt=str(amount),
-                )
-                self._clear_prompt(context)
-                await message.reply_text(
-                    "Техническая ошибка при создании заявки на вывод. Баланс не изменен.",
-                    reply_markup=self._buyer_menu_markup(),
-                )
-                return
-
-            self._clear_prompt(context)
-            reply = "Заявка на вывод создана.\nСтатус: на проверке у администратора."
-            self._logger.info(
-                "buyer_withdraw_requested",
-                telegram_update_id=update.update_id,
-                withdrawal_request_id=withdrawal.withdrawal_request_id,
-                withdrawal_ref=self._withdrawal_ref(withdrawal.withdrawal_request_id),
-            )
-            await message.reply_text(reply, reply_markup=self._buyer_menu_markup())
             return
 
         if prompt_type == "admin_request_id":
@@ -7754,6 +7426,20 @@ class TelegramWebhookRuntime:
         )
         return self._seller_listing_creation_flow
 
+    def _seller_withdrawal_creation_flow(self) -> WithdrawalRequestCreationFlow:
+        return WithdrawalRequestCreationFlow(
+            config=SELLER_WITHDRAWAL_CONFIG,
+            requester_adapter=_RuntimeSellerWithdrawalAdapter(self),
+            address_validator=_RuntimeTonMainnetAddressValidator(self),
+        )
+
+    def _buyer_withdrawal_creation_flow(self) -> WithdrawalRequestCreationFlow:
+        return WithdrawalRequestCreationFlow(
+            config=BUYER_WITHDRAWAL_CONFIG,
+            requester_adapter=_RuntimeBuyerWithdrawalAdapter(self),
+            address_validator=_RuntimeTonMainnetAddressValidator(self),
+        )
+
     async def _apply_transport_effects(
         self,
         context: ContextTypes.DEFAULT_TYPE,
@@ -7804,6 +7490,15 @@ class TelegramWebhookRuntime:
                         parse_mode=effect.parse_mode,
                     )
                 continue
+            if isinstance(effect, ReplyRoleMenuText):
+                target = message or query_message
+                if target is not None:
+                    await target.reply_text(
+                        effect.text,
+                        reply_markup=self._role_menu_markup(effect.role),
+                        parse_mode=effect.parse_mode,
+                    )
+                continue
             if isinstance(effect, ReplaceText):
                 await self._replace_message(
                     query_message or message,
@@ -7814,6 +7509,15 @@ class TelegramWebhookRuntime:
                 continue
             if isinstance(effect, LogEvent):
                 self._logger.info(effect.event_name, **effect.fields)
+
+    def _role_menu_markup(self, role: str) -> InlineKeyboardMarkup:
+        if role == _ROLE_SELLER:
+            return self._seller_menu_markup()
+        if role == _ROLE_BUYER:
+            return self._buyer_menu_markup()
+        if role == _ROLE_ADMIN:
+            return self._admin_menu_markup()
+        raise ValueError(f"unsupported role menu: {role}")
 
     def _flow_buttons_markup(
         self,

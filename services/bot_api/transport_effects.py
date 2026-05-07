@@ -27,6 +27,13 @@ class ReplyText:
 
 
 @dataclass(frozen=True)
+class ReplyRoleMenuText:
+    text: str
+    role: str
+    parse_mode: str | None = "HTML"
+
+
+@dataclass(frozen=True)
 class ReplaceText:
     text: str
     buttons: tuple[tuple[ButtonSpec, ...], ...] = ()
@@ -69,7 +76,15 @@ class LogEvent:
 
 
 TransportEffect = (
-    ReplyText | ReplaceText | ReplyPhoto | SetPrompt | ClearPrompt | AnswerCallback | DeleteSourceMessage | LogEvent
+    ReplyText
+    | ReplyRoleMenuText
+    | ReplaceText
+    | ReplyPhoto
+    | SetPrompt
+    | ClearPrompt
+    | AnswerCallback
+    | DeleteSourceMessage
+    | LogEvent
 )
 
 
