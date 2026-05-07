@@ -20,6 +20,7 @@ from services.bot_api.transport_effects import (
     ReplyPhoto,
     ReplyText,
     SetPrompt,
+    SetUserData,
 )
 from tests.e2e_harness import FakeBot, FakeCallbackQuery, FakeChat, FakeContext, FakeMessage, FakeTransport
 
@@ -85,6 +86,7 @@ async def test_runtime_applies_shared_transport_effects_to_telegram_adapter() ->
         result=FlowResult(
             effects=(
                 SetPrompt(prompt_type="seller_listing_create", data={"shop_id": 11}),
+                SetUserData(key="last_buyer_shop_slug", value="shop_tushenka"),
                 ReplyPhoto(photo_url="https://example.com/photo.webp"),
                 ReplyText(
                     text="Экран",
@@ -106,6 +108,7 @@ async def test_runtime_applies_shared_transport_effects_to_telegram_adapter() ->
         "sensitive": False,
         "shop_id": 11,
     }
+    assert context.user_data["last_buyer_shop_slug"] == "shop_tushenka"
     assert [event.kind for event in transport.events] == ["reply_photo", "reply"]
     reply_markup = transport.events[-1].reply_markup
     first_button, second_button = reply_markup.inline_keyboard[0]

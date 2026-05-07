@@ -59,6 +59,12 @@ class ClearPrompt:
 
 
 @dataclass(frozen=True)
+class SetUserData:
+    key: str
+    value: Any
+
+
+@dataclass(frozen=True)
 class AnswerCallback:
     text: str | None = None
     show_alert: bool = False
@@ -82,6 +88,7 @@ TransportEffect = (
     | ReplyPhoto
     | SetPrompt
     | ClearPrompt
+    | SetUserData
     | AnswerCallback
     | DeleteSourceMessage
     | LogEvent
