@@ -71,19 +71,26 @@ def test_seller_listing_creation_start_prompt_uses_shared_transport_effects() ->
     assert isinstance(result.effects[0], SetPrompt)
 
 
-def test_runtime_caches_stateless_flow_factories_and_refreshes_buyer_marketplace_rate() -> None:
+def test_runtime_caches_stateless_flow_factories_and_refreshes_display_rate() -> None:
     runtime = _build_runtime()
 
     assert runtime._seller_withdrawal_creation_flow() is runtime._seller_withdrawal_creation_flow()
     assert runtime._buyer_withdrawal_creation_flow() is runtime._buyer_withdrawal_creation_flow()
     assert runtime._admin_exceptions_flow() is runtime._admin_exceptions_flow()
 
+    seller_flow = runtime._get_seller_listing_creation_flow()
+    assert runtime._get_seller_listing_creation_flow() is seller_flow
+    assert "~100" in seller_flow.instruction_text(shop_title="Тушенка")
+
     buyer_flow = runtime._buyer_marketplace_flow()
     assert runtime._buyer_marketplace_flow() is buyer_flow
 
     runtime._display_rub_per_usdt = Decimal("101")
+    refreshed_seller_flow = runtime._get_seller_listing_creation_flow()
     refreshed_buyer_flow = runtime._buyer_marketplace_flow()
 
+    assert refreshed_seller_flow is not seller_flow
+    assert "~101" in refreshed_seller_flow.instruction_text(shop_title="Тушенка")
     assert refreshed_buyer_flow is not buyer_flow
     assert refreshed_buyer_flow._config.display_rub_per_usdt == Decimal("101")
 

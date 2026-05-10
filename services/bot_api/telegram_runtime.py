@@ -626,6 +626,7 @@ class TelegramWebhookRuntime:
         self._seller_processor: SellerCommandProcessor | None = None
         self._buyer_processor: BuyerCommandProcessor | None = None
         self._seller_listing_creation_flow: SellerListingCreationFlow | None = None
+        self._seller_listing_creation_flow_rate: Decimal | None = None
         self._seller_withdrawal_creation_flow_cache: WithdrawalRequestCreationFlow | None = None
         self._buyer_withdrawal_creation_flow_cache: WithdrawalRequestCreationFlow | None = None
         self._buyer_marketplace_flow_cache: BuyerMarketplaceFlow | None = None
@@ -770,6 +771,7 @@ class TelegramWebhookRuntime:
                 fx_rate_service=self._fx_rate_service,
                 fx_rate_ttl_seconds=self._settings.fx_rate_ttl_seconds,
             )
+            self._seller_listing_creation_flow_rate = self._settings.display_rub_per_usdt
             self._buyer_processor = BuyerCommandProcessor(
                 buyer_service=self._buyer_service,
                 bot_username=self._settings.telegram_bot_username,
@@ -1383,6 +1385,7 @@ class TelegramWebhookRuntime:
                     notice="Магазин не найден или уже удален.",
                 )
                 return
+            await self._refresh_display_rub_per_usdt()
             await self._apply_transport_effects(
                 context=context,
                 query_message=query_message,
@@ -5929,7 +5932,10 @@ class TelegramWebhookRuntime:
         await message.reply_text("Неизвестный тип ввода. Отправьте /start.")
 
     def _get_seller_listing_creation_flow(self) -> SellerListingCreationFlow:
-        if self._seller_listing_creation_flow is not None:
+        if (
+            self._seller_listing_creation_flow is not None
+            and self._seller_listing_creation_flow_rate == self._display_rub_per_usdt
+        ):
             return self._seller_listing_creation_flow
         seller_workflow = self._seller_workflow_service or _RuntimeSellerListingWorkflowAdapter(self)
         self._seller_listing_creation_flow = SellerListingCreationFlow(
@@ -5939,6 +5945,7 @@ class TelegramWebhookRuntime:
             fx_rate_service=self._fx_rate_service,
             fx_rate_ttl_seconds=self._settings.fx_rate_ttl_seconds,
         )
+        self._seller_listing_creation_flow_rate = self._display_rub_per_usdt
         return self._seller_listing_creation_flow
 
     def _seller_withdrawal_creation_flow(self) -> WithdrawalRequestCreationFlow:

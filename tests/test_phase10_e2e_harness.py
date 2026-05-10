@@ -473,11 +473,18 @@ async def test_phase10_e2e_seller_listing_create_and_activate_flow() -> None:
     )
     harness = TelegramRuntimeHarness(runtime, telegram_id=10001, username="seller")
 
+    async def refresh_display_rate() -> None:
+        runtime._display_rub_per_usdt = Decimal("74.23")
+
+    runtime._refresh_display_rub_per_usdt = AsyncMock(side_effect=refresh_display_rate)
+
     pick_events = await harness.callback(flow="seller", action="listing_create_pick_shop")
     assert any("Выберите магазин для нового объявления." in text for text in _event_texts(pick_events))
 
     prompt_events = await harness.callback(flow="seller", action="listing_create_prompt", entity_id="11")
     assert any("Создание объявления для магазина" in text for text in _event_texts(prompt_events))
+    assert any("~74.23" in text for text in _event_texts(prompt_events))
+    assert all("~100" not in text for text in _event_texts(prompt_events))
 
     preview_events = await harness.text("552892532, 100, 5, бумага а4 для принтера, в размер, не садятся после стирки")
     assert any("Проверьте объявление" in text for text in _event_texts(preview_events))
