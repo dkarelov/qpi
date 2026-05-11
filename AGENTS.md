@@ -215,13 +215,12 @@ Persistence and schema:
 - Buyer receives setup token (base64 JSON array):
   - `[1, task_uuid, search_phrase, wb_product_id, 1, wb_brand_name]`, where `task_uuid` is the immutable assignment UUID and `wb_brand_name` is an empty string when unavailable.
 - Buyer submits verification token (base64 JSON array):
-  - `[1, task_uuid, wb_product_id, order_id, ordered_at]`, where `ordered_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
-- LEGACY compatibility only: old extension versions may submit `[task_uuid, order_id, ordered_at]`; new clients must not generate this format, and backend support for it is expected to be removed in a future version.
+  - `[task_uuid, order_id, ordered_at]`, where `ordered_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
 - Verification token `ordered_at` values more than 15 minutes in the future are rejected.
 - After pickup, buyer receives review setup token (base64 JSON array):
   - `[2, task_uuid, wb_product_id, review_phrase_1?, review_phrase_2?]`, where phrases are omitted when the seller did not provide them.
 - Buyer submits review confirmation token (base64 JSON array):
-  - `[2, task_uuid, wb_product_id, reviewed_at, review_score, review_text]`, where `reviewed_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
+  - `[task_uuid, reviewed_at, review_score, review_text]`, where `reviewed_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
 - Verification token must be submitted within 4 hours of reservation.
 - `order_id` is globally unique (`1 order_id = 1 slot`).
 - Review confirmation is mandatory after pickup. Without it, cashback stays frozen even after the unlock timer has passed.

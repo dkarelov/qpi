@@ -20,10 +20,9 @@ def _encode_payload(
     order_id: str,
     ordered_at: datetime,
 ) -> str:
+    del wb_product_id
     payload = [
-        1,
         task_uuid,
-        wb_product_id,
         order_id,
         ordered_at.replace(tzinfo=None).isoformat(),
     ]

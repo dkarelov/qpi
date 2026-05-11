@@ -50,13 +50,9 @@ _ASSIGNMENT_PAYLOAD_ALLOWED_STATES = {"reserved", "order_verified"}
 _RESERVATION_EXPIRED_STATUS = "expired_2h"
 _BUYER_CANCELLED_STATUS = "buyer_cancelled"
 _RESERVATION_TIMEOUT_IDEMPOTENCY_PREFIX = "reservation-expire"
-_PURCHASE_PAYLOAD_VERSION = 3
-_LEGACY_PURCHASE_PAYLOAD_VERSION = 2
-_REVIEW_PAYLOAD_VERSION = 2
-_PURCHASE_TOKEN_TYPE = 1
-_REVIEW_TOKEN_TYPE = 2
+_PURCHASE_PAYLOAD_VERSION = 4
+_REVIEW_PAYLOAD_VERSION = 3
 _PURCHASE_PAYLOAD_SOURCE = "plugin_base64"
-_LEGACY_PURCHASE_PAYLOAD_SOURCE = "plugin_base64_legacy"
 _ORDERED_AT_FUTURE_TOLERANCE = timedelta(minutes=15)
 _REVIEW_STATUS_PENDING_MANUAL = "pending_manual"
 _REVIEW_STATUS_VERIFIED_AUTO = "verified_auto"
@@ -70,7 +66,6 @@ class DecodedPurchasePayload:
     task_uuid: UUID
     order_id: str
     ordered_at: datetime
-    wb_product_id: int | None
     source: str
     raw_payload_json: list[Any]
 
@@ -79,7 +74,6 @@ class DecodedPurchasePayload:
 class DecodedReviewPayload:
     payload_version: int
     task_uuid: UUID
-    wb_product_id: int
     reviewed_at: datetime
     rating: int
     review_text: str
@@ -566,8 +560,6 @@ class BuyerService:
                     raise InvalidStateError("assignment cannot accept payload in current state")
                 if decoded.task_uuid != assignment["task_uuid"]:
                     raise PayloadValidationError("payload field 'task_uuid' does not match assignment")
-                if decoded.wb_product_id is not None and decoded.wb_product_id != assignment["wb_product_id"]:
-                    raise PayloadValidationError("payload field 'wb_product_id' does not match assignment listing")
 
                 await cur.execute("SELECT now() AS current_time")
                 now_row = await cur.fetchone()
@@ -869,8 +861,6 @@ class BuyerService:
             raise InvalidStateError("assignment cannot accept review payload in current state")
         if decoded.task_uuid != assignment["task_uuid"]:
             raise PayloadValidationError("payload field 'task_uuid' does not match assignment")
-        if decoded.wb_product_id != assignment["wb_product_id"]:
-            raise PayloadValidationError("payload field 'wb_product_id' does not match assignment listing")
 
         await cur.execute(
             """
@@ -1392,48 +1382,17 @@ def decode_purchase_payload(payload_base64: str) -> DecodedPurchasePayload:
 
     if not isinstance(parsed, list):
         raise PayloadValidationError("payload must be a JSON array")
-    if len(parsed) == 3:
-        # LEGACY token format; remove support in a future extension/backend contract cleanup.
-        task_uuid = _require_uuid(parsed[0], field_name="task_uuid")
-        order_id_raw = parsed[1]
-        if not isinstance(order_id_raw, str) or not order_id_raw.strip():
-            raise PayloadValidationError("payload field 'order_id' must be non-empty string")
-        order_id = order_id_raw.strip()
+    if len(parsed) != 3:
+        raise PayloadValidationError("payload must contain [task_uuid, order_id, ordered_at]")
 
-        ordered_at_raw = parsed[2]
-        if not isinstance(ordered_at_raw, str):
-            raise PayloadValidationError("payload field 'ordered_at' must be ISO datetime string")
-        ordered_at = _parse_iso_datetime_utc(ordered_at_raw, field_name="ordered_at")
+    task_uuid = _require_uuid(parsed[0], field_name="task_uuid")
 
-        return DecodedPurchasePayload(
-            payload_version=_LEGACY_PURCHASE_PAYLOAD_VERSION,
-            task_uuid=task_uuid,
-            order_id=order_id,
-            ordered_at=ordered_at,
-            wb_product_id=None,
-            source=_LEGACY_PURCHASE_PAYLOAD_SOURCE,
-            raw_payload_json=parsed,
-        )
-
-    if len(parsed) != 5:
-        raise PayloadValidationError(
-            "payload must contain [token_type, task_uuid, wb_product_id, order_id, ordered_at] "
-            "or LEGACY [task_uuid, order_id, ordered_at]"
-        )
-
-    token_type = _require_positive_int(parsed[0], field_name="token_type")
-    if token_type != _PURCHASE_TOKEN_TYPE:
-        raise PayloadValidationError(f"payload field 'token_type' must be {_PURCHASE_TOKEN_TYPE}")
-
-    task_uuid = _require_uuid(parsed[1], field_name="task_uuid")
-    wb_product_id = _require_positive_int(parsed[2], field_name="wb_product_id")
-
-    order_id_raw = parsed[3]
+    order_id_raw = parsed[1]
     if not isinstance(order_id_raw, str) or not order_id_raw.strip():
         raise PayloadValidationError("payload field 'order_id' must be non-empty string")
     order_id = order_id_raw.strip()
 
-    ordered_at_raw = parsed[4]
+    ordered_at_raw = parsed[2]
     if not isinstance(ordered_at_raw, str):
         raise PayloadValidationError("payload field 'ordered_at' must be ISO datetime string")
     ordered_at = _parse_iso_datetime_utc(ordered_at_raw, field_name="ordered_at")
@@ -1443,7 +1402,6 @@ def decode_purchase_payload(payload_base64: str) -> DecodedPurchasePayload:
         task_uuid=task_uuid,
         order_id=order_id,
         ordered_at=ordered_at,
-        wb_product_id=wb_product_id,
         source=_PURCHASE_PAYLOAD_SOURCE,
         raw_payload_json=parsed,
     )
@@ -1471,35 +1429,27 @@ def decode_review_payload(payload_base64: str) -> DecodedReviewPayload:
 
     if not isinstance(parsed, list):
         raise PayloadValidationError("payload must be a JSON array")
-    if len(parsed) != 6:
-        raise PayloadValidationError(
-            "payload must contain [token_type, task_uuid, wb_product_id, reviewed_at, rating, review_text]"
-        )
+    if len(parsed) != 4:
+        raise PayloadValidationError("payload must contain [task_uuid, reviewed_at, rating, review_text]")
 
-    token_type = _require_positive_int(parsed[0], field_name="token_type")
-    if token_type != _REVIEW_TOKEN_TYPE:
-        raise PayloadValidationError(f"payload field 'token_type' must be {_REVIEW_TOKEN_TYPE}")
+    task_uuid = _require_uuid(parsed[0], field_name="task_uuid")
 
-    task_uuid = _require_uuid(parsed[1], field_name="task_uuid")
-    wb_product_id = _require_positive_int(parsed[2], field_name="wb_product_id")
-
-    reviewed_at_raw = parsed[3]
+    reviewed_at_raw = parsed[1]
     if not isinstance(reviewed_at_raw, str):
         raise PayloadValidationError("payload field 'reviewed_at' must be ISO datetime string")
     reviewed_at = _parse_iso_datetime_utc(reviewed_at_raw, field_name="reviewed_at")
 
-    rating = _require_positive_int(parsed[4], field_name="rating")
+    rating = _require_positive_int(parsed[2], field_name="rating")
     if rating > 5:
         raise PayloadValidationError("payload field 'rating' must be between 1 and 5")
 
-    review_text_raw = parsed[5]
+    review_text_raw = parsed[3]
     if not isinstance(review_text_raw, str) or not review_text_raw.strip():
         raise PayloadValidationError("payload field 'review_text' must be non-empty string")
 
     return DecodedReviewPayload(
         payload_version=_REVIEW_PAYLOAD_VERSION,
         task_uuid=task_uuid,
-        wb_product_id=wb_product_id,
         reviewed_at=reviewed_at,
         rating=rating,
         review_text=review_text_raw.strip(),

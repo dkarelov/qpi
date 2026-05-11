@@ -22,26 +22,41 @@ def _encode_payload(
     task_uuid: str = _TASK_UUID,
     order_id: str,
     ordered_at: str = "2026-02-26T12:00:00",
-    wb_product_id: int,
+    wb_product_id: int | None = None,
 ) -> str:
-    payload: list[Any] = [1, task_uuid, wb_product_id, order_id, ordered_at]
+    del wb_product_id
+    payload: list[Any] = [task_uuid, order_id, ordered_at]
     return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
 
 
-def _encode_legacy_payload(
+def _encode_verbose_payload(
     *,
     task_uuid: str = _TASK_UUID,
     order_id: str,
     ordered_at: str = "2026-02-26T12:00:00",
+    wb_product_id: int = 552892532,
 ) -> str:
-    payload: list[Any] = [task_uuid, order_id, ordered_at]
+    payload: list[Any] = [1, task_uuid, wb_product_id, order_id, ordered_at]
     return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
 
 
 def _encode_review_payload(
     *,
     task_uuid: str = _TASK_UUID,
-    wb_product_id: int,
+    wb_product_id: int | None = None,
+    reviewed_at: str = "2026-03-18T10:30:00",
+    rating: int = 5,
+    review_text: str = "great",
+) -> str:
+    del wb_product_id
+    payload: list[Any] = [task_uuid, reviewed_at, rating, review_text]
+    return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+
+
+def _encode_verbose_review_payload(
+    *,
+    task_uuid: str = _TASK_UUID,
+    wb_product_id: int = 552892532,
     reviewed_at: str = "2026-03-18T10:30:00",
     rating: int = 5,
     review_text: str = "great",
@@ -815,7 +830,7 @@ async def test_worker_expiry_transitions_reserved_to_expired_and_releases_funds(
         ),
         (
             lambda _wb_product_id: base64.b64encode(json.dumps(["ORD-MISSING"]).encode("utf-8")).decode("ascii"),
-            "contain [token_type, task_uuid",
+            "contain [task_uuid",
         ),
     ],
 )
@@ -877,9 +892,10 @@ def test_decode_purchase_payload_accepts_js_utc_timestamp() -> None:
     )
 
     assert str(decoded.task_uuid) == _TASK_UUID
-    assert decoded.wb_product_id == 552892532
     assert decoded.order_id == "ORD-UTC-Z"
     assert decoded.ordered_at == datetime(2026, 3, 10, 20, 32, 23, 807000, tzinfo=UTC)
+    assert decoded.payload_version == 4
+    assert decoded.source == "plugin_base64"
 
 
 def test_decode_purchase_payload_normalizes_timezone_offset_to_utc() -> None:
@@ -892,14 +908,13 @@ def test_decode_purchase_payload_normalizes_timezone_offset_to_utc() -> None:
     )
 
     assert str(decoded.task_uuid) == _TASK_UUID
-    assert decoded.wb_product_id == 552892532
     assert decoded.order_id == "ORD-OFFSET"
     assert decoded.ordered_at == datetime(2026, 2, 26, 12, 0, 0, tzinfo=UTC)
 
 
-def test_decode_purchase_payload_accepts_legacy_shape() -> None:
+def test_decode_purchase_payload_accepts_compact_shape_from_client_complaint() -> None:
     decoded = decode_purchase_payload(
-        _encode_legacy_payload(
+        _encode_payload(
             task_uuid="0e447c32-c0fb-4bb3-a383-2f68fffb261a",
             order_id="f79879a08ff546b583859bd4ece7b90b",
             ordered_at="2026-05-11T09:45:20.141Z",
@@ -907,19 +922,29 @@ def test_decode_purchase_payload_accepts_legacy_shape() -> None:
     )
 
     assert str(decoded.task_uuid) == "0e447c32-c0fb-4bb3-a383-2f68fffb261a"
-    assert decoded.wb_product_id is None
     assert decoded.order_id == "f79879a08ff546b583859bd4ece7b90b"
     assert decoded.ordered_at == datetime(2026, 5, 11, 9, 45, 20, 141000, tzinfo=UTC)
-    assert decoded.payload_version == 2
-    assert decoded.source == "plugin_base64_legacy"
+    assert decoded.payload_version == 4
+    assert decoded.source == "plugin_base64"
 
 
-def test_decode_purchase_payload_rejects_malformed_legacy_task_uuid() -> None:
+def test_decode_purchase_payload_rejects_malformed_compact_task_uuid() -> None:
     with pytest.raises(PayloadValidationError, match="task_uuid"):
         decode_purchase_payload(
-            _encode_legacy_payload(
+            _encode_payload(
                 task_uuid="not-a-uuid",
-                order_id="ORD-LEGACY-BAD-UUID",
+                order_id="ORD-BAD-UUID",
+            )
+        )
+
+
+def test_decode_purchase_payload_rejects_verbose_shape() -> None:
+    with pytest.raises(PayloadValidationError, match=r"\[task_uuid, order_id, ordered_at\]"):
+        decode_purchase_payload(
+            _encode_verbose_payload(
+                task_uuid="0e447c32-c0fb-4bb3-a383-2f68fffb261a",
+                order_id="ORD-VERBOSE",
+                wb_product_id=552892532,
             )
         )
 
@@ -934,42 +959,20 @@ def test_decode_review_payload_accepts_js_utc_timestamp() -> None:
     )
 
     assert str(decoded.task_uuid) == _TASK_UUID
-    assert decoded.wb_product_id == 552892532
     assert decoded.reviewed_at == datetime(2026, 3, 18, 10, 30, 0, 500000, tzinfo=UTC)
     assert decoded.rating == 5
     assert decoded.review_text == "отлично"
+    assert decoded.payload_version == 3
 
 
-@pytest.mark.asyncio
-async def test_submit_payload_rejects_wb_product_mismatch(db_pool) -> None:
-    buyer_service = BuyerService(db_pool)
-    fixture = await _prepare_reservable_listing(
-        db_pool,
-        slug="payload-mismatch-shop",
-        wb_product_id=5311,
-        reward_usdt=Decimal("8.000000"),
-        slot_count=1,
-        available_slots=1,
-    )
-    buyer = await buyer_service.bootstrap_buyer(
-        telegram_id=850011,
-        username="buyer_payload_mismatch",
-    )
-    reservation = await buyer_service.reserve_listing_slot(
-        buyer_user_id=buyer.user_id,
-        listing_id=fixture["listing_id"],
-        idempotency_key="reserve:buyer:850011:mismatch",
-    )
-
-    with pytest.raises(PayloadValidationError, match="wb_product_id"):
-        await buyer_service.submit_purchase_payload(
-            buyer_user_id=buyer.user_id,
-            assignment_id=reservation.assignment_id,
-            payload_base64=_encode_payload(
-                task_uuid=str(reservation.task_uuid),
-                order_id="ORD-PRODUCT-MISMATCH",
-                wb_product_id=999999,
-            ),
+def test_decode_review_payload_rejects_verbose_shape() -> None:
+    with pytest.raises(PayloadValidationError, match=r"\[task_uuid, reviewed_at, rating, review_text\]"):
+        decode_review_payload(
+            _encode_verbose_review_payload(
+                task_uuid="0e447c32-c0fb-4bb3-a383-2f68fffb261a",
+                wb_product_id=552892532,
+                review_text="отлично",
+            )
         )
 
 
@@ -1007,11 +1010,11 @@ async def test_submit_payload_rejects_task_uuid_mismatch(db_pool) -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_legacy_payload_rejects_task_uuid_mismatch(db_pool) -> None:
+async def test_submit_compact_payload_rejects_task_uuid_mismatch(db_pool) -> None:
     buyer_service = BuyerService(db_pool)
     fixture = await _prepare_reservable_listing(
         db_pool,
-        slug="payload-legacy-uuid-mismatch-shop",
+        slug="payload-compact-uuid-mismatch-shop",
         wb_product_id=5314,
         reward_usdt=Decimal("8.000000"),
         slot_count=1,
@@ -1019,21 +1022,21 @@ async def test_submit_legacy_payload_rejects_task_uuid_mismatch(db_pool) -> None
     )
     buyer = await buyer_service.bootstrap_buyer(
         telegram_id=850014,
-        username="buyer_payload_legacy_uuid_mismatch",
+        username="buyer_payload_compact_uuid_mismatch",
     )
     reservation = await buyer_service.reserve_listing_slot(
         buyer_user_id=buyer.user_id,
         listing_id=fixture["listing_id"],
-        idempotency_key="reserve:buyer:850014:legacy-uuid-mismatch",
+        idempotency_key="reserve:buyer:850014:compact-uuid-mismatch",
     )
 
     with pytest.raises(PayloadValidationError, match="task_uuid"):
         await buyer_service.submit_purchase_payload(
             buyer_user_id=buyer.user_id,
             assignment_id=reservation.assignment_id,
-            payload_base64=_encode_legacy_payload(
+            payload_base64=_encode_payload(
                 task_uuid=_TASK_UUID,
-                order_id="ORD-LEGACY-UUID-MISMATCH",
+                order_id="ORD-COMPACT-UUID-MISMATCH",
             ),
         )
 
@@ -1133,37 +1136,37 @@ async def test_duplicate_order_id_is_rejected_for_second_assignment(db_pool) -> 
 
 
 @pytest.mark.asyncio
-async def test_duplicate_legacy_order_id_is_rejected_for_second_assignment(db_pool) -> None:
+async def test_duplicate_compact_order_id_is_rejected_for_second_assignment(db_pool) -> None:
     buyer_service = BuyerService(db_pool)
     fixture = await _prepare_reservable_listing(
         db_pool,
-        slug="legacy-dup-shop",
+        slug="compact-dup-shop",
         wb_product_id=5402,
         reward_usdt=Decimal("9.000000"),
         slot_count=2,
         available_slots=2,
     )
-    buyer_one = await buyer_service.bootstrap_buyer(telegram_id=860011, username="buyer_legacy_dup_1")
-    buyer_two = await buyer_service.bootstrap_buyer(telegram_id=860012, username="buyer_legacy_dup_2")
+    buyer_one = await buyer_service.bootstrap_buyer(telegram_id=860011, username="buyer_compact_dup_1")
+    buyer_two = await buyer_service.bootstrap_buyer(telegram_id=860012, username="buyer_compact_dup_2")
 
     reservation_one = await buyer_service.reserve_listing_slot(
         buyer_user_id=buyer_one.user_id,
         listing_id=fixture["listing_id"],
-        idempotency_key="reserve:legacy-dup:1",
+        idempotency_key="reserve:compact-dup:1",
     )
     reservation_two = await buyer_service.reserve_listing_slot(
         buyer_user_id=buyer_two.user_id,
         listing_id=fixture["listing_id"],
-        idempotency_key="reserve:legacy-dup:2",
+        idempotency_key="reserve:compact-dup:2",
     )
 
-    payload = _encode_legacy_payload(
+    payload = _encode_payload(
         task_uuid=str(reservation_one.task_uuid),
-        order_id="ORD-LEGACY-DUP",
+        order_id="ORD-COMPACT-DUP",
     )
-    duplicate_payload = _encode_legacy_payload(
+    duplicate_payload = _encode_payload(
         task_uuid=str(reservation_two.task_uuid),
-        order_id="ORD-LEGACY-DUP",
+        order_id="ORD-COMPACT-DUP",
     )
     first_submit = await buyer_service.submit_purchase_payload(
         buyer_user_id=buyer_one.user_id,
@@ -1257,29 +1260,32 @@ async def test_valid_payload_moves_assignment_to_order_verified_and_is_idempoten
             order = await cur.fetchone()
             assert order["order_id"] == "ORD-SUCCESS"
             assert order["wb_product_id"] == 5501
-            assert order["payload_version"] == 3
-            assert order["raw_payload_json"][0] == 1
-            assert order["raw_payload_json"][1] == str(reservation.task_uuid)
+            assert order["payload_version"] == 4
+            assert order["raw_payload_json"] == [
+                str(reservation.task_uuid),
+                "ORD-SUCCESS",
+                "2026-02-26T12:00:00",
+            ]
 
 
 @pytest.mark.asyncio
-async def test_legacy_payload_moves_assignment_to_order_verified(db_pool) -> None:
+async def test_compact_payload_moves_assignment_to_order_verified(db_pool) -> None:
     buyer_service = BuyerService(db_pool)
     fixture = await _prepare_reservable_listing(
         db_pool,
-        slug="legacy-success-shop",
+        slug="compact-success-shop",
         wb_product_id=1001200877,
         reward_usdt=Decimal("11.000000"),
         slot_count=1,
         available_slots=1,
     )
-    buyer = await buyer_service.bootstrap_buyer(telegram_id=870011, username="buyer_legacy_success")
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870011, username="buyer_compact_success")
     reservation = await buyer_service.reserve_listing_slot(
         buyer_user_id=buyer.user_id,
         listing_id=fixture["listing_id"],
-        idempotency_key="reserve:legacy-success:1",
+        idempotency_key="reserve:compact-success:1",
     )
-    payload = _encode_legacy_payload(
+    payload = _encode_payload(
         task_uuid=str(reservation.task_uuid),
         order_id="f79879a08ff546b583859bd4ece7b90b",
         ordered_at="2026-05-11T09:45:20.141Z",
@@ -1314,8 +1320,8 @@ async def test_legacy_payload_moves_assignment_to_order_verified(db_pool) -> Non
             order = await cur.fetchone()
             assert order["order_id"] == "f79879a08ff546b583859bd4ece7b90b"
             assert order["wb_product_id"] == 1001200877
-            assert order["payload_version"] == 2
-            assert order["source"] == "plugin_base64_legacy"
+            assert order["payload_version"] == 4
+            assert order["source"] == "plugin_base64"
             assert order["raw_payload_json"] == [
                 str(reservation.task_uuid),
                 "f79879a08ff546b583859bd4ece7b90b",
@@ -1413,9 +1419,13 @@ async def test_submit_review_payload_moves_assignment_to_pickup_wait_unlock_and_
             assert review["wb_product_id"] == 5701
             assert review["rating"] == 5
             assert review["review_text"] == "Очень понравились, в размер и не садятся после стирки."
-            assert review["payload_version"] == 2
-            assert review["raw_payload_json"][0] == 2
-            assert review["raw_payload_json"][1] == str(reservation.task_uuid)
+            assert review["payload_version"] == 3
+            assert review["raw_payload_json"] == [
+                str(reservation.task_uuid),
+                "2026-03-18T10:30:00",
+                5,
+                "Очень понравились, в размер и не садятся после стирки.",
+            ]
 
 
 @pytest.mark.asyncio
