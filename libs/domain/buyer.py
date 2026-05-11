@@ -51,9 +51,12 @@ _RESERVATION_EXPIRED_STATUS = "expired_2h"
 _BUYER_CANCELLED_STATUS = "buyer_cancelled"
 _RESERVATION_TIMEOUT_IDEMPOTENCY_PREFIX = "reservation-expire"
 _PURCHASE_PAYLOAD_VERSION = 3
+_LEGACY_PURCHASE_PAYLOAD_VERSION = 2
 _REVIEW_PAYLOAD_VERSION = 2
 _PURCHASE_TOKEN_TYPE = 1
 _REVIEW_TOKEN_TYPE = 2
+_PURCHASE_PAYLOAD_SOURCE = "plugin_base64"
+_LEGACY_PURCHASE_PAYLOAD_SOURCE = "plugin_base64_legacy"
 _ORDERED_AT_FUTURE_TOLERANCE = timedelta(minutes=15)
 _REVIEW_STATUS_PENDING_MANUAL = "pending_manual"
 _REVIEW_STATUS_VERIFIED_AUTO = "verified_auto"
@@ -67,7 +70,8 @@ class DecodedPurchasePayload:
     task_uuid: UUID
     order_id: str
     ordered_at: datetime
-    wb_product_id: int
+    wb_product_id: int | None
+    source: str
     raw_payload_json: list[Any]
 
 
@@ -562,7 +566,7 @@ class BuyerService:
                     raise InvalidStateError("assignment cannot accept payload in current state")
                 if decoded.task_uuid != assignment["task_uuid"]:
                     raise PayloadValidationError("payload field 'task_uuid' does not match assignment")
-                if decoded.wb_product_id != assignment["wb_product_id"]:
+                if decoded.wb_product_id is not None and decoded.wb_product_id != assignment["wb_product_id"]:
                     raise PayloadValidationError("payload field 'wb_product_id' does not match assignment listing")
 
                 await cur.execute("SELECT now() AS current_time")
@@ -643,7 +647,7 @@ class BuyerService:
                             raw_payload_json,
                             source
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'plugin_base64')
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
                         (
                             assignment_id,
@@ -655,6 +659,7 @@ class BuyerService:
                             decoded.ordered_at,
                             decoded.payload_version,
                             Json(decoded.raw_payload_json),
+                            decoded.source,
                         ),
                     )
                 except UniqueViolation as exc:
@@ -1387,9 +1392,33 @@ def decode_purchase_payload(payload_base64: str) -> DecodedPurchasePayload:
 
     if not isinstance(parsed, list):
         raise PayloadValidationError("payload must be a JSON array")
+    if len(parsed) == 3:
+        # LEGACY token format; remove support in a future extension/backend contract cleanup.
+        task_uuid = _require_uuid(parsed[0], field_name="task_uuid")
+        order_id_raw = parsed[1]
+        if not isinstance(order_id_raw, str) or not order_id_raw.strip():
+            raise PayloadValidationError("payload field 'order_id' must be non-empty string")
+        order_id = order_id_raw.strip()
+
+        ordered_at_raw = parsed[2]
+        if not isinstance(ordered_at_raw, str):
+            raise PayloadValidationError("payload field 'ordered_at' must be ISO datetime string")
+        ordered_at = _parse_iso_datetime_utc(ordered_at_raw, field_name="ordered_at")
+
+        return DecodedPurchasePayload(
+            payload_version=_LEGACY_PURCHASE_PAYLOAD_VERSION,
+            task_uuid=task_uuid,
+            order_id=order_id,
+            ordered_at=ordered_at,
+            wb_product_id=None,
+            source=_LEGACY_PURCHASE_PAYLOAD_SOURCE,
+            raw_payload_json=parsed,
+        )
+
     if len(parsed) != 5:
         raise PayloadValidationError(
-            "payload must contain [token_type, task_uuid, wb_product_id, order_id, ordered_at]"
+            "payload must contain [token_type, task_uuid, wb_product_id, order_id, ordered_at] "
+            "or LEGACY [task_uuid, order_id, ordered_at]"
         )
 
     token_type = _require_positive_int(parsed[0], field_name="token_type")
@@ -1415,6 +1444,7 @@ def decode_purchase_payload(payload_base64: str) -> DecodedPurchasePayload:
         order_id=order_id,
         ordered_at=ordered_at,
         wb_product_id=wb_product_id,
+        source=_PURCHASE_PAYLOAD_SOURCE,
         raw_payload_json=parsed,
     )
 

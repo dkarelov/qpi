@@ -28,6 +28,16 @@ def _encode_payload(
     return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
 
 
+def _encode_legacy_payload(
+    *,
+    task_uuid: str = _TASK_UUID,
+    order_id: str,
+    ordered_at: str = "2026-02-26T12:00:00",
+) -> str:
+    payload: list[Any] = [task_uuid, order_id, ordered_at]
+    return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+
+
 def _encode_review_payload(
     *,
     task_uuid: str = _TASK_UUID,
@@ -887,6 +897,33 @@ def test_decode_purchase_payload_normalizes_timezone_offset_to_utc() -> None:
     assert decoded.ordered_at == datetime(2026, 2, 26, 12, 0, 0, tzinfo=UTC)
 
 
+def test_decode_purchase_payload_accepts_legacy_shape() -> None:
+    decoded = decode_purchase_payload(
+        _encode_legacy_payload(
+            task_uuid="0e447c32-c0fb-4bb3-a383-2f68fffb261a",
+            order_id="f79879a08ff546b583859bd4ece7b90b",
+            ordered_at="2026-05-11T09:45:20.141Z",
+        )
+    )
+
+    assert str(decoded.task_uuid) == "0e447c32-c0fb-4bb3-a383-2f68fffb261a"
+    assert decoded.wb_product_id is None
+    assert decoded.order_id == "f79879a08ff546b583859bd4ece7b90b"
+    assert decoded.ordered_at == datetime(2026, 5, 11, 9, 45, 20, 141000, tzinfo=UTC)
+    assert decoded.payload_version == 2
+    assert decoded.source == "plugin_base64_legacy"
+
+
+def test_decode_purchase_payload_rejects_malformed_legacy_task_uuid() -> None:
+    with pytest.raises(PayloadValidationError, match="task_uuid"):
+        decode_purchase_payload(
+            _encode_legacy_payload(
+                task_uuid="not-a-uuid",
+                order_id="ORD-LEGACY-BAD-UUID",
+            )
+        )
+
+
 def test_decode_review_payload_accepts_js_utc_timestamp() -> None:
     decoded = decode_review_payload(
         _encode_review_payload(
@@ -965,6 +1002,38 @@ async def test_submit_payload_rejects_task_uuid_mismatch(db_pool) -> None:
                 task_uuid=_TASK_UUID,
                 order_id="ORD-UUID-MISMATCH",
                 wb_product_id=5312,
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_submit_legacy_payload_rejects_task_uuid_mismatch(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="payload-legacy-uuid-mismatch-shop",
+        wb_product_id=5314,
+        reward_usdt=Decimal("8.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+    buyer = await buyer_service.bootstrap_buyer(
+        telegram_id=850014,
+        username="buyer_payload_legacy_uuid_mismatch",
+    )
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:buyer:850014:legacy-uuid-mismatch",
+    )
+
+    with pytest.raises(PayloadValidationError, match="task_uuid"):
+        await buyer_service.submit_purchase_payload(
+            buyer_user_id=buyer.user_id,
+            assignment_id=reservation.assignment_id,
+            payload_base64=_encode_legacy_payload(
+                task_uuid=_TASK_UUID,
+                order_id="ORD-LEGACY-UUID-MISMATCH",
             ),
         )
 
@@ -1064,6 +1133,63 @@ async def test_duplicate_order_id_is_rejected_for_second_assignment(db_pool) -> 
 
 
 @pytest.mark.asyncio
+async def test_duplicate_legacy_order_id_is_rejected_for_second_assignment(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="legacy-dup-shop",
+        wb_product_id=5402,
+        reward_usdt=Decimal("9.000000"),
+        slot_count=2,
+        available_slots=2,
+    )
+    buyer_one = await buyer_service.bootstrap_buyer(telegram_id=860011, username="buyer_legacy_dup_1")
+    buyer_two = await buyer_service.bootstrap_buyer(telegram_id=860012, username="buyer_legacy_dup_2")
+
+    reservation_one = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer_one.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:legacy-dup:1",
+    )
+    reservation_two = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer_two.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:legacy-dup:2",
+    )
+
+    payload = _encode_legacy_payload(
+        task_uuid=str(reservation_one.task_uuid),
+        order_id="ORD-LEGACY-DUP",
+    )
+    duplicate_payload = _encode_legacy_payload(
+        task_uuid=str(reservation_two.task_uuid),
+        order_id="ORD-LEGACY-DUP",
+    )
+    first_submit = await buyer_service.submit_purchase_payload(
+        buyer_user_id=buyer_one.user_id,
+        assignment_id=reservation_one.assignment_id,
+        payload_base64=payload,
+    )
+    assert first_submit.changed is True
+
+    with pytest.raises(DuplicateOrderError):
+        await buyer_service.submit_purchase_payload(
+            buyer_user_id=buyer_two.user_id,
+            assignment_id=reservation_two.assignment_id,
+            payload_base64=duplicate_payload,
+        )
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT status FROM assignments WHERE id = %s",
+                (reservation_two.assignment_id,),
+            )
+            assignment_two = await cur.fetchone()
+            assert assignment_two["status"] == "reserved"
+
+
+@pytest.mark.asyncio
 async def test_valid_payload_moves_assignment_to_order_verified_and_is_idempotent(db_pool) -> None:
     buyer_service = BuyerService(db_pool)
     fixture = await _prepare_reservable_listing(
@@ -1134,6 +1260,67 @@ async def test_valid_payload_moves_assignment_to_order_verified_and_is_idempoten
             assert order["payload_version"] == 3
             assert order["raw_payload_json"][0] == 1
             assert order["raw_payload_json"][1] == str(reservation.task_uuid)
+
+
+@pytest.mark.asyncio
+async def test_legacy_payload_moves_assignment_to_order_verified(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="legacy-success-shop",
+        wb_product_id=1001200877,
+        reward_usdt=Decimal("11.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870011, username="buyer_legacy_success")
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:legacy-success:1",
+    )
+    payload = _encode_legacy_payload(
+        task_uuid=str(reservation.task_uuid),
+        order_id="f79879a08ff546b583859bd4ece7b90b",
+        ordered_at="2026-05-11T09:45:20.141Z",
+    )
+
+    result = await buyer_service.submit_purchase_payload(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        payload_base64=payload,
+    )
+
+    assert result.changed is True
+    assert result.status == "order_verified"
+    assert result.order_id == "f79879a08ff546b583859bd4ece7b90b"
+    assert result.wb_product_id == 1001200877
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT
+                    order_id,
+                    wb_product_id,
+                    payload_version,
+                    raw_payload_json,
+                    source
+                FROM buyer_orders
+                WHERE assignment_id = %s
+                """,
+                (reservation.assignment_id,),
+            )
+            order = await cur.fetchone()
+            assert order["order_id"] == "f79879a08ff546b583859bd4ece7b90b"
+            assert order["wb_product_id"] == 1001200877
+            assert order["payload_version"] == 2
+            assert order["source"] == "plugin_base64_legacy"
+            assert order["raw_payload_json"] == [
+                str(reservation.task_uuid),
+                "f79879a08ff546b583859bd4ece7b90b",
+                "2026-05-11T09:45:20.141Z",
+            ]
 
 
 @pytest.mark.asyncio
