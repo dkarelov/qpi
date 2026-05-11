@@ -5,6 +5,7 @@ This repository includes the marketplace bot runtime, Cloud Functions, plain-SQL
 ## Current Marketplace Notes
 
 - Buyer setup tokens keep their typed/product-bearing format; buyer order and review confirmation tokens are compact and use the immutable assignment `task_uuid`.
+- Confirmation tokens that include `token_type` or `wb_product_id` are rejected; those fields belong only to setup tokens.
 - Cashback unlock now requires both WB pickup and buyer review confirmation.
 - Automatic review verification only succeeds when the token matches the assignment, the review score is `5`, and every required review phrase is present in the review text.
 - Failed automatic review verification leaves the purchase in `picked_up_wait_review`; the buyer must either correct the review and resubmit the token or contact support.

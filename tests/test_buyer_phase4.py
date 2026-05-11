@@ -22,9 +22,7 @@ def _encode_payload(
     task_uuid: str = _TASK_UUID,
     order_id: str,
     ordered_at: str = "2026-02-26T12:00:00",
-    wb_product_id: int | None = None,
 ) -> str:
-    del wb_product_id
     payload: list[Any] = [task_uuid, order_id, ordered_at]
     return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
 
@@ -43,12 +41,10 @@ def _encode_verbose_payload(
 def _encode_review_payload(
     *,
     task_uuid: str = _TASK_UUID,
-    wb_product_id: int | None = None,
     reviewed_at: str = "2026-03-18T10:30:00",
     rating: int = 5,
     review_text: str = "great",
 ) -> str:
-    del wb_product_id
     payload: list[Any] = [task_uuid, reviewed_at, rating, review_text]
     return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
 
@@ -415,7 +411,6 @@ async def test_catalog_hides_products_already_purchased_by_buyer(db_pool) -> Non
         payload_base64=_encode_payload(
             task_uuid=str(reservation.task_uuid),
             order_id="repeat-filter-order",
-            wb_product_id=7001,
         ),
     )
 
@@ -504,7 +499,6 @@ async def test_reserve_rejects_product_already_purchased_by_buyer(db_pool) -> No
         payload_base64=_encode_payload(
             task_uuid=str(first_reservation.task_uuid),
             order_id="repeat-reserve-order",
-            wb_product_id=7101,
         ),
     )
 
@@ -887,7 +881,6 @@ def test_decode_purchase_payload_accepts_js_utc_timestamp() -> None:
         _encode_payload(
             order_id="ORD-UTC-Z",
             ordered_at="2026-03-10T20:32:23.807Z",
-            wb_product_id=552892532,
         )
     )
 
@@ -903,7 +896,6 @@ def test_decode_purchase_payload_normalizes_timezone_offset_to_utc() -> None:
         _encode_payload(
             order_id="ORD-OFFSET",
             ordered_at="2026-02-26T15:00:00+03:00",
-            wb_product_id=552892532,
         )
     )
 
@@ -952,7 +944,6 @@ def test_decode_purchase_payload_rejects_verbose_shape() -> None:
 def test_decode_review_payload_accepts_js_utc_timestamp() -> None:
     decoded = decode_review_payload(
         _encode_review_payload(
-            wb_product_id=552892532,
             reviewed_at="2026-03-18T10:30:00.500Z",
             review_text="отлично",
         )
@@ -1004,7 +995,6 @@ async def test_submit_payload_rejects_task_uuid_mismatch(db_pool) -> None:
             payload_base64=_encode_payload(
                 task_uuid=_TASK_UUID,
                 order_id="ORD-UUID-MISMATCH",
-                wb_product_id=5312,
             ),
         )
 
@@ -1071,7 +1061,6 @@ async def test_submit_payload_rejects_future_ordered_at(db_pool) -> None:
                 task_uuid=str(reservation.task_uuid),
                 order_id="ORD-FUTURE",
                 ordered_at=future_ordered_at,
-                wb_product_id=5313,
             ),
         )
 
@@ -1104,12 +1093,10 @@ async def test_duplicate_order_id_is_rejected_for_second_assignment(db_pool) -> 
     payload = _encode_payload(
         task_uuid=str(reservation_one.task_uuid),
         order_id="ORD-DUP",
-        wb_product_id=5401,
     )
     duplicate_payload = _encode_payload(
         task_uuid=str(reservation_two.task_uuid),
         order_id="ORD-DUP",
-        wb_product_id=5401,
     )
     first_submit = await buyer_service.submit_purchase_payload(
         buyer_user_id=buyer_one.user_id,
@@ -1212,7 +1199,6 @@ async def test_valid_payload_moves_assignment_to_order_verified_and_is_idempoten
     payload = _encode_payload(
         task_uuid=str(reservation.task_uuid),
         order_id="ORD-SUCCESS",
-        wb_product_id=5501,
     )
 
     first = await buyer_service.submit_purchase_payload(
@@ -1355,7 +1341,6 @@ async def test_submit_review_payload_moves_assignment_to_pickup_wait_unlock_and_
         payload_base64=_encode_payload(
             task_uuid=str(reservation.task_uuid),
             order_id="ORD-REVIEW",
-            wb_product_id=5701,
         ),
     )
 
@@ -1375,7 +1360,6 @@ async def test_submit_review_payload_moves_assignment_to_pickup_wait_unlock_and_
 
     payload = _encode_review_payload(
         task_uuid=str(reservation.task_uuid),
-        wb_product_id=5701,
         review_text="Очень понравились, в размер и не садятся после стирки.",
     )
     first = await buyer_service.submit_review_payload(
@@ -1452,7 +1436,6 @@ async def test_submit_review_payload_stays_blocked_until_corrected(db_pool) -> N
         payload_base64=_encode_payload(
             task_uuid=str(reservation.task_uuid),
             order_id="ORD-REVIEW-FIX",
-            wb_product_id=5702,
         ),
     )
 
@@ -1475,7 +1458,6 @@ async def test_submit_review_payload_stays_blocked_until_corrected(db_pool) -> N
         assignment_id=reservation.assignment_id,
         payload_base64=_encode_review_payload(
             task_uuid=str(reservation.task_uuid),
-            wb_product_id=5702,
             review_text="Очень понравились, в размер.",
         ),
     )
@@ -1490,7 +1472,6 @@ async def test_submit_review_payload_stays_blocked_until_corrected(db_pool) -> N
         assignment_id=reservation.assignment_id,
         payload_base64=_encode_review_payload(
             task_uuid=str(reservation.task_uuid),
-            wb_product_id=5702,
             review_text="Очень понравились, в размер и не садятся после стирки.",
         ),
     )
@@ -1550,7 +1531,6 @@ async def test_admin_verify_review_payload_overrides_pending_manual(db_pool) -> 
         payload_base64=_encode_payload(
             task_uuid=str(reservation.task_uuid),
             order_id="ORD-REVIEW-ADMIN",
-            wb_product_id=5703,
         ),
     )
 
@@ -1579,7 +1559,6 @@ async def test_admin_verify_review_payload_overrides_pending_manual(db_pool) -> 
         assignment_id=reservation.assignment_id,
         payload_base64=_encode_review_payload(
             task_uuid=str(reservation.task_uuid),
-            wb_product_id=5703,
             rating=4,
             review_text="Очень понравились, в размер.",
         ),
@@ -1591,7 +1570,6 @@ async def test_admin_verify_review_payload_overrides_pending_manual(db_pool) -> 
         assignment_id=reservation.assignment_id,
         payload_base64=_encode_review_payload(
             task_uuid=str(reservation.task_uuid),
-            wb_product_id=5703,
             rating=4,
             review_text="Очень понравились, в размер.",
         ),
@@ -1687,7 +1665,6 @@ async def test_buyer_command_processor_smoke_flow(db_pool) -> None:
     payload = _encode_payload(
         task_uuid=str(assignment_row["task_uuid"]),
         order_id="ORD-CMD",
-        wb_product_id=5601,
     )
 
     submit_response = await processor.handle(
@@ -1763,7 +1740,6 @@ async def test_buyer_command_processor_submit_review_flow(db_pool) -> None:
 
     payload = _encode_review_payload(
         task_uuid=str(assignment_row["task_uuid"]),
-        wb_product_id=5602,
         review_text="Очень понравились, в размер и не садятся после стирки.",
     )
     submit_response = await processor.handle(

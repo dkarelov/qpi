@@ -1556,7 +1556,7 @@ def _purchase_payload_validation_text(exc: PayloadValidationError) -> str:
         "Токен-подтверждение не принят.\n"
         "Проверьте, что вы скопировали его полностью из расширения для этой покупки."
     )
-    if any(token in details for token in ("task_uuid", "wb_product_id", "token_type")):
+    if "task_uuid" in details:
         return f"{base}\nПохоже, токен относится к другой покупке или устарел."
     if details and "timezone" in details:
         return f"{base}\nПроверьте дату и время на устройстве и сформируйте токен заново."
@@ -1566,7 +1566,7 @@ def _purchase_payload_validation_text(exc: PayloadValidationError) -> str:
 def _review_payload_validation_text(exc: PayloadValidationError) -> str:
     details = str(exc).strip().lower()
     base = "Токен отзыва не принят.\nПроверьте, что вы скопировали его полностью из расширения для этой покупки."
-    if any(token in details for token in ("task_uuid", "wb_product_id", "token_type")):
+    if "task_uuid" in details:
         return f"{base}\nПохоже, токен относится к другой покупке или устарел."
     if "timezone" in details:
         return f"{base}\nПроверьте дату и время на устройстве и сформируйте токен заново."

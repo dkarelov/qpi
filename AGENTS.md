@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-05-07 UTC
+Last updated: 2026-05-11 UTC
 
 ## 0. Completion Gate
 
@@ -221,6 +221,7 @@ Persistence and schema:
   - `[2, task_uuid, wb_product_id, review_phrase_1?, review_phrase_2?]`, where phrases are omitted when the seller did not provide them.
 - Buyer submits review confirmation token (base64 JSON array):
   - `[task_uuid, reviewed_at, review_score, review_text]`, where `reviewed_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
+- Order and review confirmation tokens are compact-only; token type and `wb_product_id` are derived from the locked assignment and are not accepted in confirmation payloads.
 - Verification token must be submitted within 4 hours of reservation.
 - `order_id` is globally unique (`1 order_id = 1 slot`).
 - Review confirmation is mandatory after pickup. Without it, cashback stays frozen even after the unlock timer has passed.

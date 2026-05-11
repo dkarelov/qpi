@@ -16,11 +16,9 @@ from tests.helpers import create_account, create_listing, create_shop, create_us
 def _encode_payload(
     *,
     task_uuid: str,
-    wb_product_id: int,
     order_id: str,
     ordered_at: datetime,
 ) -> str:
-    del wb_product_id
     payload = [
         task_uuid,
         order_id,
@@ -167,7 +165,6 @@ async def _prepare_order_verified_assignment(
                 )
     payload_base64 = _encode_payload(
         task_uuid=str(reservation.task_uuid),
-        wb_product_id=wb_product_id,
         order_id=order_id,
         ordered_at=ordered_at,
     )
