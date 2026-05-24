@@ -787,6 +787,7 @@ class TelegramWebhookRuntime:
                 display_rub_per_usdt=self._settings.display_rub_per_usdt,
                 fx_rate_service=self._fx_rate_service,
                 fx_rate_ttl_seconds=self._settings.fx_rate_ttl_seconds,
+                listing_deep_link_builder=self._build_listing_deep_link,
             )
             self._seller_listing_creation_flow_rate = self._settings.display_rub_per_usdt
             self._buyer_processor = BuyerCommandProcessor(

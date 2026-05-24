@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -9,6 +10,7 @@ from unittest.mock import AsyncMock
 import psycopg
 import pytest
 
+import services.bot_api.telegram_runtime as telegram_runtime_module
 from libs.config.settings import BotApiSettings
 from libs.domain.buyer import BuyerService
 from libs.domain.seller import SellerService
@@ -76,6 +78,57 @@ async def test_runtime_post_init_fails_when_required_schema_columns_are_missing(
     assert "users.is_seller" in runtime._startup_error
     assert "assignments.wb_product_id" in runtime._startup_error
     assert runtime._health_payload()["status"] == "startup_failed"
+
+
+@pytest.mark.asyncio
+async def test_runtime_post_init_wires_listing_deep_link_builders(monkeypatch) -> None:
+    class _FakeDepositIntentService:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def ensure_default_shard(self, **kwargs) -> None:
+            pass
+
+    class _FakeNotificationService:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def sync_admin_users(self, *, telegram_ids) -> None:
+            pass
+
+    monkeypatch.setattr(telegram_runtime_module, "DepositIntentService", _FakeDepositIntentService)
+    monkeypatch.setattr(telegram_runtime_module, "NotificationService", _FakeNotificationService)
+
+    runtime = _build_runtime()
+    runtime._settings.webhook_set_enabled = False
+    runtime._db_pool = SimpleNamespace(
+        pool=object(),
+        open=AsyncMock(return_value=None),
+        check=AsyncMock(return_value=None),
+        close=AsyncMock(return_value=None),
+    )
+    runtime._assert_runtime_schema_compatibility = AsyncMock(return_value=None)
+
+    async def _idle_notification_loop(*, bot) -> None:
+        await asyncio.Event().wait()
+
+    runtime._notification_dispatch_loop = _idle_notification_loop
+    application = SimpleNamespace(
+        bot=SimpleNamespace(
+            get_me=AsyncMock(return_value=SimpleNamespace(id=123, username="qpi_bot")),
+            set_my_commands=AsyncMock(return_value=None),
+            set_chat_menu_button=AsyncMock(return_value=None),
+        )
+    )
+
+    await runtime._post_init(application)
+
+    assert runtime._ready is True
+    assert runtime._seller_processor is not None
+    assert runtime._seller_listing_creation_flow is not None
+    assert runtime._seller_listing_creation_flow._build_listing_deep_link(21).endswith("start=listing_21")
+
+    await runtime._post_shutdown(application)
 
 
 @pytest.mark.asyncio
