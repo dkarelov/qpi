@@ -3804,6 +3804,22 @@ class TelegramWebhookRuntime:
                 query_message=query_message,
                 message=None,
                 default_role=_ROLE_BUYER,
+                result=await self._buyer_marketplace_flow().start_review_instruction(
+                    buyer_user_id=buyer.user_id,
+                    assignment_id=assignment_id,
+                ),
+            )
+            return
+        if action == "submit_review_payload_input_prompt":
+            try:
+                assignment_id = int(payload.entity_id) if payload.entity_id else None
+            except ValueError:
+                assignment_id = None
+            await self._apply_transport_effects(
+                context=context,
+                query_message=query_message,
+                message=None,
+                default_role=_ROLE_BUYER,
                 result=self._buyer_marketplace_flow().start_review_payload_prompt(assignment_id=assignment_id),
             )
             return

@@ -880,9 +880,19 @@ async def test_phase10_e2e_buyer_review_prompt_and_submit_flow() -> None:
     assert "Нужно оставить отзыв" in purchase_text
     assert any("✍️ Ввести токен отзыва" in _markup_labels(event) for event in purchase_events)
 
-    review_prompt_events = await harness.callback(
+    review_instruction_events = await harness.callback(
         flow="buyer",
         action="submit_review_payload_prompt",
+        entity_id="31",
+    )
+    review_instruction_text = "\n".join(_event_texts(review_instruction_events))
+    assert "Оставьте отзыв на 5 звезд на сайте ВБ" in review_instruction_text
+    assert "Фразы для отзыва:</b> в размер; не садятся после стирки" in review_instruction_text
+    assert any("✍️ Ввести токен отзыва" in _markup_labels(event) for event in review_instruction_events)
+
+    review_prompt_events = await harness.callback(
+        flow="buyer",
+        action="submit_review_payload_input_prompt",
         entity_id="31",
     )
     assert any(

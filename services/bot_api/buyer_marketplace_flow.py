@@ -735,7 +735,7 @@ class BuyerMarketplaceFlow:
                     [
                         _button(
                             "✍️ Ввести токен отзыва",
-                            action="submit_review_payload_prompt",
+                            action="submit_review_payload_input_prompt",
                             entity_id=item.assignment_id,
                         )
                     ]
@@ -779,6 +779,65 @@ class BuyerMarketplaceFlow:
                         cta="Вставьте токен из расширения следующим сообщением ниже.",
                     ),
                     buttons=_rows([[_button("↩️ Назад к покупкам", action="assignments")]]),
+                    parse_mode="HTML",
+                ),
+            )
+        )
+
+    async def start_review_instruction(self, *, buyer_user_id: int, assignment_id: int | None) -> FlowResult:
+        if assignment_id is None:
+            return _missing_assignment_result(text="Не удалось открыть покупку. Попробуйте снова.")
+        assignments = _buyer_visible_assignments(
+            await self._adapter.list_buyer_assignments(buyer_user_id=buyer_user_id)
+        )
+        assignment = next((item for item in assignments if item.assignment_id == assignment_id), None)
+        if assignment is None:
+            return _missing_assignment_result(text="Покупка не найдена.")
+        if assignment.status != "picked_up_wait_review":
+            return _missing_assignment_result(text="Для этой покупки отзыв сейчас не требуется.")
+
+        display_title = _listing_display_title(
+            display_title=assignment.display_title,
+            fallback=assignment.search_phrase,
+        )
+        lines = [
+            _entity_block_heading_with_ref(
+                label="Покупка",
+                ref=format_assignment_ref(assignment.assignment_id),
+            ),
+            f"<b>Товар:</b> {html.escape(display_title)}",
+            f"<b>Магазин:</b> {html.escape(_buyer_shop_title(assignment))}",
+        ]
+        if getattr(assignment, "order_id", None):
+            lines.append(f"<b>Номер заказа:</b> {html.escape(assignment.order_id)}")
+        lines.extend(
+            [
+                f"<b>Статус:</b> {buyer_purchase_status_badge(assignment.status)}",
+                buyer_review_instruction_text(assignment, include_title=False),
+            ]
+        )
+        return FlowResult(
+            effects=(
+                ReplaceText(
+                    text=_screen_text(
+                        title="Отзыв",
+                        cta="Сначала получите токен отзыва в расширении, затем отправьте токен-подтверждение.",
+                        lines=lines,
+                        separate_blocks=True,
+                    ),
+                    buttons=_rows(
+                        [
+                            [
+                                _button(
+                                    "✍️ Ввести токен отзыва",
+                                    action="submit_review_payload_input_prompt",
+                                    entity_id=assignment.assignment_id,
+                                )
+                            ],
+                            [_button("↩️ Назад к покупкам", action="assignments")],
+                            [_knowledge_button(topic="purchases")],
+                        ]
+                    ),
                     parse_mode="HTML",
                 ),
             )

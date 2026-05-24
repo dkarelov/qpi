@@ -446,9 +446,40 @@ async def test_buyer_marketplace_flow_purchase_list_shows_reserved_and_pending_m
     assert "Ввести токен-подтверждение" in labels
     assert "🚫 Отказаться от покупки" in labels
     assert "✍️ Ввести токен отзыва" in labels
+    review_buttons = [button for row in screen.buttons for button in row if button.text == "✍️ Ввести токен отзыва"]
+    assert review_buttons[0].action == "submit_review_payload_input_prompt"
 
 
-def test_buyer_marketplace_flow_starts_sensitive_purchase_and_review_prompts() -> None:
+@pytest.mark.asyncio
+async def test_buyer_marketplace_flow_review_instruction_shows_setup_token_before_input_prompt() -> None:
+    flow, _ = _flow(
+        FakeBuyerMarketplaceAdapter(
+            assignments=[
+                _assignment(
+                    status="picked_up_wait_review",
+                    review_status="pending_manual",
+                    review_reason="missing required phrase",
+                )
+            ]
+        )
+    )
+
+    result = await flow.start_review_instruction(buyer_user_id=202, assignment_id=31)
+
+    screen = result.effects[0]
+    assert isinstance(screen, ReplaceText)
+    assert "<b>Отзыв</b>" in screen.text
+    assert "<b>Покупка</b> · <code>P31</code>" in screen.text
+    assert "Оставьте отзыв на 5 звезд на сайте ВБ" in screen.text
+    assert "Фразы для отзыва:</b> плотная бумага; белая" in screen.text
+    assert "<code>" in screen.text
+    review_buttons = [button for row in screen.buttons for button in row if button.text == "✍️ Ввести токен отзыва"]
+    assert len(review_buttons) == 1
+    assert review_buttons[0].action == "submit_review_payload_input_prompt"
+    assert review_buttons[0].entity_id == "31"
+
+
+def test_buyer_marketplace_flow_starts_sensitive_purchase_and_review_input_prompts() -> None:
     flow, _ = _flow()
 
     purchase = flow.start_purchase_payload_prompt(assignment_id=31)

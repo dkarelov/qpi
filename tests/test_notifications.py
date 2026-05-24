@@ -91,7 +91,7 @@ def test_render_assignment_reservation_expired_notification_has_buyer_cta() -> N
     assert rendered.cta_text == "📋 Покупки"
 
 
-def test_render_assignment_picked_up_buyer_review_required_links_to_review_prompt() -> None:
+def test_render_assignment_picked_up_buyer_review_required_links_to_review_instruction() -> None:
     rendered = _render_notification(
         NotificationOutboxItem(
             notification_id=12,
