@@ -209,6 +209,29 @@ async def test_shop_deeplink_resolution_and_listing_visibility(db_pool) -> None:
 
 
 @pytest.mark.asyncio
+async def test_listing_deeplink_resolution_returns_listing_and_shop_context(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="listing-link-shop",
+        wb_product_id=5621,
+        reward_usdt=Decimal("2.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+
+    resolved = await buyer_service.resolve_active_listing_deep_link(
+        listing_id=fixture["listing_id"],
+    )
+
+    assert resolved.shop_id == fixture["shop_id"]
+    assert resolved.shop_slug == "listing-link-shop"
+    assert resolved.shop_title == "Shop listing-link-shop"
+    assert resolved.listing.listing_id == fixture["listing_id"]
+    assert resolved.listing.wb_product_id == 5621
+
+
+@pytest.mark.asyncio
 async def test_shop_catalog_hides_active_listings_without_free_slots(db_pool) -> None:
     buyer_service = BuyerService(db_pool)
 
@@ -1647,6 +1670,15 @@ async def test_buyer_command_processor_smoke_flow(db_pool) -> None:
     assert 'товар="' in start_response.text
     assert "~600 ₽" in start_response.text
     assert "USDT" not in start_response.text
+
+    listing_link_response = await processor.handle(
+        telegram_id=880001,
+        username="buyer_cmd",
+        text=f"/start listing_{fixture['listing_id']}",
+    )
+    assert "Товар:" in listing_link_response.text
+    assert "Магазин: Shop cmd-shop (cmd-shop)" in listing_link_response.text
+    assert f"Чтобы занять слот: /reserve {fixture['listing_id']}" in listing_link_response.text
 
     reserve_response = await processor.handle(
         telegram_id=880001,

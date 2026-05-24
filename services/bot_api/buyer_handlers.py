@@ -12,6 +12,7 @@ from libs.domain.errors import (
     NotFoundError,
     PayloadValidationError,
 )
+from services.bot_api.deep_links import build_shop_deep_link, parse_start_payload
 
 
 @dataclass(frozen=True)
@@ -57,13 +58,17 @@ class BuyerCommandProcessor:
             buyer_user_id = buyer.user_id
 
             if command == "/start":
-                if args.startswith("shop_"):
-                    slug = args[len("shop_") :].strip()
-                    if slug:
-                        return await self._render_shop_catalog(
-                            slug=slug,
-                            buyer_user_id=buyer_user_id,
-                        )
+                start_payload = parse_start_payload(args)
+                if start_payload is not None and start_payload.kind == "shop":
+                    return await self._render_shop_catalog(
+                        slug=str(start_payload.value),
+                        buyer_user_id=buyer_user_id,
+                    )
+                if start_payload is not None and start_payload.kind == "listing":
+                    return await self._render_listing_deep_link(
+                        listing_id=int(start_payload.value),
+                        buyer_user_id=buyer_user_id,
+                    )
                 return BuyerCommandResponse(
                     text=(
                         "Роль: покупатель.\n"
@@ -226,7 +231,7 @@ class BuyerCommandProcessor:
             slug=slug,
             buyer_user_id=buyer_user_id,
         )
-        deep_link = f"https://t.me/{self._bot_username}?start=shop_{shop.slug}"
+        deep_link = build_shop_deep_link(bot_username=self._bot_username, slug=shop.slug)
         if not listings:
             return BuyerCommandResponse(
                 text=(f"Магазин: {shop.title} ({shop.slug})\nАктивных листингов пока нет.\nСсылка: {deep_link}")
@@ -245,6 +250,34 @@ class BuyerCommandProcessor:
                 f"Магазин: {shop.title} ({shop.slug})\n"
                 f"Ссылка: {deep_link}\n"
                 "Активные листинги:\n" + "\n".join(lines) + "\n\nЧтобы занять слот: /reserve <listing_id>"
+            )
+        )
+
+    async def _render_listing_deep_link(
+        self,
+        *,
+        listing_id: int,
+        buyer_user_id: int,
+    ) -> BuyerCommandResponse:
+        resolved = await self._buyer_service.resolve_active_listing_deep_link(
+            listing_id=listing_id,
+            buyer_user_id=buyer_user_id,
+        )
+        await self._buyer_service.touch_saved_shop(
+            buyer_user_id=buyer_user_id,
+            shop_id=resolved.shop_id,
+        )
+        item = resolved.listing
+        display_title = (item.display_title or item.search_phrase).strip()
+        price_text = f"{item.reference_price_rub} ₽" if item.reference_price_rub else "—"
+        return BuyerCommandResponse(
+            text=(
+                f"Товар: {display_title}\n"
+                f"Магазин: {resolved.shop_title} ({resolved.shop_slug})\n"
+                f'Поиск: "{item.search_phrase}"\n'
+                f"Кэшбэк: {self._format_buyer_reward(item.reward_usdt)}\n"
+                f"Цена: {price_text}\n\n"
+                f"Чтобы занять слот: /reserve {item.listing_id}"
             )
         )
 

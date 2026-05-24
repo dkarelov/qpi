@@ -286,7 +286,7 @@ def test_listing_created_prompt_activation_explains_activation_effect() -> None:
     )
 
     assert "Активировать объявление сейчас?" in text
-    assert "отправьте покупателям ссылку на магазин" in text
+    assert "отправьте покупателям ссылку на товар" in text
     assert "Товар:</b> Джинсы женские прямые" in text
     assert "Источник цены:</b> рассчитана по заказам за 30 дней." in text
     assert "Артикул продавца:</b> sku-1" in text

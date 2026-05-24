@@ -184,6 +184,7 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
         list_active_listings_by_shop_slug=AsyncMock(
             return_value=[
                 _ns(
+                    shop_id=11,
                     listing_id=21,
                     wb_product_id=552892532,
                     display_title="Бумага A4 для принтера",
@@ -199,6 +200,29 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
                     reward_usdt=Decimal("0.250000"),
                 )
             ]
+        ),
+        resolve_active_listing_deep_link=AsyncMock(
+            return_value=_ns(
+                shop_id=11,
+                shop_slug="shop_tushenka",
+                shop_title="Тушенка",
+                listing=_ns(
+                    shop_id=11,
+                    listing_id=21,
+                    wb_product_id=552892532,
+                    display_title="Бумага A4 для принтера",
+                    wb_source_title="BRAUBERG Бумага A4 для принтера",
+                    wb_subject_name="Бумага офисная",
+                    wb_brand_name="BRAUBERG",
+                    wb_description="Белая бумага для офиса",
+                    wb_photo_url="https://example.com/photo.webp",
+                    wb_tech_sizes=["0"],
+                    wb_characteristics=[{"name": "Плотность", "value": "80 г/м2"}],
+                    reference_price_rub=400,
+                    search_phrase="бумага а4 для принтера",
+                    reward_usdt=Decimal("0.250000"),
+                ),
+            )
         ),
         touch_saved_shop=AsyncMock(return_value=None),
         list_saved_shops=AsyncMock(return_value=[]),
@@ -495,6 +519,8 @@ async def test_phase10_e2e_seller_listing_create_and_activate_flow() -> None:
 
     create_events = await harness.callback(flow="seller", action="listing_title_keep")
     assert any("Активировать объявление сейчас?" in text for text in _event_texts(create_events))
+    assert any("Ссылка на товар:" in text for text in _event_texts(create_events))
+    assert any("start=listing_21" in text for text in _event_texts(create_events))
 
     activate_events = await harness.callback(flow="seller", action="listing_activate", entity_id="21")
     assert any("Объявление активно." in text for text in _event_texts(activate_events))
@@ -1004,6 +1030,23 @@ async def test_phase10_e2e_buyer_listing_open_shows_photo_and_detail_card() -> N
 
 
 @pytest.mark.asyncio
+async def test_phase10_e2e_buyer_listing_deep_link_opens_product_card() -> None:
+    runtime, deps = _build_runtime()
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    events = await harness.start(start_arg="listing_21")
+
+    assert any(event.kind == "reply_photo" for event in events)
+    text = "\n".join(_event_texts(events))
+    assert "Бумага A4 для принтера" in text
+    assert "Цена:</b> 400 ₽" in text
+    assert any("✅ Купить" in _markup_labels(event) for event in events)
+    assert harness.context.user_data["last_buyer_shop_slug"] == "shop_tushenka"
+    deps.buyer.resolve_active_listing_deep_link.assert_awaited_once()
+    deps.buyer.touch_saved_shop.assert_awaited_with(buyer_user_id=202, shop_id=11)
+
+
+@pytest.mark.asyncio
 async def test_phase10_e2e_seller_listing_open_shows_photo_and_detail_card() -> None:
     runtime, deps = _build_runtime()
     deps.seller.list_shops = AsyncMock(
@@ -1042,7 +1085,8 @@ async def test_phase10_e2e_seller_listing_open_shows_photo_and_detail_card() -> 
     assert "🟢 Бумага A4 для принтера" in detail_text
     assert "План покупок / В процессе:</b> 5 / 0" in detail_text
     assert "Параметры" in detail_text
-    assert "Ссылка на магазин:" in detail_text
+    assert "Ссылка на товар:" in detail_text
+    assert "start=listing_21" in detail_text
 
 
 @pytest.mark.asyncio

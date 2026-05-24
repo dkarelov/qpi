@@ -29,6 +29,7 @@ from libs.domain.models import (
     AssignmentReservationResult,
     BuyerAssignmentView,
     BuyerBootstrapResult,
+    BuyerListingDeepLinkResult,
     BuyerListingResult,
     BuyerOrderSubmitResult,
     BuyerReviewSubmitResult,
@@ -282,6 +283,108 @@ class BuyerService:
                     )
                     for row in rows
                 ]
+
+        return await run_in_transaction(self._pool, operation, read_only=True)
+
+    async def resolve_active_listing_deep_link(
+        self,
+        *,
+        listing_id: int,
+        buyer_user_id: int | None = None,
+    ) -> BuyerListingDeepLinkResult:
+        if listing_id < 1:
+            raise ValueError("listing_id must be >= 1")
+
+        async def operation(conn: AsyncConnection) -> BuyerListingDeepLinkResult:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                params: list[Any] = [listing_id]
+                buyer_filters = ""
+                if buyer_user_id is not None:
+                    buyer_filters = """
+                      AND NOT EXISTS (
+                            SELECT 1
+                            FROM assignments ax
+                            JOIN listings lx ON lx.id = ax.listing_id
+                            WHERE ax.buyer_user_id = %s
+                              AND lx.wb_product_id = l.wb_product_id
+                              AND ax.status = ANY (
+                                    ARRAY[
+                                        'reserved'::text,
+                                        'order_verified'::text,
+                                        'picked_up_wait_review'::text,
+                                        'picked_up_wait_unlock'::text,
+                                        'withdraw_sent'::text
+                                    ]
+                              )
+                      )
+                      AND NOT EXISTS (
+                            SELECT 1
+                            FROM buyer_orders bo
+                            WHERE bo.buyer_user_id = %s
+                              AND bo.wb_product_id = l.wb_product_id
+                      )
+                    """
+                    params.extend([buyer_user_id, buyer_user_id])
+
+                await cur.execute(
+                    f"""
+                    SELECT
+                        l.id,
+                        l.shop_id,
+                        l.wb_product_id,
+                        l.display_title,
+                        l.wb_source_title,
+                        l.reference_price_rub,
+                        l.wb_subject_name,
+                        l.wb_brand_name,
+                        l.wb_description,
+                        l.wb_photo_url,
+                        l.wb_tech_sizes_json,
+                        l.wb_characteristics_json,
+                        l.search_phrase,
+                        l.reward_usdt,
+                        l.slot_count,
+                        l.available_slots,
+                        s.slug AS shop_slug,
+                        s.title AS shop_title
+                    FROM listings l
+                    JOIN shops s ON s.id = l.shop_id
+                    WHERE l.id = %s
+                      AND l.deleted_at IS NULL
+                      AND l.status = 'active'
+                      AND l.available_slots > 0
+                      AND s.deleted_at IS NULL
+                      {buyer_filters}
+                    """,
+                    tuple(params),
+                )
+                row = await cur.fetchone()
+                if row is None:
+                    raise NotFoundError(f"listing {listing_id} not found")
+                listing = BuyerListingResult(
+                    listing_id=row["id"],
+                    shop_id=row["shop_id"],
+                    wb_product_id=row["wb_product_id"],
+                    display_title=row["display_title"],
+                    wb_source_title=row["wb_source_title"],
+                    reference_price_rub=row["reference_price_rub"],
+                    wb_subject_name=row["wb_subject_name"],
+                    wb_brand_name=row["wb_brand_name"],
+                    wb_description=row["wb_description"],
+                    wb_photo_url=row["wb_photo_url"],
+                    wb_tech_sizes=list(row["wb_tech_sizes_json"] or []),
+                    wb_characteristics=list(row["wb_characteristics_json"] or []),
+                    search_phrase=row["search_phrase"],
+                    reward_usdt=row["reward_usdt"],
+                    slot_count=row["slot_count"],
+                    available_slots=row["available_slots"],
+                )
+                return BuyerListingDeepLinkResult(
+                    shop_id=row["shop_id"],
+                    shop_slug=row["shop_slug"],
+                    shop_title=row["shop_title"],
+                    listing=listing,
+                )
 
         return await run_in_transaction(self._pool, operation, read_only=True)
 

@@ -60,6 +60,13 @@ class BuyerMarketplaceAdapter(Protocol):
         buyer_user_id: int | None = None,
     ) -> list[Any]: ...
 
+    async def resolve_active_listing_deep_link(
+        self,
+        *,
+        listing_id: int,
+        buyer_user_id: int | None = None,
+    ) -> Any: ...
+
     async def touch_saved_shop(self, *, buyer_user_id: int, shop_id: int) -> None: ...
 
     async def resolve_saved_shop_for_buyer(self, *, buyer_user_id: int, shop_id: int) -> Any: ...
@@ -172,7 +179,7 @@ class BuyerMarketplaceFlow:
                         "1. Установите расширение для браузера Chrome / Яндекс Qpilka "
                         "(обязательно):\n"
                         f'<a href="{_QPILKA_EXTENSION_URL}">{_QPILKA_EXTENSION_URL}</a>\n'
-                        "2. Откройте магазин и выберите товар.\n"
+                        "2. Откройте ссылку на товар или магазин и проверьте карточку товара.\n"
                         "3. Нажмите «Купить» (произойдет бронирование товара) и скопируйте токен заявки на покупку.\n"
                         "4. Вставьте полученный токен в расширение браузера Qpilka и следуйте подсказкам "
                         "для совершения заказа товара. Важно это сделать в течение 4 часов, иначе "
@@ -187,8 +194,8 @@ class BuyerMarketplaceFlow:
                     ),
                     (
                         "<b>FAQ</b>\n"
-                        "1. <b>Где найти магазин?</b>\n"
-                        "Ссылки на магазины публикуются в профильных телеграм группах.\n\n"
+                        "1. <b>Где найти товар?</b>\n"
+                        "Ссылки на конкретные товары публикуются в профильных телеграм группах.\n\n"
                         "2. <b>Что, если заказ не был сделан в течение 4 часов (бронь отменена)?</b>\n"
                         "Оформите новую покупку.\n\n"
                         "3. <b>Почему кэшбэк разблокируется только через 15 дней?</b>\n"
@@ -221,7 +228,8 @@ class BuyerMarketplaceFlow:
                 lines=[
                     (
                         "Магазины сохраняются в вашем профиле, и вы всегда можете к ним вернуться "
-                        "позднее. Добавить магазин в профиль можно, перейдя по его ссылке."
+                        "позднее. Ссылка на товар откроет нужное объявление сразу, а ссылка на магазин "
+                        "откроет общий каталог продавца."
                     ),
                     (
                         "<b>Полезно знать</b>\n"
@@ -1229,6 +1237,38 @@ class BuyerMarketplaceFlow:
         )
         return FlowResult(effects=tuple(effects))
 
+    async def open_listing_deep_link(
+        self,
+        *,
+        buyer_user_id: int,
+        listing_id: int | None,
+        replace: bool = False,
+    ) -> FlowResult:
+        if listing_id is None:
+            return _listing_deep_link_unavailable_result(replace=replace)
+        try:
+            resolved = await self._adapter.resolve_active_listing_deep_link(
+                listing_id=listing_id,
+                buyer_user_id=buyer_user_id,
+            )
+        except (NotFoundError, InvalidStateError, ValueError):
+            return _listing_deep_link_unavailable_result(replace=replace)
+
+        try:
+            await self._adapter.touch_saved_shop(buyer_user_id=buyer_user_id, shop_id=resolved.shop_id)
+        except DomainError:
+            pass
+
+        effects: list[Any] = [SetUserData(key=self._config.last_shop_slug_key, value=resolved.shop_slug)]
+        effects.extend(
+            _listing_detail_effects(
+                listing=resolved.listing,
+                notice=None,
+                display_rub_per_usdt=self._config.display_rub_per_usdt,
+            )
+        )
+        return FlowResult(effects=tuple(effects))
+
     async def render_listing_detail(
         self,
         *,
@@ -1263,23 +1303,13 @@ class BuyerMarketplaceFlow:
                     ),
                 )
             )
-        keyboard_rows = [
-            [_button("✅ Купить", action="reserve", entity_id=listing.listing_id)],
-            [_button("↩️ Назад к каталогу", action="open_last_shop")],
-            [_knowledge_button(topic="purchases")],
-        ]
         return FlowResult(
-            effects=(
-                ReplyPhoto(photo_url=listing.wb_photo_url),
-                ReplaceText(
-                    text=buyer_listing_detail_html(
-                        listing=listing,
-                        notice=notice,
-                        display_rub_per_usdt=self._config.display_rub_per_usdt,
-                    ),
-                    buttons=_rows(keyboard_rows),
-                    parse_mode="HTML",
-                ),
+            effects=tuple(
+                _listing_detail_effects(
+                    listing=listing,
+                    notice=notice,
+                    display_rub_per_usdt=self._config.display_rub_per_usdt,
+                )
             )
         )
 
@@ -1678,6 +1708,41 @@ def _text_effect(
     if replace:
         return ReplaceText(text=text, buttons=buttons, parse_mode=parse_mode)
     return ReplyText(text=text, buttons=buttons, parse_mode=parse_mode)
+
+
+def _listing_detail_effects(
+    *,
+    listing: Any,
+    notice: str | None,
+    display_rub_per_usdt: Decimal,
+) -> tuple[ReplyPhoto | ReplaceText, ...]:
+    keyboard_rows = [
+        [_button("✅ Купить", action="reserve", entity_id=listing.listing_id)],
+        [_button("↩️ Назад к каталогу", action="open_last_shop")],
+        [_knowledge_button(topic="purchases")],
+    ]
+    return (
+        ReplyPhoto(photo_url=listing.wb_photo_url),
+        ReplaceText(
+            text=buyer_listing_detail_html(
+                listing=listing,
+                notice=notice,
+                display_rub_per_usdt=display_rub_per_usdt,
+            ),
+            buttons=_rows(keyboard_rows),
+            parse_mode="HTML",
+        ),
+    )
+
+
+def _listing_deep_link_unavailable_result(*, replace: bool) -> FlowResult:
+    effect = _text_effect(
+        text="Товар по ссылке недоступен. Откройте магазин или выберите другой товар.",
+        buttons=_rows([[_button("↩️ К магазинам", action="shops")]]),
+        replace=replace,
+        parse_mode=None,
+    )
+    return FlowResult(effects=(effect,))
 
 
 def _numbered_page_buttons(

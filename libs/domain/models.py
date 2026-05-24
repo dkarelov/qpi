@@ -179,6 +179,14 @@ class BuyerListingResult:
 
 
 @dataclass(frozen=True)
+class BuyerListingDeepLinkResult:
+    shop_id: int
+    shop_slug: str
+    shop_title: str
+    listing: BuyerListingResult
+
+
+@dataclass(frozen=True)
 class BuyerOrderSubmitResult:
     assignment_id: int
     changed: bool

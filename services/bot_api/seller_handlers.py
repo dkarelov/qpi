@@ -15,6 +15,7 @@ from libs.domain.seller import SellerService
 from libs.domain.seller_workflow import SellerWorkflowService
 from libs.integrations.wb import WbPingClient
 from libs.security.token_cipher import encrypt_token
+from services.bot_api.deep_links import build_listing_deep_link, build_shop_deep_link
 from services.bot_api.seller_listing_creation_flow import SellerListingCreationFlow
 
 
@@ -51,6 +52,10 @@ class SellerCommandProcessor:
                 display_rub_per_usdt=display_rub_per_usdt,
                 fx_rate_service=fx_rate_service,
                 fx_rate_ttl_seconds=fx_rate_ttl_seconds,
+                listing_deep_link_builder=lambda listing_id: build_listing_deep_link(
+                    bot_username=self._bot_username,
+                    listing_id=listing_id,
+                ),
             )
             if seller_workflow_service is not None
             else None
@@ -105,7 +110,7 @@ class SellerCommandProcessor:
                     seller_user_id=seller_user_id,
                     title=args,
                 )
-                deep_link = f"https://t.me/{self._bot_username}?start=shop_{shop.slug}"
+                deep_link = build_shop_deep_link(bot_username=self._bot_username, slug=shop.slug)
                 return SellerCommandResponse(
                     text=(f"Магазин «{shop.title}» создан.\nСсылка для покупателей:\n{deep_link}")
                 )

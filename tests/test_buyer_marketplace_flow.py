@@ -138,6 +138,22 @@ class FakeBuyerMarketplaceAdapter:
             raise NotFoundError("shop not found")
         return self.listings
 
+    async def resolve_active_listing_deep_link(
+        self,
+        *,
+        listing_id: int,
+        buyer_user_id: int | None = None,
+    ) -> Any:
+        listing = next((item for item in self.listings if item.listing_id == listing_id), None)
+        if listing is None:
+            raise NotFoundError("listing not found")
+        return _ns(
+            shop_id=self.shop.shop_id,
+            shop_slug=self.shop.slug,
+            shop_title=self.shop.title,
+            listing=listing,
+        )
+
     async def touch_saved_shop(self, *, buyer_user_id: int, shop_id: int) -> None:
         self.touch_calls.append((buyer_user_id, shop_id))
 
@@ -276,9 +292,12 @@ def test_buyer_marketplace_flow_keeps_support_inside_guide_only() -> None:
 
     assert isinstance(guide, ReplaceText)
     assert "Инструкция покупателя" in guide.text
+    assert "Откройте ссылку на товар" in guide.text
+    assert "Ссылки на конкретные товары" in guide.text
     guide_buttons = [button for row in guide.buttons for button in row]
     assert any(button.text == "🆘 Поддержка" and button.url for button in guide_buttons)
     assert isinstance(shops, ReplaceText)
+    assert "Ссылка на товар откроет нужное объявление сразу" in shops.text
     assert "🆘 Поддержка" not in [button.text for row in shops.buttons for button in row]
 
 
@@ -371,6 +390,24 @@ async def test_buyer_marketplace_flow_listing_detail_hides_internal_wb_fields() 
     assert "WB source" not in screen.text
     labels = [button.text for row in screen.buttons for button in row]
     assert "✅ Купить" in labels
+
+
+@pytest.mark.asyncio
+async def test_buyer_marketplace_flow_listing_deep_link_stores_shop_and_opens_detail() -> None:
+    flow, adapter = _flow()
+
+    result = await flow.open_listing_deep_link(buyer_user_id=202, listing_id=21)
+
+    store, photo, screen = result.effects
+    assert isinstance(store, SetUserData)
+    assert store.key == "last_buyer_shop_slug"
+    assert store.value == "shop_tushenka"
+    assert isinstance(photo, ReplyPhoto)
+    assert isinstance(screen, ReplaceText)
+    assert "Бумага A4 для принтера" in screen.text
+    labels = [button.text for row in screen.buttons for button in row]
+    assert "✅ Купить" in labels
+    assert adapter.touch_calls == [(202, 11)]
 
 
 @pytest.mark.asyncio

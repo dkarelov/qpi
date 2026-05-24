@@ -320,6 +320,7 @@ async def test_listing_create_command_matches_current_listing_create_contract(db
     assert "Клей для ремонта" in response.text
     assert "Цена покупателя: 392 ₽ (manual)" in response.text
     assert "Фразы для отзыва: не течет, удобный дозатор" in response.text
+    assert "Ссылка на товар: https://t.me/qpi_bot?start=listing_" in response.text
 
     listings = await seller_service.list_listings(seller_user_id=seller.user_id, shop_id=shop.shop_id)
     assert len(listings) == 1

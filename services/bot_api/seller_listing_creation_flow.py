@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -225,12 +226,14 @@ class SellerListingCreationFlow:
         display_rub_per_usdt: Decimal,
         fx_rate_service: FxRateService | None = None,
         fx_rate_ttl_seconds: int = 900,
+        listing_deep_link_builder: Callable[[int], str] | None = None,
     ) -> None:
         self._seller_service = seller_service
         self._seller_workflow = seller_workflow
         self._display_rub_per_usdt = display_rub_per_usdt
         self._fx_rate_service = fx_rate_service
         self._fx_rate_ttl_seconds = fx_rate_ttl_seconds
+        self._listing_deep_link_builder = listing_deep_link_builder
 
     def listing_create_usage_text(self) -> str:
         return (
@@ -444,6 +447,7 @@ class SellerListingCreationFlow:
                         reward_usdt=listing.reward_usdt,
                         slot_count=listing.slot_count,
                         collateral_required_usdt=listing.collateral_required_usdt,
+                        listing_deep_link=self._build_listing_deep_link(listing.listing_id),
                     ),
                     buttons=(
                         (
@@ -484,6 +488,8 @@ class SellerListingCreationFlow:
             )
         listing = await self._create_listing_from_session(session=session)
         review_phrases_text = ", ".join(session.review_phrases) if session.review_phrases else "—"
+        listing_deep_link = self._build_listing_deep_link(listing.listing_id)
+        link_line = f"\nСсылка на товар: {listing_deep_link}" if listing_deep_link else ""
         return CommandListingCreateResult(
             text=(
                 f"Листинг создан: id={listing.listing_id}, status={listing.status}\n"
@@ -495,6 +501,7 @@ class SellerListingCreationFlow:
                 f"Цена покупателя: {session.reference_price_rub} ₽ ({session.reference_price_source})\n"
                 f"Слоты: {listing.slot_count}\n"
                 f"Фразы для отзыва: {review_phrases_text}"
+                f"{link_line}"
             )
         )
 
@@ -625,6 +632,7 @@ class SellerListingCreationFlow:
         reward_usdt: Decimal,
         slot_count: int,
         collateral_required_usdt: Decimal,
+        listing_deep_link: str | None = None,
     ) -> str:
         cashback_percent = _format_listing_cashback_percent(
             reference_price_rub=reference_price_rub,
@@ -656,14 +664,21 @@ class SellerListingCreationFlow:
             lines.append("<b>Источник цены:</b> введена вручную.")
         elif reference_price_source == "orders":
             lines.append("<b>Источник цены:</b> рассчитана по заказам за 30 дней.")
+        if listing_deep_link:
+            lines.append(f"<b>Ссылка на товар:</b>\n{html.escape(listing_deep_link)}")
         return (
             _screen_text(
                 title="Проверьте объявление перед активацией",
                 lines=lines,
-                note="Если все верно, активируйте объявление и отправьте покупателям ссылку на магазин.",
+                note="Если все верно, активируйте объявление и отправьте покупателям ссылку на товар.",
             )
             + "\n\n<b>Активировать объявление сейчас?</b>"
         )
+
+    def _build_listing_deep_link(self, listing_id: int) -> str | None:
+        if self._listing_deep_link_builder is None:
+            return None
+        return self._listing_deep_link_builder(listing_id)
 
     async def _prepare_session(
         self,

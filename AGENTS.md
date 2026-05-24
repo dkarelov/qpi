@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-05-11 UTC
+Last updated: 2026-05-24 UTC
 
 ## 0. Completion Gate
 
@@ -193,6 +193,7 @@ Persistence and schema:
   - fallback: manual seller input when no historical orders exist for the product.
 - Seller confirms or edits the buyer-visible title before the draft is saved.
 - Seller listing confirmation preview shows the product photo when WB returned one.
+- Each listing has a buyer product deeplink shaped as `listing_<listing_id>`; sellers share this product link with buyers so the buyer lands on the exact announcement.
 - Seller cannot edit an existing announcement after creation; if parameters must change, the seller creates a new announcement and deletes the old one.
 - Cashback is converted once to fixed `reward_usdt` at creation.
 - Listing collateral requirement: `reward_usdt * slot_count * 1.01`.
@@ -207,7 +208,7 @@ Persistence and schema:
 
 ### 4.2 Buyer rules
 
-- Buyer enters shop by deeplink `shop_<slug>` or by saved shops menu.
+- Buyer can open an exact announcement by product deeplink `listing_<listing_id>`; legacy shop deeplinks `shop_<slug>` and saved shops still open the shop catalog.
 - Buyer can reserve slot only on active listings.
 - Buyer-facing primary CTA for an active listing is `Купить`.
 - Buyer-facing listing screens show buyer-visible title, WB subject, description, photo, sizes, characteristics, cashback in RUB with approximate percent, and `Цена` in RUB.
@@ -385,7 +386,7 @@ Transitions:
   - action buttons such as edit/pause/delete live inside the announcement card, not in the list.
 - Seller announcement card is streamlined:
   - title starts with green/red activity indicator,
-  - top section shows only WB article, cashback, search phrase, plan/in-progress, shop link, collateral, and activity status,
+  - top section shows only WB article, cashback, search phrase, plan/in-progress, product link, collateral, and activity status,
   - the rest of the WB data lives inside collapsed `Параметры`, `Описание`, and `Характеристики` sections,
   - if collateral is insufficient, the note explains that balance top-up is required before activation.
 - Seller balance screen shows `Свободно для новых объявлений`, `Уже выделено под объявления`, and `В процессе вывода`; `Всего` is not shown there, and activation shortfall is shown only when funds are insufficient.

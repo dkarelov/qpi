@@ -73,6 +73,11 @@ from services.bot_api.callback_data import (
     build_callback,
     parse_callback,
 )
+from services.bot_api.deep_links import (
+    build_listing_deep_link,
+    build_shop_deep_link,
+    parse_start_payload,
+)
 from services.bot_api.seller_handlers import SellerCommandProcessor
 from services.bot_api.seller_listing_creation_flow import SellerListingCreationFlow
 from services.bot_api.telegram_notifications import render_telegram_notification
@@ -413,6 +418,17 @@ class _RuntimeBuyerMarketplaceAdapter(BuyerMarketplaceAdapter):
     ) -> list[Any]:
         return await self._runtime._buyer_service.list_active_listings_by_shop_slug(
             slug=slug,
+            buyer_user_id=buyer_user_id,
+        )
+
+    async def resolve_active_listing_deep_link(
+        self,
+        *,
+        listing_id: int,
+        buyer_user_id: int | None = None,
+    ) -> Any:
+        return await self._runtime._buyer_service.resolve_active_listing_deep_link(
+            listing_id=listing_id,
             buyer_user_id=buyer_user_id,
         )
 
@@ -762,6 +778,7 @@ class TelegramWebhookRuntime:
                 display_rub_per_usdt=self._settings.display_rub_per_usdt,
                 fx_rate_service=self._fx_rate_service,
                 fx_rate_ttl_seconds=self._settings.fx_rate_ttl_seconds,
+                listing_deep_link_builder=self._build_listing_deep_link,
             )
             self._seller_workflow_service = seller_workflow_service
             self._seller_listing_creation_flow = SellerListingCreationFlow(
@@ -888,25 +905,33 @@ class TelegramWebhookRuntime:
         )
         self._clear_prompt(context)
         start_args = " ".join(context.args).strip()
-        if start_args.startswith("shop_"):
-            shop_slug = start_args[len("shop_") :].strip()
-            if shop_slug:
-                try:
-                    buyer = await self._buyer_service.bootstrap_buyer(
-                        telegram_id=identity.telegram_id,
-                        username=identity.username,
-                    )
-                except InvalidStateError as exc:
-                    await update.message.reply_text(
-                        f"Режим покупателя недоступен: {exc}",
-                        reply_markup=self._root_menu_markup(identity=identity),
-                    )
-                    return
-                context.user_data[_ACTIVE_ROLE_KEY] = _ROLE_BUYER
+        start_payload = parse_start_payload(start_args)
+        if start_payload is not None:
+            try:
+                buyer = await self._buyer_service.bootstrap_buyer(
+                    telegram_id=identity.telegram_id,
+                    username=identity.username,
+                )
+            except InvalidStateError as exc:
+                await update.message.reply_text(
+                    f"Режим покупателя недоступен: {exc}",
+                    reply_markup=self._root_menu_markup(identity=identity),
+                )
+                return
+            context.user_data[_ACTIVE_ROLE_KEY] = _ROLE_BUYER
+            if start_payload.kind == "shop":
                 await self._send_buyer_shop_catalog(
                     update.message,
                     context=context,
-                    slug=shop_slug,
+                    slug=str(start_payload.value),
+                    buyer_user_id=buyer.user_id,
+                )
+                return
+            if start_payload.kind == "listing":
+                await self._send_buyer_listing_deep_link(
+                    update.message,
+                    context=context,
+                    listing_id=int(start_payload.value),
                     buyer_user_id=buyer.user_id,
                 )
                 return
@@ -1752,7 +1777,7 @@ class TelegramWebhookRuntime:
                         "2. Создайте объявление: артикул WB, кэшбэк в ₽, число покупок, поисковая фраза "
                         "и до 10 фраз для отзыва.\n"
                         "3. Пополните баланс, если не хватает обеспечения.\n"
-                        "4. Активируйте объявление и отправьте покупателям ссылку на магазин.\n"
+                        "4. Активируйте объявление и отправьте покупателям ссылку на товар.\n"
                         "5. Следите за покупками и выводите свободный остаток."
                     ),
                     (
@@ -1784,11 +1809,11 @@ class TelegramWebhookRuntime:
         elif topic == "shops":
             text = self._screen_text(
                 title="Про магазины",
-                cta="Магазин — это ваша публичная витрина с отдельной ссылкой для покупателей.",
+                cta="Магазин — это ваша публичная витрина, которая объединяет объявления.",
                 lines=[
                     (
-                        "В магазине находятся объявления. Покупатель переходит по ссылке магазина, "
-                        "выбирает товар и начинает покупку."
+                        "В магазине находятся объявления. Для покупателя публикуйте ссылку на конкретный товар, "
+                        "чтобы он сразу попал в нужную карточку."
                     ),
                     (
                         "<b>Полезно знать</b>\n"
@@ -1824,6 +1849,7 @@ class TelegramWebhookRuntime:
                         "и показывает покупателю только нужные поля. После выкупа покупатель "
                         "подтверждает отзыв на 5 звезд."
                     ),
+                    "Каждое объявление получает отдельную ссылку на товар для покупателей.",
                     (
                         "<b>Полезно знать</b>\n"
                         "1. Если параметр нужно изменить, создайте новое объявление.\n"
@@ -1959,7 +1985,7 @@ class TelegramWebhookRuntime:
             )
             return
 
-        deep_link = f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"
+        deep_link = build_shop_deep_link(bot_username=self._settings.telegram_bot_username, slug=shop.slug)
         lines = [
             f"<b>Название:</b> {html.escape(shop.title)}",
             f"<b>Ссылка для покупателей:</b>\n{html.escape(deep_link)}",
@@ -2623,11 +2649,9 @@ class TelegramWebhookRuntime:
             )
             return
 
-        shops = await self._seller_service.list_shops(seller_user_id=seller_user_id)
         balance_snapshot = await self._seller_service.get_seller_balance_snapshot(
             seller_user_id=seller_user_id,
         )
-        shop_slugs = {shop.shop_id: shop.slug for shop in shops}
         resolved_page, total_pages, start_index, end_index = self._resolve_numbered_page(
             total_items=len(listings),
             requested_page=page,
@@ -2646,9 +2670,9 @@ class TelegramWebhookRuntime:
                 reward_usdt=listing.reward_usdt,
                 reference_price_rub=listing.reference_price_rub,
             )
-            shop_slug = shop_slugs.get(listing.shop_id)
-            shop_link = (
-                f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop_slug}" if shop_slug else "—"
+            listing_link = build_listing_deep_link(
+                bot_username=self._settings.telegram_bot_username,
+                listing_id=listing.listing_id,
             )
             collateral_line = self._format_listing_collateral_line(
                 collateral_view=listing,
@@ -2661,7 +2685,7 @@ class TelegramWebhookRuntime:
                 f"<b>Поисковая фраза:</b> &quot;{html.escape(listing.search_phrase)}&quot;\n"
                 + (f"<b>План покупок / В процессе:</b> {listing.slot_count} / {listing.in_progress_assignments_count}")
                 + "\n"
-                + f"<b>Ссылка на магазин:</b> {html.escape(shop_link)}\n"
+                + f"<b>Ссылка на товар:</b> {html.escape(listing_link)}\n"
                 + f"<b>Обеспечение:</b> {collateral_line}"
                 + "\n"
                 + (f"<b>Статус:</b> {self._listing_activity_badge(is_active=listing.status == 'active')}")
@@ -2722,10 +2746,6 @@ class TelegramWebhookRuntime:
                 seller_user_id=seller_user_id,
                 listing_id=listing_id,
             )
-            shop = await self._seller_service.get_shop(
-                seller_user_id=seller_user_id,
-                shop_id=listing.shop_id,
-            )
         except NotFoundError:
             await self._render_seller_listings(
                 context=None,
@@ -2752,7 +2772,10 @@ class TelegramWebhookRuntime:
                 listing=listing,
                 collateral_view=collateral_view,
                 seller_available_usdt=balance_snapshot.seller_available_usdt,
-                shop_link=(f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"),
+                listing_link=build_listing_deep_link(
+                    bot_username=self._settings.telegram_bot_username,
+                    listing_id=listing.listing_id,
+                ),
                 notice=notice,
             ),
             self._seller_listing_detail_markup(
@@ -5400,7 +5423,7 @@ class TelegramWebhookRuntime:
                 )
                 return
 
-            deep_link = f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"
+            deep_link = build_shop_deep_link(bot_username=self._settings.telegram_bot_username, slug=shop.slug)
             self._clear_prompt(context)
             await message.reply_text(
                 (f"Магазин «{shop.title}» создан.\nСсылка для покупателей:\n{deep_link}"),
@@ -5491,7 +5514,7 @@ class TelegramWebhookRuntime:
                 )
                 return
             self._clear_prompt(context)
-            deep_link = f"https://t.me/{self._settings.telegram_bot_username}?start=shop_{shop.slug}"
+            deep_link = build_shop_deep_link(bot_username=self._settings.telegram_bot_username, slug=shop.slug)
             await message.reply_text(
                 (f"Магазин переименован: «{shop.title}».\nНовая ссылка для покупателей:\n{deep_link}"),
                 reply_markup=self._seller_shop_detail_markup(
@@ -5960,6 +5983,7 @@ class TelegramWebhookRuntime:
             display_rub_per_usdt=self._display_rub_per_usdt,
             fx_rate_service=self._fx_rate_service,
             fx_rate_ttl_seconds=self._settings.fx_rate_ttl_seconds,
+            listing_deep_link_builder=self._build_listing_deep_link,
         )
         self._seller_listing_creation_flow_rate = self._display_rub_per_usdt
         return self._seller_listing_creation_flow
@@ -6185,6 +6209,26 @@ class TelegramWebhookRuntime:
                 buyer_user_id=buyer_user_id,
                 replace=prefer_edit,
                 page=page,
+            ),
+        )
+
+    async def _send_buyer_listing_deep_link(
+        self,
+        message: Message | None,
+        *,
+        context: ContextTypes.DEFAULT_TYPE,
+        listing_id: int,
+        buyer_user_id: int,
+    ) -> None:
+        await self._refresh_display_rub_per_usdt()
+        await self._apply_transport_effects(
+            context=context,
+            query_message=None,
+            message=message,
+            default_role=_ROLE_BUYER,
+            result=await self._buyer_marketplace_flow().open_listing_deep_link(
+                buyer_user_id=buyer_user_id,
+                listing_id=listing_id,
             ),
         )
 
@@ -6550,6 +6594,12 @@ class TelegramWebhookRuntime:
     @staticmethod
     def _parse_withdrawal_reference(value: str) -> int:
         return parse_withdrawal_ref(value)
+
+    def _build_listing_deep_link(self, listing_id: int) -> str:
+        return build_listing_deep_link(
+            bot_username=self._settings.telegram_bot_username,
+            listing_id=listing_id,
+        )
 
     def _build_support_link(
         self,
@@ -7116,7 +7166,7 @@ class TelegramWebhookRuntime:
         seller_available_usdt: Decimal = Decimal("0.000000"),
     ) -> str:
         if listing.status == "active":
-            return "Объявление активно. При необходимости поставьте его на паузу или поделитесь ссылкой на магазин."
+            return "Объявление активно. При необходимости поставьте его на паузу или поделитесь ссылкой на товар."
         if not self._listing_has_sufficient_collateral(
             collateral_view=collateral_view,
             seller_available_usdt=seller_available_usdt,
@@ -7131,7 +7181,7 @@ class TelegramWebhookRuntime:
         listing,
         collateral_view,
         seller_available_usdt: Decimal = Decimal("0.000000"),
-        shop_link: str | None = None,
+        listing_link: str | None = None,
         notice: str | None = None,
     ) -> str:
         display_title = self._listing_display_title(
@@ -7157,8 +7207,8 @@ class TelegramWebhookRuntime:
                 f"<b>План покупок / В процессе:</b> {planned} / {in_progress}",
             ]
         )
-        if shop_link:
-            lines.append(f"<b>Ссылка на магазин:</b>\n{html.escape(shop_link)}")
+        if listing_link:
+            lines.append(f"<b>Ссылка на товар:</b>\n{html.escape(listing_link)}")
         collateral_line = self._format_listing_collateral_line(
             collateral_view=collateral_view,
             seller_available_usdt=seller_available_usdt,
