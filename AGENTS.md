@@ -437,7 +437,7 @@ Transitions:
 - Seller notifications:
   - pickup notification can indicate that buyer review is still pending,
   - after review confirmation the seller receives a dedicated notification containing the confirmed rating, review text, and confirmation time.
-- All user-facing timestamps are rendered in `MSK` (`Europe/Moscow`).
+- All user-facing timestamps are rendered in `МСК` (`Europe/Moscow`).
 - Admin UX:
   - `Выводы`, `Депозиты`, `Исключения` sections.
 - Admin withdrawals section contains pending/actionable requests and processed-history access for both buyers and sellers, with requester role shown in queue and detail views.

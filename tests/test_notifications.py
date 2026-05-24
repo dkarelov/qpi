@@ -12,6 +12,7 @@ from libs.domain.ledger import FinanceService
 from libs.domain.models import NotificationOutboxItem
 from libs.domain.notifications import (
     EVENT_ASSIGNMENT_EARLY_PAYOUT_LISTING_DELETE_BUYER,
+    EVENT_ASSIGNMENT_PICKED_UP_BUYER,
     EVENT_ASSIGNMENT_RESERVATION_EXPIRED_BUYER,
     EVENT_ASSIGNMENT_REVIEW_CONFIRMED_SELLER,
     EVENT_ASSIGNMENT_REWARD_UNLOCKED_BUYER,
@@ -88,6 +89,45 @@ def test_render_assignment_reservation_expired_notification_has_buyer_cta() -> N
     assert rendered.cta_flow == "buyer"
     assert rendered.cta_action == "assignments"
     assert rendered.cta_text == "📋 Покупки"
+
+
+def test_render_assignment_picked_up_buyer_review_required_links_to_review_prompt() -> None:
+    rendered = _render_notification(
+        NotificationOutboxItem(
+            notification_id=12,
+            recipient_telegram_id=1,
+            recipient_scope="buyer",
+            event_type=EVENT_ASSIGNMENT_PICKED_UP_BUYER,
+            dedupe_key="assignment:31:picked_up_wait_unlock:buyer",
+            payload_json={
+                "assignment_id": 31,
+                "listing_id": 2,
+                "shop_id": 3,
+                "display_title": "Товар",
+                "shop_title": "Магазин",
+                "reward_usdt": "3.000000",
+                "review_required": True,
+                "unlock_at": "2026-06-05T17:58:00+00:00",
+            },
+            status="pending",
+            attempt_count=0,
+            next_attempt_at=datetime.now(tz=UTC),
+            last_error=None,
+            sent_at=None,
+            created_at=datetime.now(tz=UTC),
+            updated_at=datetime.now(tz=UTC),
+        )
+    )
+
+    assert "Выкуп подтвержден" in rendered.text
+    assert (
+        "Следующий шаг:</b> Оставьте отзыв на 5 звезд на сайте ВБ. "
+        "Кэшбэк разблокируется после отзыва, но не раньше 05.06.2026 20:58 МСК."
+    ) in rendered.text
+    assert rendered.cta_flow == "buyer"
+    assert rendered.cta_action == "submit_review_payload_prompt"
+    assert rendered.cta_entity_id == "31"
+    assert rendered.cta_text == "✍️ Оставить отзыв"
 
 
 def test_render_assignment_review_confirmed_seller_notification_contains_rating_and_text() -> None:
@@ -289,7 +329,7 @@ def test_render_withdraw_created_admin_notification_uses_full_detail_body() -> N
     assert "<b>Сумма:</b> 2.538393 USDT" in rendered.text
     assert "<b>Статус:</b> 🟡 На проверке" in rendered.text
     assert "<b>Кошелек:</b> UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH" in rendered.text
-    assert "<b>Создана:</b> 04.04.2026 01:17 MSK" in rendered.text
+    assert "<b>Создана:</b> 04.04.2026 01:17 МСК" in rendered.text
     assert "<b>Обработана:</b> -" in rendered.text
     assert "<b>Отправлена:</b> -" in rendered.text
     assert "#" not in rendered.text

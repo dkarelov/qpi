@@ -80,13 +80,25 @@ def render_telegram_notification(
         title = "Выкуп подтвержден" if item.recipient_scope == "buyer" else "Покупка выкуплена"
         if payload.get("review_required"):
             next_step = (
-                "Оставьте обязательный отзыв на 5 звезд через Qpilka. "
+                "Оставьте отзыв на 5 звезд на сайте ВБ. "
                 f"Кэшбэк разблокируется после отзыва, но не раньше {_format_datetime_msk(payload.get('unlock_at'))}."
                 if item.recipient_scope == "buyer"
                 else "Покупатель должен подтвердить обязательный отзыв на 5 звезд перед разблокировкой кэшбэка."
             )
         else:
             next_step = f"Кэшбэк разблокируется: {_format_datetime_msk(payload.get('unlock_at'))}"
+        if item.recipient_scope == "buyer" and payload.get("review_required"):
+            cta_text = "✍️ Оставить отзыв"
+            cta_action = "submit_review_payload_prompt"
+            cta_entity_id = str(payload["assignment_id"])
+        elif item.recipient_scope == "buyer":
+            cta_text = "📋 Покупки"
+            cta_action = "assignments"
+            cta_entity_id = None
+        else:
+            cta_text = "📦 Объявления"
+            cta_action = "listing_open"
+            cta_entity_id = str(payload["listing_id"])
         return RenderedTelegramNotification(
             text=(
                 f"<b>{title}</b>\n\n"
@@ -95,10 +107,10 @@ def render_telegram_notification(
                 f"<b>Следующий шаг:</b> {html.escape(next_step)}"
             ),
             parse_mode="HTML",
-            cta_text="📋 Покупки" if item.recipient_scope == "buyer" else "📦 Объявления",
+            cta_text=cta_text,
             cta_flow="buyer" if item.recipient_scope == "buyer" else "seller",
-            cta_action="assignments" if item.recipient_scope == "buyer" else "listing_open",
-            cta_entity_id=None if item.recipient_scope == "buyer" else str(payload["listing_id"]),
+            cta_action=cta_action,
+            cta_entity_id=cta_entity_id,
         )
     if event_type == EVENT_ASSIGNMENT_REVIEW_CONFIRMED_SELLER:
         return RenderedTelegramNotification(
@@ -408,7 +420,7 @@ def _format_datetime_msk(value: str | datetime | None) -> str:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     localized = parsed.astimezone(MSK)
-    return localized.strftime("%d.%m.%Y %H:%M MSK")
+    return localized.strftime("%d.%m.%Y %H:%M МСК")
 
 
 def _normalize_amount(amount: Decimal) -> Decimal:

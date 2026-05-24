@@ -330,7 +330,7 @@ def test_buyer_task_instruction_contains_title_link_and_deadline() -> None:
         '<a href="https://chromewebstore.google.com/detail/qpilka/joefinmgneknnaejambgbaclobeedaga">'
         "расширении для браузера Chrome / Яндекс Qpilka</a>"
     ) in text
-    assert "до 04.04.2026 06:31 MSK (по истечении срока бронь отменится)." in text
+    assert "до 04.04.2026 06:31 МСК (по истечении срока бронь отменится)." in text
     assert "Отправьте токен-подтверждение сюда." in text
     assert "Поисковая фраза:</b>" not in text
     assert decoded == [1, _TASK_UUID, "женские джинсы", 12345678, 1, "LeBrand"]
@@ -378,7 +378,7 @@ def test_buyer_review_instruction_contains_token_and_selected_phrases() -> None:
     token = text.split("<code>", maxsplit=1)[1].split("</code>", maxsplit=1)[0]
     decoded = json.loads(base64.b64decode(token).decode("utf-8"))
 
-    assert "оставьте отзыв на 5 звезд" in text
+    assert "Оставьте отзыв на 5 звезд на сайте ВБ" in text
     assert "Фразы для отзыва:</b> в размер; не садятся после стирки" in text
     assert decoded == [2, _TASK_UUID, 12345678, "в размер", "не садятся после стирки"]
 

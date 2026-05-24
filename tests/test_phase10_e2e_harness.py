@@ -822,7 +822,7 @@ async def test_phase10_e2e_buyer_deeplink_reserve_submit_payload_flow() -> None:
         '<a href="https://chromewebstore.google.com/detail/qpilka/joefinmgneknnaejambgbaclobeedaga">'
         "расширении для браузера Chrome / Яндекс Qpilka</a>"
     ) in reserve_text
-    assert "до 02.03.2026 17:00 MSK (по истечении срока бронь отменится)." in reserve_text
+    assert "до 02.03.2026 17:00 МСК (по истечении срока бронь отменится)." in reserve_text
     assert "<b>Срок заказа:</b>" not in reserve_text
     assert any("Ввести токен-подтверждение" in _markup_labels(event) for event in reserve_events)
 
@@ -1524,8 +1524,8 @@ async def test_phase10_e2e_buyer_withdraw_history_shows_timestamps_and_note() ->
     text = "\n".join(_event_texts(events))
 
     assert "<b>Вывод</b> · <code>W77</code>" in text
-    assert "<b>Создана:</b> 02.03.2026 15:00 MSK" in text
-    assert "<b>Обработана:</b> 02.03.2026 15:05 MSK" in text
+    assert "<b>Создана:</b> 02.03.2026 15:00 МСК" in text
+    assert "<b>Обработана:</b> 02.03.2026 15:05 МСК" in text
     assert "<b>Комментарий:</b> Неверный адрес" in text
     assert "<b>Статус:</b> 🔴 Отклонено" in text
 

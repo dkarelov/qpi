@@ -596,7 +596,7 @@ def _format_datetime_msk(value: datetime | None) -> str:
         return "—"
     normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
     localized = normalized.astimezone(_MSK_TZ)
-    return localized.strftime("%d.%m.%Y %H:%M MSK")
+    return localized.strftime("%d.%m.%Y %H:%M МСК")
 
 
 def _screen_text(

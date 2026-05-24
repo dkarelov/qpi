@@ -1373,7 +1373,7 @@ def buyer_review_instruction_text(assignment: Any, *, include_title: bool = True
     lines: list[str] = []
     if include_title:
         lines.append(f"<b>Товар:</b> {html.escape(display_title)}")
-    lines.append("<b>Следующий шаг:</b> оставьте отзыв на 5 звезд через Qpilka.")
+    lines.append("<b>Следующий шаг:</b> Оставьте отзыв на 5 звезд на сайте ВБ.")
     selected_phrases = _normalize_review_phrases(getattr(assignment, "review_phrases", None))
     if selected_phrases:
         lines.append("<b>Фразы для отзыва:</b> " + html.escape(_format_review_phrases_text(selected_phrases)))
@@ -1471,7 +1471,7 @@ def _format_datetime_msk(value: datetime | None) -> str:
         return "—"
     normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
     localized = normalized.astimezone(_MSK_TZ)
-    return localized.strftime("%d.%m.%Y %H:%M MSK")
+    return localized.strftime("%d.%m.%Y %H:%M МСК")
 
 
 def _normalize_review_phrases(review_phrases: list[str] | None) -> list[str]:

@@ -6480,7 +6480,7 @@ class TelegramWebhookRuntime:
             return "—"
         normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
         localized = normalized.astimezone(_MSK_TZ)
-        return localized.strftime("%d.%m.%Y %H:%M MSK")
+        return localized.strftime("%d.%m.%Y %H:%M МСК")
 
     @staticmethod
     def _status_badge(label: str, *, color: str) -> str:
@@ -6686,7 +6686,7 @@ class TelegramWebhookRuntime:
         lines: list[str] = []
         if include_title:
             lines.append(f"<b>Товар:</b> {html.escape(display_title)}")
-        lines.append("<b>Следующий шаг:</b> оставьте отзыв на 5 звезд через Qpilka.")
+        lines.append("<b>Следующий шаг:</b> Оставьте отзыв на 5 звезд на сайте ВБ.")
         selected_phrases = self._normalize_review_phrases(getattr(assignment, "review_phrases", None))
         if selected_phrases:
             lines.append("<b>Фразы для отзыва:</b> " + html.escape(self._format_review_phrases_text(selected_phrases)))

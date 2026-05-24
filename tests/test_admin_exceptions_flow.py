@@ -168,7 +168,7 @@ async def test_admin_exceptions_flow_renders_empty_review_queue_with_deposit_cou
     assert "Счет: D22" in effect.text
     assert "Счет: не найден" in effect.text
     assert "Счет D22" in effect.text
-    assert "Истек: 01.03.2026 15:00 MSK" in effect.text
+    assert "Истек: 01.03.2026 15:00 МСК" in effect.text
     assert effect.buttons[0][0].text == "✅ Проверить отзыв · 0"
     assert effect.buttons[1][0].text == "🔗 Привязать платеж к счету · 2"
     assert effect.buttons[1][1].text == "🛑 Отменить счет · 1"
