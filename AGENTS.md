@@ -360,9 +360,10 @@ Transitions:
   - the bot sends a new screen message instead of editing the previous one.
 - Standard screen layout:
   - title,
-  - italic call to action immediately below the title,
+  - optional italic subtitle immediately below the title when it adds useful guidance, context, state, or risk,
   - main content blocks separated by empty lines,
   - optional italic note at the bottom only when it adds non-obvious next steps or issue guidance.
+- Buyer screens omit generic subtitles such as "choose an action below" or "check the list below"; buyer empty states and blockers belong in the main body text.
 - Button labels include emoji/icon prefix.
 - Marketplace support entry uses Telegram URL buttons into the companion support-bot on the seller main dashboard and inside the buyer `📘 Инструкция` screen; if `SUPPORT_BOT_USERNAME` is unset, those buttons are hidden rather than degraded into broken links.
 - Buyer support must stay deeper than the first dashboard screen: do not reintroduce a support shortcut on the buyer main cabinet when the intent is to route confused users through manuals/FAQ first.

@@ -145,7 +145,6 @@ class BuyerMarketplaceFlow:
                 bucket_counts[bucket] += 1
         text = _screen_text(
             title="Кабинет покупателя",
-            cta="Выберите раздел ниже.",
             lines=[
                 (
                     "<b>Покупки:</b> "
@@ -174,11 +173,11 @@ class BuyerMarketplaceFlow:
         if topic == "guide":
             text = _screen_text(
                 title="Инструкция покупателя",
-                cta=(
-                    "Купилка позволяет просто и безопасно покупать товары на Wildberries "
-                    "и получать за это кэшбэк на криптокошелек."
-                ),
                 lines=[
+                    (
+                        "Купилка позволяет просто и безопасно покупать товары на Wildberries "
+                        "и получать за это кэшбэк на криптокошелек."
+                    ),
                     (
                         "<b>Как пользоваться ботом</b>\n"
                         "1. Установите расширение для браузера Chrome / Яндекс Qpilka "
@@ -229,8 +228,8 @@ class BuyerMarketplaceFlow:
         elif topic == "shops":
             text = _screen_text(
                 title="Про магазины",
-                cta="Магазин — это подборка доступных объявлений одного продавца.",
                 lines=[
+                    "Магазин — это подборка доступных объявлений одного продавца.",
                     (
                         "Магазины сохраняются в вашем профиле, и вы всегда можете к ним вернуться "
                         "позднее. Ссылка на товар откроет нужное объявление сразу, а ссылка на магазин "
@@ -253,8 +252,8 @@ class BuyerMarketplaceFlow:
         elif topic == "purchases":
             text = _screen_text(
                 title="Про покупки",
-                cta="Покупка появляется после бронирования товара и проходит несколько статусов.",
                 lines=[
+                    "Покупка появляется после бронирования товара и проходит несколько статусов.",
                     (
                         "Для получения кэшбэка на покупку необходимо:\n"
                         "- оформить заказ (с использованием расширения для браузера)\n"
@@ -280,11 +279,11 @@ class BuyerMarketplaceFlow:
         else:
             text = _screen_text(
                 title="Про баланс и вывод",
-                cta=(
-                    "На балансе покупателя отображается сумма, доступная к выводу, "
-                    "а также сумма, ожидающая разблокировки кэшбэка."
-                ),
                 lines=[
+                    (
+                        "На балансе покупателя отображается сумма, доступная к выводу, "
+                        "а также сумма, ожидающая разблокировки кэшбэка."
+                    ),
                     (
                         "Суммы обычно показываются как приблизительные значения в ₽ для удобства. "
                         "Точная сумма вывода и все операции внутри системы ведутся в USDT."
@@ -318,9 +317,9 @@ class BuyerMarketplaceFlow:
         if notice:
             lines.append(html.escape(notice))
         if not saved_shops:
+            lines.append("Сохраненных магазинов пока нет.")
             text = _screen_text(
                 title="Магазины",
-                cta="Сохраненных магазинов пока нет.",
                 lines=lines,
                 separate_blocks=True,
             )
@@ -351,7 +350,6 @@ class BuyerMarketplaceFlow:
 
         text = _screen_text(
             title="Магазины",
-            cta="Выберите номер магазина.",
             lines=lines,
             separate_blocks=True,
         )
@@ -491,7 +489,7 @@ class BuyerMarketplaceFlow:
         except InvalidStateError:
             text = _screen_text(
                 title=f"Магазин «{html.escape(shop.title)}»",
-                cta="Удаление недоступно, пока в магазине есть незавершенная покупка.",
+                lines=["Удаление недоступно, пока в магазине есть незавершенная покупка."],
             )
             return FlowResult(
                 effects=(
@@ -672,7 +670,7 @@ class BuyerMarketplaceFlow:
             return FlowResult(
                 effects=(
                     ReplaceText(
-                        text=_screen_text(title="Покупки", cta="У вас пока нет покупок."),
+                        text=_screen_text(title="Покупки", lines=["У вас пока нет покупок."]),
                         buttons=_rows(
                             [
                                 [_button("↩️ Назад", action="menu")],
@@ -765,7 +763,6 @@ class BuyerMarketplaceFlow:
                 ReplaceText(
                     text=_screen_text(
                         title="Покупки",
-                        cta="Проверьте статус покупок и выберите следующее действие ниже.",
                         lines=lines,
                         separate_blocks=True,
                     ),
@@ -899,7 +896,6 @@ class BuyerMarketplaceFlow:
                 ReplaceText(
                     text=_screen_text(
                         title="Отмена покупки",
-                        cta="Подтвердите действие ниже.",
                         lines=["Бронь будет снята, а покупка снова станет доступна другим покупателям."],
                     ),
                     buttons=_rows(
@@ -1158,7 +1154,7 @@ class BuyerMarketplaceFlow:
                 text = _screen_text(
                     title=html.escape(header),
                     title_suffix_html=_title_ref_suffix(shop_ref),
-                    cta="У вас уже есть активная покупка в этом магазине. Других объявлений здесь пока нет.",
+                    lines=["У вас уже есть активная покупка в этом магазине. Других объявлений здесь пока нет."],
                 )
                 keyboard_rows = [
                     [
@@ -1174,7 +1170,7 @@ class BuyerMarketplaceFlow:
                 text = _screen_text(
                     title=html.escape(header),
                     title_suffix_html=_title_ref_suffix(shop_ref),
-                    cta="Активных объявлений пока нет.",
+                    lines=["Активных объявлений пока нет."],
                 )
                 keyboard_rows = []
                 if can_remove_shop:
@@ -1220,7 +1216,6 @@ class BuyerMarketplaceFlow:
         text = _screen_text(
             title=html.escape(header),
             title_suffix_html=_title_ref_suffix(shop_ref),
-            cta="Выберите номер объявления.",
             lines=lines,
             separate_blocks=True,
         )
@@ -1417,7 +1412,7 @@ def buyer_listing_detail_html(
     return _screen_text(
         title=f"📦 {display_title}",
         title_suffix_html=_title_ref_suffix(format_listing_ref(listing.listing_id)),
-        cta="Проверьте товар и выберите следующее действие ниже.",
+        cta="Проверьте товар перед покупкой.",
         lines=lines,
         separate_blocks=True,
     )

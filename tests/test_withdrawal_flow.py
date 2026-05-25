@@ -308,6 +308,7 @@ async def test_withdrawal_flow_renders_cancel_prompt_for_owned_pending_request(c
     assert adapter.detail_calls == [77]
     assert isinstance(result.effects[0], ReplaceText)
     assert "<b>💳 Отмена вывода</b>" in result.effects[0].text
+    assert "<i>Подтвердите действие ниже.</i>" not in result.effects[0].text
     assert "<b>Сумма:</b> 1.25 USDT" in result.effects[0].text
     assert config.cancel_return_line in result.effects[0].text
     assert result.effects[0].buttons[0][0].action == "withdraw_cancel_confirm"

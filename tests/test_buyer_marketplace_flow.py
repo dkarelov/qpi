@@ -285,6 +285,7 @@ async def test_buyer_marketplace_flow_renders_dashboard_counts_and_balance() -> 
     assert isinstance(screen, ReplaceText)
     assert "ожидают заказа: 1 · заказаны: 1 · выкуплены: 1" in screen.text
     assert "<b>Баланс:</b> ~125 ₽" in screen.text
+    assert "<i>Выберите раздел ниже.</i>" not in screen.text
     labels = [button.text for row in screen.buttons for button in row]
     assert "🏪 Магазины · 2" in labels
     assert "📋 Покупки · 3" in labels
@@ -322,6 +323,7 @@ async def test_buyer_marketplace_flow_renders_saved_shop_numbered_pagination() -
     assert isinstance(screen, ReplaceText)
     assert "11. 🟢 Магазин 11 (объявлений: 1)" in screen.text
     assert "\n<b>1. " not in screen.text
+    assert "<i>Выберите номер магазина.</i>" not in screen.text
     labels = [button.text for row in screen.buttons for button in row]
     assert "11" in labels
     assert "⬅️" in labels
@@ -352,6 +354,7 @@ async def test_buyer_marketplace_flow_blocks_saved_shop_removal_with_unfinished_
     screen = result.effects[0]
     assert isinstance(screen, ReplaceText)
     assert "Удаление недоступно, пока в магазине есть незавершенная покупка." in screen.text
+    assert "<i>Удаление недоступно" not in screen.text
     labels = [button.text for row in screen.buttons for button in row]
     assert labels == ["📋 Покупки", "↩️ Назад к магазинам"]
 
@@ -368,6 +371,7 @@ async def test_buyer_marketplace_flow_catalog_uses_numbered_listing_pagination_w
     assert "11. Товар 11" in screen.text
     assert "12. Товар 12" in screen.text
     assert "\n<b>1. Товар 1" not in screen.text
+    assert "<i>Выберите номер объявления.</i>" not in screen.text
     labels = [button.text for row in screen.buttons for button in row]
     assert "11" in labels
     assert "12" in labels
@@ -390,6 +394,7 @@ async def test_buyer_marketplace_flow_listing_detail_hides_internal_wb_fields() 
     assert isinstance(photo, ReplyPhoto)
     assert photo.photo_url == "https://example.com/photo.webp"
     assert isinstance(screen, ReplaceText)
+    assert "<i>Проверьте товар перед покупкой.</i>" in screen.text
     assert "Цена:</b> 400 ₽" in screen.text
     assert "Характеристики" in screen.text
     assert "Артикул WB:</b>" not in screen.text
@@ -662,6 +667,7 @@ async def test_buyer_marketplace_flow_confirms_assignment_cancel_idempotently() 
 
     assert isinstance(prompt.effects[0], ReplaceText)
     assert "Бронь будет снята" in prompt.effects[0].text
+    assert "<i>Подтвердите действие ниже.</i>" not in prompt.effects[0].text
     assert adapter.cancel_calls == [
         {
             "buyer_user_id": 202,

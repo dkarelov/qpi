@@ -4082,7 +4082,6 @@ class TelegramWebhookRuntime:
             )
         text = self._screen_text(
             title="Баланс покупателя",
-            cta="Выберите следующее действие ниже.",
             lines=lines,
             separate_blocks=True,
         )
@@ -4180,7 +4179,6 @@ class TelegramWebhookRuntime:
                 query_message,
                 self._screen_text(
                     title="Транзакции покупателя",
-                    cta="Здесь отображаются выводы покупателя.",
                     lines=["Транзакций пока нет."],
                     note="Когда появятся заявки на вывод, они будут видны здесь.",
                 ),
@@ -4275,7 +4273,6 @@ class TelegramWebhookRuntime:
                     if total_pages > 1
                     else "Транзакции покупателя"
                 ),
-                cta="Проверьте статус выводов ниже.",
                 lines=lines,
                 note=("Если вывод отклонен или задержан, проверьте статус и при необходимости оформите новую заявку."),
                 separate_blocks=True,

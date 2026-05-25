@@ -963,7 +963,7 @@ async def test_phase10_e2e_buyer_shops_screen_uses_numbered_shop_list() -> None:
     for event in events:
         labels.extend(_markup_labels(event))
 
-    assert "<i>Выберите номер магазина.</i>" in text
+    assert "<i>Выберите номер магазина.</i>" not in text
     assert "1. 🔴 Тушенка (объявлений: 0)" in text
     assert "2. 🔴 Пустой магазин (объявлений: 0)" in text
     assert "Сохраненные магазины:" not in text

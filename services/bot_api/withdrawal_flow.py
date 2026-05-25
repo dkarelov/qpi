@@ -392,7 +392,6 @@ class WithdrawalRequestCreationFlow:
                 ReplaceText(
                     text=_screen_text(
                         title="Отмена вывода",
-                        cta="Подтвердите действие ниже.",
                         lines=[
                             f"<b>Сумма:</b> {_format_usdt_value(detail.amount_usdt, precise=True)} USDT",
                             f"<b>Адрес:</b> {html.escape(detail.payout_address)}",
