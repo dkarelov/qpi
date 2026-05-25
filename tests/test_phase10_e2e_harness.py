@@ -206,6 +206,7 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
                 shop_id=11,
                 shop_slug="shop_tushenka",
                 shop_title="Тушенка",
+                buyer_action_state=None,
                 listing=_ns(
                     shop_id=11,
                     listing_id=21,

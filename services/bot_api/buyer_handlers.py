@@ -12,6 +12,7 @@ from libs.domain.errors import (
     NotFoundError,
     PayloadValidationError,
 )
+from services.bot_api.buyer_listing_copy import repeat_purchase_listing_notice
 from services.bot_api.deep_links import build_shop_deep_link, parse_start_payload
 
 
@@ -278,12 +279,8 @@ class BuyerCommandProcessor:
         item = resolved.listing
         display_title = (item.display_title or item.search_phrase).strip()
         price_text = f"{item.reference_price_rub} ₽" if item.reference_price_rub else "—"
-        action_state = getattr(resolved, "buyer_action_state", None)
-        if action_state == "active_purchase":
-            action_text = "У вас уже есть активная покупка по этому товару. Продолжить можно в /my_orders."
-        elif action_state == "already_purchased":
-            action_text = "Этот товар уже был куплен с вашего аккаунта. Повторно забронировать нельзя."
-        else:
+        action_text = repeat_purchase_listing_notice(resolved.buyer_action_state)
+        if action_text is None:
             action_text = f"Чтобы занять слот: /reserve {item.listing_id}"
         return BuyerCommandResponse(
             text=(

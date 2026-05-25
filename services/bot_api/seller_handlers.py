@@ -57,22 +57,19 @@ class SellerCommandProcessor:
                 )
 
             listing_deep_link_builder = default_listing_deep_link_builder
-        self._listing_creation_flow = (
-            listing_creation_flow
-            if listing_creation_flow is not None
-            else (
-                SellerListingCreationFlow(
-                    seller_service=seller_service,
-                    seller_workflow=seller_workflow_service,
-                    display_rub_per_usdt=display_rub_per_usdt,
-                    fx_rate_service=fx_rate_service,
-                    fx_rate_ttl_seconds=fx_rate_ttl_seconds,
-                    listing_deep_link_builder=listing_deep_link_builder,
-                )
-                if seller_workflow_service is not None
-                else None
+        if listing_creation_flow is not None:
+            self._listing_creation_flow = listing_creation_flow
+        elif seller_workflow_service is not None:
+            self._listing_creation_flow = SellerListingCreationFlow(
+                seller_service=seller_service,
+                seller_workflow=seller_workflow_service,
+                display_rub_per_usdt=display_rub_per_usdt,
+                fx_rate_service=fx_rate_service,
+                fx_rate_ttl_seconds=fx_rate_ttl_seconds,
+                listing_deep_link_builder=listing_deep_link_builder,
             )
-        )
+        else:
+            self._listing_creation_flow = None
 
     async def handle(
         self,

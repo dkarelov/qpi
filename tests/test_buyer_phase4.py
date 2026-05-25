@@ -19,6 +19,10 @@ from libs.domain.errors import (
     PayloadValidationError,
 )
 from services.bot_api.buyer_handlers import BuyerCommandProcessor
+from services.bot_api.buyer_listing_copy import (
+    ACTIVE_PURCHASE_LISTING_NOTICE,
+    ALREADY_PURCHASED_LISTING_NOTICE,
+)
 from tests.helpers import create_account, create_listing, create_shop, create_user
 
 _TASK_UUID = "11111111-1111-4111-8111-111111111111"
@@ -1826,8 +1830,8 @@ async def test_buyer_command_listing_deeplink_ignores_saved_shop_touch_failure()
 @pytest.mark.parametrize(
     ("action_state", "expected_copy"),
     [
-        ("active_purchase", "У вас уже есть активная покупка по этому товару."),
-        ("already_purchased", "Этот товар уже был куплен с вашего аккаунта."),
+        ("active_purchase", ACTIVE_PURCHASE_LISTING_NOTICE),
+        ("already_purchased", ALREADY_PURCHASED_LISTING_NOTICE),
     ],
 )
 async def test_buyer_command_listing_deeplink_explains_repeat_purchase_blocks(

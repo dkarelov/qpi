@@ -9,6 +9,10 @@ from typing import Any
 import pytest
 
 from libs.domain.errors import InvalidStateError, NoSlotsAvailableError, NotFoundError, PayloadValidationError
+from services.bot_api.buyer_listing_copy import (
+    ACTIVE_PURCHASE_LISTING_NOTICE,
+    ALREADY_PURCHASED_LISTING_NOTICE,
+)
 from services.bot_api.buyer_marketplace_flow import (
     BuyerMarketplaceFlow,
     BuyerMarketplaceFlowConfig,
@@ -418,13 +422,13 @@ async def test_buyer_marketplace_flow_listing_deep_link_stores_shop_and_opens_de
     [
         (
             "active_purchase",
-            "У вас уже есть активная покупка по этому товару.",
+            ACTIVE_PURCHASE_LISTING_NOTICE,
             True,
         ),
         (
             "already_purchased",
-            "Этот товар уже был куплен с вашего аккаунта.",
-            False,
+            ALREADY_PURCHASED_LISTING_NOTICE,
+            True,
         ),
     ],
 )
@@ -488,8 +492,10 @@ async def test_buyer_marketplace_flow_maps_unavailable_and_duplicate_reservation
     purchased = await purchased_flow.reserve_listing(buyer_user_id=202, listing_id=21, callback_query_id="cbq-1")
 
     assert "Свободных покупок по этому товару нет." in unavailable.effects[0].text
-    assert "У вас уже есть активная покупка по этому товару." in active.effects[0].text
-    assert "Этот товар уже был куплен с вашего аккаунта." in purchased.effects[0].text
+    assert ACTIVE_PURCHASE_LISTING_NOTICE in active.effects[0].text
+    assert ALREADY_PURCHASED_LISTING_NOTICE in purchased.effects[0].text
+    purchased_labels = [button.text for row in purchased.effects[0].buttons for button in row]
+    assert "📋 Покупки" in purchased_labels
 
 
 @pytest.mark.asyncio

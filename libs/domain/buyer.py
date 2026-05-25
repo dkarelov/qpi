@@ -47,6 +47,7 @@ _ACTIVE_ASSIGNMENT_STATES = (
     "picked_up_wait_unlock",
     "withdraw_sent",
 )
+# Completed purchases are detected through buyer_orders, which is written before withdraw_sent.
 _IN_PROGRESS_ASSIGNMENT_STATES = (
     "reserved",
     "order_verified",

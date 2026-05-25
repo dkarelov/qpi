@@ -23,6 +23,11 @@ from libs.domain.public_refs import (
     format_listing_ref,
     format_shop_ref,
 )
+from services.bot_api.buyer_listing_copy import (
+    ACTIVE_PURCHASE_LISTING_NOTICE,
+    ALREADY_PURCHASED_LISTING_NOTICE,
+    repeat_purchase_listing_notice,
+)
 from services.bot_api.transport_effects import (
     ButtonSpec,
     ClearPrompt,
@@ -577,8 +582,13 @@ class BuyerMarketplaceFlow:
                 return FlowResult(
                     effects=(
                         ReplaceText(
-                            text="Этот товар уже был куплен с вашего аккаунта. Повторно забронировать нельзя.",
-                            buttons=_rows([[_button("↩️ Назад к магазинам", action="shops")]]),
+                            text=ALREADY_PURCHASED_LISTING_NOTICE,
+                            buttons=_rows(
+                                [
+                                    [_button("📋 Покупки", action="assignments")],
+                                    [_button("↩️ Назад к магазинам", action="shops")],
+                                ]
+                            ),
                             parse_mode=None,
                         ),
                     )
@@ -1263,8 +1273,8 @@ class BuyerMarketplaceFlow:
         effects.extend(
             _listing_detail_effects(
                 listing=resolved.listing,
-                notice=_listing_action_state_notice(getattr(resolved, "buyer_action_state", None)),
-                action_state=getattr(resolved, "buyer_action_state", None),
+                notice=repeat_purchase_listing_notice(resolved.buyer_action_state),
+                action_state=resolved.buyer_action_state,
                 display_rub_per_usdt=self._config.display_rub_per_usdt,
             )
         )
@@ -1616,7 +1626,7 @@ def _active_purchase_exists_result() -> FlowResult:
     return FlowResult(
         effects=(
             ReplaceText(
-                text="У вас уже есть активная покупка по этому товару.\nПродолжить можно в разделе «📋 Покупки».",
+                text=ACTIVE_PURCHASE_LISTING_NOTICE,
                 buttons=_rows(
                     [
                         [_button("📋 Покупки", action="assignments")],
@@ -1722,7 +1732,7 @@ def _listing_detail_effects(
     keyboard_rows: list[list[ButtonSpec]] = []
     if action_state is None:
         keyboard_rows.append([_button("✅ Купить", action="reserve", entity_id=listing.listing_id)])
-    elif action_state == "active_purchase":
+    elif action_state in {"active_purchase", "already_purchased"}:
         keyboard_rows.append([_button("📋 Покупки", action="assignments")])
     keyboard_rows.extend(
         [
@@ -1742,15 +1752,6 @@ def _listing_detail_effects(
             parse_mode="HTML",
         ),
     )
-
-
-def _listing_action_state_notice(action_state: str | None) -> str | None:
-    if action_state == "active_purchase":
-        return "У вас уже есть активная покупка по этому товару. Продолжить можно в разделе «Покупки»."
-    if action_state == "already_purchased":
-        return "Этот товар уже был куплен с вашего аккаунта. Повторно забронировать нельзя."
-    return None
-
 
 def _listing_deep_link_unavailable_result(*, replace: bool) -> FlowResult:
     effect = _text_effect(
