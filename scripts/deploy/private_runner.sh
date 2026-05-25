@@ -530,11 +530,11 @@ case "${command_name}" in
     start_instance
     wait_for_ssh
     cancel_scheduled_shutdown
-    install_or_reconfigure_runner
     install_or_refresh_autoshutdown_controller
-    wait_for_runner_online
     autoshutdown_heartbeat
     schedule_shutdown "${PRIVATE_RUNNER_MAX_SESSION_MINUTES}"
+    install_or_reconfigure_runner
+    wait_for_runner_online
     print_status
     ;;
   schedule-stop)
