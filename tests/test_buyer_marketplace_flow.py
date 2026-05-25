@@ -12,6 +12,7 @@ from libs.domain.errors import InvalidStateError, NoSlotsAvailableError, NotFoun
 from services.bot_api.buyer_listing_copy import (
     ACTIVE_PURCHASE_LISTING_NOTICE,
     ALREADY_PURCHASED_LISTING_NOTICE,
+    ALREADY_PURCHASED_VISIBLE_LISTING_NOTICE,
 )
 from services.bot_api.buyer_marketplace_flow import (
     BuyerMarketplaceFlow,
@@ -427,8 +428,13 @@ async def test_buyer_marketplace_flow_listing_deep_link_stores_shop_and_opens_de
         ),
         (
             "already_purchased",
-            ALREADY_PURCHASED_LISTING_NOTICE,
+            ALREADY_PURCHASED_VISIBLE_LISTING_NOTICE,
             True,
+        ),
+        (
+            "already_purchased_hidden",
+            ALREADY_PURCHASED_LISTING_NOTICE,
+            False,
         ),
     ],
 )
@@ -495,7 +501,7 @@ async def test_buyer_marketplace_flow_maps_unavailable_and_duplicate_reservation
     assert ACTIVE_PURCHASE_LISTING_NOTICE in active.effects[0].text
     assert ALREADY_PURCHASED_LISTING_NOTICE in purchased.effects[0].text
     purchased_labels = [button.text for row in purchased.effects[0].buttons for button in row]
-    assert "📋 Покупки" in purchased_labels
+    assert "📋 Покупки" not in purchased_labels
 
 
 @pytest.mark.asyncio

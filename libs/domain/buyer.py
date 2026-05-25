@@ -54,6 +54,7 @@ _IN_PROGRESS_ASSIGNMENT_STATES = (
     "picked_up_wait_review",
     "picked_up_wait_unlock",
 )
+_VISIBLE_COMPLETED_ASSIGNMENT_STATES = ("withdraw_sent",)
 _ASSIGNMENT_PAYLOAD_ALLOWED_STATES = {"reserved", "order_verified"}
 _RESERVATION_EXPIRED_STATUS = "expired_2h"
 _BUYER_CANCELLED_STATUS = "buyer_cancelled"
@@ -336,6 +337,14 @@ class BuyerService:
                         EXISTS (
                             SELECT 1
                             FROM buyer_orders bo
+                            JOIN assignments ay ON ay.id = bo.assignment_id
+                            WHERE bo.buyer_user_id = %s
+                              AND bo.wb_product_id = l.wb_product_id
+                              AND ay.status = ANY (%s)
+                        ) AS has_visible_prior_order,
+                        EXISTS (
+                            SELECT 1
+                            FROM buyer_orders bo
                             WHERE bo.buyer_user_id = %s
                               AND bo.wb_product_id = l.wb_product_id
                         ) AS has_prior_order
@@ -350,6 +359,8 @@ class BuyerService:
                         buyer_user_id,
                         list(_IN_PROGRESS_ASSIGNMENT_STATES),
                         buyer_user_id,
+                        list(_VISIBLE_COMPLETED_ASSIGNMENT_STATES),
+                        buyer_user_id,
                         listing_id,
                     ),
                 )
@@ -359,8 +370,10 @@ class BuyerService:
                 buyer_action_state = None
                 if row["has_in_progress_purchase"]:
                     buyer_action_state = "active_purchase"
-                elif row["has_prior_order"]:
+                elif row["has_visible_prior_order"]:
                     buyer_action_state = "already_purchased"
+                elif row["has_prior_order"]:
+                    buyer_action_state = "already_purchased_hidden"
                 if buyer_action_state is None and row["available_slots"] <= 0:
                     raise NotFoundError(f"listing {listing_id} not found")
                 listing = BuyerListingResult(

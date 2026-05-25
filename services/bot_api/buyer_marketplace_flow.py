@@ -583,12 +583,7 @@ class BuyerMarketplaceFlow:
                     effects=(
                         ReplaceText(
                             text=ALREADY_PURCHASED_LISTING_NOTICE,
-                            buttons=_rows(
-                                [
-                                    [_button("📋 Покупки", action="assignments")],
-                                    [_button("↩️ Назад к магазинам", action="shops")],
-                                ]
-                            ),
+                            buttons=_rows([[_button("↩️ Назад к магазинам", action="shops")]]),
                             parse_mode=None,
                         ),
                     )

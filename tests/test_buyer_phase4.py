@@ -22,6 +22,7 @@ from services.bot_api.buyer_handlers import BuyerCommandProcessor
 from services.bot_api.buyer_listing_copy import (
     ACTIVE_PURCHASE_LISTING_NOTICE,
     ALREADY_PURCHASED_LISTING_NOTICE,
+    ALREADY_PURCHASED_VISIBLE_LISTING_NOTICE,
 )
 from tests.helpers import create_account, create_listing, create_shop, create_user
 
@@ -570,6 +571,66 @@ async def test_listing_deeplink_resolution_returns_already_purchased_state_for_p
     assert resolved.listing.listing_id == fixture["listing_id"]
     assert resolved.listing.available_slots == 0
     assert resolved.buyer_action_state == "already_purchased"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_status", ["returned_within_14d", "delivery_expired", "wb_invalid"])
+async def test_listing_deeplink_resolution_marks_hidden_prior_orders_without_purchase_route(
+    db_pool,
+    terminal_status: str,
+) -> None:
+    buyer_service = BuyerService(db_pool)
+    wb_product_id = {
+        "returned_within_14d": 7063,
+        "delivery_expired": 7064,
+        "wb_invalid": 7065,
+    }[terminal_status]
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug=f"hidden-repeat-link-shop-{terminal_status}",
+        wb_product_id=wb_product_id,
+        reward_usdt=Decimal("3.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+    buyer = await buyer_service.bootstrap_buyer(
+        telegram_id=870000 + wb_product_id,
+        username=f"buyer_hidden_repeat_link_{terminal_status}",
+    )
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key=f"reserve:buyer:{terminal_status}:hidden-repeat",
+    )
+    await buyer_service.submit_purchase_payload(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        payload_base64=_encode_payload(
+            task_uuid=str(reservation.task_uuid),
+            order_id=f"hidden-repeat-link-order-{terminal_status}",
+        ),
+    )
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE assignments
+                    SET status = %s,
+                        updated_at = timezone('utc', now())
+                    WHERE id = %s
+                    """,
+                    (terminal_status, reservation.assignment_id),
+                )
+
+    resolved = await buyer_service.resolve_active_listing_deep_link(
+        listing_id=fixture["listing_id"],
+        buyer_user_id=buyer.user_id,
+    )
+
+    assert resolved.listing.listing_id == fixture["listing_id"]
+    assert resolved.listing.available_slots == 0
+    assert resolved.buyer_action_state == "already_purchased_hidden"
 
 
 @pytest.mark.asyncio
@@ -1831,7 +1892,8 @@ async def test_buyer_command_listing_deeplink_ignores_saved_shop_touch_failure()
     ("action_state", "expected_copy"),
     [
         ("active_purchase", ACTIVE_PURCHASE_LISTING_NOTICE),
-        ("already_purchased", ALREADY_PURCHASED_LISTING_NOTICE),
+        ("already_purchased", ALREADY_PURCHASED_VISIBLE_LISTING_NOTICE),
+        ("already_purchased_hidden", ALREADY_PURCHASED_LISTING_NOTICE),
     ],
 )
 async def test_buyer_command_listing_deeplink_explains_repeat_purchase_blocks(
