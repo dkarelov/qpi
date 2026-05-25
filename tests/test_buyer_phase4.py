@@ -4,13 +4,20 @@ import base64
 import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from psycopg.rows import dict_row
 
 from libs.domain.buyer import BuyerService, decode_purchase_payload, decode_review_payload
-from libs.domain.errors import DuplicateOrderError, InvalidStateError, PayloadValidationError
+from libs.domain.errors import (
+    DomainError,
+    DuplicateOrderError,
+    InvalidStateError,
+    NotFoundError,
+    PayloadValidationError,
+)
 from services.bot_api.buyer_handlers import BuyerCommandProcessor
 from tests.helpers import create_account, create_listing, create_shop, create_user
 
@@ -483,6 +490,102 @@ async def test_catalog_hides_products_with_active_assignment_for_buyer(db_pool) 
     )
     assert [item.listing_id for item in listings] == [second_listing_id]
     assert [item.wb_product_id for item in listings] == [7052]
+
+
+@pytest.mark.asyncio
+async def test_listing_deeplink_resolution_returns_active_purchase_state_for_repeat_buyer(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="active-repeat-link-shop",
+        wb_product_id=7061,
+        reward_usdt=Decimal("3.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870021, username="buyer_active_repeat_link")
+    await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:buyer:870021:7061:first",
+    )
+
+    resolved = await buyer_service.resolve_active_listing_deep_link(
+        listing_id=fixture["listing_id"],
+        buyer_user_id=buyer.user_id,
+    )
+
+    assert resolved.listing.listing_id == fixture["listing_id"]
+    assert resolved.listing.available_slots == 0
+    assert resolved.buyer_action_state == "active_purchase"
+
+
+@pytest.mark.asyncio
+async def test_listing_deeplink_resolution_returns_already_purchased_state_for_prior_order(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="purchased-repeat-link-shop",
+        wb_product_id=7062,
+        reward_usdt=Decimal("3.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870022, username="buyer_purchased_repeat_link")
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:buyer:870022:7062:first",
+    )
+    await buyer_service.submit_purchase_payload(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        payload_base64=_encode_payload(
+            task_uuid=str(reservation.task_uuid),
+            order_id="purchased-repeat-link-order",
+        ),
+    )
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE assignments
+                    SET status = 'withdraw_sent',
+                        updated_at = timezone('utc', now())
+                    WHERE id = %s
+                    """,
+                    (reservation.assignment_id,),
+                )
+
+    resolved = await buyer_service.resolve_active_listing_deep_link(
+        listing_id=fixture["listing_id"],
+        buyer_user_id=buyer.user_id,
+    )
+
+    assert resolved.listing.listing_id == fixture["listing_id"]
+    assert resolved.listing.available_slots == 0
+    assert resolved.buyer_action_state == "already_purchased"
+
+
+@pytest.mark.asyncio
+async def test_listing_deeplink_resolution_hides_no_slot_listing_without_existing_purchase(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="no-slot-link-shop",
+        wb_product_id=7063,
+        reward_usdt=Decimal("3.000000"),
+        slot_count=1,
+        available_slots=0,
+    )
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870023, username="buyer_no_slot_link")
+
+    with pytest.raises(NotFoundError):
+        await buyer_service.resolve_active_listing_deep_link(
+            listing_id=fixture["listing_id"],
+            buyer_user_id=buyer.user_id,
+        )
 
 
 @pytest.mark.asyncio
@@ -1640,6 +1743,111 @@ async def test_admin_verify_review_payload_overrides_pending_manual(db_pool) -> 
             )
             audit_count = await cur.fetchone()
             assert audit_count["count"] == 1
+
+
+class _StubBuyerCommandService:
+    def __init__(
+        self,
+        *,
+        resolve_side_effect: Exception | None = None,
+        touch_side_effect: Exception | None = None,
+        action_state: str | None = None,
+    ) -> None:
+        self.resolve_side_effect = resolve_side_effect
+        self.touch_side_effect = touch_side_effect
+        self.action_state = action_state
+        self.touch_calls: list[tuple[int, int]] = []
+
+    async def bootstrap_buyer(self, *, telegram_id: int, username: str | None):
+        return SimpleNamespace(user_id=202)
+
+    async def resolve_active_listing_deep_link(self, *, listing_id: int, buyer_user_id: int | None = None):
+        if self.resolve_side_effect is not None:
+            raise self.resolve_side_effect
+        return SimpleNamespace(
+            shop_id=11,
+            shop_slug="cmd-link-shop",
+            shop_title="Command Link Shop",
+            buyer_action_state=self.action_state,
+            listing=SimpleNamespace(
+                listing_id=listing_id,
+                display_title="Товар по ссылке",
+                search_phrase="товар тест",
+                reference_price_rub=500,
+                reward_usdt=Decimal("2.000000"),
+            ),
+        )
+
+    async def touch_saved_shop(self, *, buyer_user_id: int, shop_id: int) -> None:
+        self.touch_calls.append((buyer_user_id, shop_id))
+        if self.touch_side_effect is not None:
+            raise self.touch_side_effect
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc", [NotFoundError("listing not found"), DomainError("listing paused")])
+async def test_buyer_command_listing_deeplink_returns_friendly_unavailable_text(exc: Exception) -> None:
+    processor = BuyerCommandProcessor(
+        buyer_service=_StubBuyerCommandService(resolve_side_effect=exc),
+        bot_username="qpi_marketplace_bot",
+        display_rub_per_usdt=Decimal("100"),
+    )
+
+    response = await processor.handle(
+        telegram_id=880010,
+        username="buyer_cmd_link_unavailable",
+        text="/start listing_999",
+    )
+
+    assert response.text == "Товар по ссылке недоступен. Откройте магазин или выберите другой товар."
+
+
+@pytest.mark.asyncio
+async def test_buyer_command_listing_deeplink_ignores_saved_shop_touch_failure() -> None:
+    service = _StubBuyerCommandService(touch_side_effect=DomainError("touch failed"))
+    processor = BuyerCommandProcessor(
+        buyer_service=service,
+        bot_username="qpi_marketplace_bot",
+        display_rub_per_usdt=Decimal("100"),
+    )
+
+    response = await processor.handle(
+        telegram_id=880011,
+        username="buyer_cmd_link_touch",
+        text="/start listing_21",
+    )
+
+    assert "Товар: Товар по ссылке" in response.text
+    assert "Чтобы занять слот: /reserve 21" in response.text
+    assert service.touch_calls == [(202, 11)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action_state", "expected_copy"),
+    [
+        ("active_purchase", "У вас уже есть активная покупка по этому товару."),
+        ("already_purchased", "Этот товар уже был куплен с вашего аккаунта."),
+    ],
+)
+async def test_buyer_command_listing_deeplink_explains_repeat_purchase_blocks(
+    action_state: str,
+    expected_copy: str,
+) -> None:
+    processor = BuyerCommandProcessor(
+        buyer_service=_StubBuyerCommandService(action_state=action_state),
+        bot_username="qpi_marketplace_bot",
+        display_rub_per_usdt=Decimal("100"),
+    )
+
+    response = await processor.handle(
+        telegram_id=880012,
+        username="buyer_cmd_link_repeat",
+        text="/start listing_21",
+    )
+
+    assert expected_copy in response.text
+    assert "/reserve" not in response.text
 
 
 @pytest.mark.asyncio

@@ -769,17 +769,6 @@ class TelegramWebhookRuntime:
                 wb_public_client=self._wb_public_client,
                 token_cipher_key=self._settings.token_cipher_key,
             )
-            self._seller_processor = SellerCommandProcessor(
-                seller_service=self._seller_service,
-                seller_workflow_service=seller_workflow_service,
-                wb_ping_client=wb_ping_client,
-                token_cipher_key=self._settings.token_cipher_key,
-                bot_username=self._settings.telegram_bot_username,
-                display_rub_per_usdt=self._settings.display_rub_per_usdt,
-                fx_rate_service=self._fx_rate_service,
-                fx_rate_ttl_seconds=self._settings.fx_rate_ttl_seconds,
-                listing_deep_link_builder=self._build_listing_deep_link,
-            )
             self._seller_workflow_service = seller_workflow_service
             self._seller_listing_creation_flow = SellerListingCreationFlow(
                 seller_service=self._seller_service,
@@ -790,6 +779,18 @@ class TelegramWebhookRuntime:
                 listing_deep_link_builder=self._build_listing_deep_link,
             )
             self._seller_listing_creation_flow_rate = self._settings.display_rub_per_usdt
+            self._seller_processor = SellerCommandProcessor(
+                seller_service=self._seller_service,
+                seller_workflow_service=seller_workflow_service,
+                wb_ping_client=wb_ping_client,
+                token_cipher_key=self._settings.token_cipher_key,
+                bot_username=self._settings.telegram_bot_username,
+                display_rub_per_usdt=self._settings.display_rub_per_usdt,
+                fx_rate_service=self._fx_rate_service,
+                fx_rate_ttl_seconds=self._settings.fx_rate_ttl_seconds,
+                listing_deep_link_builder=self._build_listing_deep_link,
+                listing_creation_flow=self._seller_listing_creation_flow,
+            )
             self._buyer_processor = BuyerCommandProcessor(
                 buyer_service=self._buyer_service,
                 bot_username=self._settings.telegram_bot_username,

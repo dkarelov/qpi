@@ -1263,7 +1263,8 @@ class BuyerMarketplaceFlow:
         effects.extend(
             _listing_detail_effects(
                 listing=resolved.listing,
-                notice=None,
+                notice=_listing_action_state_notice(getattr(resolved, "buyer_action_state", None)),
+                action_state=getattr(resolved, "buyer_action_state", None),
                 display_rub_per_usdt=self._config.display_rub_per_usdt,
             )
         )
@@ -1308,6 +1309,7 @@ class BuyerMarketplaceFlow:
                 _listing_detail_effects(
                     listing=listing,
                     notice=notice,
+                    action_state=None,
                     display_rub_per_usdt=self._config.display_rub_per_usdt,
                 )
             )
@@ -1714,13 +1716,20 @@ def _listing_detail_effects(
     *,
     listing: Any,
     notice: str | None,
+    action_state: str | None,
     display_rub_per_usdt: Decimal,
 ) -> tuple[ReplyPhoto | ReplaceText, ...]:
-    keyboard_rows = [
-        [_button("✅ Купить", action="reserve", entity_id=listing.listing_id)],
-        [_button("↩️ Назад к каталогу", action="open_last_shop")],
-        [_knowledge_button(topic="purchases")],
-    ]
+    keyboard_rows: list[list[ButtonSpec]] = []
+    if action_state is None:
+        keyboard_rows.append([_button("✅ Купить", action="reserve", entity_id=listing.listing_id)])
+    elif action_state == "active_purchase":
+        keyboard_rows.append([_button("📋 Покупки", action="assignments")])
+    keyboard_rows.extend(
+        [
+            [_button("↩️ Назад к каталогу", action="open_last_shop")],
+            [_knowledge_button(topic="purchases")],
+        ]
+    )
     return (
         ReplyPhoto(photo_url=listing.wb_photo_url),
         ReplaceText(
@@ -1733,6 +1742,14 @@ def _listing_detail_effects(
             parse_mode="HTML",
         ),
     )
+
+
+def _listing_action_state_notice(action_state: str | None) -> str | None:
+    if action_state == "active_purchase":
+        return "У вас уже есть активная покупка по этому товару. Продолжить можно в разделе «Покупки»."
+    if action_state == "already_purchased":
+        return "Этот товар уже был куплен с вашего аккаунта. Повторно забронировать нельзя."
+    return None
 
 
 def _listing_deep_link_unavailable_result(*, replace: bool) -> FlowResult:

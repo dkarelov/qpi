@@ -108,6 +108,7 @@ class FakeBuyerMarketplaceAdapter:
     purchase_side_effect: Exception | None = None
     review_side_effect: Exception | None = None
     cancel_side_effect: Exception | None = None
+    deep_link_action_state: str | None = None
     touch_calls: list[tuple[int, int]] = field(default_factory=list)
     reserve_calls: list[dict[str, Any]] = field(default_factory=list)
     purchase_calls: list[dict[str, Any]] = field(default_factory=list)
@@ -152,6 +153,7 @@ class FakeBuyerMarketplaceAdapter:
             shop_slug=self.shop.slug,
             shop_title=self.shop.title,
             listing=listing,
+            buyer_action_state=self.deep_link_action_state,
         )
 
     async def touch_saved_shop(self, *, buyer_user_id: int, shop_id: int) -> None:
@@ -408,6 +410,39 @@ async def test_buyer_marketplace_flow_listing_deep_link_stores_shop_and_opens_de
     labels = [button.text for row in screen.buttons for button in row]
     assert "✅ Купить" in labels
     assert adapter.touch_calls == [(202, 11)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action_state", "expected_copy", "expected_purchase_button"),
+    [
+        (
+            "active_purchase",
+            "У вас уже есть активная покупка по этому товару.",
+            True,
+        ),
+        (
+            "already_purchased",
+            "Этот товар уже был куплен с вашего аккаунта.",
+            False,
+        ),
+    ],
+)
+async def test_buyer_marketplace_flow_listing_deep_link_explains_repeat_purchase_blocks(
+    action_state: str,
+    expected_copy: str,
+    expected_purchase_button: bool,
+) -> None:
+    flow, _ = _flow(FakeBuyerMarketplaceAdapter(deep_link_action_state=action_state))
+
+    result = await flow.open_listing_deep_link(buyer_user_id=202, listing_id=21)
+
+    _, _, screen = result.effects
+    assert isinstance(screen, ReplaceText)
+    assert expected_copy in screen.text
+    labels = [button.text for row in screen.buttons for button in row]
+    assert "✅ Купить" not in labels
+    assert ("📋 Покупки" in labels) is expected_purchase_button
 
 
 @pytest.mark.asyncio

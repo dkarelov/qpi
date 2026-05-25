@@ -209,6 +209,7 @@ Persistence and schema:
 ### 4.2 Buyer rules
 
 - Buyer can open an exact announcement by product deeplink `listing_<listing_id>`; legacy shop deeplinks `shop_<slug>` and saved shops still open the shop catalog.
+- Product deeplinks reopen the product card for buyers who already have an active or completed purchase for the same WB item, hide the reserve action, and explain the repeat-purchase block instead of showing a generic unavailable state.
 - Buyer can reserve slot only on active listings.
 - Buyer-facing primary CTA for an active listing is `Купить`.
 - Buyer-facing listing screens show buyer-visible title, WB subject, description, photo, sizes, characteristics, cashback in RUB with approximate percent, and `Цена` in RUB.

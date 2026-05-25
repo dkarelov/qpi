@@ -184,6 +184,7 @@ class BuyerListingDeepLinkResult:
     shop_slug: str
     shop_title: str
     listing: BuyerListingResult
+    buyer_action_state: str | None = None
 
 
 @dataclass(frozen=True)

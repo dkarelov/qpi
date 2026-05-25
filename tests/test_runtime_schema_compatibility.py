@@ -127,6 +127,7 @@ async def test_runtime_post_init_wires_listing_deep_link_builders(monkeypatch) -
     assert runtime._seller_processor is not None
     assert runtime._seller_listing_creation_flow is not None
     assert runtime._seller_listing_creation_flow._build_listing_deep_link(21).endswith("start=listing_21")
+    assert runtime._seller_processor._listing_creation_flow is runtime._seller_listing_creation_flow
 
     await runtime._post_shutdown(application)
 

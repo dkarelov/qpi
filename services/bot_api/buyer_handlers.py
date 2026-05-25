@@ -259,17 +259,32 @@ class BuyerCommandProcessor:
         listing_id: int,
         buyer_user_id: int,
     ) -> BuyerCommandResponse:
-        resolved = await self._buyer_service.resolve_active_listing_deep_link(
-            listing_id=listing_id,
-            buyer_user_id=buyer_user_id,
-        )
-        await self._buyer_service.touch_saved_shop(
-            buyer_user_id=buyer_user_id,
-            shop_id=resolved.shop_id,
-        )
+        try:
+            resolved = await self._buyer_service.resolve_active_listing_deep_link(
+                listing_id=listing_id,
+                buyer_user_id=buyer_user_id,
+            )
+        except (DomainError, ValueError):
+            return BuyerCommandResponse(
+                text="Товар по ссылке недоступен. Откройте магазин или выберите другой товар."
+            )
+        try:
+            await self._buyer_service.touch_saved_shop(
+                buyer_user_id=buyer_user_id,
+                shop_id=resolved.shop_id,
+            )
+        except DomainError:
+            pass
         item = resolved.listing
         display_title = (item.display_title or item.search_phrase).strip()
         price_text = f"{item.reference_price_rub} ₽" if item.reference_price_rub else "—"
+        action_state = getattr(resolved, "buyer_action_state", None)
+        if action_state == "active_purchase":
+            action_text = "У вас уже есть активная покупка по этому товару. Продолжить можно в /my_orders."
+        elif action_state == "already_purchased":
+            action_text = "Этот товар уже был куплен с вашего аккаунта. Повторно забронировать нельзя."
+        else:
+            action_text = f"Чтобы занять слот: /reserve {item.listing_id}"
         return BuyerCommandResponse(
             text=(
                 f"Товар: {display_title}\n"
@@ -277,7 +292,7 @@ class BuyerCommandProcessor:
                 f'Поиск: "{item.search_phrase}"\n'
                 f"Кэшбэк: {self._format_buyer_reward(item.reward_usdt)}\n"
                 f"Цена: {price_text}\n\n"
-                f"Чтобы занять слот: /reserve {item.listing_id}"
+                f"{action_text}"
             )
         )
 

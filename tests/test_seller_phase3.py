@@ -15,6 +15,7 @@ from libs.integrations.wb import WbPingResult
 from libs.integrations.wb_public import WbObservedBuyerPrice, WbProductSnapshot
 from libs.security.token_cipher import encrypt_token
 from services.bot_api.seller_handlers import SellerCommandProcessor
+from services.bot_api.seller_listing_creation_flow import SellerListingCreationFlow
 from tests.helpers import create_listing, create_shop, create_user
 
 
@@ -329,6 +330,37 @@ async def test_listing_create_command_matches_current_listing_create_contract(db
     assert listings[0].reference_price_source == "manual"
     assert listings[0].review_phrases == ["не течет", "удобный дозатор"]
     assert listings[0].reward_usdt == Decimal("1.000000")
+
+
+@pytest.mark.asyncio
+async def test_listing_create_command_without_link_builder_omits_empty_product_link_line(db_pool) -> None:
+    seller_service = SellerService(db_pool)
+    seller = await seller_service.bootstrap_seller(telegram_id=70032, username="seller_cmd_no_link")
+    shop = await seller_service.create_shop(seller_user_id=seller.user_id, title="No Link Shop")
+    await seller_service.save_validated_shop_token(
+        seller_user_id=seller.user_id,
+        shop_id=shop.shop_id,
+        token_ciphertext=encrypt_token("valid-token", "test-key"),
+    )
+    flow = SellerListingCreationFlow(
+        seller_service=seller_service,
+        seller_workflow=SellerWorkflowService(
+            seller_service=seller_service,
+            wb_public_client=StubWbPublicClient(buyer_price_rub=None),
+            token_cipher_key="test-key",
+        ),
+        display_rub_per_usdt=Decimal("100"),
+    )
+
+    response = await flow.create_from_command(
+        seller_user_id=seller.user_id,
+        args=flow.parse_command_args(
+            f"{shop.shop_id} 225954015, 100, 2, клей b7000, не течет || 392 || Клей для ремонта"
+        ),
+    )
+
+    assert "Листинг создан" in response.text
+    assert "Ссылка на товар:" not in response.text
 
 
 @pytest.mark.asyncio

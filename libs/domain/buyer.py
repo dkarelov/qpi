@@ -47,6 +47,12 @@ _ACTIVE_ASSIGNMENT_STATES = (
     "picked_up_wait_unlock",
     "withdraw_sent",
 )
+_IN_PROGRESS_ASSIGNMENT_STATES = (
+    "reserved",
+    "order_verified",
+    "picked_up_wait_review",
+    "picked_up_wait_unlock",
+)
 _ASSIGNMENT_PAYLOAD_ALLOWED_STATES = {"reserved", "order_verified"}
 _RESERVATION_EXPIRED_STATUS = "expired_2h"
 _BUYER_CANCELLED_STATUS = "buyer_cancelled"
@@ -297,37 +303,8 @@ class BuyerService:
 
         async def operation(conn: AsyncConnection) -> BuyerListingDeepLinkResult:
             async with conn.cursor(row_factory=dict_row) as cur:
-                params: list[Any] = [listing_id]
-                buyer_filters = ""
-                if buyer_user_id is not None:
-                    buyer_filters = """
-                      AND NOT EXISTS (
-                            SELECT 1
-                            FROM assignments ax
-                            JOIN listings lx ON lx.id = ax.listing_id
-                            WHERE ax.buyer_user_id = %s
-                              AND lx.wb_product_id = l.wb_product_id
-                              AND ax.status = ANY (
-                                    ARRAY[
-                                        'reserved'::text,
-                                        'order_verified'::text,
-                                        'picked_up_wait_review'::text,
-                                        'picked_up_wait_unlock'::text,
-                                        'withdraw_sent'::text
-                                    ]
-                              )
-                      )
-                      AND NOT EXISTS (
-                            SELECT 1
-                            FROM buyer_orders bo
-                            WHERE bo.buyer_user_id = %s
-                              AND bo.wb_product_id = l.wb_product_id
-                      )
-                    """
-                    params.extend([buyer_user_id, buyer_user_id])
-
                 await cur.execute(
-                    f"""
+                    """
                     SELECT
                         l.id,
                         l.shop_id,
@@ -346,20 +323,44 @@ class BuyerService:
                         l.slot_count,
                         l.available_slots,
                         s.slug AS shop_slug,
-                        s.title AS shop_title
+                        s.title AS shop_title,
+                        EXISTS (
+                            SELECT 1
+                            FROM assignments ax
+                            JOIN listings lx ON lx.id = ax.listing_id
+                            WHERE ax.buyer_user_id = %s
+                              AND lx.wb_product_id = l.wb_product_id
+                              AND ax.status = ANY (%s)
+                        ) AS has_in_progress_purchase,
+                        EXISTS (
+                            SELECT 1
+                            FROM buyer_orders bo
+                            WHERE bo.buyer_user_id = %s
+                              AND bo.wb_product_id = l.wb_product_id
+                        ) AS has_prior_order
                     FROM listings l
                     JOIN shops s ON s.id = l.shop_id
                     WHERE l.id = %s
                       AND l.deleted_at IS NULL
                       AND l.status = 'active'
-                      AND l.available_slots > 0
                       AND s.deleted_at IS NULL
-                      {buyer_filters}
                     """,
-                    tuple(params),
+                    (
+                        buyer_user_id,
+                        list(_IN_PROGRESS_ASSIGNMENT_STATES),
+                        buyer_user_id,
+                        listing_id,
+                    ),
                 )
                 row = await cur.fetchone()
                 if row is None:
+                    raise NotFoundError(f"listing {listing_id} not found")
+                buyer_action_state = None
+                if row["has_in_progress_purchase"]:
+                    buyer_action_state = "active_purchase"
+                elif row["has_prior_order"]:
+                    buyer_action_state = "already_purchased"
+                if buyer_action_state is None and row["available_slots"] <= 0:
                     raise NotFoundError(f"listing {listing_id} not found")
                 listing = BuyerListingResult(
                     listing_id=row["id"],
@@ -384,6 +385,7 @@ class BuyerService:
                     shop_slug=row["shop_slug"],
                     shop_title=row["shop_title"],
                     listing=listing,
+                    buyer_action_state=buyer_action_state,
                 )
 
         return await run_in_transaction(self._pool, operation, read_only=True)
