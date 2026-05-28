@@ -87,6 +87,7 @@ class DecodedReviewPayload:
     rating: int
     review_text: str
     raw_payload_json: list[Any]
+    legacy_wb_product_id: int | None = None
 
 
 class BuyerService:
@@ -980,6 +981,11 @@ class BuyerService:
             raise InvalidStateError("assignment cannot accept review payload in current state")
         if decoded.task_uuid != assignment["task_uuid"]:
             raise PayloadValidationError("payload field 'task_uuid' does not match assignment")
+        if (
+            decoded.legacy_wb_product_id is not None
+            and decoded.legacy_wb_product_id != int(assignment["wb_product_id"])
+        ):
+            raise PayloadValidationError("payload field 'wb_product_id' does not match assignment")
 
         await cur.execute(
             """
@@ -1548,21 +1554,25 @@ def decode_review_payload(payload_base64: str) -> DecodedReviewPayload:
 
     if not isinstance(parsed, list):
         raise PayloadValidationError("payload must be a JSON array")
-    if len(parsed) != 4:
+    legacy_wb_product_id: int | None = None
+    if len(parsed) == 4:
+        task_uuid_raw, reviewed_at_raw, rating_raw, review_text_raw = parsed
+    elif len(parsed) == 5:
+        task_uuid_raw, legacy_wb_product_id_raw, reviewed_at_raw, rating_raw, review_text_raw = parsed
+        legacy_wb_product_id = _require_positive_int(legacy_wb_product_id_raw, field_name="wb_product_id")
+    else:
         raise PayloadValidationError("payload must contain [task_uuid, reviewed_at, rating, review_text]")
 
-    task_uuid = _require_uuid(parsed[0], field_name="task_uuid")
+    task_uuid = _require_uuid(task_uuid_raw, field_name="task_uuid")
 
-    reviewed_at_raw = parsed[1]
     if not isinstance(reviewed_at_raw, str):
         raise PayloadValidationError("payload field 'reviewed_at' must be ISO datetime string")
     reviewed_at = _parse_iso_datetime_utc(reviewed_at_raw, field_name="reviewed_at")
 
-    rating = _require_positive_int(parsed[2], field_name="rating")
+    rating = _require_positive_int(rating_raw, field_name="rating")
     if rating > 5:
         raise PayloadValidationError("payload field 'rating' must be between 1 and 5")
 
-    review_text_raw = parsed[3]
     if not isinstance(review_text_raw, str) or not review_text_raw.strip():
         raise PayloadValidationError("payload field 'review_text' must be non-empty string")
 
@@ -1573,6 +1583,7 @@ def decode_review_payload(payload_base64: str) -> DecodedReviewPayload:
         rating=rating,
         review_text=review_text_raw.strip(),
         raw_payload_json=parsed,
+        legacy_wb_product_id=legacy_wb_product_id,
     )
 
 

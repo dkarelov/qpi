@@ -61,6 +61,18 @@ def _encode_review_payload(
     return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
 
 
+def _encode_legacy_review_payload(
+    *,
+    task_uuid: str = _TASK_UUID,
+    wb_product_id: int | str = 552892532,
+    reviewed_at: str = "2026-03-18T10:30:00",
+    rating: int = 5,
+    review_text: str = "great",
+) -> str:
+    payload: list[Any] = [task_uuid, wb_product_id, reviewed_at, rating, review_text]
+    return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+
+
 def _encode_verbose_review_payload(
     *,
     task_uuid: str = _TASK_UUID,
@@ -1147,6 +1159,23 @@ def test_decode_review_payload_accepts_js_utc_timestamp() -> None:
     assert decoded.payload_version == 3
 
 
+def test_decode_review_payload_accepts_legacy_no_type_shape() -> None:
+    decoded = decode_review_payload(
+        _encode_legacy_review_payload(
+            wb_product_id="1001200877",
+            reviewed_at="2026-05-28T21:28:29.999Z",
+            review_text="Действительно мясо внутри - кусочками.",
+        )
+    )
+
+    assert str(decoded.task_uuid) == _TASK_UUID
+    assert decoded.legacy_wb_product_id == 1001200877
+    assert decoded.reviewed_at == datetime(2026, 5, 28, 21, 28, 29, 999000, tzinfo=UTC)
+    assert decoded.rating == 5
+    assert decoded.review_text == "Действительно мясо внутри - кусочками."
+    assert decoded.payload_version == 3
+
+
 def test_decode_review_payload_rejects_verbose_shape() -> None:
     with pytest.raises(PayloadValidationError, match=r"\[task_uuid, reviewed_at, rating, review_text\]"):
         decode_review_payload(
@@ -1601,6 +1630,138 @@ async def test_submit_review_payload_moves_assignment_to_pickup_wait_unlock_and_
                 5,
                 "Очень понравились, в размер и не садятся после стирки.",
             ]
+
+
+@pytest.mark.asyncio
+async def test_submit_review_payload_accepts_legacy_no_type_shape(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="review-legacy-shop",
+        wb_product_id=5706,
+        reward_usdt=Decimal("6.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870106, username="buyer_review_legacy")
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:review:legacy",
+    )
+    await buyer_service.submit_purchase_payload(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        payload_base64=_encode_payload(
+            task_uuid=str(reservation.task_uuid),
+            order_id="ORD-REVIEW-LEGACY",
+        ),
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE assignments
+                    SET status = 'picked_up_wait_review',
+                        unlock_at = timezone('utc', now()) + interval '10 days'
+                    WHERE id = %s
+                    """,
+                    (reservation.assignment_id,),
+                )
+
+    payload = _encode_legacy_review_payload(
+        task_uuid=str(reservation.task_uuid),
+        wb_product_id="5706",
+        reviewed_at="2026-05-28T21:28:29.999Z",
+        review_text="Действительно мясо внутри - кусочками.",
+    )
+    result = await buyer_service.submit_review_payload(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        payload_base64=payload,
+    )
+
+    assert result.changed is True
+    assert result.status == "picked_up_wait_unlock"
+    assert result.verification_status == "verified_auto"
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT wb_product_id, raw_payload_json
+                FROM buyer_reviews
+                WHERE assignment_id = %s
+                """,
+                (reservation.assignment_id,),
+            )
+            review = await cur.fetchone()
+            assert review["wb_product_id"] == 5706
+            assert review["raw_payload_json"] == [
+                str(reservation.task_uuid),
+                "5706",
+                "2026-05-28T21:28:29.999Z",
+                5,
+                "Действительно мясо внутри - кусочками.",
+            ]
+
+
+@pytest.mark.asyncio
+async def test_submit_review_payload_rejects_legacy_wb_product_id_mismatch(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="review-legacy-mismatch-shop",
+        wb_product_id=5707,
+        reward_usdt=Decimal("6.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870107, username="buyer_review_legacy_mismatch")
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:review:legacy-mismatch",
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE assignments
+                    SET status = 'picked_up_wait_review',
+                        unlock_at = timezone('utc', now()) + interval '10 days'
+                    WHERE id = %s
+                    """,
+                    (reservation.assignment_id,),
+                )
+
+    with pytest.raises(PayloadValidationError, match="wb_product_id"):
+        await buyer_service.submit_review_payload(
+            buyer_user_id=buyer.user_id,
+            assignment_id=reservation.assignment_id,
+            payload_base64=_encode_legacy_review_payload(
+                task_uuid=str(reservation.task_uuid),
+                wb_product_id=999999,
+                review_text="Действительно мясо внутри - кусочками.",
+            ),
+        )
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT status FROM assignments WHERE id = %s", (reservation.assignment_id,))
+            assignment = await cur.fetchone()
+            assert assignment["status"] == "picked_up_wait_review"
+
+            await cur.execute(
+                "SELECT COUNT(*) AS count FROM buyer_reviews WHERE assignment_id = %s",
+                (reservation.assignment_id,),
+            )
+            review_count = await cur.fetchone()
+            assert review_count["count"] == 0
 
 
 @pytest.mark.asyncio

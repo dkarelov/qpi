@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-05-24 UTC
+Last updated: 2026-05-28 UTC
 
 ## 0. Completion Gate
 
@@ -224,6 +224,7 @@ Persistence and schema:
 - Buyer submits review confirmation token (base64 JSON array):
   - `[task_uuid, reviewed_at, review_score, review_text]`, where `reviewed_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
 - Order and review confirmation tokens are compact-only; token type and `wb_product_id` are derived from the locked assignment and are not accepted in confirmation payloads.
+- Transitional compatibility: review confirmation also accepts already-generated no-type legacy tokens shaped as `[task_uuid, wb_product_id, reviewed_at, review_score, review_text]`; the embedded `wb_product_id` must match the locked assignment.
 - Verification token must be submitted within 4 hours of reservation.
 - `order_id` is globally unique (`1 order_id = 1 slot`).
 - Review confirmation is mandatory after pickup. Without it, cashback stays frozen even after the unlock timer has passed.
@@ -470,6 +471,8 @@ Transitions:
 - Support-bot dependency management is `npm` + upstream `package-lock.json`, with Node 24 as the qpi target version.
 - `requirements.txt` is generated from `uv.lock` for Cloud Function/Terraform compatibility and is never hand-edited.
 - DB access: `psycopg3` + plain SQL only (no ORM).
+- Do not use the globally named `pg-prod` MCP for this repo: it is connected to another PostgreSQL database, and its results are invalid for qpi diagnostics, SQL validation, production evidence, and incident investigation.
+- For qpi DB work, use the repo-documented `psql`, SSH/bastion, `scripts/deploy/schema_remote.sh`, and CI/private-runner validation paths.
 - Schema changes only through `schema/schema.sql` + `psqldef`.
 - Infrastructure mutations are Terraform-only from `infra/`.
 - Code-only deploy entrypoints are `scripts/deploy/runtime.sh`, `scripts/deploy/function.sh`, and `scripts/deploy/support_bot.sh`; broader infra mutations still remain Terraform-only.
