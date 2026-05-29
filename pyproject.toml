@@ -14,6 +14,7 @@ dependencies = [
   "structlog>=25.1,<26.0",
   "python-telegram-bot[webhooks]>=21.10,<22.0",
   "yc_json_logger @ git+https://github.com/e-comet/yc_json_logger.git@882b8a6880d7726f03db145d4d6935a0b26294df",
+  "pillow>=12.2.0",
 ]
 
 [project.optional-dependencies]

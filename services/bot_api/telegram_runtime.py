@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import html
+import io
 import json
 import threading
+import urllib.error
 import urllib.parse
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -15,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from PIL import Image, UnidentifiedImageError
 from psycopg.rows import dict_row
 
 from libs.config.settings import BotApiSettings
@@ -110,6 +114,7 @@ try:
         BotCommand,
         InlineKeyboardButton,
         InlineKeyboardMarkup,
+        InputFile,
         MenuButtonCommands,
         Message,
         Update,
@@ -148,6 +153,14 @@ _NUMBERED_PAGE_SIZE = 10
 _MSK_TZ = ZoneInfo("Europe/Moscow")
 _TON_FRIENDLY_MAINNET_PREFIXES = frozenset({"E", "U"})
 _TON_FRIENDLY_TESTNET_PREFIXES = frozenset({"k", "0"})
+_PHOTO_DOWNLOAD_TIMEOUT_SECONDS = 10
+_PHOTO_MAX_BYTES = 10 * 1024 * 1024
+_PHOTO_JPEG_QUALITY = 88
+_PHOTO_HTTP_HEADERS = {
+    "User-Agent": "qpi-bot/1.0",
+    "Accept": "image/webp,image/jpeg,image/png,*/*;q=0.8",
+}
+_SUPPORTED_UPLOAD_IMAGE_TYPES = frozenset({"image/jpeg", "image/jpg", "image/png", "image/webp"})
 
 _SELLER_COMMAND_PREFIXES = (
     "/shop_",
@@ -222,6 +235,17 @@ _NOTIFICATION_DISPATCH_MAX_BACKOFF_SECONDS = 3600
 class TelegramIdentity:
     telegram_id: int
     username: str | None
+
+
+@dataclass(frozen=True)
+class _DownloadedPhoto:
+    data: bytes
+    content_type: str | None
+    final_url: str
+
+
+class _PhotoDownloadError(RuntimeError):
+    pass
 
 
 class _RuntimeSellerListingWorkflowAdapter:
@@ -614,6 +638,93 @@ class _BotHealthServer:
             self._thread.join(timeout=3)
             self._thread = None
         self._logger.info("bot_health_server_stopped")
+
+
+def _is_http_url(value: str) -> bool:
+    parsed = urllib.parse.urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _is_webp_url(value: str) -> bool:
+    parsed = urllib.parse.urlparse(value)
+    return parsed.path.lower().endswith(".webp")
+
+
+def _is_wb_photo_url(value: str) -> bool:
+    parsed = urllib.parse.urlparse(value)
+    host = parsed.netloc.lower()
+    return (
+        host.endswith(".wbbasket.ru")
+        or host.endswith(".wbcontent.net")
+        or (host.startswith("basket-") and host.endswith(".wb.ru"))
+    )
+
+
+def _download_photo_from_url(photo_url: str) -> _DownloadedPhoto:
+    request = urllib.request.Request(photo_url, headers=_PHOTO_HTTP_HEADERS)
+    try:
+        with urllib.request.urlopen(request, timeout=_PHOTO_DOWNLOAD_TIMEOUT_SECONDS) as response:
+            status = getattr(response, "status", 200)
+            if status >= 400:
+                raise _PhotoDownloadError(f"HTTP {status}")
+
+            content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            if content_type and content_type not in _SUPPORTED_UPLOAD_IMAGE_TYPES:
+                raise _PhotoDownloadError(f"unsupported content type: {content_type}")
+
+            content_length_text = response.headers.get("Content-Length")
+            if content_length_text:
+                try:
+                    content_length = int(content_length_text)
+                except ValueError:
+                    content_length = None
+                if content_length is not None and content_length > _PHOTO_MAX_BYTES:
+                    raise _PhotoDownloadError(f"photo too large: {content_length} bytes")
+
+            data = response.read(_PHOTO_MAX_BYTES + 1)
+            if len(data) > _PHOTO_MAX_BYTES:
+                raise _PhotoDownloadError(f"photo exceeds {_PHOTO_MAX_BYTES} bytes")
+            if not data:
+                raise _PhotoDownloadError("photo response is empty")
+            return _DownloadedPhoto(data=data, content_type=content_type or None, final_url=response.geturl())
+    except _PhotoDownloadError:
+        raise
+    except urllib.error.URLError as exc:
+        raise _PhotoDownloadError(str(exc)) from exc
+    except TimeoutError as exc:
+        raise _PhotoDownloadError("timed out") from exc
+
+
+def _photo_upload_filename(*, photo_url: str, content_type: str | None) -> str:
+    if content_type in {"image/jpeg", "image/jpg"}:
+        return "listing.jpg"
+    if content_type == "image/png":
+        return "listing.png"
+    if content_type == "image/webp" or _is_webp_url(photo_url):
+        return "listing.webp"
+    return "listing"
+
+
+def _convert_image_bytes_to_jpeg(data: bytes) -> bytes:
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image.load()
+            if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
+                alpha_source = image.convert("RGBA")
+                background = Image.new("RGBA", alpha_source.size, (255, 255, 255, 255))
+                image = Image.alpha_composite(background, alpha_source).convert("RGB")
+            elif image.mode != "RGB":
+                image = image.convert("RGB")
+
+            output = io.BytesIO()
+            image.save(output, format="JPEG", quality=_PHOTO_JPEG_QUALITY, optimize=True)
+    except UnidentifiedImageError as exc:
+        raise ValueError("photo bytes are not a supported image") from exc
+
+    jpeg_data = output.getvalue()
+    if len(jpeg_data) > _PHOTO_MAX_BYTES:
+        raise ValueError(f"converted JPEG exceeds {_PHOTO_MAX_BYTES} bytes")
+    return jpeg_data
 
 
 class TelegramWebhookRuntime:
@@ -7042,15 +7153,96 @@ class TelegramWebhookRuntime:
     ) -> None:
         if message is None or not photo_url:
             return
+        if not _is_http_url(photo_url):
+            await self._try_reply_photo(
+                message,
+                photo=photo_url,
+                source_url=photo_url,
+                strategy="telegram_file_id_or_url",
+            )
+            return
+        should_skip_direct_url = _is_webp_url(photo_url) and _is_wb_photo_url(photo_url)
+        if not should_skip_direct_url and await self._try_reply_photo(
+            message,
+            photo=photo_url,
+            source_url=photo_url,
+            strategy="direct_url",
+        ):
+            return
+
+        downloaded = await self._download_photo_for_upload(photo_url)
+        if downloaded is None:
+            return
+
+        upload_filename = _photo_upload_filename(photo_url=downloaded.final_url, content_type=downloaded.content_type)
+        upload = InputFile(downloaded.data, filename=upload_filename)
+        if await self._try_reply_photo(
+            message,
+            photo=upload,
+            source_url=photo_url,
+            strategy="memory_upload",
+        ):
+            return
+
         try:
-            await message.reply_photo(photo=photo_url)
+            jpeg_data = await asyncio.to_thread(_convert_image_bytes_to_jpeg, downloaded.data)
+        except Exception as exc:
+            self._logger.warning(
+                "telegram_photo_conversion_failed",
+                error_type=type(exc).__name__,
+                error_message=str(exc)[:300],
+                photo_url=photo_url,
+                content_type=downloaded.content_type,
+            )
+            return
+
+        await self._try_reply_photo(
+            message,
+            photo=InputFile(jpeg_data, filename="listing.jpg"),
+            source_url=photo_url,
+            strategy="jpeg_memory_upload",
+        )
+
+    async def _download_photo_for_upload(self, photo_url: str) -> _DownloadedPhoto | None:
+        try:
+            return await asyncio.to_thread(_download_photo_from_url, photo_url)
+        except _PhotoDownloadError as exc:
+            self._logger.warning(
+                "telegram_photo_download_failed",
+                error_type=type(exc).__name__,
+                error_message=str(exc)[:300],
+                photo_url=photo_url,
+            )
+            return None
+        except Exception as exc:
+            self._logger.warning(
+                "telegram_photo_download_failed",
+                error_type=type(exc).__name__,
+                error_message=str(exc)[:300],
+                photo_url=photo_url,
+            )
+            return None
+
+    async def _try_reply_photo(
+        self,
+        message: Message,
+        *,
+        photo: str | InputFile,
+        source_url: str,
+        strategy: str,
+    ) -> bool:
+        try:
+            await message.reply_photo(photo=photo)
+            return True
         except Exception as exc:
             self._logger.warning(
                 "telegram_photo_reply_failed",
                 error_type=type(exc).__name__,
                 error_message=str(exc)[:300],
-                photo_url=photo_url,
+                photo_url=source_url,
+                strategy=strategy,
             )
+            return False
 
     def _seller_listing_detail_markup(
         self,

@@ -18,6 +18,8 @@ idna==3.11
     # via
     #   anyio
     #   httpx
+pillow==12.2.0
+    # via qpi
 psycopg==3.3.3
     # via qpi
 psycopg-binary==3.3.3 ; implementation_name != 'pypy'

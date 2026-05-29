@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+from telegram import InputFile
 
+import services.bot_api.telegram_runtime as telegram_runtime_module
 from libs.config.settings import BotApiSettings
 from services.bot_api.callback_data import build_callback
 from services.bot_api.seller_listing_creation_flow import SellerListingCreationFlow
-from services.bot_api.telegram_runtime import TelegramWebhookRuntime
+from services.bot_api.telegram_runtime import TelegramWebhookRuntime, _DownloadedPhoto, _PhotoDownloadError
 from services.bot_api.transport_effects import (
     AnswerCallback,
     ButtonSpec,
@@ -25,6 +27,18 @@ from services.bot_api.transport_effects import (
     SetUserData,
 )
 from tests.e2e_harness import FakeBot, FakeCallbackQuery, FakeChat, FakeContext, FakeMessage, FakeTransport
+
+
+class FailingPhotoMessage(FakeMessage):
+    def __init__(self, *, failures: int, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._remaining_photo_failures = failures
+
+    async def reply_photo(self, photo, **kwargs) -> None:
+        if self._remaining_photo_failures > 0:
+            self._remaining_photo_failures -= 1
+            raise RuntimeError("simulated photo failure")
+        await super().reply_photo(photo, **kwargs)
 
 
 def _build_runtime() -> TelegramWebhookRuntime:
@@ -141,6 +155,121 @@ async def test_runtime_applies_shared_transport_effects_to_telegram_adapter() ->
     assert first_button.callback_data == build_callback(flow="seller", action="listings", entity_id="3")
     assert second_button.url == "https://t.me/support_bot"
     runtime._logger.info.assert_called_once_with("transport_effect_test", shop_id=11)
+
+
+@pytest.mark.asyncio
+async def test_runtime_uploads_webp_photo_url_from_memory_without_direct_url_attempt() -> None:
+    runtime = _build_runtime()
+    runtime._logger = SimpleNamespace(info=Mock(), warning=Mock(), exception=Mock())
+    runtime._download_photo_for_upload = AsyncMock(
+        return_value=_DownloadedPhoto(
+            data=b"webp-bytes",
+            content_type="image/webp",
+            final_url="https://basket-41.wbbasket.ru/item.webp",
+        )
+    )
+    transport = FakeTransport()
+    message = FakeMessage(transport=transport, chat=FakeChat(transport=transport, chat_id=100))
+
+    await runtime._reply_with_photo_if_available(message, photo_url="https://basket-41.wbbasket.ru/item.webp")
+
+    assert [event.kind for event in transport.events] == ["reply_photo"]
+    uploaded = transport.events[0].photo
+    assert isinstance(uploaded, InputFile)
+    assert uploaded.filename == "listing.webp"
+    assert uploaded.input_file_content == b"webp-bytes"
+    runtime._logger.warning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_runtime_falls_back_to_memory_upload_when_direct_photo_url_fails() -> None:
+    runtime = _build_runtime()
+    runtime._logger = SimpleNamespace(info=Mock(), warning=Mock(), exception=Mock())
+    runtime._download_photo_for_upload = AsyncMock(
+        return_value=_DownloadedPhoto(
+            data=b"jpeg-bytes",
+            content_type="image/jpeg",
+            final_url="https://cdn.example/item.jpg",
+        )
+    )
+    transport = FakeTransport()
+    message = FailingPhotoMessage(
+        failures=1,
+        transport=transport,
+        chat=FakeChat(transport=transport, chat_id=100),
+    )
+
+    await runtime._reply_with_photo_if_available(message, photo_url="https://cdn.example/item.jpg")
+
+    assert [event.kind for event in transport.events] == ["reply_photo"]
+    uploaded = transport.events[0].photo
+    assert isinstance(uploaded, InputFile)
+    assert uploaded.filename == "listing.jpg"
+    assert uploaded.input_file_content == b"jpeg-bytes"
+    runtime._logger.warning.assert_called_once()
+    assert runtime._logger.warning.call_args.kwargs["strategy"] == "direct_url"
+
+
+@pytest.mark.asyncio
+async def test_runtime_converts_downloaded_photo_to_jpeg_when_upload_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _build_runtime()
+    runtime._logger = SimpleNamespace(info=Mock(), warning=Mock(), exception=Mock())
+    runtime._download_photo_for_upload = AsyncMock(
+        return_value=_DownloadedPhoto(
+            data=b"webp-bytes",
+            content_type="image/webp",
+            final_url="https://basket-41.wbbasket.ru/item.webp",
+        )
+    )
+    monkeypatch.setattr(telegram_runtime_module, "_convert_image_bytes_to_jpeg", lambda data: b"jpeg-bytes")
+    transport = FakeTransport()
+    message = FailingPhotoMessage(
+        failures=1,
+        transport=transport,
+        chat=FakeChat(transport=transport, chat_id=100),
+    )
+
+    await runtime._reply_with_photo_if_available(message, photo_url="https://basket-41.wbbasket.ru/item.webp")
+
+    assert [event.kind for event in transport.events] == ["reply_photo"]
+    uploaded = transport.events[0].photo
+    assert isinstance(uploaded, InputFile)
+    assert uploaded.filename == "listing.jpg"
+    assert uploaded.input_file_content == b"jpeg-bytes"
+    runtime._logger.warning.assert_called_once()
+    assert runtime._logger.warning.call_args.kwargs["strategy"] == "memory_upload"
+
+
+@pytest.mark.asyncio
+async def test_runtime_keeps_text_screen_when_photo_download_fails() -> None:
+    runtime = _build_runtime()
+    runtime._logger = SimpleNamespace(info=Mock(), warning=Mock(), exception=Mock())
+    transport = FakeTransport()
+    chat = FakeChat(transport=transport, chat_id=100)
+    message = FakeMessage(transport=transport, chat=chat)
+    context = FakeContext(bot=FakeBot(transport=transport))
+    original_download = telegram_runtime_module._download_photo_from_url
+    telegram_runtime_module._download_photo_from_url = Mock(side_effect=_PhotoDownloadError("blocked"))
+    try:
+        await runtime._apply_transport_effects(
+            context=context,
+            query_message=None,
+            message=message,
+            default_role="buyer",
+            result=FlowResult(
+                effects=(
+                    ReplyPhoto(photo_url="https://basket-41.wbbasket.ru/item.webp"),
+                    ReplyText(text="Карточка товара"),
+                )
+            ),
+        )
+    finally:
+        telegram_runtime_module._download_photo_from_url = original_download
+
+    assert [event.kind for event in transport.events] == ["reply"]
+    assert transport.events[0].text == "Карточка товара"
+    runtime._logger.warning.assert_called_once()
+    assert runtime._logger.warning.call_args.args[0] == "telegram_photo_download_failed"
 
 
 @pytest.mark.asyncio

@@ -213,6 +213,7 @@ Persistence and schema:
 - Buyer can reserve slot only on active listings.
 - Buyer-facing primary CTA for an active listing is `Купить`.
 - Buyer-facing listing screens show buyer-visible title, WB subject, description, photo, sizes, characteristics, cashback in RUB with approximate percent, and `Цена` in RUB.
+- WB product photos may be stored as WB `.webp` URLs; Telegram photo delivery uses bounded in-memory upload/conversion fallback and must not rely only on Telegram fetching the URL or create a disk cache.
 - Buyer-facing listing screens/cards must not expose WB article (`Артикул WB` / `Артикул ВБ`), WB brand, or WB source title.
 - Buyer receives setup token (base64 JSON array):
   - `[1, task_uuid, search_phrase, wb_product_id, 1, wb_brand_name]`, where `task_uuid` is the immutable assignment UUID and `wb_brand_name` is an empty string when unavailable.

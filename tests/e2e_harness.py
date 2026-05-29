@@ -15,7 +15,7 @@ class TransportEvent:
     show_alert: bool | None = None
     reply_markup: Any | None = None
     chat_id: int | None = None
-    photo: str | None = None
+    photo: Any | None = None
 
 
 @dataclass
@@ -31,7 +31,7 @@ class FakeTransport:
         show_alert: bool | None = None,
         reply_markup: Any | None = None,
         chat_id: int | None = None,
-        photo: str | None = None,
+        photo: Any | None = None,
     ) -> None:
         self.events.append(
             TransportEvent(
@@ -106,7 +106,7 @@ class FakeMessage:
 
     async def reply_photo(
         self,
-        photo: str,
+        photo: Any,
         *,
         caption: str | None = None,
         reply_markup: Any | None = None,
