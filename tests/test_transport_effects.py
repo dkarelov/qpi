@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import io
+import urllib.request
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from PIL import Image
 from telegram import InputFile
 
 import services.bot_api.telegram_runtime as telegram_runtime_module
@@ -41,6 +44,38 @@ class FailingPhotoMessage(FakeMessage):
         await super().reply_photo(photo, **kwargs)
 
 
+class FakePhotoResponse:
+    def __init__(
+        self,
+        *,
+        data: bytes,
+        content_type: str | None,
+        final_url: str,
+        status: int = 200,
+        content_length: int | None = None,
+    ) -> None:
+        self._data = data
+        self._final_url = final_url
+        self.status = status
+        self.headers = {}
+        if content_type is not None:
+            self.headers["Content-Type"] = content_type
+        if content_length is not None:
+            self.headers["Content-Length"] = str(content_length)
+
+    def __enter__(self) -> FakePhotoResponse:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        return None
+
+    def read(self, size: int) -> bytes:
+        return self._data[:size]
+
+    def geturl(self) -> str:
+        return self._final_url
+
+
 def _build_runtime() -> TelegramWebhookRuntime:
     settings = BotApiSettings.model_validate(
         {
@@ -51,6 +86,88 @@ def _build_runtime() -> TelegramWebhookRuntime:
         }
     )
     return TelegramWebhookRuntime(settings=settings)
+
+
+def test_wb_photo_url_matching_uses_hostname_and_rejects_spoofed_hosts() -> None:
+    assert telegram_runtime_module._is_wb_photo_url("https://wbbasket.ru/item.webp")
+    assert telegram_runtime_module._is_wb_photo_url("https://basket-41.wbbasket.ru:443/item.webp")
+    assert telegram_runtime_module._is_wb_photo_url("https://images.wbcontent.net/item.webp")
+    assert telegram_runtime_module._is_wb_photo_url("https://basket-41.wb.ru/item.webp")
+
+    assert not telegram_runtime_module._is_wb_photo_url("https://basket-41.wbbasket.ru.evil.example/item.webp")
+    assert not telegram_runtime_module._is_wb_photo_url("https://basket-41.wbbasket.ru@169.254.169.254/item.webp")
+    assert not telegram_runtime_module._is_wb_photo_url("https://example.com/item.webp")
+
+
+def test_download_photo_rejects_untrusted_url_without_opening(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_opener = SimpleNamespace(open=Mock())
+    monkeypatch.setattr(telegram_runtime_module, "_PHOTO_URL_OPENER", fake_opener)
+
+    with pytest.raises(_PhotoDownloadError, match="trusted WB photo host"):
+        telegram_runtime_module._download_photo_from_url("https://example.com/item.jpg")
+
+    fake_opener.open.assert_not_called()
+
+
+def test_download_photo_rejects_untrusted_final_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_opener = SimpleNamespace(
+        open=Mock(
+            return_value=FakePhotoResponse(
+                data=b"image-bytes",
+                content_type="image/webp",
+                final_url="http://169.254.169.254/latest/meta-data",
+            )
+        )
+    )
+    monkeypatch.setattr(telegram_runtime_module, "_PHOTO_URL_OPENER", fake_opener)
+
+    with pytest.raises(_PhotoDownloadError, match="final photo URL"):
+        telegram_runtime_module._download_photo_from_url("https://basket-41.wbbasket.ru/item.webp")
+
+
+def test_trusted_photo_redirect_handler_rejects_untrusted_redirect() -> None:
+    handler = telegram_runtime_module._TrustedPhotoRedirectHandler()
+    request = urllib.request.Request("https://basket-41.wbbasket.ru/item.webp")
+
+    with pytest.raises(_PhotoDownloadError, match="redirect target"):
+        handler.redirect_request(
+            request,
+            fp=None,
+            code=302,
+            msg="Found",
+            headers={},
+            newurl="http://169.254.169.254/latest/meta-data",
+        )
+
+
+def test_download_photo_allows_binary_content_type_from_trusted_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_opener = SimpleNamespace(
+        open=Mock(
+            return_value=FakePhotoResponse(
+                data=b"image-bytes",
+                content_type="application/octet-stream",
+                final_url="https://basket-41.wbbasket.ru/item.webp",
+            )
+        )
+    )
+    monkeypatch.setattr(telegram_runtime_module, "_PHOTO_URL_OPENER", fake_opener)
+
+    downloaded = telegram_runtime_module._download_photo_from_url("https://basket-41.wbbasket.ru/item.webp")
+
+    assert downloaded.data == b"image-bytes"
+    assert downloaded.content_type == "application/octet-stream"
+
+
+def test_convert_image_bytes_to_jpeg_accepts_real_webp_bytes() -> None:
+    source = io.BytesIO()
+    Image.new("RGBA", (2, 2), (200, 20, 30, 180)).save(source, format="WEBP")
+
+    jpeg_data = telegram_runtime_module._convert_image_bytes_to_jpeg(source.getvalue())
+
+    with Image.open(io.BytesIO(jpeg_data)) as image:
+        assert image.format == "JPEG"
+        assert image.mode == "RGB"
+        assert image.size == (2, 2)
 
 
 def test_button_spec_describes_callback_or_url_button() -> None:
@@ -189,7 +306,7 @@ async def test_runtime_falls_back_to_memory_upload_when_direct_photo_url_fails()
         return_value=_DownloadedPhoto(
             data=b"jpeg-bytes",
             content_type="image/jpeg",
-            final_url="https://cdn.example/item.jpg",
+            final_url="https://basket-41.wbbasket.ru/item.jpg",
         )
     )
     transport = FakeTransport()
@@ -199,13 +316,36 @@ async def test_runtime_falls_back_to_memory_upload_when_direct_photo_url_fails()
         chat=FakeChat(transport=transport, chat_id=100),
     )
 
-    await runtime._reply_with_photo_if_available(message, photo_url="https://cdn.example/item.jpg")
+    await runtime._reply_with_photo_if_available(message, photo_url="https://basket-41.wbbasket.ru/item.jpg")
 
     assert [event.kind for event in transport.events] == ["reply_photo"]
     uploaded = transport.events[0].photo
     assert isinstance(uploaded, InputFile)
     assert uploaded.filename == "listing.jpg"
     assert uploaded.input_file_content == b"jpeg-bytes"
+    runtime._logger.warning.assert_called_once()
+    assert runtime._logger.warning.call_args.kwargs["strategy"] == "direct_url"
+
+
+@pytest.mark.asyncio
+async def test_runtime_does_not_download_untrusted_photo_url_when_direct_send_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _build_runtime()
+    runtime._logger = SimpleNamespace(info=Mock(), warning=Mock(), exception=Mock())
+    blocked_download = Mock(side_effect=AssertionError("untrusted URL must not be downloaded"))
+    monkeypatch.setattr(telegram_runtime_module, "_download_photo_from_url", blocked_download)
+    transport = FakeTransport()
+    message = FailingPhotoMessage(
+        failures=1,
+        transport=transport,
+        chat=FakeChat(transport=transport, chat_id=100),
+    )
+
+    await runtime._reply_with_photo_if_available(message, photo_url="https://cdn.example/item.jpg")
+
+    assert transport.events == []
+    blocked_download.assert_not_called()
     runtime._logger.warning.assert_called_once()
     assert runtime._logger.warning.call_args.kwargs["strategy"] == "direct_url"
 

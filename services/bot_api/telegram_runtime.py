@@ -161,6 +161,8 @@ _PHOTO_HTTP_HEADERS = {
     "Accept": "image/webp,image/jpeg,image/png,*/*;q=0.8",
 }
 _SUPPORTED_UPLOAD_IMAGE_TYPES = frozenset({"image/jpeg", "image/jpg", "image/png", "image/webp"})
+_SUPPORTED_BINARY_IMAGE_TYPES = frozenset({"application/octet-stream", "binary/octet-stream"})
+_TRUSTED_WB_PHOTO_ROOT_HOSTS = frozenset({"wbbasket.ru", "wbcontent.net"})
 
 _SELLER_COMMAND_PREFIXES = (
     "/shop_",
@@ -246,6 +248,24 @@ class _DownloadedPhoto:
 
 class _PhotoDownloadError(RuntimeError):
     pass
+
+
+class _TrustedPhotoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        if not _is_wb_photo_url(newurl):
+            raise _PhotoDownloadError("redirect target is not a trusted WB photo host")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_PHOTO_URL_OPENER = urllib.request.build_opener(_TrustedPhotoRedirectHandler)
 
 
 class _RuntimeSellerListingWorkflowAdapter:
@@ -640,9 +660,19 @@ class _BotHealthServer:
         self._logger.info("bot_health_server_stopped")
 
 
+def _http_url_hostname(value: str) -> str | None:
+    try:
+        parsed = urllib.parse.urlparse(value)
+        host = parsed.hostname
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not host:
+        return None
+    return host.rstrip(".").lower()
+
+
 def _is_http_url(value: str) -> bool:
-    parsed = urllib.parse.urlparse(value)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    return _http_url_hostname(value) is not None
 
 
 def _is_webp_url(value: str) -> bool:
@@ -651,25 +681,37 @@ def _is_webp_url(value: str) -> bool:
 
 
 def _is_wb_photo_url(value: str) -> bool:
-    parsed = urllib.parse.urlparse(value)
-    host = parsed.netloc.lower()
+    host = _http_url_hostname(value)
+    if host is None:
+        return False
+    if host in _TRUSTED_WB_PHOTO_ROOT_HOSTS:
+        return True
+    if any(host.endswith(f".{root_host}") for root_host in _TRUSTED_WB_PHOTO_ROOT_HOSTS):
+        return True
+    return host.startswith("basket-") and host.endswith(".wb.ru")
+
+
+def _is_supported_photo_content_type(content_type: str | None) -> bool:
     return (
-        host.endswith(".wbbasket.ru")
-        or host.endswith(".wbcontent.net")
-        or (host.startswith("basket-") and host.endswith(".wb.ru"))
+        not content_type
+        or content_type in _SUPPORTED_UPLOAD_IMAGE_TYPES
+        or content_type in _SUPPORTED_BINARY_IMAGE_TYPES
     )
 
 
 def _download_photo_from_url(photo_url: str) -> _DownloadedPhoto:
+    if not _is_wb_photo_url(photo_url):
+        raise _PhotoDownloadError("photo URL is not a trusted WB photo host")
+
     request = urllib.request.Request(photo_url, headers=_PHOTO_HTTP_HEADERS)
     try:
-        with urllib.request.urlopen(request, timeout=_PHOTO_DOWNLOAD_TIMEOUT_SECONDS) as response:
+        with _PHOTO_URL_OPENER.open(request, timeout=_PHOTO_DOWNLOAD_TIMEOUT_SECONDS) as response:
             status = getattr(response, "status", 200)
             if status >= 400:
                 raise _PhotoDownloadError(f"HTTP {status}")
 
             content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-            if content_type and content_type not in _SUPPORTED_UPLOAD_IMAGE_TYPES:
+            if not _is_supported_photo_content_type(content_type):
                 raise _PhotoDownloadError(f"unsupported content type: {content_type}")
 
             content_length_text = response.headers.get("Content-Length")
@@ -686,7 +728,10 @@ def _download_photo_from_url(photo_url: str) -> _DownloadedPhoto:
                 raise _PhotoDownloadError(f"photo exceeds {_PHOTO_MAX_BYTES} bytes")
             if not data:
                 raise _PhotoDownloadError("photo response is empty")
-            return _DownloadedPhoto(data=data, content_type=content_type or None, final_url=response.geturl())
+            final_url = response.geturl()
+            if not _is_wb_photo_url(final_url):
+                raise _PhotoDownloadError("final photo URL is not a trusted WB photo host")
+            return _DownloadedPhoto(data=data, content_type=content_type or None, final_url=final_url)
     except _PhotoDownloadError:
         raise
     except urllib.error.URLError as exc:
@@ -7174,6 +7219,7 @@ class TelegramWebhookRuntime:
         if downloaded is None:
             return
 
+        # Keep logs tied to the original product URL, but name the upload from the resolved response URL.
         upload_filename = _photo_upload_filename(photo_url=downloaded.final_url, content_type=downloaded.content_type)
         upload = InputFile(downloaded.data, filename=upload_filename)
         if await self._try_reply_photo(
@@ -7204,6 +7250,8 @@ class TelegramWebhookRuntime:
         )
 
     async def _download_photo_for_upload(self, photo_url: str) -> _DownloadedPhoto | None:
+        if not _is_wb_photo_url(photo_url):
+            return None
         try:
             return await asyncio.to_thread(_download_photo_from_url, photo_url)
         except _PhotoDownloadError as exc:
