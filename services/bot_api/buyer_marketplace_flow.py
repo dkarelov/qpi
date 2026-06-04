@@ -9,6 +9,7 @@ from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
+from libs.domain.buyer import decode_purchase_payload
 from libs.domain.errors import (
     DomainError,
     DuplicateOrderError,
@@ -31,6 +32,7 @@ from services.bot_api.buyer_listing_copy import (
 from services.bot_api.transport_effects import (
     ButtonSpec,
     ClearPrompt,
+    DeleteSourceMessage,
     FlowResult,
     LogEvent,
     ReplaceText,
@@ -91,6 +93,13 @@ class BuyerMarketplaceAdapter(Protocol):
         *,
         buyer_user_id: int,
         assignment_id: int,
+        payload_base64: str,
+    ) -> Any: ...
+
+    async def submit_purchase_payload_by_task_uuid(
+        self,
+        *,
+        buyer_user_id: int,
         payload_base64: str,
     ) -> Any: ...
 
@@ -1019,6 +1028,71 @@ class BuyerMarketplaceFlow:
             )
         )
 
+    async def submit_direct_purchase_payload(
+        self,
+        *,
+        text: str,
+        buyer_user_id: int,
+        update_id: int,
+    ) -> FlowResult:
+        try:
+            result = await self._adapter.submit_purchase_payload_by_task_uuid(
+                buyer_user_id=buyer_user_id,
+                payload_base64=text,
+            )
+        except NotFoundError:
+            return _direct_purchase_payload_rejected_result(
+                update_id=update_id,
+                reason="not_found",
+                text=(
+                    "Токен-подтверждение не принят.\n"
+                    "Похоже, токен относится к другой покупке или устарел."
+                ),
+            )
+        except PayloadValidationError as exc:
+            return _direct_purchase_payload_rejected_result(
+                update_id=update_id,
+                reason="payload_validation_error",
+                text=_purchase_payload_validation_text(exc),
+            )
+        except DuplicateOrderError:
+            return _direct_purchase_payload_rejected_result(
+                update_id=update_id,
+                reason="duplicate_order",
+                text="Этот номер заказа уже использован в другой покупке.",
+            )
+        except InvalidStateError:
+            return _direct_purchase_payload_rejected_result(
+                update_id=update_id,
+                reason="invalid_state",
+                text="Сейчас нельзя отправить токен-подтверждение для этой покупки.",
+            )
+
+        if result.changed:
+            reply = (
+                "Токен-подтверждение принят.\n"
+                f"Номер заказа: {result.order_id}\n"
+                "Дальше мы автоматически проверим выкуп и начисление кэшбэка."
+            )
+        else:
+            reply = f"Этот токен-подтверждение уже отправлен ранее.\nНомер заказа: {result.order_id}"
+        return FlowResult(
+            effects=(
+                DeleteSourceMessage(),
+                LogEvent(
+                    event_name="buyer_payload_submitted",
+                    fields={
+                        "telegram_update_id": update_id,
+                        "assignment_id": result.assignment_id,
+                        "assignment_ref": format_assignment_ref(result.assignment_id),
+                        "changed": result.changed,
+                        "direct_paste": True,
+                    },
+                ),
+                ReplyText(text=reply, buttons=_buyer_menu_buttons(), parse_mode=None),
+            )
+        )
+
     async def submit_review_payload(
         self,
         *,
@@ -1511,6 +1585,14 @@ def _buyer_visible_assignments(assignments: list[Any]) -> list[Any]:
     return [item for item in assignments if item.status in visible_statuses]
 
 
+def looks_like_purchase_payload(text: str) -> bool:
+    try:
+        decode_purchase_payload(text)
+    except PayloadValidationError:
+        return False
+    return True
+
+
 def _buyer_shop_title(assignment: Any) -> str:
     title = str(getattr(assignment, "shop_title", "") or "").strip()
     if title:
@@ -1652,6 +1734,22 @@ def _purchase_payload_validation_text(exc: PayloadValidationError) -> str:
     if details and "timezone" in details:
         return f"{base}\nПроверьте дату и время на устройстве и сформируйте токен заново."
     return base
+
+
+def _direct_purchase_payload_rejected_result(*, update_id: int, reason: str, text: str) -> FlowResult:
+    return FlowResult(
+        effects=(
+            DeleteSourceMessage(),
+            LogEvent(
+                event_name="buyer_direct_payload_rejected",
+                fields={
+                    "telegram_update_id": update_id,
+                    "reason": reason,
+                },
+            ),
+            ReplyText(text=text, buttons=_buyer_menu_buttons(), parse_mode=None),
+        )
+    )
 
 
 def _review_payload_validation_text(exc: PayloadValidationError) -> str:

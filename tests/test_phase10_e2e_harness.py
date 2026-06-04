@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -258,6 +260,13 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
             ]
         ),
         submit_purchase_payload=AsyncMock(
+            return_value=_ns(
+                assignment_id=31,
+                changed=True,
+                order_id="ORDER-1",
+            )
+        ),
+        submit_purchase_payload_by_task_uuid=AsyncMock(
             return_value=_ns(
                 assignment_id=31,
                 changed=True,
@@ -868,6 +877,42 @@ async def test_phase10_e2e_buyer_deeplink_reserve_submit_payload_flow() -> None:
 
     deps.buyer.reserve_listing_slot.assert_awaited_once()
     deps.buyer.submit_purchase_payload.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_buyer_direct_purchase_payload_without_prompt_flow() -> None:
+    runtime, deps = _build_runtime()
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    await harness.start(start_arg="shop_shop_tushenka")
+    payload = base64.b64encode(
+        json.dumps([_TASK_UUID, "ORDER-1", "2026-03-02T12:30:00"]).encode("utf-8")
+    ).decode("ascii")
+
+    payload_events = await harness.text(payload)
+
+    assert any("Токен-подтверждение принят." in text for text in _event_texts(payload_events))
+    assert any(event.kind == "delete" for event in payload_events)
+    deps.buyer.submit_purchase_payload_by_task_uuid.assert_awaited_once_with(
+        buyer_user_id=202,
+        payload_base64=payload,
+    )
+    deps.buyer.submit_purchase_payload.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_buyer_random_text_without_prompt_still_shows_menu() -> None:
+    runtime, deps = _build_runtime()
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    await harness.start(start_arg="shop_shop_tushenka")
+
+    events = await harness.text("обычное сообщение")
+
+    assert any("Используйте кнопки меню покупателя." in text for text in _event_texts(events))
+    assert not any(event.kind == "delete" for event in events)
+    deps.buyer.submit_purchase_payload_by_task_uuid.assert_not_awaited()
+    deps.buyer.submit_purchase_payload.assert_not_awaited()
 
 
 @pytest.mark.asyncio

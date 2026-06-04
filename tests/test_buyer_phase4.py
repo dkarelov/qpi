@@ -1475,6 +1475,90 @@ async def test_valid_payload_moves_assignment_to_order_verified_and_is_idempoten
 
 
 @pytest.mark.asyncio
+async def test_direct_payload_resolves_assignment_by_task_uuid(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="direct-success-shop",
+        wb_product_id=5502,
+        reward_usdt=Decimal("11.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870002, username="buyer_direct_success")
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:direct-success:1",
+    )
+    payload = _encode_payload(
+        task_uuid=str(reservation.task_uuid),
+        order_id="ORD-DIRECT-SUCCESS",
+    )
+
+    result = await buyer_service.submit_purchase_payload_by_task_uuid(
+        buyer_user_id=buyer.user_id,
+        payload_base64=payload,
+    )
+
+    assert result.changed is True
+    assert result.status == "order_verified"
+    assert result.assignment_id == reservation.assignment_id
+    assert result.order_id == "ORD-DIRECT-SUCCESS"
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT
+                    a.status,
+                    a.order_id,
+                    bo.order_id AS buyer_order_id,
+                    bo.payload_version
+                FROM assignments a
+                JOIN buyer_orders bo ON bo.assignment_id = a.id
+                WHERE a.id = %s
+                """,
+                (reservation.assignment_id,),
+            )
+            row = await cur.fetchone()
+            assert row["status"] == "order_verified"
+            assert row["order_id"] == "ORD-DIRECT-SUCCESS"
+            assert row["buyer_order_id"] == "ORD-DIRECT-SUCCESS"
+            assert row["payload_version"] == 4
+
+
+@pytest.mark.asyncio
+async def test_direct_payload_rejects_expired_reservation(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="direct-expired-shop",
+        wb_product_id=5503,
+        reward_usdt=Decimal("11.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870003, username="buyer_direct_expired")
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:direct-expired:1",
+    )
+    await _set_assignment_expired(db_pool, assignment_id=reservation.assignment_id)
+    payload = _encode_payload(
+        task_uuid=str(reservation.task_uuid),
+        order_id="ORD-DIRECT-EXPIRED",
+    )
+
+    with pytest.raises(InvalidStateError, match="reservation window has expired"):
+        await buyer_service.submit_purchase_payload_by_task_uuid(
+            buyer_user_id=buyer.user_id,
+            payload_base64=payload,
+        )
+
+
+@pytest.mark.asyncio
 async def test_compact_payload_moves_assignment_to_order_verified(db_pool) -> None:
     buyer_service = BuyerService(db_pool)
     fixture = await _prepare_reservable_listing(

@@ -653,160 +653,203 @@ class BuyerService:
 
         async def operation(conn: AsyncConnection) -> BuyerOrderSubmitResult:
             async with conn.cursor(row_factory=dict_row) as cur:
+                return await self._submit_purchase_payload_decoded_locked(
+                    cur,
+                    buyer_user_id=buyer_user_id,
+                    assignment_id=assignment_id,
+                    decoded=decoded,
+                )
+
+        return await run_in_transaction(self._pool, operation)
+
+    async def submit_purchase_payload_by_task_uuid(
+        self,
+        *,
+        buyer_user_id: int,
+        payload_base64: str,
+    ) -> BuyerOrderSubmitResult:
+        decoded = decode_purchase_payload(payload_base64)
+
+        async def operation(conn: AsyncConnection) -> BuyerOrderSubmitResult:
+            async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
-                    SELECT
-                        a.id,
-                        a.listing_id,
-                        a.buyer_user_id,
-                        a.status,
-                        a.task_uuid,
-                        a.order_id,
-                        a.reservation_expires_at,
-                        l.wb_product_id
-                    FROM assignments a
-                    JOIN listings l ON l.id = a.listing_id
-                    WHERE a.id = %s
-                    FOR UPDATE OF a, l
+                    SELECT id
+                    FROM assignments
+                    WHERE buyer_user_id = %s
+                      AND task_uuid = %s
                     """,
-                    (assignment_id,),
+                    (buyer_user_id, decoded.task_uuid),
                 )
                 assignment = await cur.fetchone()
                 if assignment is None:
-                    raise NotFoundError(f"assignment {assignment_id} not found")
-                if assignment["buyer_user_id"] != buyer_user_id:
-                    raise NotFoundError(f"assignment {assignment_id} not found for buyer")
-                if assignment["status"] not in _ASSIGNMENT_PAYLOAD_ALLOWED_STATES:
-                    raise InvalidStateError("assignment cannot accept payload in current state")
-                if decoded.task_uuid != assignment["task_uuid"]:
-                    raise PayloadValidationError("payload field 'task_uuid' does not match assignment")
-
-                await cur.execute("SELECT now() AS current_time")
-                now_row = await cur.fetchone()
-                current_time = now_row["current_time"]
-                if decoded.ordered_at > current_time + _ORDERED_AT_FUTURE_TOLERANCE:
-                    raise PayloadValidationError("payload field 'ordered_at' cannot be in the future")
-                if assignment["status"] == "reserved" and assignment["reservation_expires_at"] <= current_time:
-                    raise InvalidStateError("reservation window has expired")
-
-                await cur.execute(
-                    """
-                    SELECT
-                        assignment_id,
-                        order_id,
-                        ordered_at
-                    FROM buyer_orders
-                    WHERE assignment_id = %s
-                    FOR UPDATE
-                    """,
-                    (assignment_id,),
+                    raise NotFoundError("assignment not found for payload")
+                return await self._submit_purchase_payload_decoded_locked(
+                    cur,
+                    buyer_user_id=buyer_user_id,
+                    assignment_id=assignment["id"],
+                    decoded=decoded,
                 )
-                existing_order = await cur.fetchone()
-                if existing_order is not None:
-                    if (
-                        existing_order["order_id"] == decoded.order_id
-                        and existing_order["ordered_at"] == decoded.ordered_at
-                    ):
-                        await cur.execute(
-                            """
-                            UPDATE assignments
-                            SET status = 'order_verified',
-                                order_id = %s,
-                                order_submitted_at = COALESCE(
-                                    order_submitted_at,
-                                    timezone('utc', now())
-                                ),
-                                updated_at = timezone('utc', now())
-                            WHERE id = %s
-                            """,
-                            (decoded.order_id, assignment_id),
-                        )
-                        return BuyerOrderSubmitResult(
-                            assignment_id=assignment_id,
-                            changed=False,
-                            status="order_verified",
-                            order_id=decoded.order_id,
-                            wb_product_id=assignment["wb_product_id"],
-                            ordered_at=decoded.ordered_at,
-                        )
-                    raise InvalidStateError("assignment already has a different payload")
 
-                await cur.execute(
-                    """
-                    SELECT assignment_id
-                    FROM buyer_orders
-                    WHERE order_id = %s
-                    FOR UPDATE
-                    """,
-                    (decoded.order_id,),
-                )
-                duplicate_order = await cur.fetchone()
-                if duplicate_order is not None and duplicate_order["assignment_id"] != assignment_id:
-                    raise DuplicateOrderError("order_id is already linked to another assignment")
+        return await run_in_transaction(self._pool, operation)
 
-                try:
-                    await cur.execute(
-                        """
-                        INSERT INTO buyer_orders (
-                            assignment_id,
-                            listing_id,
-                            buyer_user_id,
-                            task_uuid,
-                            order_id,
-                            wb_product_id,
-                            ordered_at,
-                            payload_version,
-                            raw_payload_json,
-                            source
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            assignment_id,
-                            assignment["listing_id"],
-                            buyer_user_id,
-                            assignment["task_uuid"],
-                            decoded.order_id,
-                            assignment["wb_product_id"],
-                            decoded.ordered_at,
-                            decoded.payload_version,
-                            Json(decoded.raw_payload_json),
-                            decoded.source,
-                        ),
-                    )
-                except UniqueViolation as exc:
-                    constraint_name = exc.diag.constraint_name if exc.diag is not None else None
-                    if constraint_name == "uq_buyer_orders_order_id":
-                        raise DuplicateOrderError("order_id is already linked to another assignment") from exc
-                    if constraint_name == "uq_buyer_orders_assignment_id":
-                        raise InvalidStateError("assignment already has submitted order payload") from exc
-                    raise
+    async def _submit_purchase_payload_decoded_locked(
+        self,
+        cur,
+        *,
+        buyer_user_id: int,
+        assignment_id: int,
+        decoded: DecodedPurchasePayload,
+    ) -> BuyerOrderSubmitResult:
+        await cur.execute(
+            """
+            SELECT
+                a.id,
+                a.listing_id,
+                a.buyer_user_id,
+                a.status,
+                a.task_uuid,
+                a.order_id,
+                a.reservation_expires_at,
+                l.wb_product_id
+            FROM assignments a
+            JOIN listings l ON l.id = a.listing_id
+            WHERE a.id = %s
+            FOR UPDATE OF a, l
+            """,
+            (assignment_id,),
+        )
+        assignment = await cur.fetchone()
+        if assignment is None:
+            raise NotFoundError(f"assignment {assignment_id} not found")
+        if assignment["buyer_user_id"] != buyer_user_id:
+            raise NotFoundError(f"assignment {assignment_id} not found for buyer")
+        if assignment["status"] not in _ASSIGNMENT_PAYLOAD_ALLOWED_STATES:
+            raise InvalidStateError("assignment cannot accept payload in current state")
+        if decoded.task_uuid != assignment["task_uuid"]:
+            raise PayloadValidationError("payload field 'task_uuid' does not match assignment")
 
+        await cur.execute("SELECT now() AS current_time")
+        now_row = await cur.fetchone()
+        current_time = now_row["current_time"]
+        if decoded.ordered_at > current_time + _ORDERED_AT_FUTURE_TOLERANCE:
+            raise PayloadValidationError("payload field 'ordered_at' cannot be in the future")
+        if assignment["status"] == "reserved" and assignment["reservation_expires_at"] <= current_time:
+            raise InvalidStateError("reservation window has expired")
+
+        await cur.execute(
+            """
+            SELECT
+                assignment_id,
+                order_id,
+                ordered_at
+            FROM buyer_orders
+            WHERE assignment_id = %s
+            FOR UPDATE
+            """,
+            (assignment_id,),
+        )
+        existing_order = await cur.fetchone()
+        if existing_order is not None:
+            if existing_order["order_id"] == decoded.order_id and existing_order["ordered_at"] == decoded.ordered_at:
                 await cur.execute(
                     """
                     UPDATE assignments
                     SET status = 'order_verified',
                         order_id = %s,
-                        order_submitted_at = COALESCE(order_submitted_at, timezone('utc', now())),
+                        order_submitted_at = COALESCE(
+                            order_submitted_at,
+                            timezone('utc', now())
+                        ),
                         updated_at = timezone('utc', now())
                     WHERE id = %s
                     """,
                     (decoded.order_id, assignment_id),
                 )
-                await self._notifications.enqueue_assignment_order_verified_for_seller_locked(
-                    cur,
-                    assignment_id=assignment_id,
-                )
                 return BuyerOrderSubmitResult(
                     assignment_id=assignment_id,
-                    changed=True,
+                    changed=False,
                     status="order_verified",
                     order_id=decoded.order_id,
                     wb_product_id=assignment["wb_product_id"],
                     ordered_at=decoded.ordered_at,
                 )
+            raise InvalidStateError("assignment already has a different payload")
 
-        return await run_in_transaction(self._pool, operation)
+        await cur.execute(
+            """
+            SELECT assignment_id
+            FROM buyer_orders
+            WHERE order_id = %s
+            FOR UPDATE
+            """,
+            (decoded.order_id,),
+        )
+        duplicate_order = await cur.fetchone()
+        if duplicate_order is not None and duplicate_order["assignment_id"] != assignment_id:
+            raise DuplicateOrderError("order_id is already linked to another assignment")
+
+        try:
+            await cur.execute(
+                """
+                INSERT INTO buyer_orders (
+                    assignment_id,
+                    listing_id,
+                    buyer_user_id,
+                    task_uuid,
+                    order_id,
+                    wb_product_id,
+                    ordered_at,
+                    payload_version,
+                    raw_payload_json,
+                    source
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    assignment_id,
+                    assignment["listing_id"],
+                    buyer_user_id,
+                    assignment["task_uuid"],
+                    decoded.order_id,
+                    assignment["wb_product_id"],
+                    decoded.ordered_at,
+                    decoded.payload_version,
+                    Json(decoded.raw_payload_json),
+                    decoded.source,
+                ),
+            )
+        except UniqueViolation as exc:
+            constraint_name = exc.diag.constraint_name if exc.diag is not None else None
+            if constraint_name == "uq_buyer_orders_order_id":
+                raise DuplicateOrderError("order_id is already linked to another assignment") from exc
+            if constraint_name == "uq_buyer_orders_assignment_id":
+                raise InvalidStateError("assignment already has submitted order payload") from exc
+            raise
+
+        await cur.execute(
+            """
+            UPDATE assignments
+            SET status = 'order_verified',
+                order_id = %s,
+                order_submitted_at = COALESCE(order_submitted_at, timezone('utc', now())),
+                updated_at = timezone('utc', now())
+            WHERE id = %s
+            """,
+            (decoded.order_id, assignment_id),
+        )
+        await self._notifications.enqueue_assignment_order_verified_for_seller_locked(
+            cur,
+            assignment_id=assignment_id,
+        )
+        return BuyerOrderSubmitResult(
+            assignment_id=assignment_id,
+            changed=True,
+            status="order_verified",
+            order_id=decoded.order_id,
+            wb_product_id=assignment["wb_product_id"],
+            ordered_at=decoded.ordered_at,
+        )
 
     async def submit_review_payload(
         self,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -20,6 +22,7 @@ from services.bot_api.buyer_marketplace_flow import (
 )
 from services.bot_api.transport_effects import (
     ClearPrompt,
+    DeleteSourceMessage,
     LogEvent,
     ReplaceText,
     ReplyPhoto,
@@ -111,12 +114,14 @@ class FakeBuyerMarketplaceAdapter:
     remove_side_effect: Exception | None = None
     reserve_side_effect: Exception | None = None
     purchase_side_effect: Exception | None = None
+    direct_purchase_side_effect: Exception | None = None
     review_side_effect: Exception | None = None
     cancel_side_effect: Exception | None = None
     deep_link_action_state: str | None = None
     touch_calls: list[tuple[int, int]] = field(default_factory=list)
     reserve_calls: list[dict[str, Any]] = field(default_factory=list)
     purchase_calls: list[dict[str, Any]] = field(default_factory=list)
+    direct_purchase_calls: list[dict[str, Any]] = field(default_factory=list)
     review_calls: list[dict[str, Any]] = field(default_factory=list)
     cancel_calls: list[dict[str, Any]] = field(default_factory=list)
 
@@ -208,6 +213,22 @@ class FakeBuyerMarketplaceAdapter:
         )
         if self.purchase_side_effect is not None:
             raise self.purchase_side_effect
+        return self.purchase_result
+
+    async def submit_purchase_payload_by_task_uuid(
+        self,
+        *,
+        buyer_user_id: int,
+        payload_base64: str,
+    ) -> Any:
+        self.direct_purchase_calls.append(
+            {
+                "buyer_user_id": buyer_user_id,
+                "payload_base64": payload_base64,
+            }
+        )
+        if self.direct_purchase_side_effect is not None:
+            raise self.direct_purchase_side_effect
         return self.purchase_result
 
     async def submit_review_payload(
@@ -620,6 +641,66 @@ async def test_buyer_marketplace_flow_submits_purchase_payload_and_preserves_ret
     assert len(invalid.effects) == 1
     assert isinstance(invalid.effects[0], ReplyText)
     assert "Похоже, токен относится к другой покупке" in invalid.effects[0].text
+
+
+@pytest.mark.asyncio
+async def test_buyer_marketplace_flow_submits_direct_purchase_payload_with_safe_logging() -> None:
+    flow, adapter = _flow()
+
+    result = await flow.submit_direct_purchase_payload(
+        text="payload",
+        buyer_user_id=202,
+        update_id=503,
+    )
+
+    assert adapter.direct_purchase_calls == [{"buyer_user_id": 202, "payload_base64": "payload"}]
+    assert isinstance(result.effects[0], DeleteSourceMessage)
+    assert isinstance(result.effects[1], LogEvent)
+    assert result.effects[1].event_name == "buyer_payload_submitted"
+    assert result.effects[1].fields == {
+        "telegram_update_id": 503,
+        "assignment_id": 31,
+        "assignment_ref": "P31",
+        "changed": True,
+        "direct_paste": True,
+    }
+    assert isinstance(result.effects[2], ReplyText)
+    assert "Токен-подтверждение принят." in result.effects[2].text
+
+
+@pytest.mark.asyncio
+async def test_buyer_marketplace_flow_logs_direct_purchase_payload_rejection_without_token() -> None:
+    flow, adapter = _flow(
+        FakeBuyerMarketplaceAdapter(direct_purchase_side_effect=InvalidStateError("reservation window has expired"))
+    )
+
+    result = await flow.submit_direct_purchase_payload(
+        text="payload",
+        buyer_user_id=202,
+        update_id=504,
+    )
+
+    assert adapter.direct_purchase_calls == [{"buyer_user_id": 202, "payload_base64": "payload"}]
+    assert isinstance(result.effects[0], DeleteSourceMessage)
+    assert isinstance(result.effects[1], LogEvent)
+    assert result.effects[1].event_name == "buyer_direct_payload_rejected"
+    assert result.effects[1].fields == {"telegram_update_id": 504, "reason": "invalid_state"}
+    assert isinstance(result.effects[2], ReplyText)
+    assert "Сейчас нельзя отправить токен-подтверждение" in result.effects[2].text
+    assert "payload" not in str(result.effects[1].fields)
+
+
+def test_buyer_marketplace_flow_detects_only_valid_purchase_payload_text() -> None:
+    payload = base64.b64encode(
+        json.dumps(["11111111-1111-4111-8111-111111111111", "ORDER-1", "2026-03-02T12:30:00"]).encode(
+            "utf-8"
+        )
+    ).decode("ascii")
+
+    from services.bot_api.buyer_marketplace_flow import looks_like_purchase_payload
+
+    assert looks_like_purchase_payload(payload) is True
+    assert looks_like_purchase_payload("обычное сообщение покупателя") is False
 
 
 @pytest.mark.asyncio
