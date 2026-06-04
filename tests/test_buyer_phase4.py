@@ -100,6 +100,28 @@ async def _set_assignment_expired(db_pool, *, assignment_id: int) -> None:
                 )
 
 
+async def _set_assignment_review_wait(
+    db_pool,
+    *,
+    assignment_id: int,
+    review_phrases: list[str] | None = None,
+) -> None:
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE assignments
+                    SET status = 'picked_up_wait_review',
+                        review_phrases = %s,
+                        unlock_at = timezone('utc', now()) + interval '10 days',
+                        updated_at = timezone('utc', now())
+                    WHERE id = %s
+                    """,
+                    (review_phrases or [], assignment_id),
+                )
+
+
 async def _prepare_reservable_listing(
     db_pool,
     *,
@@ -1555,6 +1577,207 @@ async def test_direct_payload_rejects_expired_reservation(db_pool) -> None:
         await buyer_service.submit_purchase_payload_by_task_uuid(
             buyer_user_id=buyer.user_id,
             payload_base64=payload,
+        )
+
+
+@pytest.mark.asyncio
+async def test_direct_review_payload_resolves_assignment_by_task_uuid(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="direct-review-success-shop",
+        wb_product_id=5711,
+        reward_usdt=Decimal("6.000000"),
+        slot_count=1,
+        available_slots=1,
+        review_phrases=["в размер"],
+    )
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870201, username="buyer_direct_review_success")
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:direct-review:1",
+    )
+    await buyer_service.submit_purchase_payload(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        payload_base64=_encode_payload(
+            task_uuid=str(reservation.task_uuid),
+            order_id="ORD-DIRECT-REVIEW",
+        ),
+    )
+    await _set_assignment_review_wait(
+        db_pool,
+        assignment_id=reservation.assignment_id,
+        review_phrases=["в размер"],
+    )
+
+    result = await buyer_service.submit_review_payload_by_task_uuid(
+        buyer_user_id=buyer.user_id,
+        payload_base64=_encode_review_payload(
+            task_uuid=str(reservation.task_uuid),
+            review_text="Отлично подошли, в размер.",
+        ),
+    )
+
+    assert result.changed is True
+    assert result.assignment_id == reservation.assignment_id
+    assert result.status == "picked_up_wait_unlock"
+    assert result.verification_status == "verified_auto"
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT
+                    a.status,
+                    br.wb_product_id,
+                    br.rating,
+                    br.review_text
+                FROM assignments a
+                JOIN buyer_reviews br ON br.assignment_id = a.id
+                WHERE a.id = %s
+                """,
+                (reservation.assignment_id,),
+            )
+            row = await cur.fetchone()
+            assert row["status"] == "picked_up_wait_unlock"
+            assert row["wb_product_id"] == 5711
+            assert row["rating"] == 5
+            assert row["review_text"] == "Отлично подошли, в размер."
+
+
+@pytest.mark.asyncio
+async def test_direct_review_payload_accepts_legacy_shape_and_validates_wb_product_id(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="direct-review-legacy-shop",
+        wb_product_id=5712,
+        reward_usdt=Decimal("6.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870202, username="buyer_direct_review_legacy")
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:direct-review:legacy",
+    )
+    await buyer_service.submit_purchase_payload(
+        buyer_user_id=buyer.user_id,
+        assignment_id=reservation.assignment_id,
+        payload_base64=_encode_payload(
+            task_uuid=str(reservation.task_uuid),
+            order_id="ORD-DIRECT-REVIEW-LEGACY",
+        ),
+    )
+    await _set_assignment_review_wait(db_pool, assignment_id=reservation.assignment_id)
+
+    payload = _encode_legacy_review_payload(
+        task_uuid=str(reservation.task_uuid),
+        wb_product_id="5712",
+        reviewed_at="2026-05-28T21:28:29.999Z",
+        review_text="Отзыв на пять звезд.",
+    )
+    result = await buyer_service.submit_review_payload_by_task_uuid(
+        buyer_user_id=buyer.user_id,
+        payload_base64=payload,
+    )
+
+    assert result.changed is True
+    assert result.status == "picked_up_wait_unlock"
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT wb_product_id, raw_payload_json FROM buyer_reviews WHERE assignment_id = %s",
+                (reservation.assignment_id,),
+            )
+            review = await cur.fetchone()
+            assert review["wb_product_id"] == 5712
+            assert review["raw_payload_json"] == [
+                str(reservation.task_uuid),
+                "5712",
+                "2026-05-28T21:28:29.999Z",
+                5,
+                "Отзыв на пять звезд.",
+            ]
+
+
+@pytest.mark.asyncio
+async def test_direct_review_payload_for_another_buyer_raises_not_found(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="direct-review-not-found-shop",
+        wb_product_id=5713,
+        reward_usdt=Decimal("6.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870203, username="buyer_direct_review_owner")
+    other_buyer = await buyer_service.bootstrap_buyer(telegram_id=870204, username="buyer_direct_review_other")
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:direct-review:not-found",
+    )
+    await _set_assignment_review_wait(db_pool, assignment_id=reservation.assignment_id)
+
+    with pytest.raises(NotFoundError, match="assignment not found for payload"):
+        await buyer_service.submit_review_payload_by_task_uuid(
+            buyer_user_id=other_buyer.user_id,
+            payload_base64=_encode_review_payload(
+                task_uuid=str(reservation.task_uuid),
+                review_text="Отзыв не от того покупателя.",
+            ),
+        )
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT
+                    a.status,
+                    COUNT(br.assignment_id) AS review_count
+                FROM assignments a
+                LEFT JOIN buyer_reviews br ON br.assignment_id = a.id
+                WHERE a.id = %s
+                GROUP BY a.status
+                """,
+                (reservation.assignment_id,),
+            )
+            row = await cur.fetchone()
+            assert row["status"] == "picked_up_wait_review"
+            assert row["review_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_direct_review_payload_preserves_invalid_status_error(db_pool) -> None:
+    buyer_service = BuyerService(db_pool)
+    fixture = await _prepare_reservable_listing(
+        db_pool,
+        slug="direct-review-invalid-status-shop",
+        wb_product_id=5714,
+        reward_usdt=Decimal("6.000000"),
+        slot_count=1,
+        available_slots=1,
+    )
+    buyer = await buyer_service.bootstrap_buyer(telegram_id=870205, username="buyer_direct_review_invalid")
+    reservation = await buyer_service.reserve_listing_slot(
+        buyer_user_id=buyer.user_id,
+        listing_id=fixture["listing_id"],
+        idempotency_key="reserve:direct-review:invalid-status",
+    )
+
+    with pytest.raises(InvalidStateError, match="assignment cannot accept review payload in current state"):
+        await buyer_service.submit_review_payload_by_task_uuid(
+            buyer_user_id=buyer.user_id,
+            payload_base64=_encode_review_payload(
+                task_uuid=str(reservation.task_uuid),
+                review_text="Отзыв слишком рано.",
+            ),
         )
 
 

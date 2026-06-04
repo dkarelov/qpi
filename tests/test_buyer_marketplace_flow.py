@@ -19,6 +19,8 @@ from services.bot_api.buyer_listing_copy import (
 from services.bot_api.buyer_marketplace_flow import (
     BuyerMarketplaceFlow,
     BuyerMarketplaceFlowConfig,
+    classify_buyer_token_text,
+    looks_like_purchase_payload,
 )
 from services.bot_api.transport_effects import (
     ClearPrompt,
@@ -116,6 +118,7 @@ class FakeBuyerMarketplaceAdapter:
     purchase_side_effect: Exception | None = None
     direct_purchase_side_effect: Exception | None = None
     review_side_effect: Exception | None = None
+    direct_review_side_effect: Exception | None = None
     cancel_side_effect: Exception | None = None
     deep_link_action_state: str | None = None
     touch_calls: list[tuple[int, int]] = field(default_factory=list)
@@ -123,6 +126,7 @@ class FakeBuyerMarketplaceAdapter:
     purchase_calls: list[dict[str, Any]] = field(default_factory=list)
     direct_purchase_calls: list[dict[str, Any]] = field(default_factory=list)
     review_calls: list[dict[str, Any]] = field(default_factory=list)
+    direct_review_calls: list[dict[str, Any]] = field(default_factory=list)
     cancel_calls: list[dict[str, Any]] = field(default_factory=list)
 
     async def get_buyer_balance_snapshot(self, *, buyer_user_id: int) -> Any:
@@ -247,6 +251,22 @@ class FakeBuyerMarketplaceAdapter:
         )
         if self.review_side_effect is not None:
             raise self.review_side_effect
+        return self.review_result
+
+    async def submit_review_payload_by_task_uuid(
+        self,
+        *,
+        buyer_user_id: int,
+        payload_base64: str,
+    ) -> Any:
+        self.direct_review_calls.append(
+            {
+                "buyer_user_id": buyer_user_id,
+                "payload_base64": payload_base64,
+            }
+        )
+        if self.direct_review_side_effect is not None:
+            raise self.direct_review_side_effect
         return self.review_result
 
     async def cancel_assignment_by_buyer(
@@ -690,17 +710,39 @@ async def test_buyer_marketplace_flow_logs_direct_purchase_payload_rejection_wit
     assert "payload" not in str(result.effects[1].fields)
 
 
-def test_buyer_marketplace_flow_detects_only_valid_purchase_payload_text() -> None:
-    payload = base64.b64encode(
+def test_buyer_marketplace_flow_classifies_direct_buyer_token_text() -> None:
+    purchase_payload = base64.b64encode(
         json.dumps(["11111111-1111-4111-8111-111111111111", "ORDER-1", "2026-03-02T12:30:00"]).encode(
             "utf-8"
         )
     ).decode("ascii")
+    canonical_review_payload = base64.b64encode(
+        json.dumps(["11111111-1111-4111-8111-111111111111", "2026-03-05T12:30:00", 5, "Текст"]).encode(
+            "utf-8"
+        )
+    ).decode("ascii")
+    legacy_review_payload = base64.b64encode(
+        json.dumps(["11111111-1111-4111-8111-111111111111", 552892532, "2026-03-05T12:30:00", 5, "Текст"]).encode(
+            "utf-8"
+        )
+    ).decode("ascii")
+    purchase_setup_payload = base64.b64encode(
+        json.dumps([1, "11111111-1111-4111-8111-111111111111", "бумага", 552892532, 1, "BRAUBERG"]).encode(
+            "utf-8"
+        )
+    ).decode("ascii")
+    review_setup_payload = base64.b64encode(
+        json.dumps([2, "11111111-1111-4111-8111-111111111111", 552892532, "плотная бумага"]).encode("utf-8")
+    ).decode("ascii")
 
-    from services.bot_api.buyer_marketplace_flow import looks_like_purchase_payload
-
-    assert looks_like_purchase_payload(payload) is True
-    assert looks_like_purchase_payload("обычное сообщение покупателя") is False
+    assert classify_buyer_token_text(purchase_payload) == "purchase"
+    assert classify_buyer_token_text(canonical_review_payload) == "review"
+    assert classify_buyer_token_text(legacy_review_payload) == "review"
+    assert classify_buyer_token_text("обычное сообщение покупателя") is None
+    assert classify_buyer_token_text(purchase_setup_payload) is None
+    assert classify_buyer_token_text(review_setup_payload) is None
+    assert looks_like_purchase_payload(purchase_payload) is True
+    assert looks_like_purchase_payload(canonical_review_payload) is False
 
 
 @pytest.mark.asyncio
@@ -733,6 +775,90 @@ async def test_buyer_marketplace_flow_submits_review_payload_with_pending_manual
     labels = [button.text for row in reply.buttons for button in row]
     assert "🆘 Поддержка" in labels
     assert "🏪 Магазины" in labels
+
+
+@pytest.mark.asyncio
+async def test_buyer_marketplace_flow_submits_direct_review_payload_with_safe_logging() -> None:
+    flow, adapter = _flow()
+
+    result = await flow.submit_direct_review_payload(
+        text="review-payload",
+        buyer_user_id=202,
+        update_id=602,
+    )
+
+    assert adapter.direct_review_calls == [{"buyer_user_id": 202, "payload_base64": "review-payload"}]
+    assert isinstance(result.effects[0], DeleteSourceMessage)
+    assert isinstance(result.effects[1], LogEvent)
+    assert result.effects[1].event_name == "buyer_review_payload_submitted"
+    assert result.effects[1].fields == {
+        "telegram_update_id": 602,
+        "assignment_id": 31,
+        "assignment_ref": "P31",
+        "changed": True,
+        "verification_status": "verified_auto",
+        "direct_paste": True,
+    }
+    assert isinstance(result.effects[2], ReplyText)
+    assert "Отзыв подтвержден." in result.effects[2].text
+    assert "review-payload" not in str(result.effects[1].fields)
+
+
+@pytest.mark.asyncio
+async def test_buyer_marketplace_flow_direct_review_pending_manual_returns_followup_buttons() -> None:
+    flow, adapter = _flow(
+        FakeBuyerMarketplaceAdapter(
+            review_result=_ns(
+                assignment_id=31,
+                changed=True,
+                verification_status="pending_manual",
+                verification_reason="required phrase missing",
+            )
+        )
+    )
+
+    result = await flow.submit_direct_review_payload(
+        text="review-payload",
+        buyer_user_id=202,
+        update_id=603,
+    )
+
+    assert adapter.direct_review_calls == [{"buyer_user_id": 202, "payload_base64": "review-payload"}]
+    delete_message, log, reply = result.effects
+    assert isinstance(delete_message, DeleteSourceMessage)
+    assert isinstance(log, LogEvent)
+    assert log.fields["direct_paste"] is True
+    assert isinstance(reply, ReplyText)
+    assert "Кэшбэк пока не будет выплачен." in reply.text
+    labels = [button.text for row in reply.buttons for button in row]
+    assert "🆘 Поддержка" in labels
+    assert "🏪 Магазины" in labels
+
+
+@pytest.mark.asyncio
+async def test_buyer_marketplace_flow_logs_direct_review_payload_rejection_without_token_or_review_text() -> None:
+    flow, adapter = _flow(
+        FakeBuyerMarketplaceAdapter(
+            direct_review_side_effect=PayloadValidationError("secret review text should not be logged")
+        )
+    )
+
+    result = await flow.submit_direct_review_payload(
+        text="review-payload-secret",
+        buyer_user_id=202,
+        update_id=604,
+    )
+
+    assert adapter.direct_review_calls == [{"buyer_user_id": 202, "payload_base64": "review-payload-secret"}]
+    delete_message, log, reply = result.effects
+    assert isinstance(delete_message, DeleteSourceMessage)
+    assert isinstance(log, LogEvent)
+    assert log.event_name == "buyer_direct_review_payload_rejected"
+    assert log.fields == {"telegram_update_id": 604, "reason": "payload_validation_error"}
+    assert isinstance(reply, ReplyText)
+    assert "Токен отзыва не принят." in reply.text
+    assert "review-payload-secret" not in str(result.effects)
+    assert "secret review text" not in str(result.effects)
 
 
 @pytest.mark.asyncio

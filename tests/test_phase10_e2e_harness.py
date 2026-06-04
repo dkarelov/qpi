@@ -281,6 +281,14 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
                 verification_reason=None,
             )
         ),
+        submit_review_payload_by_task_uuid=AsyncMock(
+            return_value=_ns(
+                assignment_id=31,
+                changed=True,
+                verification_status="verified_auto",
+                verification_reason=None,
+            )
+        ),
         list_admin_pending_review_confirmations=AsyncMock(return_value=[]),
         admin_verify_review_payload=AsyncMock(
             return_value=_ns(
@@ -898,6 +906,29 @@ async def test_phase10_e2e_buyer_direct_purchase_payload_without_prompt_flow() -
         payload_base64=payload,
     )
     deps.buyer.submit_purchase_payload.assert_not_awaited()
+    deps.buyer.submit_review_payload_by_task_uuid.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_phase10_e2e_buyer_direct_review_payload_without_prompt_flow() -> None:
+    runtime, deps = _build_runtime()
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    await harness.start(start_arg="shop_shop_tushenka")
+    payload = base64.b64encode(
+        json.dumps([_TASK_UUID, "2026-03-05T12:30:00", 5, "Отзыв подтвержден"]).encode("utf-8")
+    ).decode("ascii")
+
+    payload_events = await harness.text(payload)
+
+    assert any("Отзыв подтвержден." in text for text in _event_texts(payload_events))
+    assert any(event.kind == "delete" for event in payload_events)
+    deps.buyer.submit_review_payload_by_task_uuid.assert_awaited_once_with(
+        buyer_user_id=202,
+        payload_base64=payload,
+    )
+    deps.buyer.submit_review_payload.assert_not_awaited()
+    deps.buyer.submit_purchase_payload_by_task_uuid.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -913,6 +944,8 @@ async def test_phase10_e2e_buyer_random_text_without_prompt_still_shows_menu() -
     assert not any(event.kind == "delete" for event in events)
     deps.buyer.submit_purchase_payload_by_task_uuid.assert_not_awaited()
     deps.buyer.submit_purchase_payload.assert_not_awaited()
+    deps.buyer.submit_review_payload_by_task_uuid.assert_not_awaited()
+    deps.buyer.submit_review_payload.assert_not_awaited()
 
 
 @pytest.mark.asyncio

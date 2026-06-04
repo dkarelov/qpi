@@ -70,7 +70,7 @@ from services.bot_api.buyer_marketplace_flow import (
     buyer_dashboard_status_bucket,
     buyer_listing_detail_html,
     buyer_shop_activity_badge,
-    looks_like_purchase_payload,
+    classify_buyer_token_text,
 )
 from services.bot_api.callback_data import (
     CALLBACK_VERSION,
@@ -536,6 +536,17 @@ class _RuntimeBuyerMarketplaceAdapter(BuyerMarketplaceAdapter):
         return await self._runtime._buyer_service.submit_review_payload(
             buyer_user_id=buyer_user_id,
             assignment_id=assignment_id,
+            payload_base64=payload_base64,
+        )
+
+    async def submit_review_payload_by_task_uuid(
+        self,
+        *,
+        buyer_user_id: int,
+        payload_base64: str,
+    ) -> Any:
+        return await self._runtime._buyer_service.submit_review_payload_by_task_uuid(
+            buyer_user_id=buyer_user_id,
             payload_base64=payload_base64,
         )
 
@@ -1173,21 +1184,30 @@ class TelegramWebhookRuntime:
             )
             return
         if active_role == _ROLE_BUYER:
-            if looks_like_purchase_payload(text):
+            token_kind = classify_buyer_token_text(text)
+            if token_kind is not None:
                 buyer = await self._buyer_service.bootstrap_buyer(
                     telegram_id=identity.telegram_id,
                     username=identity.username,
                 )
+                if token_kind == "purchase":
+                    result = await self._buyer_marketplace_flow().submit_direct_purchase_payload(
+                        text=text,
+                        buyer_user_id=buyer.user_id,
+                        update_id=update.update_id,
+                    )
+                else:
+                    result = await self._buyer_marketplace_flow().submit_direct_review_payload(
+                        text=text,
+                        buyer_user_id=buyer.user_id,
+                        update_id=update.update_id,
+                    )
                 await self._apply_transport_effects(
                     context=context,
                     query_message=None,
                     message=update.message,
                     default_role=_ROLE_BUYER,
-                    result=await self._buyer_marketplace_flow().submit_direct_purchase_payload(
-                        text=text,
-                        buyer_user_id=buyer.user_id,
-                        update_id=update.update_id,
-                    ),
+                    result=result,
                 )
                 return
             await update.message.reply_text(

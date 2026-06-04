@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-05-28 UTC
+Last updated: 2026-06-04 UTC
 
 ## 0. Completion Gate
 
@@ -219,7 +219,7 @@ Persistence and schema:
   - `[1, task_uuid, search_phrase, wb_product_id, 1, wb_brand_name]`, where `task_uuid` is the immutable assignment UUID and `wb_brand_name` is an empty string when unavailable.
 - Buyer submits verification token (base64 JSON array):
   - `[task_uuid, order_id, ordered_at]`, where `ordered_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
-- Buyer can paste a valid verification token directly while in buyer context without first opening the token-input prompt; the runtime resolves the purchase by `task_uuid`, applies the same validation/write path, and deletes the sensitive token message when possible.
+- Buyer can paste a valid verification token or review confirmation token directly while in buyer context without first opening the token-input prompt; the runtime resolves the purchase by `task_uuid`, applies the same validation/write path, and deletes the sensitive token message when possible.
 - Verification token `ordered_at` values more than 15 minutes in the future are rejected.
 - After pickup, buyer receives review setup token (base64 JSON array):
   - `[2, task_uuid, wb_product_id, review_phrase_1?, review_phrase_2?]`, where phrases are omitted when the seller did not provide them.

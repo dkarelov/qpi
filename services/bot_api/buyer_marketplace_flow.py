@@ -9,7 +9,7 @@ from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
-from libs.domain.buyer import decode_purchase_payload
+from libs.domain.buyer import decode_purchase_payload, decode_review_payload
 from libs.domain.errors import (
     DomainError,
     DuplicateOrderError,
@@ -108,6 +108,13 @@ class BuyerMarketplaceAdapter(Protocol):
         *,
         buyer_user_id: int,
         assignment_id: int,
+        payload_base64: str,
+    ) -> Any: ...
+
+    async def submit_review_payload_by_task_uuid(
+        self,
+        *,
+        buyer_user_id: int,
         payload_base64: str,
     ) -> Any: ...
 
@@ -1124,6 +1131,75 @@ class BuyerMarketplaceFlow:
                 effects=(ReplyText(text="Сейчас нельзя отправить токен отзыва для этой покупки.", parse_mode=None),)
             )
 
+        reply, buttons = self._review_payload_reply_and_buttons(result)
+        return FlowResult(
+            effects=(
+                ClearPrompt(),
+                LogEvent(
+                    event_name="buyer_review_payload_submitted",
+                    fields={
+                        "telegram_update_id": update_id,
+                        "assignment_id": result.assignment_id,
+                        "assignment_ref": format_assignment_ref(result.assignment_id),
+                        "changed": result.changed,
+                        "verification_status": result.verification_status,
+                    },
+                ),
+                ReplyText(text=reply, buttons=buttons, parse_mode=None),
+            )
+        )
+
+    async def submit_direct_review_payload(
+        self,
+        *,
+        text: str,
+        buyer_user_id: int,
+        update_id: int,
+    ) -> FlowResult:
+        try:
+            result = await self._adapter.submit_review_payload_by_task_uuid(
+                buyer_user_id=buyer_user_id,
+                payload_base64=text,
+            )
+        except NotFoundError:
+            return _direct_review_payload_rejected_result(
+                update_id=update_id,
+                reason="not_found",
+                text="Токен отзыва не принят.\nПохоже, токен относится к другой покупке или устарел.",
+            )
+        except PayloadValidationError as exc:
+            return _direct_review_payload_rejected_result(
+                update_id=update_id,
+                reason="payload_validation_error",
+                text=_review_payload_validation_text(exc),
+            )
+        except InvalidStateError:
+            return _direct_review_payload_rejected_result(
+                update_id=update_id,
+                reason="invalid_state",
+                text="Сейчас нельзя отправить токен отзыва для этой покупки.",
+            )
+
+        reply, buttons = self._review_payload_reply_and_buttons(result)
+        return FlowResult(
+            effects=(
+                DeleteSourceMessage(),
+                LogEvent(
+                    event_name="buyer_review_payload_submitted",
+                    fields={
+                        "telegram_update_id": update_id,
+                        "assignment_id": result.assignment_id,
+                        "assignment_ref": format_assignment_ref(result.assignment_id),
+                        "changed": result.changed,
+                        "verification_status": result.verification_status,
+                        "direct_paste": True,
+                    },
+                ),
+                ReplyText(text=reply, buttons=buttons, parse_mode=None),
+            )
+        )
+
+    def _review_payload_reply_and_buttons(self, result: Any) -> tuple[str, tuple[tuple[ButtonSpec, ...], ...]]:
         buttons = _buyer_menu_buttons()
         if result.verification_status != "pending_manual":
             if result.changed:
@@ -1143,22 +1219,7 @@ class BuyerMarketplaceFlow:
                 "или напишите в поддержку со скриншотом опубликованного отзыва."
             )
             buttons = self._buyer_review_followup_buttons(assignment_id=result.assignment_id)
-        return FlowResult(
-            effects=(
-                ClearPrompt(),
-                LogEvent(
-                    event_name="buyer_review_payload_submitted",
-                    fields={
-                        "telegram_update_id": update_id,
-                        "assignment_id": result.assignment_id,
-                        "assignment_ref": format_assignment_ref(result.assignment_id),
-                        "changed": result.changed,
-                        "verification_status": result.verification_status,
-                    },
-                ),
-                ReplyText(text=reply, buttons=buttons, parse_mode=None),
-            )
-        )
+        return reply, buttons
 
     async def submit_shop_slug(self, *, buyer_user_id: int, slug: str) -> FlowResult:
         catalog = await self.render_shop_catalog(
@@ -1585,6 +1646,16 @@ def _buyer_visible_assignments(assignments: list[Any]) -> list[Any]:
     return [item for item in assignments if item.status in visible_statuses]
 
 
+def classify_buyer_token_text(text: str) -> str | None:
+    if looks_like_purchase_payload(text):
+        return "purchase"
+    try:
+        decode_review_payload(text)
+    except PayloadValidationError:
+        return None
+    return "review"
+
+
 def looks_like_purchase_payload(text: str) -> bool:
     try:
         decode_purchase_payload(text)
@@ -1742,6 +1813,22 @@ def _direct_purchase_payload_rejected_result(*, update_id: int, reason: str, tex
             DeleteSourceMessage(),
             LogEvent(
                 event_name="buyer_direct_payload_rejected",
+                fields={
+                    "telegram_update_id": update_id,
+                    "reason": reason,
+                },
+            ),
+            ReplyText(text=text, buttons=_buyer_menu_buttons(), parse_mode=None),
+        )
+    )
+
+
+def _direct_review_payload_rejected_result(*, update_id: int, reason: str, text: str) -> FlowResult:
+    return FlowResult(
+        effects=(
+            DeleteSourceMessage(),
+            LogEvent(
+                event_name="buyer_direct_review_payload_rejected",
                 fields={
                     "telegram_update_id": update_id,
                     "reason": reason,

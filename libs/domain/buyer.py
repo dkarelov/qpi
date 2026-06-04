@@ -879,6 +879,32 @@ class BuyerService:
 
         return await run_in_transaction(self._pool, operation)
 
+    async def submit_review_payload_by_task_uuid(
+        self,
+        *,
+        buyer_user_id: int,
+        payload_base64: str,
+    ) -> BuyerReviewSubmitResult:
+        decoded = decode_review_payload(payload_base64)
+
+        async def operation(conn: AsyncConnection) -> BuyerReviewSubmitResult:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                assignment = await self._load_review_assignment_by_task_uuid_locked(
+                    cur,
+                    buyer_user_id=buyer_user_id,
+                    task_uuid=decoded.task_uuid,
+                )
+                if assignment is None:
+                    raise NotFoundError("assignment not found for payload")
+                return await self._store_review_payload_locked(
+                    cur,
+                    assignment=assignment,
+                    decoded=decoded,
+                    source="plugin_base64",
+                )
+
+        return await run_in_transaction(self._pool, operation)
+
     async def admin_verify_review_payload(
         self,
         *,
@@ -1003,6 +1029,33 @@ class BuyerService:
             FOR UPDATE OF a, l
             """,
             (assignment_id,),
+        )
+        return await cur.fetchone()
+
+    async def _load_review_assignment_by_task_uuid_locked(
+        self,
+        cur,
+        *,
+        buyer_user_id: int,
+        task_uuid: UUID,
+    ) -> dict[str, Any] | None:
+        await cur.execute(
+            """
+            SELECT
+                a.id,
+                a.listing_id,
+                a.buyer_user_id,
+                a.status,
+                a.task_uuid,
+                a.review_phrases,
+                l.wb_product_id
+            FROM assignments a
+            JOIN listings l ON l.id = a.listing_id
+            WHERE a.buyer_user_id = %s
+              AND a.task_uuid = %s
+            FOR UPDATE OF a, l
+            """,
+            (buyer_user_id, task_uuid),
         )
         return await cur.fetchone()
 
