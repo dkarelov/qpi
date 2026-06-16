@@ -111,6 +111,17 @@ ssh -fNT -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCou
   -i ~/.ssh/id_rsa -L 127.0.0.1:15432:10.131.0.28:5432 ubuntu@158.160.187.114
 ```
 
+If SSH connects to the bot VM but stalls during key exchange, retry with the explicit algorithms below before debugging credentials or security groups:
+
+```bash
+ssh -o KexAlgorithms=curve25519-sha256 -o HostKeyAlgorithms=ssh-ed25519 \
+  -i ~/.ssh/id_rsa ubuntu@158.160.187.114
+
+ssh -fNT -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -o KexAlgorithms=curve25519-sha256 -o HostKeyAlgorithms=ssh-ed25519 \
+  -i ~/.ssh/id_rsa -L 127.0.0.1:15432:10.131.0.28:5432 ubuntu@158.160.187.114
+```
+
 Local shared-db path for ad-hoc work:
 
 ```bash
@@ -127,6 +138,13 @@ scripts/dev/test.sh migration-smoke
 The local shared-db path is useful for operator inspection and small manual iterations, but it is not the canonical CI/deploy gate.
 
 If `QPI_DB_VM_HOST` is set and `TEST_DATABASE_ADMIN_URL` is unset, `scripts/dev/test.sh integration|schema-compat|migration-smoke|all` will automatically use the DB VM SSH reset path. In workstation tunnel mode, that path now supports an SSH proxy through the bot VM via `QPI_DB_VM_SSH_PROXY_HOST`, so you do not need a separate admin DB password in the common operator setup.
+
+Manual production DB diagnostics:
+
+- Do not put live DB passwords in command arguments; use `PGPASSWORD`, a gitignored env file, or load `/etc/qpi/bot.env` on the VM.
+- If the workstation tunnel is unstable, run read-only diagnostics on the bot VM from `/opt/qpi/current` using `.venv/bin/python`; the bot VM does not install `psql` by default.
+- Prefer serial, bounded SSH/DB probes during incidents; parallel remote probes can hide the real failure behind SSH or tunnel timeouts.
+- When remote shell quoting becomes complex, send the script over stdin with `ssh ... bash -s <<'REMOTE'` so SQL quotes survive intact.
 
 Cleanup when local resets fail because of stale sessions:
 
@@ -299,6 +317,36 @@ Private runner bootstrap:
 - In the post-merge workflow, a line such as `deploy-functions in 0s` means the function deploy job was skipped because no target functions changed.
 - `scripts/deploy/runtime.sh` always writes `SUPPORT_BOT_USERNAME=${SUPPORT_BOT_USERNAME:-}` into the runtime overrides file. Keep `SUPPORT_BOT_USERNAME` wired through `post_merge` and `deploy_runtime`, otherwise runtime deploys will erase support deep links from `/etc/qpi/bot.env`.
 - When a runtime feature depends on an optional env var, finish the rollout by checking the live `/etc/qpi/bot.env` (or equivalent env source) and one user-visible behavior, not just the workflow result.
+
+Runtime Telegram egress:
+
+- `curl -fsS http://127.0.0.1:18080/healthz` confirms runtime readiness only; it does not prove the bot can call Telegram.
+- If callbacks or notifications appear silent or delayed, test Telegram API reachability from the bot VM:
+
+```bash
+curl -4 -sS --connect-timeout 5 --max-time 10 -o /dev/null \
+  -w 'http=%{http_code} remote=%{remote_ip} total=%{time_total}\n' \
+  https://api.telegram.org/
+```
+
+- If the DNS-selected Telegram IP times out, compare candidates explicitly:
+
+```bash
+for ip in 149.154.167.220 149.154.167.99 149.154.175.50 149.154.175.100 149.154.166.110; do
+  printf '%s ' "$ip"
+  curl -4 -sS --connect-timeout 4 --max-time 8 \
+    --resolve "api.telegram.org:443:${ip}" \
+    -o /dev/null \
+    -w 'http=%{http_code} connect=%{time_connect} tls=%{time_appconnect} total=%{time_total} remote=%{remote_ip}\n' \
+    https://api.telegram.org/ || true
+done
+```
+
+- General outbound HTTPS success does not prove Telegram reachability; during incident triage, test `api.telegram.org` itself.
+- If `notification_outbox` rows show high `attempt_count`, old `created_at`, delayed `sent_at`, and `last_error='Timed out'`, suspect Telegram API egress before investigating business logic.
+- A sent row can still retain an older `last_error`; read it together with `status`, `attempt_count`, and `sent_at`.
+- Delayed stateful notification payloads can become stale because they are rendered from JSON captured at enqueue time.
+- Follow-up engineering work remains: add Telegram egress to deploy/preflight checks, alert on old or high-attempt outbox rows, improve sent/error state clarity, and revalidate delayed stateful CTAs before sending.
 
 DB reset failures:
 

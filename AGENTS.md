@@ -564,6 +564,13 @@ ssh -i ~/.ssh/id_rsa ubuntu@158.160.187.114
 ssh -o ProxyCommand="ssh -i ~/.ssh/id_rsa -W %h:%p ubuntu@158.160.187.114" -i ~/.ssh/id_rsa ubuntu@10.131.0.28
 ```
 
+SSH key-exchange fallback:
+
+```bash
+ssh -o KexAlgorithms=curve25519-sha256 -o HostKeyAlgorithms=ssh-ed25519 \
+  -i ~/.ssh/id_rsa ubuntu@158.160.187.114
+```
+
 Support-bot private-only access:
 
 ```bash
@@ -597,12 +604,23 @@ ssh -fNT -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCou
 ss -ltnp | rg ':15432\\b'
 ```
 
+DB tunnel with SSH key-exchange fallback:
+
+```bash
+ssh -fNT -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -o KexAlgorithms=curve25519-sha256 -o HostKeyAlgorithms=ssh-ed25519 \
+  -i ~/.ssh/id_rsa -L 127.0.0.1:15432:10.131.0.28:5432 ubuntu@158.160.187.114
+```
+
 Rules:
 
 - Keep tunnel active during active development sessions.
 - Recreate tunnel if listener is missing before DB operations.
 - Before any local DB-backed test run, verify the listener first with `ss -ltnp | rg ':15432\\b'`; a missing tunnel can look like a hung pytest/psqldef run instead of failing fast.
 - Operator workstation has `psql` available (`PostgreSQL 16.13`); prefer direct `psql` checks over ad-hoc Python probes for DB inspection, schema verification, and lock/activity checks.
+- If SSH reaches the bot VM but hangs during key exchange, retry with `KexAlgorithms=curve25519-sha256` and `HostKeyAlgorithms=ssh-ed25519` before debugging auth, security groups, or VM state.
+- For live DB inspection, avoid putting production DB passwords in command argv; prefer `PGPASSWORD`, a local env file, or remote reads from `/etc/qpi/bot.env`.
+- If the workstation tunnel is flaky and `psql` hangs, use the bot VM as the read-only diagnostic host: load `/etc/qpi/bot.env`, run from `/opt/qpi/current`, and use `.venv/bin/python` with `psycopg` because `psql` is not installed on the bot VM by default.
 - If a missing local tool would materially improve speed, reliability, or operator clarity, ask the operator to install it instead of defaulting to a slower workaround.
 - DB VM security group allows SSH from the private runner security group specifically so `reset_remote_test_dbs.sh` can recreate disposable test DBs through the DB-admin path.
 - Support-bot security group allows SSH from the private runner SG and the qpi bot SG; there is no direct public SSH path for the support-bot VM.
@@ -782,14 +800,30 @@ Runbook shortcuts:
 - Bot outage:
   - `sudo systemctl status qpi-bot.service`
   - `curl -fsS http://127.0.0.1:18080/healthz`
+  - remember that `/healthz` only proves runtime readiness; it does not prove outbound Telegram API reachability,
+  - verify outbound Telegram API reachability from the bot VM:
+    - `curl -4 -sS --connect-timeout 5 --max-time 10 -o /dev/null -w 'http=%{http_code} remote=%{remote_ip} total=%{time_total}\n' https://api.telegram.org/`,
+    - if DNS-selected Telegram IPs time out, compare candidate IPs with `curl --resolve api.telegram.org:443:<ip> ... https://api.telegram.org/`,
+    - do not treat a reachable general HTTPS target such as `google.com` or `ya.ru` as proof that Telegram API egress works,
   - verify Telegram `getWebhookInfo` URL/secret alignment.
 - CF degradation:
   - inspect logs for `daily_report_scrapper`, `order_tracker`, `blockchain_checker`,
   - verify DB connectivity and runtime env key alignment.
+- Notification outbox delay:
+  - inspect `notification_outbox` for rows with high `attempt_count`, old `created_at`, delayed `sent_at`, and `last_error = 'Timed out'`,
+  - delayed stateful notifications can carry stale CTA payloads because the outbox stores the notification JSON at enqueue time and renders from that payload at send time,
+  - successful delivery currently sets `status = 'sent'` but does not clear a previous `last_error`; interpret `last_error` together with `status`, `attempt_count`, and `sent_at`.
 - Payout incident:
   - inspect request detail + ledger/audit rows,
   - notify buyer and annotate admin reason,
   - stop further payout actions if ledger consistency is in doubt.
+
+Follow-up engineering work:
+
+- Add Telegram API egress to deploy/preflight validation; runtime `/healthz` alone is insufficient.
+- Alert on old or high-attempt `notification_outbox` rows.
+- Separate historical delivery errors from current sent state, or clear stale `last_error` when a notification is sent successfully.
+- Revalidate current assignment state before sending delayed stateful notification CTAs.
 
 ## 8. CI/CD Overview
 
