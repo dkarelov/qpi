@@ -5,6 +5,7 @@
       "trigger_globs": [
         "scripts/common/detect_ci_changes.sh",
         "scripts/dev/validation_groups.json",
+        "scripts/dev/qpi_pg_mcp_codex.sh",
         "scripts/dev/test_doctor.sh",
         ".github/actionlint.yaml",
         ".github/actions/**",
@@ -32,6 +33,7 @@
       "trigger_globs": [
         "scripts/deploy/private_runner.sh",
         "scripts/deploy/private_runner_autoshutdown.sh",
+        "scripts/deploy/qpi_pg_mcp.sh",
         "scripts/dev/test.sh",
         "scripts/dev/run_db_tests_on_runner.sh",
         "scripts/dev/reset_test_db.sh",

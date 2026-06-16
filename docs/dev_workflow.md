@@ -141,10 +141,16 @@ If `QPI_DB_VM_HOST` is set and `TEST_DATABASE_ADMIN_URL` is unset, `scripts/dev/
 
 Manual production DB diagnostics:
 
+- Prefer the qpi-specific `qpi-pg-prod` MCP for read-only inspection from Codex. Install it with `scripts/deploy/qpi_pg_mcp.sh install`, register it locally with `scripts/dev/qpi_pg_mcp_codex.sh install`, and verify it with `scripts/dev/qpi_pg_mcp_codex.sh doctor`.
+- `qpi-pg-prod` runs DBHub through SSH stdio on the bot VM jump host. It does not expose HTTP, does not create a public listener, and uses the dedicated `qpi_mcp_readonly` database role.
+- Do not use the global `pg-prod` MCP for this repo; it is connected to a different PostgreSQL database.
+- Use `psql`, the SSH tunnel, and `scripts/deploy/schema_remote.sh` for schema verification/apply, writes, and production repairs.
 - Do not put live DB passwords in command arguments; use `PGPASSWORD`, a gitignored env file, or load `/etc/qpi/bot.env` on the VM.
 - If the workstation tunnel is unstable, run read-only diagnostics on the bot VM from `/opt/qpi/current` using `.venv/bin/python`; the bot VM does not install `psql` by default.
 - Prefer serial, bounded SSH/DB probes during incidents; parallel remote probes can hide the real failure behind SSH or tunnel timeouts.
 - When remote shell quoting becomes complex, send the script over stdin with `ssh ... bash -s <<'REMOTE'` so SQL quotes survive intact.
+
+See `docs/ops/qpi-postgres-mcp.md` for the MCP architecture, install flow, and smoke checks.
 
 Cleanup when local resets fail because of stale sessions:
 

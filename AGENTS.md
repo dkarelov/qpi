@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-06-04 UTC
+Last updated: 2026-06-16 UTC
 
 ## 0. Completion Gate
 
@@ -138,6 +138,7 @@ Shared layers:
 - `scripts/deploy/function.sh`: canonical code-only Cloud Function rollout entrypoint.
 - `scripts/deploy/preflight.sh`: canonical shared deploy preflight entrypoint for runtime, function, and support-bot rollouts.
 - `scripts/deploy/schema_remote.sh`: canonical production-schema cleanup/assert/apply entrypoint over the bot-VM bastion.
+- `scripts/deploy/qpi_pg_mcp.sh`: canonical read-only production PostgreSQL MCP bootstrap on the bot-VM jump host.
 - `scripts/deploy/support_bot.sh`: canonical support-bot image rollout entrypoint.
 - `scripts/deploy/private_runner.sh`: canonical on-demand private runner lifecycle entrypoint for CI/deploy jobs.
 
@@ -473,8 +474,11 @@ Transitions:
 - Support-bot dependency management is `npm` + upstream `package-lock.json`, with Node 24 as the qpi target version.
 - `requirements.txt` is generated from `uv.lock` for Cloud Function/Terraform compatibility and is never hand-edited.
 - DB access: `psycopg3` + plain SQL only (no ORM).
+- For qpi read-only production inspection, use the qpi-specific `qpi-pg-prod` MCP server after it is installed with `scripts/deploy/qpi_pg_mcp.sh` and registered locally with `scripts/dev/qpi_pg_mcp_codex.sh`.
+- `qpi-pg-prod` is DBHub launched on demand through SSH stdio on the bot VM jump host. It must not expose HTTP, open a public port, or make PostgreSQL directly reachable from the workstation.
+- `qpi-pg-prod` uses the dedicated PostgreSQL role `qpi_mcp_readonly`; DBHub `readonly=true` is only a safety net, not the security boundary.
 - Do not use the globally named `pg-prod` MCP for this repo: it is connected to another PostgreSQL database, and its results are invalid for qpi diagnostics, SQL validation, production evidence, and incident investigation.
-- For qpi DB work, use the repo-documented `psql`, SSH/bastion, `scripts/deploy/schema_remote.sh`, and CI/private-runner validation paths.
+- For qpi schema changes, production writes, or incident repairs, use the repo-documented `psql`, SSH/bastion, `scripts/deploy/schema_remote.sh`, and CI/private-runner validation paths, not MCP.
 - Schema changes only through `schema/schema.sql` + `psqldef`.
 - Infrastructure mutations are Terraform-only from `infra/`.
 - Code-only deploy entrypoints are `scripts/deploy/runtime.sh`, `scripts/deploy/function.sh`, and `scripts/deploy/support_bot.sh`; broader infra mutations still remain Terraform-only.
@@ -585,6 +589,30 @@ SUPPORT_BOT_VM_SSH_PROXY_HOST=158.160.187.114 \
 scripts/deploy/support_bot.sh <image-archive> <image-tag>
 ```
 
+Read-only production PostgreSQL MCP:
+
+```bash
+# Install/refresh DBHub on the bot VM jump host and create the read-only DB role.
+BOT_VM_HOST="$(terraform -chdir=infra output -raw bot_public_ip)" \
+scripts/deploy/qpi_pg_mcp.sh install
+
+# Verify read-only login and write rejection from the bot VM.
+BOT_VM_HOST="$(terraform -chdir=infra output -raw bot_public_ip)" \
+scripts/deploy/qpi_pg_mcp.sh smoke
+
+# Register local Codex to launch DBHub through SSH stdio.
+scripts/dev/qpi_pg_mcp_codex.sh install
+scripts/dev/qpi_pg_mcp_codex.sh doctor
+```
+
+`qpi-pg-prod` architecture:
+
+- Codex starts `ssh -T ubuntu@<bot-public-ip> /usr/local/bin/qpi-pg-mcp`.
+- SSH carries MCP JSON-RPC over stdin/stdout; there is no DBHub HTTP listener and no systemd daemon.
+- `/usr/local/bin/qpi-pg-mcp` starts the pinned local DBHub Docker image with `--transport stdio --config /etc/qpi/dbhub-qpi.toml`.
+- DBHub connects from the bot VM to private PostgreSQL through `qpi_mcp_readonly`.
+- Remote config lives in `/etc/qpi/qpi-pg-mcp.env`, `/etc/qpi/dbhub-qpi.toml`, and `/etc/qpi/qpi-pg-mcp.image`.
+
 Support-bot live verification:
 
 ```bash
@@ -614,10 +642,11 @@ ssh -fNT -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCou
 
 Rules:
 
-- Keep tunnel active during active development sessions.
+- Prefer `qpi-pg-prod` MCP for read-only production inspection in Codex sessions.
+- Keep the manual tunnel active during active development sessions only when MCP is unavailable or when a psql-only workflow is required.
 - Recreate tunnel if listener is missing before DB operations.
 - Before any local DB-backed test run, verify the listener first with `ss -ltnp | rg ':15432\\b'`; a missing tunnel can look like a hung pytest/psqldef run instead of failing fast.
-- Operator workstation has `psql` available (`PostgreSQL 16.13`); prefer direct `psql` checks over ad-hoc Python probes for DB inspection, schema verification, and lock/activity checks.
+- Operator workstation has `psql` available (`PostgreSQL 16.13`); prefer direct `psql` checks over ad-hoc Python probes for schema verification, writes/repairs, and lock/activity checks that need psql-specific behavior.
 - If SSH reaches the bot VM but hangs during key exchange, retry with `KexAlgorithms=curve25519-sha256` and `HostKeyAlgorithms=ssh-ed25519` before debugging auth, security groups, or VM state.
 - For live DB inspection, avoid putting production DB passwords in command argv; prefer `PGPASSWORD`, a local env file, or remote reads from `/etc/qpi/bot.env`.
 - If the workstation tunnel is flaky and `psql` hangs, use the bot VM as the read-only diagnostic host: load `/etc/qpi/bot.env`, run from `/opt/qpi/current`, and use `.venv/bin/python` with `psycopg` because `psql` is not installed on the bot VM by default.
@@ -651,6 +680,7 @@ Rule:
 - Long-lived environments are expected to match `schema/schema.sql` exactly after cleanup; obsolete columns such as `withdrawal_requests.buyer_user_id` and `wb_report_rows.srid` are migration-only artifacts and must not remain in runtime-supported schemas.
 - Operator-driven production schema apply remains the SSH-tunnel path to `127.0.0.1:15432`.
 - `scripts/deploy/schema_remote.sh` is the canonical production path for `cleanup-plan`, `cleanup-apply`, `apply`, and `assert-clean` against the live DB through the bot-VM SSH bastion.
+- Do not use `qpi-pg-prod` MCP for schema apply, schema cleanup, or manual production repair writes.
 - CI/runtime/function deploys must assert that production schema cleanup drift is empty before code rollout; if drift remains, deployment stops until cleanup is applied.
 - CI skips production schema apply entirely when no schema-related files changed (`schema/**`, `libs/db/**`, deployment schema runner).
 
