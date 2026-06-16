@@ -51,6 +51,7 @@ class BotApiSettings(BaseAppSettings):
 
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_bot_username: str = Field(default="qpi_marketplace_bot", alias="TELEGRAM_BOT_USERNAME")
+    telegram_api_proxy_url: str | None = Field(default=None, alias="TELEGRAM_API_PROXY_URL")
     support_bot_username: str | None = Field(default=None, alias="SUPPORT_BOT_USERNAME")
     token_cipher_key: str = Field(default="dev-insecure-key", alias="TOKEN_CIPHER_KEY")
     webhook_base_url: str | None = Field(default=None, alias="WEBHOOK_BASE_URL")

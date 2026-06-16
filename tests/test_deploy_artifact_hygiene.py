@@ -40,6 +40,14 @@ def test_function_bundle_script_does_not_write_tokenized_requirements_into_stage
     assert "GIT_CONFIG_GLOBAL" in script
 
 
+def test_runtime_deploy_proxy_override_is_explicit_only() -> None:
+    script = (REPO_ROOT / "scripts/deploy/runtime.sh").read_text(encoding="utf-8")
+
+    assert 'if [[ -n "${TELEGRAM_API_PROXY_URL:-}" ]]; then' in script
+    assert "TELEGRAM_API_PROXY_URL=%s" in script
+    assert "TELEGRAM_API_PROXY_URL=${TELEGRAM_API_PROXY_URL:-}" not in script
+
+
 def test_private_git_auth_helper_can_use_scoped_git_config() -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)

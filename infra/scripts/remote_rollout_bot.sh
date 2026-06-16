@@ -116,5 +116,18 @@ curl -fsS "http://127.0.0.1:${health_port}/healthz" >/tmp/qpi-bot-health.json
 echo "health check ok"
 cat /tmp/qpi-bot-health.json
 
+set -a
+# shellcheck source=/dev/null
+source /etc/qpi/bot.env
+set +a
+curl_args=(-fsS --connect-timeout 5 --max-time 15)
+if [[ -n "${TELEGRAM_API_PROXY_URL:-}" ]]; then
+  curl_args+=(--proxy "${TELEGRAM_API_PROXY_URL}")
+fi
+telegram_get_me="$(curl "${curl_args[@]}" "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe")"
+jq -e '.ok == true' >/dev/null <<<"${telegram_get_me}"
+telegram_username="$(jq -r '.result.username // "-"' <<<"${telegram_get_me}")"
+echo "telegram getMe ok: ${telegram_username}"
+
 trap - ERR
 echo "rollout complete: ${release_id}"

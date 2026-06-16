@@ -232,6 +232,7 @@ GH_TOKEN="$(gh auth token)" \
 YC_FOLDER_ID=<folder-id> \
 BOT_VM_HOST=<host> \
 TELEGRAM_BOT_TOKEN=<token> \
+TELEGRAM_API_PROXY_URL=<proxy-url-if-needed> \
 TOKEN_CIPHER_KEY=<cipher-key> \
 BOT_WEBHOOK_SECRET_TOKEN=<secret> \
 scripts/deploy/runtime.sh
@@ -321,32 +322,35 @@ Private runner bootstrap:
 Runtime Telegram egress:
 
 - `curl -fsS http://127.0.0.1:18080/healthz` confirms runtime readiness only; it does not prove the bot can call Telegram.
-- If callbacks or notifications appear silent or delayed, test Telegram API reachability from the bot VM:
+- The canonical Telegram health check is an authenticated Bot API `getMe` call with the runtime bot token. A bare request to `https://api.telegram.org/` is not enough because it does not prove the token-specific API path works.
+- If callbacks or notifications appear silent or delayed, test Telegram API reachability from the bot VM with the same proxy setting the runtime uses:
 
 ```bash
-curl -4 -sS --connect-timeout 5 --max-time 10 -o /dev/null \
-  -w 'http=%{http_code} remote=%{remote_ip} total=%{time_total}\n' \
-  https://api.telegram.org/
+set -a
+source /etc/qpi/bot.env
+set +a
+curl_args=(-fsS --connect-timeout 5 --max-time 15)
+if [[ -n "${TELEGRAM_API_PROXY_URL:-}" ]]; then
+  curl_args+=(--proxy "${TELEGRAM_API_PROXY_URL}")
+fi
+curl "${curl_args[@]}" "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" | jq '.ok, .result.username'
 ```
 
-- If the DNS-selected Telegram IP times out, compare candidates explicitly:
+- If direct Telegram access times out, compare it with the configured proxy before debugging bot logic:
 
 ```bash
-for ip in 149.154.167.220 149.154.167.99 149.154.175.50 149.154.175.100 149.154.166.110; do
-  printf '%s ' "$ip"
-  curl -4 -sS --connect-timeout 4 --max-time 8 \
-    --resolve "api.telegram.org:443:${ip}" \
-    -o /dev/null \
-    -w 'http=%{http_code} connect=%{time_connect} tls=%{time_appconnect} total=%{time_total} remote=%{remote_ip}\n' \
-    https://api.telegram.org/ || true
-done
+curl -fsS --connect-timeout 5 --max-time 15 \
+  "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" >/dev/null
+curl -fsS --connect-timeout 5 --max-time 15 \
+  --proxy "${TELEGRAM_API_PROXY_URL}" \
+  "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" >/dev/null
 ```
 
 - General outbound HTTPS success does not prove Telegram reachability; during incident triage, test `api.telegram.org` itself.
 - If `notification_outbox` rows show high `attempt_count`, old `created_at`, delayed `sent_at`, and `last_error='Timed out'`, suspect Telegram API egress before investigating business logic.
 - A sent row can still retain an older `last_error`; read it together with `status`, `attempt_count`, and `sent_at`.
 - Delayed stateful notification payloads can become stale because they are rendered from JSON captured at enqueue time.
-- Follow-up engineering work remains: add Telegram egress to deploy/preflight checks, alert on old or high-attempt outbox rows, improve sent/error state clarity, and revalidate delayed stateful CTAs before sending.
+- Follow-up engineering work remains: alert on old or high-attempt outbox rows, improve sent/error state clarity, and revalidate delayed stateful CTAs before sending.
 
 DB reset failures:
 

@@ -33,6 +33,7 @@ Optional environment:
   BOT_VM_SSH_PRIVATE_KEY
   ADMIN_TELEGRAM_IDS
   SUPPORT_BOT_USERNAME
+  TELEGRAM_API_PROXY_URL
   DEPLOY_BASE_SHA / DEPLOY_HEAD_SHA (for schema auto-detection)
   QPI_ALLOW_DEPLOY_WHEN_UNHEALTHY (default: 0)
   QPI_DEPLOY_SCHEMA_MODE (default: auto)
@@ -259,6 +260,10 @@ ADMIN_TELEGRAM_IDS=${ADMIN_TELEGRAM_IDS:-}
 SUPPORT_BOT_USERNAME=${SUPPORT_BOT_USERNAME:-}
 EOF
 
+if [[ -n "${TELEGRAM_API_PROXY_URL:-}" ]]; then
+  printf 'TELEGRAM_API_PROXY_URL=%s\n' "${TELEGRAM_API_PROXY_URL}" >> "${overrides_env}"
+fi
+
 cat > "${rollout_env}" <<EOF
 GH_TOKEN=${GH_TOKEN}
 TOKEN_YC_JSON_LOGGER=${GH_TOKEN}
@@ -348,6 +353,8 @@ echo "before_release=${before_release_target}"
 echo "after_release=${after_release_target}"
 echo "before_service_state=${before_service_state}"
 echo "after_service_state=${after_service_state}"
+echo "telegram_get_me_ok=${telegram_get_me_ok:-unknown}"
+echo "telegram_get_me_username=${telegram_get_me_username:-unknown}"
 echo "free_mb_before=${free_mb}"
 echo "before_health_payload=${before_health_payload}"
 echo "after_health_payload=${after_health_payload}"

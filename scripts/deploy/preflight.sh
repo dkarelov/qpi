@@ -88,6 +88,29 @@ support_bot_remote_exec() {
   ssh "${ssh_args[@]}" "${SUPPORT_BOT_VM_SSH_USER}@${support_bot_host}" "$@"
 }
 
+runtime_telegram_get_me() {
+  local token_quoted
+  local proxy_quoted
+
+  printf -v token_quoted "%q" "${TELEGRAM_BOT_TOKEN}"
+  printf -v proxy_quoted "%q" "${TELEGRAM_API_PROXY_URL:-}"
+
+  runtime_remote_exec "bash -s" <<REMOTE
+set -euo pipefail
+TELEGRAM_BOT_TOKEN=${token_quoted}
+TELEGRAM_API_PROXY_URL=${proxy_quoted}
+curl_args=(-fsS --connect-timeout 5 --max-time 15)
+if [[ -n "\${TELEGRAM_API_PROXY_URL}" ]]; then
+  curl_args+=(--proxy "\${TELEGRAM_API_PROXY_URL}")
+fi
+telegram_get_me="\$(curl "\${curl_args[@]}" "https://api.telegram.org/bot\${TELEGRAM_BOT_TOKEN}/getMe")"
+jq -e '.ok == true' >/dev/null <<<"\${telegram_get_me}"
+telegram_username="\$(jq -r '.result.username // "-"' <<<"\${telegram_get_me}")"
+printf 'telegram_get_me_ok=%q\n' "true"
+printf 'telegram_get_me_username=%q\n' "\${telegram_username}"
+REMOTE
+}
+
 qpi_timing_init
 qpi_phase_start "validate"
 
@@ -163,6 +186,12 @@ case "${mode}" in
     ;;
 esac
 qpi_phase_end
+
+if [[ "${mode}" == "runtime" ]]; then
+  qpi_phase_start "telegram"
+  runtime_telegram_get_me
+  qpi_phase_end
+fi
 
 if [[ "${mode}" == "runtime" ]]; then
   qpi_phase_start "schema"

@@ -881,13 +881,15 @@ class TelegramWebhookRuntime:
                 "TELEGRAM_BOT_TOKEN is required for webhook runtime. "
                 "Use --seller-command/--buyer-command for local command adapter mode."
             )
-        application = (
+        builder = (
             Application.builder()
             .token(self._settings.telegram_bot_token)
             .post_init(self._post_init)
             .post_shutdown(self._post_shutdown)
-            .build()
         )
+        if self._settings.telegram_api_proxy_url:
+            builder = builder.proxy(self._settings.telegram_api_proxy_url)
+        application = builder.build()
         application.add_handler(CommandHandler("start", self._handle_start))
         application.add_handler(MessageHandler(filters.COMMAND, self._handle_command_message))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text))
