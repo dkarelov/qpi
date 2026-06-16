@@ -232,7 +232,7 @@ GH_TOKEN="$(gh auth token)" \
 YC_FOLDER_ID=<folder-id> \
 BOT_VM_HOST=<host> \
 TELEGRAM_BOT_TOKEN=<token> \
-TELEGRAM_API_PROXY_URL=<proxy-url-if-needed> \
+TELEGRAM_API_PROXY_URL=<http-or-https-proxy-url-if-needed> \
 TOKEN_CIPHER_KEY=<cipher-key> \
 BOT_WEBHOOK_SECRET_TOKEN=<secret> \
 scripts/deploy/runtime.sh
@@ -323,6 +323,7 @@ Runtime Telegram egress:
 
 - `curl -fsS http://127.0.0.1:18080/healthz` confirms runtime readiness only; it does not prove the bot can call Telegram.
 - The canonical Telegram health check is an authenticated Bot API `getMe` call with the runtime bot token. A bare request to `https://api.telegram.org/` is not enough because it does not prove the token-specific API path works.
+- `TELEGRAM_API_PROXY_URL` supports HTTP(S) proxy URLs only. SOCKS URLs are rejected intentionally because the Python runtime is not installed with SOCKS proxy support.
 - If callbacks or notifications appear silent or delayed, test Telegram API reachability from the bot VM with the same proxy setting the runtime uses:
 
 ```bash
@@ -347,6 +348,7 @@ curl -fsS --connect-timeout 5 --max-time 15 \
 ```
 
 - General outbound HTTPS success does not prove Telegram reachability; during incident triage, test `api.telegram.org` itself.
+- Runtime deploys hard-gate on `getMe` by default. For an intentional emergency deploy during a Telegram/proxy outage, set `QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE=1`; local service health and schema checks still remain mandatory.
 - If `notification_outbox` rows show high `attempt_count`, old `created_at`, delayed `sent_at`, and `last_error='Timed out'`, suspect Telegram API egress before investigating business logic.
 - A sent row can still retain an older `last_error`; read it together with `status`, `attempt_count`, and `sent_at`.
 - Delayed stateful notification payloads can become stale because they are rendered from JSON captured at enqueue time.

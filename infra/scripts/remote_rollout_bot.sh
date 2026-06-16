@@ -17,6 +17,54 @@ previous_target=""
 shared_venv_dir=""
 shared_venv_state="unknown"
 
+validate_telegram_api_proxy_url() {
+  local value="${1:-}"
+  if [[ -z "${value}" ]]; then
+    return 0
+  fi
+  if [[ "${value}" != http://* && "${value}" != https://* ]]; then
+    echo "TELEGRAM_API_PROXY_URL must be an HTTP(S) proxy URL." >&2
+    exit 1
+  fi
+  if ! python3 - "${value}" <<'PY'
+from urllib.parse import urlparse
+import sys
+
+parsed = urlparse(sys.argv[1])
+raise SystemExit(0 if parsed.scheme in {"http", "https"} and parsed.hostname else 1)
+PY
+  then
+    echo "TELEGRAM_API_PROXY_URL must include an HTTP(S) scheme and host." >&2
+    exit 1
+  fi
+}
+
+telegram_get_me_healthcheck() {
+  local telegram_get_me
+  local telegram_username
+  local curl_args=(-fsS --connect-timeout 5 --max-time 15)
+
+  validate_telegram_api_proxy_url "${TELEGRAM_API_PROXY_URL:-}"
+
+  if [[ -n "${TELEGRAM_API_PROXY_URL:-}" ]]; then
+    curl_args+=(--proxy "${TELEGRAM_API_PROXY_URL}")
+  fi
+  if telegram_get_me="$(curl "${curl_args[@]}" "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe")" &&
+    jq -e '.ok == true' >/dev/null <<<"${telegram_get_me}"; then
+    telegram_username="$(jq -r '.result.username // "-"' <<<"${telegram_get_me}")"
+    echo "telegram getMe ok: ${telegram_username}"
+    return 0
+  fi
+
+  if [[ "${QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE:-0}" == "1" ]]; then
+    echo "Telegram getMe failed, continuing because QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE=1." >&2
+    return 0
+  fi
+
+  echo "Telegram getMe failed. Set QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE=1 only for intentional emergency deploys." >&2
+  return 1
+}
+
 if [[ -L "${current_link}" ]]; then
   previous_target="$(readlink -f "${current_link}" || true)"
 fi
@@ -120,14 +168,7 @@ set -a
 # shellcheck source=/dev/null
 source /etc/qpi/bot.env
 set +a
-curl_args=(-fsS --connect-timeout 5 --max-time 15)
-if [[ -n "${TELEGRAM_API_PROXY_URL:-}" ]]; then
-  curl_args+=(--proxy "${TELEGRAM_API_PROXY_URL}")
-fi
-telegram_get_me="$(curl "${curl_args[@]}" "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe")"
-jq -e '.ok == true' >/dev/null <<<"${telegram_get_me}"
-telegram_username="$(jq -r '.result.username // "-"' <<<"${telegram_get_me}")"
-echo "telegram getMe ok: ${telegram_username}"
+telegram_get_me_healthcheck
 
 trap - ERR
 echo "rollout complete: ${release_id}"

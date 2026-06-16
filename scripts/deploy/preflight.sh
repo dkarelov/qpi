@@ -43,6 +43,7 @@ BOT_VM_SSH_USER="${BOT_VM_SSH_USER:-ubuntu}"
 BOT_VM_SSH_PORT="${BOT_VM_SSH_PORT:-22}"
 SUPPORT_BOT_VM_SSH_USER="${SUPPORT_BOT_VM_SSH_USER:-ubuntu}"
 SUPPORT_BOT_VM_SSH_PORT="${SUPPORT_BOT_VM_SSH_PORT:-22}"
+QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE="${QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE:-0}"
 
 generated_ssh_key=0
 ssh_key_path=""
@@ -92,10 +93,12 @@ runtime_telegram_get_me() {
   local token_quoted
   local proxy_quoted
 
+  qpi_validate_telegram_api_proxy_url "${TELEGRAM_API_PROXY_URL:-}"
+
   printf -v token_quoted "%q" "${TELEGRAM_BOT_TOKEN}"
   printf -v proxy_quoted "%q" "${TELEGRAM_API_PROXY_URL:-}"
 
-  runtime_remote_exec "bash -s" <<REMOTE
+  if runtime_remote_exec "bash -s" <<REMOTE
 set -euo pipefail
 TELEGRAM_BOT_TOKEN=${token_quoted}
 TELEGRAM_API_PROXY_URL=${proxy_quoted}
@@ -109,6 +112,19 @@ telegram_username="\$(jq -r '.result.username // "-"' <<<"\${telegram_get_me}")"
 printf 'telegram_get_me_ok=%q\n' "true"
 printf 'telegram_get_me_username=%q\n' "\${telegram_username}"
 REMOTE
+  then
+    return 0
+  fi
+
+  if [[ "${QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE}" == "1" ]]; then
+    echo "Telegram getMe failed, continuing because QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE=1." >&2
+    printf 'telegram_get_me_ok=%q\n' "false"
+    printf 'telegram_get_me_username=%q\n' "unknown"
+    return 0
+  fi
+
+  echo "Telegram getMe failed. Set QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE=1 only for intentional emergency deploys." >&2
+  return 1
 }
 
 qpi_timing_init
@@ -125,6 +141,7 @@ case "${mode}" in
     qpi_require_env TELEGRAM_BOT_TOKEN
     qpi_require_env TOKEN_CIPHER_KEY
     qpi_require_env BOT_WEBHOOK_SECRET_TOKEN
+    qpi_validate_telegram_api_proxy_url "${TELEGRAM_API_PROXY_URL:-}"
     qpi_prepare_private_key "BOT_VM_SSH_PRIVATE_KEY" "BOT_VM_SSH_KEY_PATH" "${HOME}/.ssh/id_rsa" ssh_key_path generated_ssh_key
     qpi_configure_yc_cli
 

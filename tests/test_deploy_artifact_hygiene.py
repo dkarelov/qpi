@@ -48,6 +48,22 @@ def test_runtime_deploy_proxy_override_is_explicit_only() -> None:
     assert "TELEGRAM_API_PROXY_URL=${TELEGRAM_API_PROXY_URL:-}" not in script
 
 
+def test_deploy_scripts_validate_telegram_proxy_and_support_explicit_bypass() -> None:
+    common_script = (REPO_ROOT / "scripts/deploy/common.sh").read_text(encoding="utf-8")
+    preflight_script = (REPO_ROOT / "scripts/deploy/preflight.sh").read_text(encoding="utf-8")
+    runtime_script = (REPO_ROOT / "scripts/deploy/runtime.sh").read_text(encoding="utf-8")
+    remote_rollout_script = (REPO_ROOT / "infra/scripts/remote_rollout_bot.sh").read_text(encoding="utf-8")
+
+    assert "qpi_validate_telegram_api_proxy_url" in common_script
+    assert 'if [[ "${value}" != http://* && "${value}" != https://* ]]; then' in common_script
+    assert 'qpi_validate_telegram_api_proxy_url "${TELEGRAM_API_PROXY_URL:-}"' in preflight_script
+    assert 'qpi_validate_telegram_api_proxy_url "${TELEGRAM_API_PROXY_URL:-}"' in runtime_script
+    assert "validate_telegram_api_proxy_url" in remote_rollout_script
+    assert "QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE" in preflight_script
+    assert "QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE" in runtime_script
+    assert "QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE" in remote_rollout_script
+
+
 def test_private_git_auth_helper_can_use_scoped_git_config() -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)

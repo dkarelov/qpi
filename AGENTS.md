@@ -626,7 +626,8 @@ Rules:
 - Support-bot security group allows SSH from the private runner SG and the qpi bot SG; there is no direct public SSH path for the support-bot VM.
 - Support-bot security group also keeps TCP/22 open to `0.0.0.0/0` for Yandex instance-group SSH health checks; that does not create direct public access because the VM has no public IP.
 - `scripts/deploy/runtime.sh` expects `BOT_WEBHOOK_SECRET_TOKEN` in the caller environment even though the live bot env file stores the value under `WEBHOOK_SECRET_TOKEN`; map the name explicitly when reusing values from `/etc/qpi/bot.env`.
-- `TELEGRAM_API_PROXY_URL`, when set, is used for marketplace bot outbound Telegram Bot API calls. Keep the value in runtime env / GitHub Secrets only; do not commit proxy credentials.
+- `TELEGRAM_API_PROXY_URL`, when set, is used for marketplace bot outbound Telegram Bot API calls. Only HTTP(S) proxy URLs are supported; SOCKS URLs are intentionally rejected because runtime dependencies do not include SOCKS support. Keep the value in runtime env / GitHub Secrets only; do not commit proxy credentials.
+- Runtime deploys hard-gate on Telegram `getMe` by default. `QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE=1` is the explicit emergency bypass for Telegram/proxy outages; it must not be used to bypass local service health or schema checks.
 - The support-bot deploy workflow currently reuses `BOT_VM_SSH_PRIVATE_KEY`; keep that secret valid for both bot and support-bot VM access unless a separate support-bot key is intentionally introduced and verified.
 
 ### 7.3 Schema operations
@@ -803,7 +804,8 @@ Runbook shortcuts:
   - `curl -fsS http://127.0.0.1:18080/healthz`
   - remember that `/healthz` only proves runtime readiness; it does not prove outbound Telegram API reachability,
   - verify outbound Telegram API reachability from the bot VM with the authenticated `getMe` Bot API call, loading `/etc/qpi/bot.env` and using `TELEGRAM_API_PROXY_URL` when it is configured,
-  - if `getMe` times out directly but succeeds through `TELEGRAM_API_PROXY_URL`, keep the proxy env in place and restart/redeploy the runtime; do not treat a reachable general HTTPS target such as `google.com` or `ya.ru` as proof that Telegram API egress works,
+  - if `getMe` times out directly but succeeds through `TELEGRAM_API_PROXY_URL`, keep the proxy env in place and restart/redeploy the runtime; if Telegram/proxy is down and an emergency deploy is still required, set `QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE=1`,
+  - do not treat a reachable general HTTPS target such as `google.com` or `ya.ru` as proof that Telegram API egress works,
   - verify Telegram `getWebhookInfo` URL/secret alignment.
 - CF degradation:
   - inspect logs for `daily_report_scrapper`, `order_tracker`, `blockchain_checker`,

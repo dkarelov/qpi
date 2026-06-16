@@ -888,6 +888,7 @@ class TelegramWebhookRuntime:
             .post_shutdown(self._post_shutdown)
         )
         if self._settings.telegram_api_proxy_url:
+            # Webhook mode uses normal Bot API calls; polling would also need get_updates_proxy().
             builder = builder.proxy(self._settings.telegram_api_proxy_url)
         application = builder.build()
         application.add_handler(CommandHandler("start", self._handle_start))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from functools import lru_cache
+from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -164,6 +165,21 @@ class BotApiSettings(BaseAppSettings):
         if isinstance(value, str):
             normalized = value.strip()
             return normalized or None
+        return value
+
+    @field_validator("telegram_api_proxy_url", mode="before")
+    @classmethod
+    def normalize_telegram_api_proxy_url(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            if not normalized:
+                return None
+            parsed = urlparse(normalized)
+            if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+                raise ValueError("TELEGRAM_API_PROXY_URL must be an HTTP(S) proxy URL")
+            return normalized
         return value
 
     @field_validator("support_bot_username", mode="before")

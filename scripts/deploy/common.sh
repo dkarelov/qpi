@@ -25,6 +25,28 @@ qpi_require_nonnegative_integer() {
   fi
 }
 
+qpi_validate_telegram_api_proxy_url() {
+  local value="${1:-}"
+  if [[ -z "${value}" ]]; then
+    return 0
+  fi
+  if [[ "${value}" != http://* && "${value}" != https://* ]]; then
+    echo "TELEGRAM_API_PROXY_URL must be an HTTP(S) proxy URL." >&2
+    exit 1
+  fi
+  if ! python3 - "${value}" <<'PY'
+from urllib.parse import urlparse
+import sys
+
+parsed = urlparse(sys.argv[1])
+raise SystemExit(0 if parsed.scheme in {"http", "https"} and parsed.hostname else 1)
+PY
+  then
+    echo "TELEGRAM_API_PROXY_URL must include an HTTP(S) scheme and host." >&2
+    exit 1
+  fi
+}
+
 qpi_configure_yc_cli() {
   if [[ -n "${YC_TOKEN:-}" ]]; then
     yc config set token "${YC_TOKEN}" >/dev/null

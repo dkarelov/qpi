@@ -95,3 +95,21 @@ def test_build_application_passes_configured_proxy_to_telegram_builder(monkeypat
 
     assert builder.token_value == "123:test-token"
     assert builder.proxy_value == "http://proxy.example:8000"
+
+
+def test_build_application_leaves_proxy_unset_when_not_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    builder = _FakeApplicationBuilder()
+    monkeypatch.setattr(telegram_runtime_module.Application, "builder", lambda: builder)
+    settings = BotApiSettings.model_validate(
+        {
+            "DATABASE_URL": "postgresql://user:pass@127.0.0.1:5432/qpi_test",
+            "TELEGRAM_BOT_TOKEN": "123:test-token",
+            "TOKEN_CIPHER_KEY": "phase10-test-key",
+        }
+    )
+    runtime = TelegramWebhookRuntime(settings=settings)
+
+    runtime._build_application()
+
+    assert builder.token_value == "123:test-token"
+    assert builder.proxy_value is None
