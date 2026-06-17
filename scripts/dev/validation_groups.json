@@ -155,6 +155,7 @@
         "libs/integrations/wb.py",
         "libs/integrations/wb_public.py",
         "libs/integrations/fx_rates.py",
+        "libs/integrations/yandex_monitoring.py",
         "libs/domain/deposit_intents.py",
         "libs/integrations/tonapi.py"
       ],
@@ -162,10 +163,12 @@
         "tests/test_bot_callback_contract.py",
         "tests/test_phase10_e2e_harness.py",
         "tests/test_telegram_error_handler.py",
+        "tests/test_telegram_proxy_request.py",
         "tests/test_telegram_runtime_ux_phase9.py",
         "tests/test_tonapi_client.py",
         "tests/test_wb_ping.py",
-        "tests/test_wb_public.py"
+        "tests/test_wb_public.py",
+        "tests/test_yandex_monitoring.py"
       ],
       "db_pytest_targets": [
         "tests/test_buyer_phase4.py",

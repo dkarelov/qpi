@@ -14,6 +14,7 @@ from libs.logging.setup import EventLogger
 
 _DEFAULT_METADATA_TOKEN_URL = "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token"
 _DEFAULT_MONITORING_WRITE_URL = "https://monitoring.api.cloud.yandex.net/monitoring/v2/data/write"
+_DEFAULT_MONITORING_TIMEOUT_SECONDS = 5.0
 _TOKEN_REFRESH_MARGIN_SECONDS = 60
 
 
@@ -84,7 +85,7 @@ class YandexMonitoringMetricClient:
         folder_id: str | None,
         token_provider: MetadataIamTokenProvider | None = None,
         endpoint_url: str = _DEFAULT_MONITORING_WRITE_URL,
-        timeout_seconds: float = 5.0,
+        timeout_seconds: float = _DEFAULT_MONITORING_TIMEOUT_SECONDS,
         urlopen: UrlOpen = urllib.request.urlopen,
     ) -> None:
         self._folder_id = (folder_id or "").strip()

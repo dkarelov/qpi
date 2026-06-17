@@ -47,6 +47,16 @@ def test_runtime_only_notification_renderer_change_stays_runtime_only() -> None:
     assert selection.needs_private_runner is True
 
 
+def test_monitoring_integration_change_deploys_runtime() -> None:
+    selection = resolve_validation_selection(["libs/integrations/yandex_monitoring.py"])
+
+    assert selection.selected_groups == ("marketplace_runtime",)
+    assert selection.has_runtime_changes is True
+    assert selection.function_targets == ()
+    assert "tests/test_telegram_proxy_request.py" in selection.fast_pytest_targets
+    assert "tests/test_yandex_monitoring.py" in selection.fast_pytest_targets
+
+
 def test_blockchain_checker_change_targets_only_blockchain_function() -> None:
     selection = resolve_validation_selection(["services/blockchain_checker/main.py"])
 
