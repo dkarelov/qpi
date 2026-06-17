@@ -17,24 +17,48 @@ previous_target=""
 shared_venv_dir=""
 shared_venv_state="unknown"
 
-validate_telegram_api_proxy_url() {
+parse_telegram_api_proxy_urls() {
   local value="${1:-}"
-  if [[ -z "${value}" ]]; then
-    return 0
-  fi
-  if [[ "${value}" != http://* && "${value}" != https://* ]]; then
-    echo "TELEGRAM_API_PROXY_URL must be an HTTP(S) proxy URL." >&2
-    exit 1
-  fi
-  if ! python3 - "${value}" <<'PY'
+  python3 - "${value}" <<'PY'
+import re
+import sys
+
+for raw_item in re.split(r"[,\n]+", sys.argv[1]):
+    item = raw_item.strip()
+    if item:
+        print(item)
+PY
+}
+
+validate_telegram_api_proxy_urls() {
+  local value="${1:-}"
+  local min_count="${2:-0}"
+  local status
+  python3 - "${value}" "${min_count}" <<'PY'
+import re
 from urllib.parse import urlparse
 import sys
 
-parsed = urlparse(sys.argv[1])
-raise SystemExit(0 if parsed.scheme in {"http", "https"} and parsed.hostname else 1)
+value = sys.argv[1]
+min_count = int(sys.argv[2])
+items = [item.strip() for item in re.split(r"[,\n]+", value) if item.strip()]
+if len(items) < min_count:
+    raise SystemExit(2)
+for item in items:
+    parsed = urlparse(item)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise SystemExit(1)
 PY
-  then
-    echo "TELEGRAM_API_PROXY_URL must include an HTTP(S) scheme and host." >&2
+  status="$?"
+  if [[ "${status}" -ne 0 ]]; then
+    case "${status}" in
+      2)
+        echo "TELEGRAM_API_PROXY_URLS must contain at least ${min_count} HTTP(S) proxy URLs." >&2
+        ;;
+      *)
+        echo "TELEGRAM_API_PROXY_URLS must contain only HTTP(S) proxy URLs with scheme and host." >&2
+        ;;
+    esac
     exit 1
   fi
 }
@@ -42,19 +66,23 @@ PY
 telegram_get_me_healthcheck() {
   local telegram_get_me
   local telegram_username
-  local curl_args=(-fsS --connect-timeout 5 --max-time 15)
+  local proxy_url
+  local _round
+  local telegram_proxy_urls=()
 
-  validate_telegram_api_proxy_url "${TELEGRAM_API_PROXY_URL:-}"
+  validate_telegram_api_proxy_urls "${TELEGRAM_API_PROXY_URLS:-}" 2
+  mapfile -t telegram_proxy_urls < <(parse_telegram_api_proxy_urls "${TELEGRAM_API_PROXY_URLS:-}")
 
-  if [[ -n "${TELEGRAM_API_PROXY_URL:-}" ]]; then
-    curl_args+=(--proxy "${TELEGRAM_API_PROXY_URL}")
-  fi
-  if telegram_get_me="$(curl "${curl_args[@]}" "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe")" &&
-    jq -e '.ok == true' >/dev/null <<<"${telegram_get_me}"; then
-    telegram_username="$(jq -r '.result.username // "-"' <<<"${telegram_get_me}")"
-    echo "telegram getMe ok: ${telegram_username}"
-    return 0
-  fi
+  for _round in 1 2 3; do
+    for proxy_url in "${telegram_proxy_urls[@]}"; do
+      if telegram_get_me="$(curl -fsS --connect-timeout 5 --max-time 15 --proxy "${proxy_url}" "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe")" &&
+        jq -e '.ok == true' >/dev/null <<<"${telegram_get_me}"; then
+        telegram_username="$(jq -r '.result.username // "-"' <<<"${telegram_get_me}")"
+        echo "telegram getMe ok: ${telegram_username}"
+        return 0
+      fi
+    done
+  done
 
   if [[ "${QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE:-0}" == "1" ]]; then
     echo "Telegram getMe failed, continuing because QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE=1." >&2

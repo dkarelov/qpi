@@ -86,6 +86,7 @@ from services.bot_api.deep_links import (
 from services.bot_api.seller_handlers import SellerCommandProcessor
 from services.bot_api.seller_listing_creation_flow import SellerListingCreationFlow
 from services.bot_api.telegram_notifications import render_telegram_notification
+from services.bot_api.telegram_proxy_request import build_telegram_proxy_request
 from services.bot_api.transport_effects import (
     AnswerCallback,
     ButtonSpec,
@@ -887,9 +888,19 @@ class TelegramWebhookRuntime:
             .post_init(self._post_init)
             .post_shutdown(self._post_shutdown)
         )
-        if self._settings.telegram_api_proxy_url:
-            # Webhook mode uses normal Bot API calls; polling would also need get_updates_proxy().
-            builder = builder.proxy(self._settings.telegram_api_proxy_url)
+        if self._settings.telegram_api_proxy_urls:
+            self._logger.info(
+                "telegram_proxy_redundancy_enabled",
+                proxies_count=len(self._settings.telegram_api_proxy_urls),
+                monitoring_enabled=bool(self._settings.yc_folder_id),
+            )
+            builder = builder.request(
+                build_telegram_proxy_request(
+                    self._settings.telegram_api_proxy_urls,
+                    folder_id=self._settings.yc_folder_id,
+                    logger=self._logger,
+                )
+            )
         application = builder.build()
         application.add_handler(CommandHandler("start", self._handle_start))
         application.add_handler(MessageHandler(filters.COMMAND, self._handle_command_message))

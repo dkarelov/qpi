@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-06-16 UTC
+Last updated: 2026-06-17 UTC
 
 ## 0. Completion Gate
 
@@ -132,6 +132,7 @@ Shared layers:
 - `services/bot_api/buyer_marketplace_flow.py`: transport-neutral buyer marketplace and purchase lifecycle flow for dashboard, knowledge screens, saved shops, shop catalog, announcement detail, reservation, proof/review submission, and purchase cancellation screens.
 - `services/bot_api/admin_exceptions_flow.py`: transport-neutral admin exception flow for blocked buyer review confirmations, seller deposit anomalies, manual review verification, deposit attach, and expired invoice cancellation prompts.
 - `services/bot_api/telegram_notifications.py`: bot-runtime-only Telegram notification renderer; shared outbox enqueue/claim logic stays in `libs/domain/notifications.py`.
+- `services/bot_api/telegram_proxy_request.py`: bot-runtime Telegram Bot API request wrapper that alternates configured HTTP(S) proxies, retries transport/5xx failures, and records proxy-health metrics in Yandex Monitoring.
 - `libs/db/*`: pool and schema tooling.
 - `scripts/dev/*`: canonical local reset/test/export wrappers.
 - `scripts/deploy/runtime.sh`: canonical bot VM rollout entrypoint.
@@ -655,7 +656,15 @@ Rules:
 - Support-bot security group allows SSH from the private runner SG and the qpi bot SG; there is no direct public SSH path for the support-bot VM.
 - Support-bot security group also keeps TCP/22 open to `0.0.0.0/0` for Yandex instance-group SSH health checks; that does not create direct public access because the VM has no public IP.
 - `scripts/deploy/runtime.sh` expects `BOT_WEBHOOK_SECRET_TOKEN` in the caller environment even though the live bot env file stores the value under `WEBHOOK_SECRET_TOKEN`; map the name explicitly when reusing values from `/etc/qpi/bot.env`.
-- `TELEGRAM_API_PROXY_URL`, when set, is used for marketplace bot outbound Telegram Bot API calls. Only HTTP(S) proxy URLs are supported; SOCKS URLs are intentionally rejected because runtime dependencies do not include SOCKS support. Keep the value in runtime env / GitHub Secrets only; do not commit proxy credentials.
+- `TELEGRAM_API_PROXY_URLS` is required for production marketplace bot outbound Telegram Bot API calls. It is a comma/newline-separated ordered list of HTTP(S) proxy URLs; SOCKS URLs are intentionally rejected because runtime dependencies do not include SOCKS support. Keep values in runtime env / GitHub Secrets only; do not commit proxy credentials.
+- `TELEGRAM_API_PROXY_URL` is no longer supported. Deploy merge deletes the stale key from `/etc/qpi/bot.env`, and runtime settings reject a non-empty legacy value.
+- The production Bot API retry order is proxy 1, proxy 2, proxy 1, proxy 2, proxy 1, proxy 2. Transport failures and HTTP 5xx are retried; semantic Telegram errors such as 400, 401, 403, and 429 are not retried. Ambiguous transport retries can duplicate a Telegram operation if Telegram processed the original request but the response was lost.
+- Telegram proxy metrics are written to Yandex Monitoring with the bot VM service-account IAM token from metadata:
+  - `qpi.telegram.proxy.request_attempt`,
+  - `qpi.telegram.proxy.request_exhausted`.
+- Yandex Monitoring alerts in the `qpilka` folder must be attached to notification channel `admin`:
+  - `qpi-telegram-proxy-failure-rate`: 24h window, per proxy, alarm when failures / attempts `> 0.5`, with at least 10 attempts for that proxy.
+  - `qpi-telegram-proxy-request-exhausted`: 10m window, alarm when exhausted requests are `> 0`.
 - Runtime deploys hard-gate on Telegram `getMe` by default. `QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE=1` is the explicit emergency bypass for Telegram/proxy outages; it must not be used to bypass local service health or schema checks.
 - The support-bot deploy workflow currently reuses `BOT_VM_SSH_PRIVATE_KEY`; keep that secret valid for both bot and support-bot VM access unless a separate support-bot key is intentionally introduced and verified.
 
@@ -833,8 +842,8 @@ Runbook shortcuts:
   - `sudo systemctl status qpi-bot.service`
   - `curl -fsS http://127.0.0.1:18080/healthz`
   - remember that `/healthz` only proves runtime readiness; it does not prove outbound Telegram API reachability,
-  - verify outbound Telegram API reachability from the bot VM with the authenticated `getMe` Bot API call, loading `/etc/qpi/bot.env` and using `TELEGRAM_API_PROXY_URL` when it is configured,
-  - if `getMe` times out directly but succeeds through `TELEGRAM_API_PROXY_URL`, keep the proxy env in place and restart/redeploy the runtime; if Telegram/proxy is down and an emergency deploy is still required, set `QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE=1`,
+  - verify outbound Telegram API reachability from the bot VM with the authenticated `getMe` Bot API call, loading `/etc/qpi/bot.env` and trying each entry in `TELEGRAM_API_PROXY_URLS`,
+  - if one proxy works and another fails, keep the proxy list in place and inspect Yandex Monitoring metric `qpi.telegram.proxy.request_attempt` by `proxy_index`; if every Telegram/proxy path is down and an emergency deploy is still required, set `QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE=1`,
   - do not treat a reachable general HTTPS target such as `google.com` or `ya.ru` as proof that Telegram API egress works,
   - verify Telegram `getWebhookInfo` URL/secret alignment.
 - CF degradation:

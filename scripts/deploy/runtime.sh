@@ -19,6 +19,7 @@ usage:
 Required environment for deploy:
   BOT_VM_HOST
   TELEGRAM_BOT_TOKEN
+  TELEGRAM_API_PROXY_URLS
   TOKEN_CIPHER_KEY
   BOT_WEBHOOK_SECRET_TOKEN
   YC_FOLDER_ID
@@ -33,7 +34,6 @@ Optional environment:
   BOT_VM_SSH_PRIVATE_KEY
   ADMIN_TELEGRAM_IDS
   SUPPORT_BOT_USERNAME
-  TELEGRAM_API_PROXY_URL
   DEPLOY_BASE_SHA / DEPLOY_HEAD_SHA (for schema auto-detection)
   QPI_ALLOW_DEPLOY_WHEN_UNHEALTHY (default: 0)
   QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE (default: 0)
@@ -216,11 +216,13 @@ fi
 resolve_git_token
 qpi_require_env "BOT_VM_HOST"
 qpi_require_env "TELEGRAM_BOT_TOKEN"
+qpi_require_env "TELEGRAM_API_PROXY_URLS"
 qpi_require_env "TOKEN_CIPHER_KEY"
 qpi_require_env "BOT_WEBHOOK_SECRET_TOKEN"
 qpi_require_env "YC_FOLDER_ID"
 qpi_require_env "GH_TOKEN"
-qpi_validate_telegram_api_proxy_url "${TELEGRAM_API_PROXY_URL:-}"
+qpi_reject_legacy_telegram_api_proxy_url
+qpi_validate_telegram_api_proxy_urls "${TELEGRAM_API_PROXY_URLS:-}" 2
 
 generated_ssh_key=0
 ssh_key_path=""
@@ -259,13 +261,11 @@ cat > "${overrides_env}" <<EOF
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
 TOKEN_CIPHER_KEY=${TOKEN_CIPHER_KEY}
 WEBHOOK_SECRET_TOKEN=${BOT_WEBHOOK_SECRET_TOKEN}
+YC_FOLDER_ID=${YC_FOLDER_ID}
 ADMIN_TELEGRAM_IDS=${ADMIN_TELEGRAM_IDS:-}
 SUPPORT_BOT_USERNAME=${SUPPORT_BOT_USERNAME:-}
+TELEGRAM_API_PROXY_URLS=${TELEGRAM_API_PROXY_URLS}
 EOF
-
-if [[ -n "${TELEGRAM_API_PROXY_URL:-}" ]]; then
-  printf 'TELEGRAM_API_PROXY_URL=%s\n' "${TELEGRAM_API_PROXY_URL}" >> "${overrides_env}"
-fi
 
 cat > "${rollout_env}" <<EOF
 GH_TOKEN=${GH_TOKEN}
@@ -302,7 +302,8 @@ qpi_phase_start "schema"
 remote_exec \
   "sudo python3 /tmp/merge_bot_env.py \
     --base /etc/qpi/bot.env \
-    --overrides /tmp/qpi-bot-overrides.env && \
+    --overrides /tmp/qpi-bot-overrides.env \
+    --delete TELEGRAM_API_PROXY_URL && \
    sudo chown root:${BOT_VM_SSH_USER} /etc/qpi/bot.env && \
    sudo chmod 0640 /etc/qpi/bot.env"
 

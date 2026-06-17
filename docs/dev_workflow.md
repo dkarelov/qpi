@@ -238,7 +238,7 @@ GH_TOKEN="$(gh auth token)" \
 YC_FOLDER_ID=<folder-id> \
 BOT_VM_HOST=<host> \
 TELEGRAM_BOT_TOKEN=<token> \
-TELEGRAM_API_PROXY_URL=<http-or-https-proxy-url-if-needed> \
+TELEGRAM_API_PROXY_URLS='<primary-http-proxy-url>,<secondary-http-proxy-url>' \
 TOKEN_CIPHER_KEY=<cipher-key> \
 BOT_WEBHOOK_SECRET_TOKEN=<secret> \
 scripts/deploy/runtime.sh
@@ -329,32 +329,52 @@ Runtime Telegram egress:
 
 - `curl -fsS http://127.0.0.1:18080/healthz` confirms runtime readiness only; it does not prove the bot can call Telegram.
 - The canonical Telegram health check is an authenticated Bot API `getMe` call with the runtime bot token. A bare request to `https://api.telegram.org/` is not enough because it does not prove the token-specific API path works.
-- `TELEGRAM_API_PROXY_URL` supports HTTP(S) proxy URLs only. SOCKS URLs are rejected intentionally because the Python runtime is not installed with SOCKS proxy support.
-- If callbacks or notifications appear silent or delayed, test Telegram API reachability from the bot VM with the same proxy setting the runtime uses:
+- `TELEGRAM_API_PROXY_URLS` is a required production comma/newline-separated ordered list of HTTP(S) proxy URLs. SOCKS URLs are rejected intentionally because the Python runtime is not installed with SOCKS proxy support.
+- The webhook runtime creates one Telegram `HTTPXRequest` per configured proxy. For each Bot API request it tries proxy 1, proxy 2, proxy 1, proxy 2, proxy 1, proxy 2; transport failures and HTTP 5xx are retried, while semantic Bot API failures such as 400, 401, 403, and 429 are not retried.
+- Retrying ambiguous transport failures can duplicate a Telegram operation if Telegram processed the request but the response was lost. Keep Telegram operations idempotent where the Bot API supports it, and inspect Telegram-side state before replaying failed operator actions manually.
+- If callbacks or notifications appear silent or delayed, test Telegram API reachability from the bot VM with the same proxy list the runtime uses:
 
 ```bash
 set -a
 source /etc/qpi/bot.env
 set +a
-curl_args=(-fsS --connect-timeout 5 --max-time 15)
-if [[ -n "${TELEGRAM_API_PROXY_URL:-}" ]]; then
-  curl_args+=(--proxy "${TELEGRAM_API_PROXY_URL}")
-fi
-curl "${curl_args[@]}" "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" | jq '.ok, .result.username'
+python3 - "${TELEGRAM_API_PROXY_URLS}" <<'PY' | while IFS= read -r proxy_url; do
+import re
+import sys
+for raw_item in re.split(r"[,\n]+", sys.argv[1]):
+    item = raw_item.strip()
+    if item:
+        print(item)
+PY
+  curl -fsS --connect-timeout 5 --max-time 15 \
+    --proxy "${proxy_url}" \
+    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" | jq '.ok, .result.username'
+done
 ```
 
-- If direct Telegram access times out, compare it with the configured proxy before debugging bot logic:
+- If all configured proxies fail, compare direct Telegram access only to separate proxy failure from regional Telegram reachability before debugging bot logic:
 
 ```bash
 curl -fsS --connect-timeout 5 --max-time 15 \
-  "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" >/dev/null
-curl -fsS --connect-timeout 5 --max-time 15 \
-  --proxy "${TELEGRAM_API_PROXY_URL}" \
   "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" >/dev/null
 ```
 
 - General outbound HTTPS success does not prove Telegram reachability; during incident triage, test `api.telegram.org` itself.
 - Runtime deploys hard-gate on `getMe` by default. For an intentional emergency deploy during a Telegram/proxy outage, set `QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE=1`; local service health and schema checks still remain mandatory.
+- Telegram proxy metrics are written to Yandex Monitoring with the bot VM service-account IAM token from metadata:
+  - `qpi.telegram.proxy.request_attempt`
+  - `qpi.telegram.proxy.request_exhausted`
+- Configure Yandex Monitoring alerts in the `qpilka` folder and attach both to notification channel `admin`:
+  - `qpi-telegram-proxy-failure-rate`: 24h window, per proxy, alarm when failures / attempts `> 0.5`, with a minimum sample of 10 attempts per proxy.
+  - `qpi-telegram-proxy-request-exhausted`: 10m window, alarm when exhausted requests are `> 0`.
+- Alert query sketch for failure rate:
+  - A: `moving_sum(series_sum(["proxy_index","proxy_host"], "qpi.telegram.proxy.request_attempt"{folderId="<folder-id>", service="custom", outcome="failure", proxy_index="*"}), 24h)`
+  - B: `moving_sum(series_sum(["proxy_index","proxy_host"], "qpi.telegram.proxy.request_attempt"{folderId="<folder-id>", service="custom", outcome="*", proxy_index="*"}), 24h)`
+  - C: `(A / B) * (drop_below(B, 10) / B)`
+  - Trigger on C `> 0.5`.
+- Alert query sketch for exhausted requests:
+  - A: `moving_sum(series_sum("qpi.telegram.proxy.request_exhausted"{folderId="<folder-id>", service="custom"}), 10m)`
+  - Trigger on A `> 0`.
 - If `notification_outbox` rows show high `attempt_count`, old `created_at`, delayed `sent_at`, and `last_error='Timed out'`, suspect Telegram API egress before investigating business logic.
 - A sent row can still retain an older `last_error`; read it together with `status`, `attempt_count`, and `sent_at`.
 - Delayed stateful notification payloads can become stale because they are rendered from JSON captured at enqueue time.

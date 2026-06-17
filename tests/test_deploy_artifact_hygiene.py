@@ -40,11 +40,12 @@ def test_function_bundle_script_does_not_write_tokenized_requirements_into_stage
     assert "GIT_CONFIG_GLOBAL" in script
 
 
-def test_runtime_deploy_proxy_override_is_explicit_only() -> None:
+def test_runtime_deploy_proxy_urls_override_is_required_and_legacy_key_is_deleted() -> None:
     script = (REPO_ROOT / "scripts/deploy/runtime.sh").read_text(encoding="utf-8")
 
-    assert 'if [[ -n "${TELEGRAM_API_PROXY_URL:-}" ]]; then' in script
-    assert "TELEGRAM_API_PROXY_URL=%s" in script
+    assert 'qpi_require_env "TELEGRAM_API_PROXY_URLS"' in script
+    assert "TELEGRAM_API_PROXY_URLS=${TELEGRAM_API_PROXY_URLS}" in script
+    assert "--delete TELEGRAM_API_PROXY_URL" in script
     assert "TELEGRAM_API_PROXY_URL=${TELEGRAM_API_PROXY_URL:-}" not in script
 
 
@@ -54,14 +55,28 @@ def test_deploy_scripts_validate_telegram_proxy_and_support_explicit_bypass() ->
     runtime_script = (REPO_ROOT / "scripts/deploy/runtime.sh").read_text(encoding="utf-8")
     remote_rollout_script = (REPO_ROOT / "infra/scripts/remote_rollout_bot.sh").read_text(encoding="utf-8")
 
-    assert "qpi_validate_telegram_api_proxy_url" in common_script
-    assert 'if [[ "${value}" != http://* && "${value}" != https://* ]]; then' in common_script
-    assert 'qpi_validate_telegram_api_proxy_url "${TELEGRAM_API_PROXY_URL:-}"' in preflight_script
-    assert 'qpi_validate_telegram_api_proxy_url "${TELEGRAM_API_PROXY_URL:-}"' in runtime_script
-    assert "validate_telegram_api_proxy_url" in remote_rollout_script
+    assert "qpi_reject_legacy_telegram_api_proxy_url" in common_script
+    assert "qpi_validate_telegram_api_proxy_urls" in common_script
+    assert 'qpi_validate_telegram_api_proxy_urls "${TELEGRAM_API_PROXY_URLS:-}" 2' in preflight_script
+    assert 'qpi_validate_telegram_api_proxy_urls "${TELEGRAM_API_PROXY_URLS:-}" 2' in runtime_script
+    assert "validate_telegram_api_proxy_urls" in remote_rollout_script
+    assert 'for _round in 1 2 3; do' in preflight_script
+    assert 'for _round in 1 2 3; do' in remote_rollout_script
     assert "QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE" in preflight_script
     assert "QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE" in runtime_script
     assert "QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE" in remote_rollout_script
+
+
+def test_runtime_workflows_use_proxy_urls_secret() -> None:
+    workflow_text = "\n".join(
+        [
+            (REPO_ROOT / ".github/workflows/deploy_runtime.yml").read_text(encoding="utf-8"),
+            (REPO_ROOT / ".github/workflows/post_merge.yml").read_text(encoding="utf-8"),
+        ]
+    )
+
+    assert "secrets.TELEGRAM_API_PROXY_URLS" in workflow_text
+    assert "secrets.TELEGRAM_API_PROXY_URL }}" not in workflow_text
 
 
 def test_private_git_auth_helper_can_use_scoped_git_config() -> None:

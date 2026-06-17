@@ -91,26 +91,43 @@ support_bot_remote_exec() {
 
 runtime_telegram_get_me() {
   local token_quoted
-  local proxy_quoted
+  local proxy_urls_quoted
 
-  qpi_validate_telegram_api_proxy_url "${TELEGRAM_API_PROXY_URL:-}"
+  qpi_reject_legacy_telegram_api_proxy_url
+  qpi_validate_telegram_api_proxy_urls "${TELEGRAM_API_PROXY_URLS:-}" 2
 
   printf -v token_quoted "%q" "${TELEGRAM_BOT_TOKEN}"
-  printf -v proxy_quoted "%q" "${TELEGRAM_API_PROXY_URL:-}"
+  printf -v proxy_urls_quoted "%q" "${TELEGRAM_API_PROXY_URLS:-}"
 
   if runtime_remote_exec "bash -s" <<REMOTE
 set -euo pipefail
 TELEGRAM_BOT_TOKEN=${token_quoted}
-TELEGRAM_API_PROXY_URL=${proxy_quoted}
-curl_args=(-fsS --connect-timeout 5 --max-time 15)
-if [[ -n "\${TELEGRAM_API_PROXY_URL}" ]]; then
-  curl_args+=(--proxy "\${TELEGRAM_API_PROXY_URL}")
-fi
-telegram_get_me="\$(curl "\${curl_args[@]}" "https://api.telegram.org/bot\${TELEGRAM_BOT_TOKEN}/getMe")"
-jq -e '.ok == true' >/dev/null <<<"\${telegram_get_me}"
-telegram_username="\$(jq -r '.result.username // "-"' <<<"\${telegram_get_me}")"
-printf 'telegram_get_me_ok=%q\n' "true"
-printf 'telegram_get_me_username=%q\n' "\${telegram_username}"
+TELEGRAM_API_PROXY_URLS=${proxy_urls_quoted}
+mapfile -t telegram_proxy_urls < <(python3 - "\${TELEGRAM_API_PROXY_URLS}" <<'PY'
+import re
+import sys
+
+for raw_item in re.split(r"[,\\n]+", sys.argv[1]):
+    item = raw_item.strip()
+    if item:
+        print(item)
+PY
+)
+telegram_get_me=""
+telegram_username=""
+for _round in 1 2 3; do
+  for proxy_url in "\${telegram_proxy_urls[@]}"; do
+    curl_args=(-fsS --connect-timeout 5 --max-time 15 --proxy "\${proxy_url}")
+    if telegram_get_me="\$(curl "\${curl_args[@]}" "https://api.telegram.org/bot\${TELEGRAM_BOT_TOKEN}/getMe")" &&
+      jq -e '.ok == true' >/dev/null <<<"\${telegram_get_me}"; then
+      telegram_username="\$(jq -r '.result.username // "-"' <<<"\${telegram_get_me}")"
+      printf 'telegram_get_me_ok=%q\n' "true"
+      printf 'telegram_get_me_username=%q\n' "\${telegram_username}"
+      exit 0
+    fi
+  done
+done
+exit 1
 REMOTE
   then
     return 0
@@ -141,7 +158,9 @@ case "${mode}" in
     qpi_require_env TELEGRAM_BOT_TOKEN
     qpi_require_env TOKEN_CIPHER_KEY
     qpi_require_env BOT_WEBHOOK_SECRET_TOKEN
-    qpi_validate_telegram_api_proxy_url "${TELEGRAM_API_PROXY_URL:-}"
+    qpi_require_env TELEGRAM_API_PROXY_URLS
+    qpi_reject_legacy_telegram_api_proxy_url
+    qpi_validate_telegram_api_proxy_urls "${TELEGRAM_API_PROXY_URLS:-}" 2
     qpi_prepare_private_key "BOT_VM_SSH_PRIVATE_KEY" "BOT_VM_SSH_KEY_PATH" "${HOME}/.ssh/id_rsa" ssh_key_path generated_ssh_key
     qpi_configure_yc_cli
 

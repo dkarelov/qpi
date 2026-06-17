@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from functools import lru_cache
 from urllib.parse import urlparse
@@ -52,8 +53,15 @@ class BotApiSettings(BaseAppSettings):
 
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_bot_username: str = Field(default="qpi_marketplace_bot", alias="TELEGRAM_BOT_USERNAME")
-    telegram_api_proxy_url: str | None = Field(default=None, alias="TELEGRAM_API_PROXY_URL")
+    telegram_api_proxy_urls: tuple[str, ...] = Field(default_factory=tuple, alias="TELEGRAM_API_PROXY_URLS")
+    legacy_telegram_api_proxy_url: str | None = Field(
+        default=None,
+        alias="TELEGRAM_API_PROXY_URL",
+        exclude=True,
+        repr=False,
+    )
     support_bot_username: str | None = Field(default=None, alias="SUPPORT_BOT_USERNAME")
+    yc_folder_id: str | None = Field(default=None, alias="YC_FOLDER_ID")
     token_cipher_key: str = Field(default="dev-insecure-key", alias="TOKEN_CIPHER_KEY")
     webhook_base_url: str | None = Field(default=None, alias="WEBHOOK_BASE_URL")
     webhook_listen_host: str = Field(default="0.0.0.0", alias="WEBHOOK_LISTEN_HOST")
@@ -167,19 +175,37 @@ class BotApiSettings(BaseAppSettings):
             return normalized or None
         return value
 
-    @field_validator("telegram_api_proxy_url", mode="before")
+    @field_validator("telegram_api_proxy_urls", mode="before")
     @classmethod
-    def normalize_telegram_api_proxy_url(cls, value):
+    def normalize_telegram_api_proxy_urls(cls, value):
+        if value in (None, "", []):
+            return ()
+        if isinstance(value, str):
+            raw_items = re.split(r"[,\n]+", value)
+        elif isinstance(value, (list, tuple, set)):
+            raw_items = list(value)
+        else:
+            raise ValueError("TELEGRAM_API_PROXY_URLS must be a comma/newline-separated list")
+
+        normalized_items: list[str] = []
+        for raw_item in raw_items:
+            normalized = str(raw_item).strip()
+            if not normalized:
+                continue
+            parsed = urlparse(normalized)
+            if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+                raise ValueError("TELEGRAM_API_PROXY_URLS must contain only HTTP(S) proxy URLs")
+            normalized_items.append(normalized)
+        return tuple(normalized_items)
+
+    @field_validator("yc_folder_id", mode="before")
+    @classmethod
+    def normalize_optional_yc_folder_id(cls, value):
         if value is None:
             return None
         if isinstance(value, str):
             normalized = value.strip()
-            if not normalized:
-                return None
-            parsed = urlparse(normalized)
-            if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
-                raise ValueError("TELEGRAM_API_PROXY_URL must be an HTTP(S) proxy URL")
-            return normalized
+            return normalized or None
         return value
 
     @field_validator("support_bot_username", mode="before")
@@ -198,6 +224,17 @@ class BotApiSettings(BaseAppSettings):
             raise ValueError(
                 "WEBHOOK_TLS_CERT_PATH and WEBHOOK_TLS_KEY_PATH must be set together",
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_telegram_proxy_configuration(self):
+        if self.legacy_telegram_api_proxy_url not in (None, ""):
+            raise ValueError("TELEGRAM_API_PROXY_URL is no longer supported; use TELEGRAM_API_PROXY_URLS")
+        if self.app_env.lower() == "prod":
+            if len(self.telegram_api_proxy_urls) < 2:
+                raise ValueError("TELEGRAM_API_PROXY_URLS must contain at least two proxy URLs in prod")
+            if not self.yc_folder_id:
+                raise ValueError("YC_FOLDER_ID is required in prod for Telegram proxy monitoring metrics")
         return self
 
     @field_validator("bot_health_host")

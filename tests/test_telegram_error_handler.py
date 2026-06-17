@@ -8,6 +8,7 @@ import pytest
 import services.bot_api.telegram_runtime as telegram_runtime_module
 from libs.config.settings import BotApiSettings
 from libs.domain.errors import InvalidStateError
+from services.bot_api.telegram_proxy_request import AlternatingTelegramProxyRequest
 from services.bot_api.telegram_runtime import TelegramWebhookRuntime
 
 
@@ -24,7 +25,7 @@ def _build_runtime() -> TelegramWebhookRuntime:
 class _FakeApplicationBuilder:
     def __init__(self) -> None:
         self.token_value: str | None = None
-        self.proxy_value: str | None = None
+        self.request_value: object | None = None
 
     def token(self, value: str) -> _FakeApplicationBuilder:
         self.token_value = value
@@ -36,8 +37,8 @@ class _FakeApplicationBuilder:
     def post_shutdown(self, _callback: object) -> _FakeApplicationBuilder:
         return self
 
-    def proxy(self, value: str) -> _FakeApplicationBuilder:
-        self.proxy_value = value
+    def request(self, value: object) -> _FakeApplicationBuilder:
+        self.request_value = value
         return self
 
     def build(self) -> _FakeApplication:
@@ -78,14 +79,17 @@ async def test_handle_error_notifies_user_for_unexpected_error() -> None:
     assert "Произошла ошибка" in reply_text.await_args.args[0]
 
 
-def test_build_application_passes_configured_proxy_to_telegram_builder(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_application_passes_configured_proxy_request_to_telegram_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     builder = _FakeApplicationBuilder()
     monkeypatch.setattr(telegram_runtime_module.Application, "builder", lambda: builder)
     settings = BotApiSettings.model_validate(
         {
             "DATABASE_URL": "postgresql://user:pass@127.0.0.1:5432/qpi_test",
             "TELEGRAM_BOT_TOKEN": "123:test-token",
-            "TELEGRAM_API_PROXY_URL": "http://proxy.example:8000",
+            "TELEGRAM_API_PROXY_URLS": "http://proxy-one.example:8000,http://proxy-two.example:8000",
+            "YC_FOLDER_ID": "b1folder",
             "TOKEN_CIPHER_KEY": "phase10-test-key",
         }
     )
@@ -94,7 +98,7 @@ def test_build_application_passes_configured_proxy_to_telegram_builder(monkeypat
     runtime._build_application()
 
     assert builder.token_value == "123:test-token"
-    assert builder.proxy_value == "http://proxy.example:8000"
+    assert isinstance(builder.request_value, AlternatingTelegramProxyRequest)
 
 
 def test_build_application_leaves_proxy_unset_when_not_configured(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -112,4 +116,4 @@ def test_build_application_leaves_proxy_unset_when_not_configured(monkeypatch: p
     runtime._build_application()
 
     assert builder.token_value == "123:test-token"
-    assert builder.proxy_value is None
+    assert builder.request_value is None

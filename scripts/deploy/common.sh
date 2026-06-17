@@ -25,24 +25,57 @@ qpi_require_nonnegative_integer() {
   fi
 }
 
-qpi_validate_telegram_api_proxy_url() {
-  local value="${1:-}"
-  if [[ -z "${value}" ]]; then
-    return 0
-  fi
-  if [[ "${value}" != http://* && "${value}" != https://* ]]; then
-    echo "TELEGRAM_API_PROXY_URL must be an HTTP(S) proxy URL." >&2
+qpi_reject_legacy_telegram_api_proxy_url() {
+  if [[ -n "${TELEGRAM_API_PROXY_URL:-}" ]]; then
+    echo "TELEGRAM_API_PROXY_URL is no longer supported; use TELEGRAM_API_PROXY_URLS." >&2
     exit 1
   fi
-  if ! python3 - "${value}" <<'PY'
+}
+
+qpi_parse_telegram_api_proxy_urls() {
+  local value="${1:-}"
+  python3 - "${value}" <<'PY'
+import re
+import sys
+
+value = sys.argv[1]
+for raw_item in re.split(r"[,\n]+", value):
+    item = raw_item.strip()
+    if not item:
+        continue
+    print(item)
+PY
+}
+
+qpi_validate_telegram_api_proxy_urls() {
+  local value="${1:-}"
+  local min_count="${2:-0}"
+  local status
+  python3 - "${value}" "${min_count}" <<'PY'
+import re
 from urllib.parse import urlparse
 import sys
 
-parsed = urlparse(sys.argv[1])
-raise SystemExit(0 if parsed.scheme in {"http", "https"} and parsed.hostname else 1)
+value = sys.argv[1]
+min_count = int(sys.argv[2])
+items = [item.strip() for item in re.split(r"[,\n]+", value) if item.strip()]
+if len(items) < min_count:
+    raise SystemExit(2)
+for item in items:
+    parsed = urlparse(item)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise SystemExit(1)
 PY
-  then
-    echo "TELEGRAM_API_PROXY_URL must include an HTTP(S) scheme and host." >&2
+  status="$?"
+  if [[ "${status}" -ne 0 ]]; then
+    case "${status}" in
+      2)
+        echo "TELEGRAM_API_PROXY_URLS must contain at least ${min_count} HTTP(S) proxy URLs." >&2
+        ;;
+      *)
+        echo "TELEGRAM_API_PROXY_URLS must contain only HTTP(S) proxy URLs with scheme and host." >&2
+        ;;
+    esac
     exit 1
   fi
 }

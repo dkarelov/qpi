@@ -19,6 +19,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Merge env overrides into base bot env file")
     parser.add_argument("--base", required=True, help="Base env file path")
     parser.add_argument("--overrides", required=True, help="Overrides env file path")
+    parser.add_argument("--delete", action="append", default=[], help="Env key to remove after applying overrides")
     args = parser.parse_args()
 
     base_path = Path(args.base)
@@ -31,6 +32,8 @@ def main() -> None:
 
     values = _read_env(base_path)
     values.update(_read_env(overrides_path))
+    for key in args.delete:
+        values.pop(key, None)
     content = "\n".join(f"{key}={values[key]}" for key in sorted(values)) + "\n"
     base_path.write_text(content, encoding="utf-8")
 
