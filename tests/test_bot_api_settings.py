@@ -34,6 +34,22 @@ def test_bot_api_settings_accepts_ordered_http_proxy_urls(raw_value: str, expect
     assert settings.telegram_api_proxy_urls == expected
 
 
+def test_bot_api_settings_reads_comma_separated_proxy_urls_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@127.0.0.1:5432/qpi_test")
+    monkeypatch.setenv("TOKEN_CIPHER_KEY", "test-key")
+    monkeypatch.setenv(
+        "TELEGRAM_API_PROXY_URLS",
+        "http://user:pass@proxy-one.example:8000,http://user:pass@proxy-two.example:8000",
+    )
+
+    settings = BotApiSettings()
+
+    assert settings.telegram_api_proxy_urls == (
+        "http://user:pass@proxy-one.example:8000",
+        "http://user:pass@proxy-two.example:8000",
+    )
+
+
 @pytest.mark.parametrize("raw_value", ["", "   "])
 def test_bot_api_settings_normalizes_blank_proxy_url_list(raw_value: str) -> None:
     settings = BotApiSettings.model_validate(_base_settings(TELEGRAM_API_PROXY_URLS=raw_value))

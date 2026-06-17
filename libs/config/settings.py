@@ -3,10 +3,11 @@ from __future__ import annotations
 import re
 from decimal import Decimal
 from functools import lru_cache
+from typing import Annotated
 from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class BaseAppSettings(BaseSettings):
@@ -53,7 +54,10 @@ class BotApiSettings(BaseAppSettings):
 
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_bot_username: str = Field(default="qpi_marketplace_bot", alias="TELEGRAM_BOT_USERNAME")
-    telegram_api_proxy_urls: tuple[str, ...] = Field(default_factory=tuple, alias="TELEGRAM_API_PROXY_URLS")
+    telegram_api_proxy_urls: Annotated[tuple[str, ...], NoDecode] = Field(
+        default_factory=tuple,
+        alias="TELEGRAM_API_PROXY_URLS",
+    )
     legacy_telegram_api_proxy_url: str | None = Field(
         default=None,
         alias="TELEGRAM_API_PROXY_URL",
