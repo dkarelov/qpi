@@ -7,6 +7,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
+from threading import Lock
 from typing import Protocol
 
 from libs.logging.setup import EventLogger
@@ -47,27 +48,33 @@ class MetadataIamTokenProvider:
         self._urlopen = urlopen
         self._now = now
         self._cached_token: _CachedIamToken | None = None
+        self._lock = Lock()
 
     def get_token(self) -> str:
         now = self._now()
         if self._cached_token and self._cached_token.expires_at > now:
             return self._cached_token.value
 
-        request = urllib.request.Request(
-            self._metadata_token_url,
-            headers={"Metadata-Flavor": "Google"},
-        )
-        with self._urlopen(request, timeout=self._timeout_seconds) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        with self._lock:
+            now = self._now()
+            if self._cached_token and self._cached_token.expires_at > now:
+                return self._cached_token.value
 
-        access_token = str(payload.get("access_token") or "").strip()
-        if not access_token:
-            raise RuntimeError("metadata IAM token response did not include access_token")
+            request = urllib.request.Request(
+                self._metadata_token_url,
+                headers={"Metadata-Flavor": "Google"},
+            )
+            with self._urlopen(request, timeout=self._timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
 
-        expires_in = int(payload.get("expires_in") or _TOKEN_REFRESH_MARGIN_SECONDS)
-        expires_at = now + max(0, expires_in - _TOKEN_REFRESH_MARGIN_SECONDS)
-        self._cached_token = _CachedIamToken(value=access_token, expires_at=expires_at)
-        return access_token
+            access_token = str(payload.get("access_token") or "").strip()
+            if not access_token:
+                raise RuntimeError("metadata IAM token response did not include access_token")
+
+            expires_in = int(payload.get("expires_in") or _TOKEN_REFRESH_MARGIN_SECONDS)
+            expires_at = now + max(0, expires_in - _TOKEN_REFRESH_MARGIN_SECONDS)
+            self._cached_token = _CachedIamToken(value=access_token, expires_at=expires_at)
+            return access_token
 
 
 class YandexMonitoringMetricClient:
@@ -77,7 +84,7 @@ class YandexMonitoringMetricClient:
         folder_id: str | None,
         token_provider: MetadataIamTokenProvider | None = None,
         endpoint_url: str = _DEFAULT_MONITORING_WRITE_URL,
-        timeout_seconds: float = 2.0,
+        timeout_seconds: float = 5.0,
         urlopen: UrlOpen = urllib.request.urlopen,
     ) -> None:
         self._folder_id = (folder_id or "").strip()

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from libs.integrations.yandex_monitoring import (
@@ -42,6 +44,7 @@ def test_yandex_monitoring_client_writes_custom_metric_payload() -> None:
         folder_id="b1folder",
         token_provider=_StaticTokenProvider(),  # type: ignore[arg-type]
         endpoint_url="https://monitoring.example/write",
+        timeout_seconds=2.0,
         urlopen=urlopen,  # type: ignore[arg-type]
     )
 
@@ -88,6 +91,24 @@ def test_metadata_iam_token_provider_caches_token_until_refresh_margin() -> None
 
     assert provider.get_token() == "token-2"
     assert calls == 2
+
+
+def test_metadata_iam_token_provider_shares_concurrent_refresh() -> None:
+    calls = 0
+
+    def urlopen(request: object, timeout: float) -> _Response:
+        nonlocal calls
+        calls += 1
+        time.sleep(0.05)
+        return _Response({"access_token": f"token-{calls}", "expires_in": 120})
+
+    provider = MetadataIamTokenProvider(urlopen=urlopen)  # type: ignore[arg-type]
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        tokens = list(executor.map(lambda _: provider.get_token(), range(5)))
+
+    assert tokens == ["token-1"] * 5
+    assert calls == 1
 
 
 async def test_metric_recorder_does_not_raise_on_metric_send_failure() -> None:
