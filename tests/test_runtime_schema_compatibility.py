@@ -118,6 +118,8 @@ async def test_runtime_post_init_wires_listing_deep_link_builders(monkeypatch) -
             get_me=AsyncMock(return_value=SimpleNamespace(id=123, username="qpi_bot")),
             set_my_commands=AsyncMock(return_value=None),
             set_chat_menu_button=AsyncMock(return_value=None),
+            delete_webhook=AsyncMock(return_value=None),
+            get_webhook_info=AsyncMock(return_value=SimpleNamespace(url="", pending_update_count=0)),
         )
     )
 
@@ -128,6 +130,7 @@ async def test_runtime_post_init_wires_listing_deep_link_builders(monkeypatch) -
     assert runtime._seller_listing_creation_flow is not None
     assert runtime._seller_listing_creation_flow._build_listing_deep_link(21).endswith("start=listing_21")
     assert runtime._seller_processor._listing_creation_flow is runtime._seller_listing_creation_flow
+    application.bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
 
     await runtime._post_shutdown(application)
 
