@@ -44,6 +44,7 @@ BOT_VM_SSH_PORT="${BOT_VM_SSH_PORT:-22}"
 SUPPORT_BOT_VM_SSH_USER="${SUPPORT_BOT_VM_SSH_USER:-ubuntu}"
 SUPPORT_BOT_VM_SSH_PORT="${SUPPORT_BOT_VM_SSH_PORT:-22}"
 QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE="${QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE:-0}"
+TELEGRAM_UPDATE_MODE="${TELEGRAM_UPDATE_MODE:-polling}"
 
 generated_ssh_key=0
 ssh_key_path=""
@@ -157,8 +158,11 @@ case "${mode}" in
     qpi_require_env BOT_VM_HOST
     qpi_require_env TELEGRAM_BOT_TOKEN
     qpi_require_env TOKEN_CIPHER_KEY
-    qpi_require_env BOT_WEBHOOK_SECRET_TOKEN
     qpi_require_env TELEGRAM_API_PROXY_URLS
+    qpi_validate_telegram_update_mode "${TELEGRAM_UPDATE_MODE}"
+    if [[ "${TELEGRAM_UPDATE_MODE}" == "webhook" ]]; then
+      qpi_require_env BOT_WEBHOOK_SECRET_TOKEN
+    fi
     qpi_reject_legacy_telegram_api_proxy_url
     qpi_validate_telegram_api_proxy_urls "${TELEGRAM_API_PROXY_URLS:-}" 2
     qpi_prepare_private_key "BOT_VM_SSH_PRIVATE_KEY" "BOT_VM_SSH_KEY_PATH" "${HOME}/.ssh/id_rsa" ssh_key_path generated_ssh_key

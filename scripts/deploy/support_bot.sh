@@ -175,6 +175,7 @@ sed \
   -e "s/__SUPPORT_BOT_TELEGRAM_BOT_TOKEN__/$(escape_sed_replacement "${SUPPORT_BOT_TELEGRAM_BOT_TOKEN}")/g" \
   -e "s/__SUPPORT_BOT_STAFFCHAT_ID__/$(escape_sed_replacement "${SUPPORT_BOT_STAFFCHAT_ID}")/g" \
   -e "s/__SUPPORT_BOT_OWNER_ID__/$(escape_sed_replacement "${SUPPORT_BOT_OWNER_ID}")/g" \
+  -e "s/__YC_FOLDER_ID__/$(escape_sed_replacement "${YC_FOLDER_ID}")/g" \
   "${repo_root}/apps/support-bot/config/config.template.yaml" > "${rendered_config}"
 qpi_phase_end
 

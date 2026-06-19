@@ -1,6 +1,6 @@
 import cache from './cache';
 import SignalAddon from './addons/signal';
-import { Context, Messenger } from './interfaces';
+import { Context, Messenger, ParseMode } from './interfaces';
 import TelegramAddon from './addons/telegram';
 
 /**
@@ -9,28 +9,27 @@ import TelegramAddon from './addons/telegram';
  * @param str - The string to escape.
  * @returns The escaped string.
  */
-const strictEscape = (str: string): string => {
-  const { parse_mode } = cache.config;
-  switch (parse_mode) {
-    case 'MarkdownV2':
+const escapeForParseMode = (str: string | number | null | undefined, parseMode: string | undefined): string => {
+  const value = (str ?? '').toString();
+  switch (parseMode) {
+    case ParseMode.MarkdownV2:
       // Escape all special MarkdownV2 characters
-      return str.replace(/([[\]()_*~`>#+\-=\|{}.!\\])/g, '\\$1');
-    case 'HTML':
-      return str
+      return value.replace(/([[\]()_*~`>#+\-=\|{}.!\\])/g, '\\$1');
+    case ParseMode.Markdown:
+      return value.replace(/([_*\[\]()])/g, '\\$1');
+    case ParseMode.HTML:
+      return value
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;'); // Escape single quotes
-    case 'Markdown':
-      // Escape special Markdown characters (square brackets separately for safety)
-      return str
-        .replace(/([[\]_*`])/g, '\$1')
-        .replace(/(\[|\])/g, '\$1');
     default:
-      return str.toString();
+      return value;
   }
 };
+
+const strictEscape = (str: string): string => escapeForParseMode(str, cache.config.parse_mode);
 
 /**
  * Sends a message through the appropriate messenger addon.
@@ -80,4 +79,4 @@ const reply = (
   sendMessage(ctx.message.chat.id, ctx.messenger, msgText, extra);
 };
 
-export { strictEscape, sendMessage, reply };
+export { escapeForParseMode, strictEscape, sendMessage, reply };

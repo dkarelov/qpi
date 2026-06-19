@@ -240,13 +240,16 @@ BOT_VM_HOST=<host> \
 TELEGRAM_BOT_TOKEN=<token> \
 TELEGRAM_API_PROXY_URLS='<primary-http-proxy-url>,<secondary-http-proxy-url>' \
 TOKEN_CIPHER_KEY=<cipher-key> \
-BOT_WEBHOOK_SECRET_TOKEN=<secret> \
 scripts/deploy/runtime.sh
 ```
+
+`TELEGRAM_UPDATE_MODE` defaults to `polling`. Set `TELEGRAM_UPDATE_MODE=webhook` and provide
+`BOT_WEBHOOK_SECRET_TOKEN` only for an intentional webhook fallback rollout.
 
 The wrapper now:
 
 - verifies the target host against the expected YC folder / bot instance group,
+- verifies Telegram `getMe` through the configured proxy list before rollout unless explicitly bypassed,
 - checks remote disk/service state before rollout,
 - decides schema apply explicitly,
 - prunes old local runtime archives before creating a new one,
@@ -330,7 +333,7 @@ Runtime Telegram egress:
 - `curl -fsS http://127.0.0.1:18080/healthz` confirms runtime readiness only; it does not prove the bot can call Telegram.
 - The canonical Telegram health check is an authenticated Bot API `getMe` call with the runtime bot token. A bare request to `https://api.telegram.org/` is not enough because it does not prove the token-specific API path works.
 - `TELEGRAM_API_PROXY_URLS` is a required production comma/newline-separated ordered list of HTTP(S) proxy URLs. SOCKS URLs are rejected intentionally because the Python runtime is not installed with SOCKS proxy support.
-- The webhook runtime creates one Telegram `HTTPXRequest` per configured proxy. For each Bot API request it tries proxy 1, proxy 2, proxy 1, proxy 2, proxy 1, proxy 2; transport failures and HTTP 5xx are retried, while semantic Bot API failures such as 400, 401, 403, and 429 are not retried.
+- The marketplace runtime uses long polling by default and creates one Telegram `HTTPXRequest` per configured proxy. For each Bot API request it tries proxy 1, proxy 2, proxy 1, proxy 2, proxy 1, proxy 2; transport failures and HTTP 5xx are retried, while semantic Bot API failures such as 400, 401, 403, and 429 are not retried.
 - Retrying ambiguous transport failures can duplicate a Telegram operation if Telegram processed the request but the response was lost. Keep Telegram operations idempotent where the Bot API supports it, and inspect Telegram-side state before replaying failed operator actions manually.
 - If callbacks or notifications appear silent or delayed, test Telegram API reachability from the bot VM with the same proxy list the runtime uses:
 
@@ -361,12 +364,19 @@ curl -fsS --connect-timeout 5 --max-time 15 \
 
 - General outbound HTTPS success does not prove Telegram reachability; during incident triage, test `api.telegram.org` itself.
 - Runtime deploys hard-gate on `getMe` by default. For an intentional emergency deploy during a Telegram/proxy outage, set `QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE=1`; local service health and schema checks still remain mandatory.
+- In normal polling mode, `getWebhookInfo` should show an empty webhook URL and no growing `pending_update_count`. A non-empty URL means Telegram may still try to POST updates to the VM.
 - Telegram proxy metrics are written to Yandex Monitoring with the bot VM service-account IAM token from metadata:
   - `qpi.telegram.proxy.request_attempt`
   - `qpi.telegram.proxy.request_exhausted`
+- Telegram update and callback metrics are written to Yandex Monitoring with the same metadata IAM token:
+  - `qpi.telegram.update.received`
+  - `qpi.telegram.update.delivery_lag_seconds`
+  - `qpi.telegram.callback.answer_failure`
 - Configure Yandex Monitoring alerts in the `qpilka` folder and attach both to notification channel `admin`:
   - `qpi-telegram-proxy-failure-rate`: 24h window, per proxy, alarm when failures / attempts `> 0.5`, with a minimum sample of 10 attempts per proxy.
   - `qpi-telegram-proxy-request-exhausted`: 10m window, alarm when exhausted requests are `> 0`.
+  - `qpi-telegram-update-lag`: 10m window, alarm when p95 update delivery lag is `> 30s`.
+  - `qpi-telegram-callback-answer-failure`: 10m window, alarm when callback answer failures are `> 0`.
 - Alert query sketch for failure rate:
   - A: `moving_sum(series_sum(["proxy_index","proxy_host"], "qpi.telegram.proxy.request_attempt"{folderId="<folder-id>", service="custom", outcome="failure", proxy_index="*"}), 24h)`
   - B: `moving_sum(series_sum(["proxy_index","proxy_host"], "qpi.telegram.proxy.request_attempt"{folderId="<folder-id>", service="custom", outcome="*", proxy_index="*"}), 24h)`

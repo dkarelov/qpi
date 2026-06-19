@@ -757,12 +757,11 @@ class BuyerMarketplaceFlow:
                             "Автоматическая проверка не пройдена. "
                             "Исправьте отзыв или напишите в поддержку со скриншотом."
                         )
-                block_lines.append(buyer_review_instruction_text(item, include_title=False))
                 keyboard_rows.append(
                     [
                         _button(
-                            "✍️ Ввести токен отзыва",
-                            action="submit_review_payload_input_prompt",
+                            "✍️ Оставить отзыв",
+                            action="submit_review_payload_prompt",
                             entity_id=item.assignment_id,
                         )
                     ]
@@ -847,7 +846,7 @@ class BuyerMarketplaceFlow:
                 ReplaceText(
                     text=_screen_text(
                         title="Отзыв",
-                        cta="Сначала получите токен отзыва в расширении, затем отправьте токен-подтверждение.",
+                        cta="Сначала опубликуйте отзыв на WB через расширение Qpilka.",
                         lines=lines,
                         separate_blocks=True,
                     ),
@@ -855,7 +854,7 @@ class BuyerMarketplaceFlow:
                         [
                             [
                                 _button(
-                                    "✍️ Ввести токен отзыва",
+                                    "✅ У меня есть токен подтверждения",
                                     action="submit_review_payload_input_prompt",
                                     entity_id=assignment.assignment_id,
                                 )
@@ -882,8 +881,8 @@ class BuyerMarketplaceFlow:
                 ),
                 ReplaceText(
                     text=_screen_text(
-                        title="Токен отзыва",
-                        cta="Вставьте токен из расширения следующим сообщением ниже.",
+                        title="Токен-подтверждение отзыва",
+                        cta="Вставьте токен-подтверждение, который выдало расширение после публикации отзыва.",
                     ),
                     buttons=_rows([[_button("↩️ Назад к покупкам", action="assignments")]]),
                     parse_mode="HTML",
@@ -1128,7 +1127,12 @@ class BuyerMarketplaceFlow:
             return FlowResult(effects=(ReplyText(text=_review_payload_validation_text(exc), parse_mode=None),))
         except InvalidStateError:
             return FlowResult(
-                effects=(ReplyText(text="Сейчас нельзя отправить токен отзыва для этой покупки.", parse_mode=None),)
+                effects=(
+                    ReplyText(
+                        text="Сейчас нельзя отправить токен-подтверждение отзыва для этой покупки.",
+                        parse_mode=None,
+                    ),
+                )
             )
 
         reply, buttons = self._review_payload_reply_and_buttons(result)
@@ -1165,7 +1169,7 @@ class BuyerMarketplaceFlow:
             return _direct_review_payload_rejected_result(
                 update_id=update_id,
                 reason="not_found",
-                text="Токен отзыва не принят.\nПохоже, токен относится к другой покупке или устарел.",
+                text="Токен-подтверждение отзыва не принят.\nПохоже, токен относится к другой покупке или устарел.",
             )
         except PayloadValidationError as exc:
             return _direct_review_payload_rejected_result(
@@ -1177,7 +1181,7 @@ class BuyerMarketplaceFlow:
             return _direct_review_payload_rejected_result(
                 update_id=update_id,
                 reason="invalid_state",
-                text="Сейчас нельзя отправить токен отзыва для этой покупки.",
+                text="Сейчас нельзя отправить токен-подтверждение отзыва для этой покупки.",
             )
 
         reply, buttons = self._review_payload_reply_and_buttons(result)
@@ -1205,13 +1209,19 @@ class BuyerMarketplaceFlow:
             if result.changed:
                 reply = "Отзыв подтвержден. Ожидайте начисления кэшбэка через 15 дней после выкупа товара."
             else:
-                reply = "Этот токен отзыва уже был отправлен ранее."
+                reply = "Этот токен-подтверждение отзыва уже был отправлен ранее."
         else:
             reason = str(result.verification_reason or "").strip()
             if result.changed:
-                reply = "Токен отзыва сохранен, но автоматическая проверка не пройдена.\nКэшбэк пока не будет выплачен."
+                reply = (
+                    "Токен-подтверждение отзыва сохранен, но автоматическая проверка не пройдена.\n"
+                    "Кэшбэк пока не будет выплачен."
+                )
             else:
-                reply = "Этот токен отзыва уже был отправлен ранее.\nКэшбэк по покупке все еще заблокирован."
+                reply = (
+                    "Этот токен-подтверждение отзыва уже был отправлен ранее.\n"
+                    "Кэшбэк по покупке все еще заблокирован."
+                )
             if reason:
                 reply += f"\nПричина: {reason}"
             reply += (
@@ -1599,21 +1609,24 @@ def buyer_review_instruction_text(assignment: Any, *, include_title: bool = True
     lines: list[str] = []
     if include_title:
         lines.append(f"<b>Товар:</b> {html.escape(display_title)}")
-    lines.append("<b>Следующий шаг:</b> Оставьте отзыв на 5 звезд на сайте ВБ.")
     selected_phrases = _normalize_review_phrases(getattr(assignment, "review_phrases", None))
-    if selected_phrases:
-        lines.append("<b>Фразы для отзыва:</b> " + html.escape(_format_review_phrases_text(selected_phrases)))
     lines.extend(
         [
-            (
-                '1. Введите токен в <a href="'
-                f"{_QPILKA_EXTENSION_URL}"
-                '">расширении для браузера Chrome / Яндекс Qpilka</a>:'
-            ),
+            "Скопируйте токен ниже в расширение Qpilka.",
             f"<code>{review_token}</code>",
-            "2. Следуйте подсказкам расширения и отправьте токен-подтверждение отзыва сюда.",
+            (
+                'Расширение покажет, какой отзыв оставить на WB. '
+                '<a href="'
+                f"{_QPILKA_EXTENSION_URL}"
+                '">Открыть расширение для Chrome / Яндекс</a>.'
+            ),
+            "Поставьте 5 звезд и добавьте обязательные фразы.",
+            "После публикации расширение выдаст токен-подтверждение.",
+            "Вернитесь сюда и нажмите кнопку ниже.",
         ]
     )
+    if selected_phrases:
+        lines.append("<b>Обязательные фразы:</b> " + html.escape(_format_review_phrases_text(selected_phrases)))
     return "\n".join(lines)
 
 
@@ -1841,7 +1854,10 @@ def _direct_review_payload_rejected_result(*, update_id: int, reason: str, text:
 
 def _review_payload_validation_text(exc: PayloadValidationError) -> str:
     details = str(exc).strip().lower()
-    base = "Токен отзыва не принят.\nПроверьте, что вы скопировали его полностью из расширения для этой покупки."
+    base = (
+        "Токен-подтверждение отзыва не принят.\n"
+        "Проверьте, что вы скопировали его полностью из расширения для этой покупки."
+    )
     if "task_uuid" in details:
         return f"{base}\nПохоже, токен относится к другой покупке или устарел."
     if "timezone" in details:

@@ -97,10 +97,12 @@ GH_TOKEN="$(gh auth token)" \
 YC_FOLDER_ID=<folder-id> \
 BOT_VM_HOST=<host> \
 TELEGRAM_BOT_TOKEN=<token> \
+TELEGRAM_API_PROXY_URLS='<primary-http-proxy-url>,<secondary-http-proxy-url>' \
 TOKEN_CIPHER_KEY=<cipher-key> \
-BOT_WEBHOOK_SECRET_TOKEN=<secret> \
 scripts/deploy/runtime.sh
 ```
+
+The marketplace runtime defaults to `TELEGRAM_UPDATE_MODE=polling`. Webhook mode is an explicit fallback only.
 
 Code-only Cloud Function deploy:
 

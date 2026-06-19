@@ -56,6 +56,7 @@ from libs.integrations.wb_public import (
     WbPublicApiError,
     WbPublicCatalogClient,
 )
+from libs.integrations.yandex_monitoring import YandexMonitoringMetricClient, YandexMonitoringMetricRecorder
 from libs.logging.setup import EventLogger, get_logger
 from libs.security.token_cipher import decrypt_token, encrypt_token
 from services.bot_api.admin_exceptions_flow import (
@@ -132,8 +133,8 @@ try:
     )
 except ImportError as exc:  # pragma: no cover - checked at runtime on deployment hosts
     raise RuntimeError(
-        "python-telegram-bot is required for webhook runtime. "
-        "Install dependencies from pyproject/requirements before running bot webhook mode."
+        "python-telegram-bot is required for the Telegram runtime. "
+        "Install dependencies from pyproject/requirements before running the marketplace bot."
     ) from exc
 
 
@@ -233,6 +234,9 @@ _RUNTIME_REQUIRED_SCHEMA_COLUMNS = {
 _NOTIFICATION_DISPATCH_POLL_SECONDS = 2.0
 _NOTIFICATION_DISPATCH_BATCH_SIZE = 50
 _NOTIFICATION_DISPATCH_MAX_BACKOFF_SECONDS = 3600
+TELEGRAM_UPDATE_RECEIVED_METRIC = "qpi.telegram.update.received"
+TELEGRAM_UPDATE_DELIVERY_LAG_METRIC = "qpi.telegram.update.delivery_lag_seconds"
+TELEGRAM_CALLBACK_ANSWER_FAILURE_METRIC = "qpi.telegram.callback.answer_failure"
 
 
 @dataclass(frozen=True)
@@ -797,7 +801,7 @@ def _convert_image_bytes_to_jpeg(data: bytes) -> bytes:
 
 
 class TelegramWebhookRuntime:
-    """Real Telegram webhook runtime with button-first role shell."""
+    """Real Telegram runtime with button-first role shell."""
 
     def __init__(self, *, settings: BotApiSettings, logger: EventLogger | None = None) -> None:
         self._settings = settings
@@ -834,19 +838,29 @@ class TelegramWebhookRuntime:
         self._payout_wallet_raw_form: str | None = None
         self._display_rub_per_usdt = settings.display_rub_per_usdt
         self._notification_dispatch_task: asyncio.Task[None] | None = None
+        self._monitoring_recorder = (
+            YandexMonitoringMetricRecorder(
+                client=YandexMonitoringMetricClient(folder_id=settings.yc_folder_id),
+                logger=self._logger,
+            )
+            if settings.yc_folder_id
+            else None
+        )
 
     def run(self) -> None:
-        webhook_url = self._build_webhook_url()
+        update_mode = self._settings.telegram_update_mode
+        webhook_url = self._build_webhook_url() if update_mode == "webhook" else None
         tls_enabled = bool(
             self._settings.webhook_tls_cert_path and self._settings.webhook_tls_key_path,
         )
         self._logger.info(
-            "telegram_webhook_runtime_starting",
+            "telegram_runtime_starting",
+            update_mode=update_mode,
             webhook_url=webhook_url,
             listen_host=self._settings.webhook_listen_host,
             listen_port=self._settings.webhook_listen_port,
             webhook_path=self._settings.webhook_path,
-            webhook_tls_enabled=tls_enabled,
+            webhook_tls_enabled=tls_enabled if update_mode == "webhook" else False,
             callback_version=CALLBACK_VERSION,
             admins_count=len(self._admin_telegram_ids),
         )
@@ -863,23 +877,29 @@ class TelegramWebhookRuntime:
             run_kwargs["cert"] = self._settings.webhook_tls_cert_path
             run_kwargs["key"] = self._settings.webhook_tls_key_path
         try:
-            application.run_webhook(
-                listen=self._settings.webhook_listen_host,
-                port=self._settings.webhook_listen_port,
-                url_path=self._settings.webhook_path,
-                webhook_url=webhook_url,
-                secret_token=self._settings.webhook_secret_token,
-                drop_pending_updates=False,
-                allowed_updates=Update.ALL_TYPES,
-                **run_kwargs,
-            )
+            if update_mode == "polling":
+                application.run_polling(
+                    drop_pending_updates=False,
+                    allowed_updates=Update.ALL_TYPES,
+                )
+            else:
+                application.run_webhook(
+                    listen=self._settings.webhook_listen_host,
+                    port=self._settings.webhook_listen_port,
+                    url_path=self._settings.webhook_path,
+                    webhook_url=webhook_url,
+                    secret_token=self._settings.webhook_secret_token,
+                    drop_pending_updates=False,
+                    allowed_updates=Update.ALL_TYPES,
+                    **run_kwargs,
+                )
         finally:
             self._health_server.stop()
 
     def _build_application(self) -> Application:
         if not self._settings.telegram_bot_token:
             raise ValueError(
-                "TELEGRAM_BOT_TOKEN is required for webhook runtime. "
+                "TELEGRAM_BOT_TOKEN is required for Telegram runtime. "
                 "Use --seller-command/--buyer-command for local command adapter mode."
             )
         builder = (
@@ -995,7 +1015,8 @@ class TelegramWebhookRuntime:
 
             bot_profile = await application.bot.get_me()
             self._logger.info(
-                "telegram_webhook_bot_identity",
+                "telegram_bot_identity",
+                update_mode=self._settings.telegram_update_mode,
                 telegram_bot_id=bot_profile.id,
                 telegram_bot_username=bot_profile.username,
             )
@@ -1011,17 +1032,20 @@ class TelegramWebhookRuntime:
                     error_type=type(exc).__name__,
                     error_message=str(exc)[:300],
                 )
-            if self._settings.webhook_set_enabled:
+            if self._settings.telegram_update_mode == "webhook" and self._settings.webhook_set_enabled:
                 await self._ensure_webhook_registration(application=application)
+            elif self._settings.telegram_update_mode == "polling":
+                await self._disable_webhook_registration(application=application)
             self._notification_dispatch_task = asyncio.create_task(
                 self._notification_dispatch_loop(bot=application.bot)
             )
             self._ready = True
-            self._logger.info("telegram_webhook_runtime_ready")
+            self._logger.info("telegram_runtime_ready", update_mode=self._settings.telegram_update_mode)
         except Exception as exc:
             self._startup_error = f"{type(exc).__name__}: {str(exc)[:500]}"
             self._logger.exception(
-                "telegram_webhook_runtime_init_failed",
+                "telegram_runtime_init_failed",
+                update_mode=self._settings.telegram_update_mode,
                 error_type=type(exc).__name__,
                 error_message=str(exc)[:500],
             )
@@ -1041,7 +1065,7 @@ class TelegramWebhookRuntime:
                 pass
             self._notification_dispatch_task = None
         await self._db_pool.close()
-        self._logger.info("telegram_webhook_runtime_stopped")
+        self._logger.info("telegram_runtime_stopped", update_mode=self._settings.telegram_update_mode)
 
     async def _ensure_webhook_registration(self, *, application: Application) -> None:
         desired_url = self._build_webhook_url()
@@ -1088,7 +1112,38 @@ class TelegramWebhookRuntime:
             has_custom_certificate=refreshed.has_custom_certificate,
         )
 
+    async def _disable_webhook_registration(self, *, application: Application) -> None:
+        await application.bot.delete_webhook(drop_pending_updates=False)
+        webhook_info = await application.bot.get_webhook_info()
+        self._logger.info(
+            "telegram_webhook_disabled_for_polling",
+            webhook_url=webhook_info.url,
+            pending_update_count=webhook_info.pending_update_count,
+        )
+
+    async def _run_update_handler(
+        self,
+        update: Update,
+        *,
+        handler: str,
+        callback: Callable[[], Any],
+    ) -> None:
+        observed_at = datetime.now(UTC)
+        try:
+            await callback()
+        except Exception:
+            self._record_update_metrics(update, handler=handler, outcome="failure", observed_at=observed_at)
+            raise
+        self._record_update_metrics(update, handler=handler, outcome="success", observed_at=observed_at)
+
     async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._run_update_handler(
+            update,
+            handler="start",
+            callback=lambda: self._handle_start_impl(update, context),
+        )
+
+    async def _handle_start_impl(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         identity = _identity_from_update(update)
         if identity is None or update.message is None:
             return
@@ -1141,6 +1196,17 @@ class TelegramWebhookRuntime:
         update: Update,
         context: ContextTypes.DEFAULT_TYPE,
     ) -> None:
+        await self._run_update_handler(
+            update,
+            handler="command",
+            callback=lambda: self._handle_command_message_impl(update, context),
+        )
+
+    async def _handle_command_message_impl(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
         identity = _identity_from_update(update)
         if identity is None or update.message is None:
             return
@@ -1172,6 +1238,13 @@ class TelegramWebhookRuntime:
         await update.message.reply_text(response.text)
 
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._run_update_handler(
+            update,
+            handler="text",
+            callback=lambda: self._handle_text_impl(update, context),
+        )
+
+    async def _handle_text_impl(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         identity = _identity_from_update(update)
         if identity is None or update.message is None:
             return
@@ -1242,6 +1315,13 @@ class TelegramWebhookRuntime:
         )
 
     async def _handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._run_update_handler(
+            update,
+            handler="callback",
+            callback=lambda: self._handle_callback_impl(update, context),
+        )
+
+    async def _handle_callback_impl(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query
         if query is None:
             return
@@ -1252,14 +1332,33 @@ class TelegramWebhookRuntime:
             await query.answer("Кнопка устарела", show_alert=True)
             return
 
+        identity = _identity_from_callback(update)
+        self._logger.info(
+            "telegram_callback_received",
+            telegram_update_id=update.update_id,
+            flow=payload.flow,
+            action=payload.action,
+            entity_id=payload.entity_id,
+            telegram_id=identity.telegram_id if identity else None,
+        )
         try:
             await query.answer()
         except Exception as exc:
             self._logger.warning(
                 "telegram_callback_answer_failed",
                 telegram_update_id=update.update_id,
+                flow=payload.flow,
+                action=payload.action,
                 error_type=type(exc).__name__,
                 error_message=str(exc)[:300],
+            )
+            self._record_metric(
+                TELEGRAM_CALLBACK_ANSWER_FAILURE_METRIC,
+                {
+                    "flow": payload.flow,
+                    "action": payload.action,
+                    "error_type": type(exc).__name__,
+                },
             )
         if query.message is None:
             try:
@@ -1276,17 +1375,8 @@ class TelegramWebhookRuntime:
                 )
             return
         await self._retire_message_keyboard(query.message)
-        identity = _identity_from_callback(update)
         if identity is None:
             return
-        self._logger.info(
-            "telegram_callback_received",
-            telegram_update_id=update.update_id,
-            flow=payload.flow,
-            action=payload.action,
-            entity_id=payload.entity_id,
-            telegram_id=identity.telegram_id,
-        )
 
         if payload.flow == "root":
             await self._handle_root_callback(
@@ -6276,10 +6366,26 @@ class TelegramWebhookRuntime:
                 continue
             if isinstance(effect, AnswerCallback):
                 if callback_query is not None:
-                    await callback_query.answer(
-                        text=effect.text,
-                        show_alert=effect.show_alert,
-                    )
+                    try:
+                        await callback_query.answer(
+                            text=effect.text,
+                            show_alert=effect.show_alert,
+                        )
+                    except Exception as exc:
+                        self._logger.warning(
+                            "telegram_callback_answer_failed",
+                            error_type=type(exc).__name__,
+                            error_message=str(exc)[:300],
+                            source="transport_effect",
+                        )
+                        self._record_metric(
+                            TELEGRAM_CALLBACK_ANSWER_FAILURE_METRIC,
+                            {
+                                "flow": default_role,
+                                "action": "transport_effect",
+                                "error_type": type(exc).__name__,
+                            },
+                        )
                 else:
                     self._warn_dropped_transport_effect(
                         effect=effect,
@@ -6970,21 +7076,26 @@ class TelegramWebhookRuntime:
         lines: list[str] = []
         if include_title:
             lines.append(f"<b>Товар:</b> {html.escape(display_title)}")
-        lines.append("<b>Следующий шаг:</b> Оставьте отзыв на 5 звезд на сайте ВБ.")
         selected_phrases = self._normalize_review_phrases(getattr(assignment, "review_phrases", None))
-        if selected_phrases:
-            lines.append("<b>Фразы для отзыва:</b> " + html.escape(self._format_review_phrases_text(selected_phrases)))
         lines.extend(
             [
-                (
-                    '1. Введите токен в <a href="'
-                    f"{_QPILKA_EXTENSION_URL}"
-                    '">расширении для браузера Chrome / Яндекс Qpilka</a>:'
-                ),
+                "Скопируйте токен ниже в расширение Qpilka.",
                 f"<code>{review_token}</code>",
-                "2. Следуйте подсказкам расширения и отправьте токен-подтверждение отзыва сюда.",
+                (
+                    'Расширение покажет, какой отзыв оставить на WB. '
+                    '<a href="'
+                    f"{_QPILKA_EXTENSION_URL}"
+                    '">Открыть расширение для Chrome / Яндекс</a>.'
+                ),
+                "Поставьте 5 звезд и добавьте обязательные фразы.",
+                "После публикации расширение выдаст токен-подтверждение.",
+                "Вернитесь сюда и нажмите кнопку ниже.",
             ]
         )
+        if selected_phrases:
+            lines.append(
+                "<b>Обязательные фразы:</b> " + html.escape(self._format_review_phrases_text(selected_phrases))
+            )
         return "\n".join(lines)
 
     @staticmethod
@@ -7908,6 +8019,53 @@ class TelegramWebhookRuntime:
                 error_message=str(exc)[:300],
             )
 
+    def _record_update_metrics(
+        self,
+        update: object,
+        *,
+        handler: str,
+        outcome: str,
+        observed_at: datetime,
+    ) -> None:
+        update_type = self._telegram_update_type(update)
+        labels = {
+            "update_type": update_type,
+            "handler": handler,
+            "outcome": outcome,
+        }
+        self._record_metric(TELEGRAM_UPDATE_RECEIVED_METRIC, labels)
+        delivery_timestamp = self._telegram_update_timestamp(update)
+        if delivery_timestamp is None:
+            return
+        lag_seconds = max(0.0, (observed_at - delivery_timestamp).total_seconds())
+        self._record_metric(TELEGRAM_UPDATE_DELIVERY_LAG_METRIC, labels, value=lag_seconds)
+
+    def _record_metric(self, name: str, labels: dict[str, str], value: float = 1.0) -> None:
+        if not self._monitoring_recorder:
+            return
+        self._monitoring_recorder.record(name, labels, value)
+
+    def _telegram_update_type(self, update: object) -> str:
+        if getattr(update, "callback_query", None) is not None:
+            return "callback_query"
+        if getattr(update, "message", None) is not None:
+            return "message"
+        return "unknown"
+
+    def _telegram_update_timestamp(self, update: object) -> datetime | None:
+        message = getattr(update, "message", None)
+        if message is None:
+            callback_query = getattr(update, "callback_query", None)
+            message = getattr(callback_query, "message", None)
+        raw_date = getattr(message, "date", None)
+        if isinstance(raw_date, datetime):
+            if raw_date.tzinfo is None:
+                return raw_date.replace(tzinfo=UTC)
+            return raw_date.astimezone(UTC)
+        if isinstance(raw_date, (int, float)):
+            return datetime.fromtimestamp(raw_date, tz=UTC)
+        return None
+
     def _health_payload(self) -> dict[str, Any]:
         payload = {
             "service": "bot_api",
@@ -7956,7 +8114,8 @@ class TelegramWebhookRuntime:
     def _build_webhook_url(self) -> str:
         if not self._settings.webhook_base_url:
             raise ValueError(
-                "WEBHOOK_BASE_URL is required for webhook runtime (example: https://158.160.187.114:8443)."
+                "WEBHOOK_BASE_URL is required when TELEGRAM_UPDATE_MODE=webhook "
+                "(example: https://158.160.187.114:8443)."
             )
         return f"{self._settings.webhook_base_url.rstrip('/')}/{self._settings.webhook_path}"
 

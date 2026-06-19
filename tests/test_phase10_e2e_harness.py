@@ -983,7 +983,8 @@ async def test_phase10_e2e_buyer_review_prompt_and_submit_flow() -> None:
     purchase_events = await harness.callback(flow="buyer", action="assignments")
     purchase_text = "\n".join(_event_texts(purchase_events))
     assert "Нужно оставить отзыв" in purchase_text
-    assert any("✍️ Ввести токен отзыва" in _markup_labels(event) for event in purchase_events)
+    assert any("✍️ Оставить отзыв" in _markup_labels(event) for event in purchase_events)
+    assert not any("✍️ Ввести токен отзыва" in _markup_labels(event) for event in purchase_events)
 
     review_instruction_events = await harness.callback(
         flow="buyer",
@@ -991,9 +992,13 @@ async def test_phase10_e2e_buyer_review_prompt_and_submit_flow() -> None:
         entity_id="31",
     )
     review_instruction_text = "\n".join(_event_texts(review_instruction_events))
-    assert "Оставьте отзыв на 5 звезд на сайте ВБ" in review_instruction_text
-    assert "Фразы для отзыва:</b> в размер; не садятся после стирки" in review_instruction_text
-    assert any("✍️ Ввести токен отзыва" in _markup_labels(event) for event in review_instruction_events)
+    assert "Скопируйте токен ниже в расширение Qpilka." in review_instruction_text
+    assert "Расширение покажет, какой отзыв оставить на WB." in review_instruction_text
+    assert "Поставьте 5 звезд и добавьте обязательные фразы." in review_instruction_text
+    assert "После публикации расширение выдаст токен-подтверждение." in review_instruction_text
+    assert "Вернитесь сюда и нажмите кнопку ниже." in review_instruction_text
+    assert "Обязательные фразы:</b> в размер; не садятся после стирки" in review_instruction_text
+    assert any("✅ У меня есть токен подтверждения" in _markup_labels(event) for event in review_instruction_events)
 
     review_prompt_events = await harness.callback(
         flow="buyer",
@@ -1001,7 +1006,8 @@ async def test_phase10_e2e_buyer_review_prompt_and_submit_flow() -> None:
         entity_id="31",
     )
     assert any(
-        "Вставьте токен из расширения следующим сообщением ниже." in text for text in _event_texts(review_prompt_events)
+        "Вставьте токен-подтверждение, который выдало расширение после публикации отзыва." in text
+        for text in _event_texts(review_prompt_events)
     )
 
     payload_events = await harness.text("WzU1Mjg5MjUzMiwiMjAyNi0wMy0xOFQxMDozMDowMFoiLDUsImdyZWF0Il0=")

@@ -1,8 +1,9 @@
 bot_token: '__SUPPORT_BOT_TELEGRAM_BOT_TOKEN__'
 staffchat_id: '__SUPPORT_BOT_STAFFCHAT_ID__'
 staffchat_type: 'telegram'
-staffchat_parse_mode: 'MarkdownV2'
+staffchat_parse_mode: 'HTML'
 owner_id: '__SUPPORT_BOT_OWNER_ID__'
+yc_folder_id: '__YC_FOLDER_ID__'
 
 spam_cant_msg: 5
 spam_time: 300000

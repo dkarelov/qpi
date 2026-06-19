@@ -50,6 +50,31 @@ def test_bot_api_settings_reads_comma_separated_proxy_urls_from_environment(monk
     )
 
 
+def test_bot_api_settings_defaults_to_polling_update_mode() -> None:
+    settings = BotApiSettings.model_validate(_base_settings())
+
+    assert settings.telegram_update_mode == "polling"
+
+
+def test_bot_api_settings_accepts_explicit_webhook_update_mode() -> None:
+    settings = BotApiSettings.model_validate(
+        _base_settings(
+            TELEGRAM_UPDATE_MODE="webhook",
+            WEBHOOK_BASE_URL="https://bot.example",
+        )
+    )
+
+    assert settings.telegram_update_mode == "webhook"
+
+
+def test_bot_api_settings_requires_webhook_base_url_only_for_webhook_mode() -> None:
+    polling = BotApiSettings.model_validate(_base_settings(TELEGRAM_UPDATE_MODE="polling", WEBHOOK_BASE_URL=""))
+
+    assert polling.telegram_update_mode == "polling"
+    with pytest.raises(ValidationError, match="WEBHOOK_BASE_URL is required"):
+        BotApiSettings.model_validate(_base_settings(TELEGRAM_UPDATE_MODE="webhook", WEBHOOK_BASE_URL=""))
+
+
 @pytest.mark.parametrize("raw_value", ["", "   "])
 def test_bot_api_settings_normalizes_blank_proxy_url_list(raw_value: str) -> None:
     settings = BotApiSettings.model_validate(_base_settings(TELEGRAM_API_PROXY_URLS=raw_value))

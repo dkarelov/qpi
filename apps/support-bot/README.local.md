@@ -62,7 +62,17 @@ This directory contains the qpi-owned overlay around the vendored upstream Teleg
 - The default qpi template currently ships with:
   - `auto_close_tickets: true`
   - `clean_replies: true`
+  - `staffchat_parse_mode: HTML`
   - no Telegram `language_code` field in the staff-facing ticket header
+- Staff-ticket formatting escapes user names, usernames, message body, and marketplace refs for the configured `staffchat_parse_mode`.
+- User success confirmation is gated on successful staff delivery plus `internalIds` recording. If delivery fails, the bot sends: `Не удалось отправить обращение в поддержку. Пожалуйста, попробуйте ещё раз через пару минут.`
+- Support forwarding emits custom metrics when `yc_folder_id` is configured:
+  - `qpi.support.ticket.staff_forward_attempt`
+  - `qpi.support.ticket.staff_forward_failure`
+  - `qpi.support.ticket.user_confirmation_sent`
+- Orphan open-ticket recovery:
+  - dry-run: `cd apps/support-bot/upstream && npm run build && npm run resend-orphan-tickets -- --dry-run --ticket-id T000006`
+  - apply: `cd apps/support-bot/upstream && npm run build && npm run resend-orphan-tickets -- --apply --ticket-id T000006`
 - If `support-bot.service` fails with `supportbot is missing dependency mongodb`, recover with compose-level sequencing instead of repeated blind restarts:
   - `docker compose ... up -d mongodb`
   - wait until `current-mongodb-1` is healthy
@@ -112,3 +122,5 @@ qpi-specific upstream patches currently in use:
 - ticket documents persist optional `username` and structured marketplace `context`.
 - staff-facing ticket headers include requester `telegram_id`, username, role, and marketplace refs.
 - file captions forwarded to staff reuse the same ticket-header formatting as text messages.
+- staff ticket delivery happens before user success confirmation, and failed delivery returns a temporary retry message.
+- orphan open tickets with empty `internalIds` can be resent with `resendOrphanTickets.js`.

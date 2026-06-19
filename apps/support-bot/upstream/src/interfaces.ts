@@ -103,6 +103,7 @@ export class Config {
   staffchat_id: string | number;
   staffchat_type: Messenger = Messenger.TELEGRAM;
   staffchat_parse_mode: ParseMode = ParseMode.MarkdownV2;
+  yc_folder_id: string = '';
   owner_id: string;
   spam_time: number = 5;
   parse_mode: string = ParseMode.MarkdownV2;
@@ -262,4 +263,3 @@ export enum Messenger {
   SIGNAL = 'signal',
   WEB = 'web',
 }
-

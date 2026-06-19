@@ -40,6 +40,13 @@ Last updated: 2026-03-26 UTC
 - `clean_replies: true` is the qpi default, so staff replies are sent as plain message text without greeting/signature wrappers.
 - `auto_close_tickets: true` is the qpi default, so a successful staff reply removes the ticket from `/open`.
 - Ticket headers sent to staff do not include Telegram `language_code`; that field was removed because it reflects Telegram client metadata, not the actual message language.
+- Staff-facing ticket messages use `staffchat_parse_mode`; the qpi template uses `HTML`, and all user-controlled header/body/context fields must be escaped for the actual outgoing parse mode.
+- A user-facing success confirmation is sent only after the staff-channel ticket is delivered and the returned staff message id is stored in `internalIds`.
+- If staff delivery or id recording fails, the user receives `Не удалось отправить обращение в поддержку. Пожалуйста, попробуйте ещё раз через пару минут.` instead of the success confirmation.
+- Support forwarding metrics:
+  - `qpi.support.ticket.staff_forward_attempt`
+  - `qpi.support.ticket.staff_forward_failure`
+  - `qpi.support.ticket.user_confirmation_sent`
 - Marketplace deep links use `/start` payloads shaped as `<role>_<topic>[_<ref>...]`, for example `seller_listing_L21_S11` or `buyer_purchase_P31_L21_S11`.
 - Support tickets persist optional marketplace context (`role`, `topic`, `refs`, `label`) and the latest deep-link context wins for the current open ticket.
 - Staff ticket headers must show ticket number, requester `telegram_id`, requester username when available, role, and attached marketplace refs.
@@ -52,6 +59,9 @@ Last updated: 2026-03-26 UTC
   - Mongo ping inside the compose stack.
 - If `support-bot.service` fails with `supportbot is missing dependency mongodb`, start `mongodb`, wait for health, then start `supportbot`; afterwards re-run `systemctl start support-bot.service` only as reconciliation.
 - Avoid concurrent manual remote builds on the support-bot VM. Kill stale rollout/build processes before retrying, or Docker/BuildKit can deadlock on containerd ref locks.
+- Orphan ticket recovery runs from the built support-bot app:
+  - dry-run: `node ./build/resendOrphanTickets.js --dry-run --ticket-id T000006`
+  - apply: `node ./build/resendOrphanTickets.js --apply --ticket-id T000006`
 
 ## Upstream update policy
 

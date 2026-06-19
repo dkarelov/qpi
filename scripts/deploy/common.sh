@@ -80,6 +80,19 @@ PY
   fi
 }
 
+qpi_validate_telegram_update_mode() {
+  local value="${1:-}"
+  case "${value}" in
+    polling|webhook)
+      return 0
+      ;;
+    *)
+      echo "TELEGRAM_UPDATE_MODE must be 'polling' or 'webhook'." >&2
+      exit 1
+      ;;
+  esac
+}
+
 qpi_configure_yc_cli() {
   if [[ -n "${YC_TOKEN:-}" ]]; then
     yc config set token "${YC_TOKEN}" >/dev/null

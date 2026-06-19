@@ -575,9 +575,10 @@ async def test_buyer_marketplace_flow_purchase_list_shows_reserved_and_pending_m
     labels = [button.text for row in screen.buttons for button in row]
     assert "Ввести токен-подтверждение" in labels
     assert "🚫 Отказаться от покупки" in labels
-    assert "✍️ Ввести токен отзыва" in labels
-    review_buttons = [button for row in screen.buttons for button in row if button.text == "✍️ Ввести токен отзыва"]
-    assert review_buttons[0].action == "submit_review_payload_input_prompt"
+    assert "✍️ Оставить отзыв" in labels
+    assert "✍️ Ввести токен отзыва" not in labels
+    review_buttons = [button for row in screen.buttons for button in row if button.text == "✍️ Оставить отзыв"]
+    assert review_buttons[0].action == "submit_review_payload_prompt"
 
 
 @pytest.mark.asyncio
@@ -600,10 +601,16 @@ async def test_buyer_marketplace_flow_review_instruction_shows_setup_token_befor
     assert isinstance(screen, ReplaceText)
     assert "<b>Отзыв</b>" in screen.text
     assert "<b>Покупка</b> · <code>P31</code>" in screen.text
-    assert "Оставьте отзыв на 5 звезд на сайте ВБ" in screen.text
-    assert "Фразы для отзыва:</b> плотная бумага; белая" in screen.text
+    assert "Скопируйте токен ниже в расширение Qpilka." in screen.text
+    assert "Расширение покажет, какой отзыв оставить на WB." in screen.text
+    assert "Поставьте 5 звезд и добавьте обязательные фразы." in screen.text
+    assert "После публикации расширение выдаст токен-подтверждение." in screen.text
+    assert "Вернитесь сюда и нажмите кнопку ниже." in screen.text
+    assert "Обязательные фразы:</b> плотная бумага; белая" in screen.text
     assert "<code>" in screen.text
-    review_buttons = [button for row in screen.buttons for button in row if button.text == "✍️ Ввести токен отзыва"]
+    review_buttons = [
+        button for row in screen.buttons for button in row if button.text == "✅ У меня есть токен подтверждения"
+    ]
     assert len(review_buttons) == 1
     assert review_buttons[0].action == "submit_review_payload_input_prompt"
     assert review_buttons[0].entity_id == "31"
@@ -629,7 +636,8 @@ def test_buyer_marketplace_flow_starts_sensitive_purchase_and_review_input_promp
     assert review_prompt.sensitive is True
     assert review_prompt.data == {"assignment_id": 31}
     assert isinstance(review_screen, ReplaceText)
-    assert "Токен отзыва" in review_screen.text
+    assert "Токен-подтверждение отзыва" in review_screen.text
+    assert "Вставьте токен-подтверждение, который выдало расширение после публикации отзыва." in review_screen.text
 
 
 @pytest.mark.asyncio
@@ -856,7 +864,7 @@ async def test_buyer_marketplace_flow_logs_direct_review_payload_rejection_witho
     assert log.event_name == "buyer_direct_review_payload_rejected"
     assert log.fields == {"telegram_update_id": 604, "reason": "payload_validation_error"}
     assert isinstance(reply, ReplyText)
-    assert "Токен отзыва не принят." in reply.text
+    assert "Токен-подтверждение отзыва не принят." in reply.text
     assert "review-payload-secret" not in str(result.effects)
     assert "secret review text" not in str(result.effects)
 

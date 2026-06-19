@@ -378,8 +378,12 @@ def test_buyer_review_instruction_contains_token_and_selected_phrases() -> None:
     token = text.split("<code>", maxsplit=1)[1].split("</code>", maxsplit=1)[0]
     decoded = json.loads(base64.b64decode(token).decode("utf-8"))
 
-    assert "Оставьте отзыв на 5 звезд на сайте ВБ" in text
-    assert "Фразы для отзыва:</b> в размер; не садятся после стирки" in text
+    assert "Скопируйте токен ниже в расширение Qpilka." in text
+    assert "Расширение покажет, какой отзыв оставить на WB." in text
+    assert "Поставьте 5 звезд и добавьте обязательные фразы." in text
+    assert "После публикации расширение выдаст токен-подтверждение." in text
+    assert "Вернитесь сюда и нажмите кнопку ниже." in text
+    assert "Обязательные фразы:</b> в размер; не садятся после стирки" in text
     assert decoded == [2, _TASK_UUID, 12345678, "в размер", "не садятся после стирки"]
 
 

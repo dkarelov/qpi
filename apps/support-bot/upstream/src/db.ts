@@ -84,6 +84,13 @@ export async function getTicketById(
   return result as ISupportee | null;
 };
 
+export async function getTicketByTicketId(
+  ticketId: string | number
+): Promise<ISupportee | null> {
+  const result = await Supportee.findOne({ ticketId });
+  return result as ISupportee | null;
+}
+
 export async function getTicketByInternalId (
   internalId: number
 ): Promise<ISupportee | null> {
@@ -92,6 +99,24 @@ export async function getTicketByInternalId (
   };
   const result = await Supportee.findOne(query);
   return result as ISupportee | null;
+}
+
+export async function listOpenTicketsWithoutInternalIds(
+  ticketIds?: Array<string | number>
+): Promise<ISupportee[]> {
+  const query: Record<string, any> = {
+    status: 'open',
+    $or: [
+      { internalIds: { $exists: false } },
+      { internalIds: null },
+      { internalIds: { $size: 0 } },
+    ],
+  };
+  if (ticketIds && ticketIds.length > 0) {
+    query.ticketId = { $in: ticketIds.map((ticketId) => Number(ticketId)) };
+  }
+  const result = await Supportee.find(query).sort({ ticketId: 1 });
+  return result as ISupportee[];
 }
 
 export async function getTicketByUserId (

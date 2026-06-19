@@ -4,13 +4,13 @@ Status: accepted
 
 ## Context
 
-The marketplace bot has accumulated buyer, seller, and admin behavior inside the webhook runtime. That made the runtime responsible for python-telegram-bot adaptation, user-facing Russian copy, prompt progression, button layout, domain calls, and domain error mapping at the same time.
+The marketplace bot has accumulated buyer, seller, and admin behavior inside the Telegram runtime. That made the runtime responsible for python-telegram-bot adaptation, user-facing Russian copy, prompt progression, button layout, domain calls, and domain error mapping at the same time.
 
 The first extraction, seller listing creation, showed the desired direction: role behavior can be tested through transport-neutral results while the runtime stays responsible for executing Telegram operations. The next planned slices are shared withdrawal handling, buyer marketplace behavior, and admin exceptions.
 
 ## Decision
 
-Marketplace Telegram behavior is split between role-flow modules and the webhook runtime.
+Marketplace Telegram behavior is split between role-flow modules and the Telegram runtime.
 
 Role-flow modules own:
 
@@ -20,13 +20,13 @@ Role-flow modules own:
 - domain error mapping;
 - decisions about which Telegram-visible effect should happen next.
 
-The webhook runtime remains the python-telegram-bot adapter. It receives Telegram updates, normalizes them into role-flow inputs, executes shared transport effects, persists prompt state, wires dependencies, and keeps python-telegram-bot types out of role-flow modules.
+The Telegram runtime remains the python-telegram-bot adapter. It receives Telegram updates, normalizes them into role-flow inputs, executes shared transport effects, persists prompt state, wires dependencies, and keeps python-telegram-bot types out of role-flow modules.
 
 Shared transport effects are the seam between role-flow modules and the runtime. They describe Telegram-visible intents, prompt state, callback feedback, source-message deletion, and logging without exposing python-telegram-bot types.
 
 ## Considered Options
 
-Keep all role behavior in the webhook runtime.
+Keep all role behavior in the Telegram runtime.
 
 This preserves short-term simplicity but keeps low locality: small UX or domain-flow changes require editing a large adapter file and testing through runtime internals.
 

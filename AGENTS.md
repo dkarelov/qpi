@@ -104,7 +104,8 @@ Companion support-bot (current decision boundary):
 - Russian UX text,
 - no Signal, web chat, LLM, or backup automation in V1,
 - normal private Telegram group is accepted for `staffchat_id`; supergroup is optional,
-- default qpi support-bot template ships with `clean_replies=true` and `auto_close_tickets=true`,
+- default qpi support-bot template ships with `clean_replies=true`, `auto_close_tickets=true`, and `staffchat_parse_mode=HTML`,
+- support-bot user success confirmation means the staff ticket was delivered and the staff message id was recorded in `internalIds`,
 - marketplace buyer/seller screens may deep-link into the support bot when `SUPPORT_BOT_USERNAME` is configured,
 - support-bot tickets are one shared queue and carry actor/entity context from the marketplace bot instead of role-based routing.
 
@@ -112,7 +113,7 @@ Companion support-bot (current decision boundary):
 
 Runtime services:
 
-- `services/bot_api`: always-on webhook bot runtime on VM.
+- `services/bot_api`: always-on marketplace bot runtime on VM; long polling is the default Telegram update intake mode.
 - `services/daily_report_scrapper`: Cloud Function, hourly WB report sync.
 - `services/order_tracker`: Cloud Function, 5-minute assignment lifecycle orchestrator.
 - `services/blockchain_checker`: Cloud Function, 5-minute seller collateral top-up matcher.
@@ -126,9 +127,9 @@ Shared layers:
 - `libs/integrations/*`: WB/TonAPI/FX clients.
 - `libs/config/settings.py`: runtime settings contracts.
 - `libs/logging/setup.py`: YC-compatible structured logging.
-- `services/bot_api/seller_listing_creation_flow.py`: transport-neutral seller listing creation flow shared by button UX and `/listing_create`; the webhook runtime maps its effects to Telegram.
-- `services/bot_api/transport_effects.py`: shared transport-neutral effect vocabulary for role flows; `TelegramWebhookRuntime` remains the Telegram adapter that executes those effects. `SetPrompt.role`, when set, intentionally overrides executor `default_role` for the stored prompt context.
-- `services/bot_api/withdrawal_flow.py`: shared transport-neutral seller/buyer withdrawal request creation and cancellation flow; the webhook runtime supplies role-specific account and TON validation adapters.
+- `services/bot_api/seller_listing_creation_flow.py`: transport-neutral seller listing creation flow shared by button UX and `/listing_create`; the Telegram runtime maps its effects to Telegram.
+- `services/bot_api/transport_effects.py`: shared transport-neutral effect vocabulary for role flows; `TelegramWebhookRuntime` remains the named Telegram adapter that executes those effects in polling or explicit webhook mode. `SetPrompt.role`, when set, intentionally overrides executor `default_role` for the stored prompt context.
+- `services/bot_api/withdrawal_flow.py`: shared transport-neutral seller/buyer withdrawal request creation and cancellation flow; the Telegram runtime supplies role-specific account and TON validation adapters.
 - `services/bot_api/buyer_marketplace_flow.py`: transport-neutral buyer marketplace and purchase lifecycle flow for dashboard, knowledge screens, saved shops, shop catalog, announcement detail, reservation, proof/review submission, and purchase cancellation screens.
 - `services/bot_api/admin_exceptions_flow.py`: transport-neutral admin exception flow for blocked buyer review confirmations, seller deposit anomalies, manual review verification, deposit attach, and expired invoice cancellation prompts.
 - `services/bot_api/telegram_notifications.py`: bot-runtime-only Telegram notification renderer; shared outbox enqueue/claim logic stays in `libs/domain/notifications.py`.
@@ -227,6 +228,12 @@ Persistence and schema:
   - `[2, task_uuid, wb_product_id, review_phrase_1?, review_phrase_2?]`, where phrases are omitted when the seller did not provide them.
 - Buyer submits review confirmation token (base64 JSON array):
   - `[task_uuid, reviewed_at, review_score, review_text]`, where `reviewed_at` is an ISO datetime; timezone-bearing values are accepted and normalized to UTC.
+- Buyer review UX is instruction-first:
+  - review-required notifications and purchase rows use `✍️ Оставить отзыв`,
+  - that action opens review instructions before the paste prompt,
+  - instructions tell the buyer to copy the setup token into Qpilka, publish a 5-star WB review with required phrases, then return with the extension-issued confirmation token,
+  - the paste prompt button is `✅ У меня есть токен подтверждения`,
+  - the paste prompt title is `Токен-подтверждение отзыва`.
 - Order and review confirmation tokens are compact-only; token type and `wb_product_id` are derived from the locked assignment and are not accepted in confirmation payloads.
 - Transitional compatibility: review confirmation also accepts already-generated no-type legacy tokens shaped as `[task_uuid, wb_product_id, reviewed_at, review_score, review_text]`; the embedded `wb_product_id` must match the locked assignment.
 - Verification token must be submitted within 4 hours of reservation.
@@ -489,7 +496,8 @@ Transitions:
 - Marketplace deploy workflows now run an explicit predeploy gate before rollout and publish immutable runtime/function artifacts before the deploy step consumes them.
 - Runtime release archives are built from tracked repository files only; ignored local files such as `.env*`, Terraform state/vars, and `.artifacts` must never enter deploy artifacts.
 - Cloud Function bundles must not contain tokenized GitHub URLs; private Git dependencies are resolved during bundling into a local wheelhouse, and bundled requirements install from those local wheels.
-- Marketplace bot runtime is webhook-based. Companion support-bot runtime uses long polling and remains private-only.
+- Marketplace bot runtime uses Telegram long polling by default through the configured outbound Telegram proxies. Webhook mode remains available only as an explicit fallback with `TELEGRAM_UPDATE_MODE=webhook` and valid webhook settings.
+- Companion support-bot runtime uses long polling and remains private-only.
 - Seller and buyer slash-command adapters (`services/bot_api/seller_handlers.py`, `services/bot_api/buyer_handlers.py`, in-chat command dispatch, and `--seller-command` / `--buyer-command`) are supported interfaces, not legacy-only tooling; changes to shared bot flows must update these adapters in the same change whenever the operation remains available by command.
 - Support-bot images are now published to a dedicated Yandex Container Registry repository and pulled on the VM during rollout instead of being copied as `docker save` archives.
 - `SUPPORT_BOT_USERNAME` is an optional marketplace bot runtime env var; when set, seller/buyer screens can build deep links into the support-bot using the public ref contract above.
@@ -655,16 +663,23 @@ Rules:
 - DB VM security group allows SSH from the private runner security group specifically so `reset_remote_test_dbs.sh` can recreate disposable test DBs through the DB-admin path.
 - Support-bot security group allows SSH from the private runner SG and the qpi bot SG; there is no direct public SSH path for the support-bot VM.
 - Support-bot security group also keeps TCP/22 open to `0.0.0.0/0` for Yandex instance-group SSH health checks; that does not create direct public access because the VM has no public IP.
-- `scripts/deploy/runtime.sh` expects `BOT_WEBHOOK_SECRET_TOKEN` in the caller environment even though the live bot env file stores the value under `WEBHOOK_SECRET_TOKEN`; map the name explicitly when reusing values from `/etc/qpi/bot.env`.
+- `scripts/deploy/runtime.sh` defaults to `TELEGRAM_UPDATE_MODE=polling`; in that mode it does not require `BOT_WEBHOOK_SECRET_TOKEN` and does not rewrite an existing fallback `WEBHOOK_SECRET_TOKEN`.
+- `BOT_WEBHOOK_SECRET_TOKEN` is required only for an intentional `TELEGRAM_UPDATE_MODE=webhook` rollback/fallback rollout; the live bot env file stores it under `WEBHOOK_SECRET_TOKEN`.
 - `TELEGRAM_API_PROXY_URLS` is required for production marketplace bot outbound Telegram Bot API calls. It is a comma/newline-separated ordered list of HTTP(S) proxy URLs; SOCKS URLs are intentionally rejected because runtime dependencies do not include SOCKS support. Keep values in runtime env / GitHub Secrets only; do not commit proxy credentials.
 - `TELEGRAM_API_PROXY_URL` is no longer supported. Deploy merge deletes the stale key from `/etc/qpi/bot.env`, and runtime settings reject a non-empty legacy value.
 - The production Bot API retry order is proxy 1, proxy 2, proxy 1, proxy 2, proxy 1, proxy 2. Transport failures and HTTP 5xx are retried; semantic Telegram errors such as 400, 401, 403, and 429 are not retried. Ambiguous transport retries can duplicate a Telegram operation if Telegram processed the original request but the response was lost.
 - Telegram proxy metrics are written to Yandex Monitoring with the bot VM service-account IAM token from metadata:
   - `qpi.telegram.proxy.request_attempt`,
   - `qpi.telegram.proxy.request_exhausted`.
+- Telegram update/runtime metrics are written to Yandex Monitoring when `YC_FOLDER_ID` is configured:
+  - `qpi.telegram.update.received` with labels `update_type`, `handler`, `outcome`,
+  - `qpi.telegram.update.delivery_lag_seconds`,
+  - `qpi.telegram.callback.answer_failure`.
 - Yandex Monitoring alerts in the `qpilka` folder must be attached to notification channel `admin`:
   - `qpi-telegram-proxy-failure-rate`: 24h window, per proxy, alarm when failures / attempts `> 0.5`, with at least 10 attempts for that proxy.
   - `qpi-telegram-proxy-request-exhausted`: 10m window, alarm when exhausted requests are `> 0`.
+  - `qpi-telegram-update-lag`: 10m window, alarm when update delivery lag p95 is `> 30s`.
+  - `qpi-telegram-callback-answer-failure`: 10m window, alarm when callback answer failures are `> 0`.
 - Runtime deploys hard-gate on Telegram `getMe` by default. `QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE=1` is the explicit emergency bypass for Telegram/proxy outages; it must not be used to bypass local service health or schema checks.
 - The support-bot deploy workflow currently reuses `BOT_VM_SSH_PRIVATE_KEY`; keep that secret valid for both bot and support-bot VM access unless a separate support-bot key is intentionally introduced and verified.
 
@@ -831,7 +846,8 @@ Core correlation fields:
 
 Common checks:
 
-- webhook handler failures in bot runtime,
+- Telegram update handler failures in bot runtime,
+- Telegram update lag and callback answer failures in Yandex Monitoring,
 - WB API errors in scrapper/tracker,
 - withdrawal backlog and stuck statuses,
 - payout send/reject events by request id and tx hash.
@@ -845,7 +861,14 @@ Runbook shortcuts:
   - verify outbound Telegram API reachability from the bot VM with the authenticated `getMe` Bot API call, loading `/etc/qpi/bot.env` and trying each entry in `TELEGRAM_API_PROXY_URLS`,
   - if one proxy works and another fails, keep the proxy list in place and inspect Yandex Monitoring metric `qpi.telegram.proxy.request_attempt` by `proxy_index`; if every Telegram/proxy path is down and an emergency deploy is still required, set `QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE=1`,
   - do not treat a reachable general HTTPS target such as `google.com` or `ya.ru` as proof that Telegram API egress works,
-  - verify Telegram `getWebhookInfo` URL/secret alignment.
+  - in normal polling mode, verify Telegram `getWebhookInfo` has an empty URL and no growing `pending_update_count`,
+  - in explicit webhook fallback mode, verify Telegram `getWebhookInfo` URL/secret alignment.
+- Support-bot orphan ticket:
+  - a user success confirmation means staff delivery succeeded and the staff message id was recorded in `internalIds`,
+  - if staff delivery fails, the user receives a temporary failure message instead of `Спасибо. Мы получили...`,
+  - inspect logs for `support_ticket_staff_forward_failed` and Monitoring metric `qpi.support.ticket.staff_forward_failure`,
+  - dry-run orphan recovery from the deployed support-bot app: `node ./build/resendOrphanTickets.js --dry-run --ticket-id T000006`,
+  - apply recovery after confirming the dry-run target: `node ./build/resendOrphanTickets.js --apply --ticket-id T000006`.
 - CF degradation:
   - inspect logs for `daily_report_scrapper`, `order_tracker`, `blockchain_checker`,
   - verify DB connectivity and runtime env key alignment.

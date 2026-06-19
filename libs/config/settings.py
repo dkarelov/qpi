@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from decimal import Decimal
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
@@ -50,10 +50,11 @@ class BaseAppSettings(BaseSettings):
 
 
 class BotApiSettings(BaseAppSettings):
-    """Settings for the webhook bot API process."""
+    """Settings for the marketplace bot API process."""
 
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_bot_username: str = Field(default="qpi_marketplace_bot", alias="TELEGRAM_BOT_USERNAME")
+    telegram_update_mode: Literal["polling", "webhook"] = Field(default="polling", alias="TELEGRAM_UPDATE_MODE")
     telegram_api_proxy_urls: Annotated[tuple[str, ...], NoDecode] = Field(
         default_factory=tuple,
         alias="TELEGRAM_API_PROXY_URLS",
@@ -224,6 +225,10 @@ class BotApiSettings(BaseAppSettings):
 
     @model_validator(mode="after")
     def validate_webhook_tls_pair(self):
+        if self.telegram_update_mode != "webhook":
+            return self
+        if not self.webhook_base_url:
+            raise ValueError("WEBHOOK_BASE_URL is required when TELEGRAM_UPDATE_MODE=webhook")
         if bool(self.webhook_tls_cert_path) != bool(self.webhook_tls_key_path):
             raise ValueError(
                 "WEBHOOK_TLS_CERT_PATH and WEBHOOK_TLS_KEY_PATH must be set together",

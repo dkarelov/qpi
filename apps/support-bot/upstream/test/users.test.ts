@@ -9,6 +9,21 @@ jest.mock('../src/middleware', () => ({
   sendMessage: mockSendMessage,
   reply: mockReply,
   strictEscape: jest.fn((str) => str),
+  escapeForParseMode: jest.fn((str, parseMode) => {
+    const value = (str ?? '').toString();
+    if (parseMode === 'HTML') {
+      return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+    if (parseMode === 'MarkdownV2') {
+      return value.replace(/([[\]()_*~`>#+\-=\|{}.!\\])/g, '\\$1');
+    }
+    return value;
+  }),
 }));
 
 jest.mock('../src/db', () => ({
@@ -37,8 +52,10 @@ jest.mock('../src/cache', () => ({
     spam_time: 5000,
     staffchat_id: 'staff123',
     staffchat_type: 'telegram',
+    staffchat_parse_mode: 'HTML',
     allow_private: false,
     parse_mode: 'MarkdownV2',
+    yc_folder_id: '',
   },
   userId: '',
   ticketIDs: [],
@@ -52,6 +69,8 @@ jest.mock('../src/addons/llm', () => ({
 
 jest.mock('fancy-log', () => ({
   info: jest.fn(),
+  error: jest.fn(),
+  warn: jest.fn(),
 }));
 
 import * as users from '../src/users';
@@ -69,7 +88,10 @@ describe('Users Module', () => {
   });
 
   describe('chat', () => {
-    const createMockContext = (text: string): Context => ({
+    const createMockContext = (
+      text: string,
+      userOverrides: Partial<Context['message']['from']> = {},
+    ): Context => ({
       message: {
         text,
         from: {
@@ -78,6 +100,7 @@ describe('Users Module', () => {
           username: 'john_doe',
           is_bot: false,
           language_code: 'en',
+          ...userOverrides,
         },
         chat: {
           id: 'chat123',
@@ -154,6 +177,7 @@ describe('Users Module', () => {
         .mockResolvedValueOnce(mockTicket);
       mockAdd.mockResolvedValue(1);
       mockSendMessage.mockResolvedValue('msg_id_123');
+      mockAddIdAndName.mockResolvedValue(mockTicket);
 
       await users.chat(ctx, { id: 'chat123' });
 
@@ -162,28 +186,32 @@ describe('Users Module', () => {
       expect(cache.ticketSent['user123']).toBe(0);
       expect(mockAdd).toHaveBeenCalledWith('user123', 'open', 'general', 'telegram');
       
-      // Should send confirmation message
+      // Should send ticket to staff first
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        'staff123',
+        'telegram',
+        expect.stringContaining('#T001001'),
+        { parse_mode: 'HTML' },
+      );
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        'staff123',
+        'telegram',
+        expect.stringContaining('Telegram ID: user123'),
+        { parse_mode: 'HTML' },
+      );
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        'staff123',
+        'telegram',
+        expect.stringContaining('Коды: P31, L21, S11'),
+        { parse_mode: 'HTML' },
+      );
+
+      // Confirmation is sent only after the staff message id is recorded.
       expect(mockSendMessage).toHaveBeenCalledWith(
         'chat123',
         'telegram',
-        expect.stringContaining('Thank you for contacting us')
-      );
-      
-      // Should send ticket to staff
-      expect(mockSendMessage).toHaveBeenCalledWith(
-        'staff123',
-        'telegram',
-        expect.stringContaining('#T001001')
-      );
-      expect(mockSendMessage).toHaveBeenCalledWith(
-        'staff123',
-        'telegram',
-        expect.stringContaining('Telegram ID: user123')
-      );
-      expect(mockSendMessage).toHaveBeenCalledWith(
-        'staff123',
-        'telegram',
-        expect.stringContaining('Коды: P31, L21, S11')
+        expect.stringContaining('Thank you for contacting us'),
+        {},
       );
       expect(mockAddIdAndName).toHaveBeenCalledWith(
         1001,
@@ -192,6 +220,74 @@ describe('Users Module', () => {
         'john_doe',
         ctx.session.pendingSupportContext,
       );
+      expect(mockSendMessage.mock.invocationCallOrder[0]).toBeLessThan(
+        mockAddIdAndName.mock.invocationCallOrder[0],
+      );
+      expect(mockAddIdAndName.mock.invocationCallOrder[0]).toBeLessThan(
+        mockSendMessage.mock.invocationCallOrder[1],
+      );
+    });
+
+    it('should escape staff tickets against staffchat_parse_mode', async () => {
+      const ctx = createMockContext('Need <help> with _underscore_ and [link](x)', {
+        first_name: 'Ann_(test)<script>',
+        username: 'ann_user(test)',
+      });
+      const mockTicket = {
+        ticketId: 1006,
+        userid: 'user123',
+        username: 'ann_user(test)',
+        context: null,
+        messenger: 'telegram',
+        status: 'open',
+        category: 'general',
+      };
+
+      mockGetTicketByUserId.mockResolvedValue(mockTicket);
+      mockSendMessage.mockResolvedValue('msg_id_128');
+      mockAddIdAndName.mockResolvedValue(mockTicket);
+
+      await users.chat(ctx, { id: 'chat123' });
+
+      const staffCall = mockSendMessage.mock.calls.find((call) => call[0] === 'staff123');
+      expect(staffCall).toBeTruthy();
+      expect(staffCall[2]).toContain('Ann_(test)&lt;script&gt;');
+      expect(staffCall[2]).toContain('Need &lt;help&gt; with _underscore_ and [link](x)');
+      expect(staffCall[3]).toEqual({ parse_mode: 'HTML' });
+    });
+
+    it('should not send success confirmation when staff forwarding fails', async () => {
+      const ctx = createMockContext('I need help');
+      const mockTicket = {
+        ticketId: 1007,
+        userid: 'user123',
+        username: 'john_doe',
+        context: null,
+        messenger: 'telegram',
+        status: 'open',
+        category: 'general',
+      };
+
+      mockGetTicketByUserId.mockResolvedValue(mockTicket);
+      mockAdd.mockResolvedValue(1);
+      mockSendMessage
+        .mockRejectedValueOnce(Object.assign(new Error('Bad Request: cannot parse entities'), {
+          description: 'Bad Request: cannot parse entities',
+        }))
+        .mockResolvedValueOnce('failure_notice');
+
+      await users.chat(ctx, { id: 'chat123' });
+
+      expect(mockAddIdAndName).not.toHaveBeenCalled();
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        'chat123',
+        'telegram',
+        'Не удалось отправить обращение в поддержку. Пожалуйста, попробуйте ещё раз через пару минут.',
+        {},
+      );
+      expect(
+        mockSendMessage.mock.calls.some((call) => String(call[2]).includes('Thank you for contacting us')),
+      ).toBe(false);
     });
 
     it('should handle spam protection for repeated messages', async () => {
@@ -211,6 +307,7 @@ describe('Users Module', () => {
       
       mockGetTicketByUserId.mockResolvedValue(mockTicket);
       mockSendMessage.mockResolvedValue('msg_id_124');
+      mockAddIdAndName.mockResolvedValue(mockTicket);
 
       await users.chat(ctx, { id: 'chat123' });
 
@@ -220,7 +317,8 @@ describe('Users Module', () => {
       expect(mockSendMessage).toHaveBeenCalledWith(
         'staff123',
         'telegram',
-        expect.stringContaining('#T001002')
+        expect.stringContaining('#T001002'),
+        { parse_mode: 'HTML' },
       );
     });
 
@@ -238,7 +336,7 @@ describe('Users Module', () => {
       expect(mockSendMessage).toHaveBeenCalledWith(
         'chat123',
         'telegram',
-        'You are sending too many messages'
+        'You are sending too many messages',
       );
     });
 
@@ -258,6 +356,7 @@ describe('Users Module', () => {
       
       mockGetTicketByUserId.mockResolvedValue(mockTicket);
       mockSendMessage.mockResolvedValue('msg_id_125');
+      mockAddIdAndName.mockResolvedValue(mockTicket);
 
       await users.chat(ctx, { id: 'chat123' });
 
@@ -265,7 +364,8 @@ describe('Users Module', () => {
       expect(mockSendMessage).toHaveBeenCalledWith(
         'staff123',
         'telegram',
-        expect.stringContaining('#T001003')
+        expect.stringContaining('#T001003'),
+        { parse_mode: 'HTML' },
       );
       
       expect(mockSendMessage).toHaveBeenCalledWith(

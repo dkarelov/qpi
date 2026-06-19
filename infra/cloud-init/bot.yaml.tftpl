@@ -34,11 +34,12 @@ write_files:
       WEBHOOK_SECRET_TOKEN=${bot_webhook_secret_token}
       WEBHOOK_TLS_CERT_PATH=/etc/qpi/webhook.crt
       WEBHOOK_TLS_KEY_PATH=/etc/qpi/webhook.key
-      WEBHOOK_SET_ENABLED=true
+      WEBHOOK_SET_ENABLED=false
       BOT_HEALTH_HOST=0.0.0.0
       BOT_HEALTH_PORT=${bot_health_port}
       TELEGRAM_BOT_TOKEN=
       TELEGRAM_BOT_USERNAME=${telegram_bot_username}
+      TELEGRAM_UPDATE_MODE=polling
       TELEGRAM_API_PROXY_URLS=
       SUPPORT_BOT_USERNAME=${support_bot_username}
       TOKEN_CIPHER_KEY=${token_cipher_key}
@@ -56,7 +57,7 @@ write_files:
     permissions: "0644"
     content: |
       [Unit]
-      Description=QPI Telegram Bot Webhook Runtime
+      Description=QPI Telegram Bot Runtime
       After=network-online.target
       Wants=network-online.target
       ConditionPathExists=/opt/qpi/current/.venv/bin/python

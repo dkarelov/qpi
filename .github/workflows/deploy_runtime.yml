@@ -190,7 +190,6 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_API_PROXY_URLS: ${{ secrets.TELEGRAM_API_PROXY_URLS }}
       TOKEN_CIPHER_KEY: ${{ secrets.TOKEN_CIPHER_KEY }}
-      BOT_WEBHOOK_SECRET_TOKEN: ${{ secrets.BOT_WEBHOOK_SECRET_TOKEN }}
       DEPLOY_BASE_SHA: ${{ needs.resolve-target.outputs.target_sha }}^
       DEPLOY_HEAD_SHA: ${{ needs.resolve-target.outputs.target_sha }}
     steps:
@@ -230,7 +229,6 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_API_PROXY_URLS: ${{ secrets.TELEGRAM_API_PROXY_URLS }}
       TOKEN_CIPHER_KEY: ${{ secrets.TOKEN_CIPHER_KEY }}
-      BOT_WEBHOOK_SECRET_TOKEN: ${{ secrets.BOT_WEBHOOK_SECRET_TOKEN }}
       DEPLOY_BASE_SHA: ${{ needs.resolve-target.outputs.target_sha }}^
       DEPLOY_HEAD_SHA: ${{ needs.resolve-target.outputs.target_sha }}
     steps:
@@ -323,7 +321,6 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_API_PROXY_URLS: ${{ secrets.TELEGRAM_API_PROXY_URLS }}
       TOKEN_CIPHER_KEY: ${{ secrets.TOKEN_CIPHER_KEY }}
-      BOT_WEBHOOK_SECRET_TOKEN: ${{ secrets.BOT_WEBHOOK_SECRET_TOKEN }}
       BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
       DEPLOY_BASE_SHA: ${{ needs.resolve-target.outputs.target_sha }}^
       DEPLOY_HEAD_SHA: ${{ needs.resolve-target.outputs.target_sha }}
@@ -385,7 +382,6 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_API_PROXY_URLS: ${{ secrets.TELEGRAM_API_PROXY_URLS }}
       TOKEN_CIPHER_KEY: ${{ secrets.TOKEN_CIPHER_KEY }}
-      BOT_WEBHOOK_SECRET_TOKEN: ${{ secrets.BOT_WEBHOOK_SECRET_TOKEN }}
       BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
       DEPLOY_BASE_SHA: ${{ needs.resolve-target.outputs.target_sha }}^
       DEPLOY_HEAD_SHA: ${{ needs.resolve-target.outputs.target_sha }}
