@@ -260,6 +260,7 @@ jobs:
       - predeploy-runtime-hotfix
     if: >-
       ${{
+        always() &&
         needs.predeploy-runtime-release.result == 'success' ||
         needs.predeploy-runtime-hotfix.result == 'success'
       }}
@@ -304,7 +305,10 @@ jobs:
       - build-runtime-artifact
     if: >-
       ${{
+        always() &&
         needs.resolve-target.outputs.deploy_mode == 'hotfix' &&
+        needs.predeploy-runtime-hotfix.result == 'success' &&
+        needs.build-runtime-artifact.result == 'success' &&
         github.event.inputs.preflight_only != 'true'
       }}
     env:
@@ -362,7 +366,10 @@ jobs:
       - build-runtime-artifact
     if: >-
       ${{
+        always() &&
         needs.resolve-target.outputs.deploy_mode == 'release-grade' &&
+        needs.predeploy-runtime-release.result == 'success' &&
+        needs.build-runtime-artifact.result == 'success' &&
         github.event.inputs.preflight_only != 'true'
       }}
     concurrency:
