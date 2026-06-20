@@ -126,7 +126,7 @@ async def handler(message: Message, manager: Manager, redis: RedisStorage, album
             logger.exception("Support topic staff Telegram API delivery failed for thread_id=%s", message.message_thread_id)
             text = manager.text_message.get("message_not_sent")
 
-    except (Exception,):
+    except Exception:
         logger.exception("Support topic staff message handler failed for thread_id=%s", message.message_thread_id)
         text = manager.text_message.get("message_not_sent")
 

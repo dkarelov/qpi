@@ -24,7 +24,6 @@ class UserData:
     """Persistent support user record."""
 
     message_thread_id: int | None
-    message_silent_id: int | None
     message_silent_mode: bool
     id: int
     full_name: str
@@ -89,7 +88,6 @@ async def create_schema(pool: Pool, schema: str = "support_bot") -> None:
             CREATE TABLE IF NOT EXISTS {users} (
                 id BIGINT PRIMARY KEY,
                 message_thread_id BIGINT,
-                message_silent_id BIGINT,
                 message_silent_mode BOOLEAN NOT NULL DEFAULT FALSE,
                 full_name TEXT NOT NULL DEFAULT '',
                 username TEXT,
@@ -109,6 +107,7 @@ async def create_schema(pool: Pool, schema: str = "support_bot") -> None:
             f"ALTER TABLE {users} ADD COLUMN IF NOT EXISTS support_topic TEXT NOT NULL DEFAULT 'generic'"
         )
         await conn.execute(f"ALTER TABLE {users} ADD COLUMN IF NOT EXISTS support_refs TEXT[] NOT NULL DEFAULT '{{}}'")
+        await conn.execute(f"ALTER TABLE {users} DROP COLUMN IF EXISTS message_silent_id")
         await conn.execute(
             f"CREATE UNIQUE INDEX IF NOT EXISTS users_thread_idx "
             f"ON {users} (message_thread_id) WHERE message_thread_id IS NOT NULL"
@@ -151,7 +150,6 @@ class RedisStorage:
     def _row_to_user(row: Record) -> UserData:
         return UserData(
             message_thread_id=row["message_thread_id"],
-            message_silent_id=row["message_silent_id"],
             message_silent_mode=row["message_silent_mode"],
             id=row["id"],
             full_name=row["full_name"],
@@ -184,14 +182,13 @@ class RedisStorage:
             await conn.execute(
                 f"""
                 INSERT INTO {self._table("users")} (
-                    id, message_thread_id, message_silent_id, message_silent_mode,
+                    id, message_thread_id, message_silent_mode,
                     full_name, username, state, is_banned, language_code, created_at, status,
                     support_role, support_topic, support_refs
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 ON CONFLICT (id) DO UPDATE SET
                     message_thread_id = EXCLUDED.message_thread_id,
-                    message_silent_id = EXCLUDED.message_silent_id,
                     message_silent_mode = EXCLUDED.message_silent_mode,
                     full_name = EXCLUDED.full_name,
                     username = EXCLUDED.username,
@@ -206,7 +203,6 @@ class RedisStorage:
                 """,
                 id_,
                 data.message_thread_id,
-                data.message_silent_id,
                 data.message_silent_mode,
                 data.full_name,
                 data.username,

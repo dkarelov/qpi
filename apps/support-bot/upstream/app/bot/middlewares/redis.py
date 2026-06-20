@@ -56,7 +56,6 @@ class RedisMiddleware(BaseMiddleware):
             user_redis = await redis.get_user(user.id)
             user_data = user_redis or UserData(
                 message_thread_id=None,
-                message_silent_id=None,
                 message_silent_mode=False,
                 is_banned=False,
                 id=user.id,

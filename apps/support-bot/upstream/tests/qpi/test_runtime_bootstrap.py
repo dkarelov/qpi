@@ -97,7 +97,77 @@ async def test_create_schema_uses_support_bot_schema() -> None:
     assert "support_role TEXT" in rendered
     assert "support_topic TEXT" in rendered
     assert "support_refs TEXT[]" in rendered
+    assert "message_silent_id BIGINT" not in rendered
+    assert "DROP COLUMN IF EXISTS message_silent_id" in rendered
     assert "public.users" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_user_ack_delete_is_scheduled_without_blocking(monkeypatch: pytest.MonkeyPatch) -> None:
+    from collections.abc import Coroutine
+    from typing import Any
+
+    from app.bot.support_runtime import AiogramSupportTopicTelegram
+    from app.config import AIConfig, BotConfig, Config, DatabaseConfig, PolicyConfig, RedisConfig, TelegramConfig
+
+    sleeps: list[int] = []
+    scheduled: list[Coroutine[Any, Any, None]] = []
+
+    async def fake_sleep(seconds: int) -> None:
+        sleeps.append(seconds)
+
+    def fake_create_task(coro: Coroutine[Any, Any, None]) -> object:
+        scheduled.append(coro)
+        return object()
+
+    monkeypatch.setattr("app.bot.support_runtime.asyncio.create_task", fake_create_task)
+
+    class FakeReply:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        async def delete(self) -> None:
+            self.deleted = True
+
+    class FakeMessage:
+        def __init__(self) -> None:
+            self.reply_message = FakeReply()
+            self.replies: list[str] = []
+
+        async def reply(self, text: str) -> FakeReply:
+            self.replies.append(text)
+            return self.reply_message
+
+    config = Config(
+        bot=BotConfig(TOKEN="123:token", DEV_IDS=[111], GROUP_ID=-1001234567890),
+        redis=RedisConfig(HOST="redis", PORT=6379, DB=7),
+        db=DatabaseConfig(URL="postgresql://support:secret@db.local:5432/qpi"),
+        telegram=TelegramConfig(PROXY_URL="http://proxy.example:8080"),
+        policy=PolicyConfig(ENABLED=False, PATH="config/policy.yaml"),
+        ai=AIConfig(
+            PROVIDER="none",
+            BASE_URL="https://openrouter.ai/api/v1",
+            API_KEY="",
+            MODEL="openai/gpt-5.4-nano",
+            SYSTEM_PROMPT_PATH="config/system_prompt.txt",
+            TIMEOUT_S=8,
+        ),
+    )
+    message = FakeMessage()
+    telegram = AiogramSupportTopicTelegram(bot=object(), config=config, reply_message=message)  # type: ignore[arg-type]
+
+    await telegram.send_user_ack(telegram_id=1001, text="ok", ttl_seconds=5)
+
+    assert message.replies == ["ok"]
+    assert len(scheduled) == 1
+    assert sleeps == []
+    assert message.reply_message.deleted is False
+
+    monkeypatch.setattr("app.bot.support_runtime.asyncio.sleep", fake_sleep)
+    await scheduled[0]
+
+    assert sleeps == [5]
+    assert message.reply_message.deleted is True
 
 
 @pytest.mark.asyncio

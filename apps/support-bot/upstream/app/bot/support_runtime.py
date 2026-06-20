@@ -68,7 +68,6 @@ class PostgresSupportTopicStore:
         if user is None:
             user = UserData(
                 message_thread_id=topic.thread_id,
-                message_silent_id=None,
                 message_silent_mode=topic.is_silent,
                 id=topic.telegram_id,
                 full_name=topic.full_name,
@@ -81,7 +80,6 @@ class PostgresSupportTopicStore:
         user.username = topic.username or "-"
         user.is_banned = topic.is_banned
         user.message_silent_mode = topic.is_silent
-        user.message_silent_id = None
         user.status = topic.status
         user.set_support_context(topic.context)
         await self.storage.update_user(user.id, user)
@@ -90,10 +88,7 @@ class PostgresSupportTopicStore:
     async def _get_user(self, telegram_id: int) -> UserData | None:
         if self.current_user is not None and self.current_user.id == telegram_id:
             return self.current_user
-        get_user = getattr(self.storage, "get_user", None)
-        if get_user is None:
-            return None
-        return await get_user(telegram_id)
+        return await self.storage.get_user(telegram_id)
 
     @staticmethod
     def _topic_from_user(user: UserData) -> SupportTopic | None:
@@ -180,6 +175,9 @@ class AiogramSupportTopicTelegram:
             message = await self.reply_message.reply(text)
         else:
             message = await self.bot.send_message(chat_id=telegram_id, text=text)
+        asyncio.create_task(self._delete_later(message, ttl_seconds))
+
+    async def _delete_later(self, message: Message, ttl_seconds: int) -> None:
         await asyncio.sleep(ttl_seconds)
         with suppress(TelegramBadRequest):
             await message.delete()

@@ -109,7 +109,6 @@ async def test_start_command_records_payload_and_opens_main_menu_without_languag
 
     user_data = UserData(
         message_thread_id=None,
-        message_silent_id=None,
         message_silent_mode=False,
         id=1001,
         full_name="Карина",
@@ -243,7 +242,6 @@ async def test_private_message_is_not_forwarded_to_general_group_when_topic_crea
     redis = FakeRedis()
     user_data = UserData(
         message_thread_id=None,
-        message_silent_id=None,
         message_silent_mode=False,
         id=1001,
         full_name="Ivan",
@@ -342,7 +340,6 @@ async def test_reopened_topic_does_not_pin_metadata(monkeypatch: pytest.MonkeyPa
     redis = FakeRedis()
     user_data = UserData(
         message_thread_id=701,
-        message_silent_id=None,
         message_silent_mode=False,
         id=1001,
         full_name="Карина",
@@ -440,7 +437,6 @@ async def test_failed_reopen_keeps_live_topic_closed_and_reports_failure(
     redis = FakeRedis()
     user_data = UserData(
         message_thread_id=701,
-        message_silent_id=None,
         message_silent_mode=False,
         id=1001,
         full_name="Карина",
@@ -540,7 +536,6 @@ async def test_deleted_topic_recovery_creates_replacement_with_context_title(
     redis = FakeRedis()
     user_data = UserData(
         message_thread_id=701,
-        message_silent_id=None,
         message_silent_mode=False,
         id=1001,
         full_name="Карина",

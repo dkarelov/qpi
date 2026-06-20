@@ -58,18 +58,11 @@ async def handler(message: Message, manager: Manager, redis: RedisStorage) -> No
         text = manager.text_message.get("silent_mode_disabled")
         with suppress(TelegramBadRequest):
             await message.reply(text)
-            if user_data.message_silent_id is not None:
-                await message.bot.unpin_chat_message(
-                    chat_id=message.chat.id,
-                    message_id=user_data.message_silent_id,
-                )
-
         await service.set_silent(thread_id=thread_id, is_silent=False)
     else:
         text = manager.text_message.get("silent_mode_enabled")
         with suppress(TelegramBadRequest):
             await message.reply(text)
-
         await service.set_silent(thread_id=thread_id, is_silent=True)
 
 
