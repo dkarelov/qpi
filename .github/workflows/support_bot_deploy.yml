@@ -62,7 +62,6 @@ jobs:
           app/bot/storage.py
           app/bot/support_context.py
           app/bot/support_topics.py
-          app/bot/support_metadata.py
           app/bot/newsletter.py
           app/bot/telegram_client.py
 
