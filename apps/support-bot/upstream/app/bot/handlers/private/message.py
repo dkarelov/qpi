@@ -8,6 +8,7 @@ from aiogram.types import Message
 from app.bot.llm import LLMProvider
 from app.bot.manager import Manager
 from app.bot.policy import PolicyEngine
+from app.bot.support_metadata import pin_support_metadata
 from app.bot.support_topics import USER_DELIVERY_ACK, USER_DELIVERY_FAILURE
 from app.bot.types.album import Album
 from app.bot.utils.create_forum_topic import (
@@ -86,6 +87,7 @@ async def handle_incoming_message(
             pass
         user_data.status = "open"
         await redis.update_user(user_data.id, user_data)
+        await pin_support_metadata(message.bot, manager.config, user_data)
 
     # Record the incoming message in the conversation transcript (LLM context).
     await redis.append_conversation(user_data.id, "user", message_text(message))

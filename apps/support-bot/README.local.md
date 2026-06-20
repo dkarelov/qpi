@@ -13,7 +13,7 @@ This directory contains the qpi-owned Python support-bot runtime imported from `
 
 - Telegram-only, private-only, long polling.
 - Canonical support unit: **Support Topic**, one Telegram forum topic per Telegram Account in the configured support supergroup.
-- User messages are delivered from private chat into the matching Support Topic.
+- User messages are delivered from private chat into the matching Support Topic; closed topics reopen on the next user message and refresh pinned metadata to `State: open`.
 - Staff replies are handled in the support supergroup topic.
 - Persistent state uses the existing qpi PostgreSQL cluster and app-owned schema `support_bot`.
 - Redis is ephemeral FSM/session state. The container deployment caps it with `--maxmemory 512mb`.

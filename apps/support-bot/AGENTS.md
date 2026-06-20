@@ -29,7 +29,7 @@ Last updated: 2026-06-20 UTC
 - `/start` currently does not create a topic on its own; Support Topic creation happens on the first real support message.
 - `/start` payloads may carry qpi role/topic/reference context; metadata is reflected in topic titles and pinned topic metadata.
 - Text, media, and album forwarding share the Support Topic service seam.
-- Closed Support Topics reopen when the user writes again.
+- Closed Support Topics reopen when the user writes again, and pinned metadata is refreshed with `State: open`.
 - Banned Telegram accounts are ignored until unbanned by staff action.
 - Forum service-message cleanup is best effort; `can_delete_messages` is useful but not required for core support delivery.
 - Old Mongo data, `/open`, orphan-ticket recovery, old ticket ids, private staff group support, and old queue preservation are out of scope for this runtime.

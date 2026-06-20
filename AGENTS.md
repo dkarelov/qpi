@@ -649,7 +649,7 @@ Manual Telegram smoke after support-bot cutover:
 - topic title and pinned metadata render role/topic/reference context,
 - staff text reply reaches the user,
 - user media appears in the same Support Topic,
-- close/reopen keeps the same topic,
+- close/reopen keeps the same topic and refreshes pinned metadata to `State: open`,
 - ban ignores further user messages until unbanned.
 
 DB tunnel (default session policy):
