@@ -1,0 +1,57 @@
+# Example policy for the optional declarative engine.
+#
+# Enable it by setting in .env:
+#   POLICY_ENABLED=true
+#   POLICY_CONFIG_PATH=config/policy.yaml
+# Or supply it base64-encoded via POLICY_YAML_B64 (handy on compose platforms).
+#
+# With POLICY_ENABLED=false (default) the engine is a no-op.
+
+version: 1
+
+defaults:
+  language_fallback: en
+
+variables:
+  rules_url: "https://example.com/rules"
+
+templates:
+  rules_link:
+    en: "Please read the rules first: {rules_url}"
+    ru: "Пожалуйста, ознакомьтесь с правилами: {rules_url}"
+
+# Rules are evaluated top-to-bottom; actions of every matching rule are applied.
+#
+# Matchers (inside `when`):
+#   event_type:     user_message | user_started | user_stopped | topic_created
+#   keywords_any:   list of substrings, or {min_matches: N, list: [...]}
+#   regex:          a regular expression tested against the message text
+#   message_length: {min: N, max: N}
+#   has_link:       true|false
+#   all: [...] / any: [...]
+#
+# Actions:
+#   suppress_topic_creation, suppress_group_notify, auto_reply (template_key),
+#   close_topic, escalate
+rules:
+  - id: skip_lifecycle
+    when:
+      event_type: [user_started, user_stopped]
+    actions:
+      - type: suppress_group_notify
+
+  - id: price_question
+    when:
+      any:
+        - regex: "(?i)\\b(price|cost|how much)\\b"
+    actions:
+      - type: auto_reply
+        template_key: rules_link
+
+# Optional LLM layer. Real on/off switch is the AI_PROVIDER env var.
+# When enabled, the bot drafts a reply (based on the conversation so far) and
+# posts it into the topic with Send/Skip buttons for the manager.
+ai:
+  enabled: false
+  system_prompt_path: config/system_prompt.txt
+  max_context_messages: 12

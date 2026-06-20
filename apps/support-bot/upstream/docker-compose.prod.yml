@@ -1,0 +1,17 @@
+# Telegram Support Bot - Production
+# Uses shared infrastructure: PostgreSQL (DATABASE_URL) + Redis (REDIS_*) over the
+# private network. No bundled datastores — all connection config comes from env.
+
+services:
+  support-bot:
+    build:
+      context: .
+      args:
+        INSTALL_AI: "1"
+    container_name: hm-support-bot
+    command: sh -c "cd /usr/src/app && python -m app"
+    restart: always
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

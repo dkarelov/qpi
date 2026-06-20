@@ -32,7 +32,7 @@ This section is intentionally first because it is a delivery gate, not a soft pr
 Current repo scope:
 
 - qpi marketplace runtime (Python + PostgreSQL),
-- companion support-bot runtime (Node/TypeScript + MongoDB) under `apps/support-bot`,
+- companion support-bot runtime (Python + PostgreSQL schema + Redis) under `apps/support-bot`,
 - shared Terraform, runner, and deploy conventions.
 
 Documentation rules:
@@ -99,15 +99,15 @@ Out of scope (MVP):
 Companion support-bot (current decision boundary):
 
 - separate operational surface from the marketplace bot,
-- isolated runtime, VM, and MongoDB state,
+- isolated runtime and VM; persistent state is in the existing PostgreSQL cluster under the `support_bot` schema,
 - Telegram-only in V1,
 - Russian UX text,
-- no Signal, web chat, LLM, or backup automation in V1,
-- normal private Telegram group is accepted for `staffchat_id`; supergroup is optional,
-- default qpi support-bot template ships with `clean_replies=true`, `auto_close_tickets=true`, and `staffchat_parse_mode=HTML`,
-- support-bot user success confirmation means the staff ticket was delivered and the staff message id was recorded in `internalIds`,
+- forum-topic Support Topic model: one Support Topic per Telegram account in the support supergroup,
+- no Signal, web chat, or backup automation in V1,
+- Redis is ephemeral support-bot runtime state and is capped separately from PostgreSQL state,
+- Telegram Bot API egress uses the first URL from `TELEGRAM_API_PROXY_URLS`,
 - marketplace buyer/seller screens may deep-link into the support bot when `SUPPORT_BOT_USERNAME` is configured,
-- support-bot tickets are one shared queue and carry actor/entity context from the marketplace bot instead of role-based routing.
+- support-bot `/start` payload parsing and rich Support Topic metadata are being implemented incrementally under GitHub issues #14-#22.
 
 ## 3. Implemented System Components
 
@@ -118,7 +118,7 @@ Runtime services:
 - `services/order_tracker`: Cloud Function, 5-minute assignment lifecycle orchestrator.
 - `services/blockchain_checker`: Cloud Function, 5-minute seller collateral top-up matcher.
 - `services/worker`: placeholder runtime (legacy/no critical ownership).
-- `apps/support-bot/*`: companion private-only long-polling support desk stack with vendored upstream app, local Docker/compose overlay, and dedicated deploy workflow.
+- `apps/support-bot/*`: companion private-only long-polling Support Topic stack with vendored Python upstream app, local Docker/compose overlay, and dedicated deploy workflow.
 
 Shared layers:
 
@@ -148,7 +148,7 @@ Persistence and schema:
 
 - PostgreSQL + `psqldef`.
 - `schema/schema.sql` is the only schema source of truth.
-- Support bot MongoDB state lives on the support-bot VM boot disk under `/var/lib/support-bot/mongodb`.
+- Support bot PostgreSQL state lives in the existing qpi database under schema `support_bot`; Redis holds only ephemeral FSM/session state.
 
 ## 4. Functional Requirements and Rules
 
@@ -477,9 +477,9 @@ Transitions:
 
 ## 5. Technical Constraints and Invariants
 
-- Marketplace services remain Python-only. The companion support-bot runtime is Node/TypeScript and isolated under `apps/support-bot`.
+- Marketplace services remain Python-only. The companion support-bot runtime is also Python and isolated under `apps/support-bot`.
 - Marketplace dependency and environment management are `uv`-based; `.venv` remains the runtime path, but `uv.lock` is the source of truth.
-- Support-bot dependency management is `npm` + upstream `package-lock.json`, with Node 24 as the qpi target version.
+- Support-bot dependency management is nested `uv` under `apps/support-bot/upstream`, with Python 3.14 as the qpi target version.
 - `requirements.txt` is generated from `uv.lock` for Cloud Function/Terraform compatibility and is never hand-edited.
 - DB access: `psycopg3` + plain SQL only (no ORM).
 - For qpi read-only production inspection, use the qpi-specific `qpi-pg-prod` MCP server after it is installed with `scripts/deploy/qpi_pg_mcp.sh` and registered locally with `scripts/dev/qpi_pg_mcp_codex.sh`.

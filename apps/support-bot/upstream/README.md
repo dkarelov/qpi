@@ -1,148 +1,94 @@
-<h1 align="center">Welcome to Telegram Support Bot 👋</h1>
-<h2 align="center">now also with Signal Support</h2>
+# HM Support Bot
 
-[![Bot API Version](https://img.shields.io/badge/Bot%20API-v6.6-f36caf.svg?style=for-the-badge)](https://core.telegram.org/bots/api)
-[![NPM Version](https://img.shields.io/npm/v/grammy.svg?style=for-the-badge)](https://www.npmjs.com/)
-[![node](https://img.shields.io/node/v/grammy.svg?style=for-the-badge)](https://www.npmjs.com/package/)
-![js-google-style](https://img.shields.io/badge/code%20style-google-brightgreen.svg?style=for-the-badge)
-[![Documentation](https://img.shields.io/badge/DOCUMENTATION-WIKI-green?style=for-the-badge)](https://github.com/bostrot/telegram-support-bot/wiki)
+![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white)
+![aiogram](https://img.shields.io/badge/aiogram-3.22-green?logo=telegram&logoColor=white)
 
-> TSB is a support bot for Telegram and Signal. It lets users create tickets which will be sent to a staff group and can be answered by a reply.  
-> Now also supports LLMs (e.g. OpenAI) to automatically assist users.
+Telegram feedback bot for customer support. Messages from private chats are automatically routed to forum topics in a support group, and staff replies are forwarded back to the user.
 
-<table>
-<tr>
-<th><img src="https://i.imgur.com/du5KZ1C.jpg" /></th>
-<th><img src="https://i.imgur.com/N2002b0.jpg" /></th>
-</tr>
-</table>
+## Features
 
-> 🚀 **Hosted solution**: Get it [here at botspace](https://botspace.bostrot.com)!
+- **Forum topics** — a dedicated topic is created for each user in the support group
+- **Two-way messaging** — user messages go to the topic, staff replies go back to the DM
+- **Media groups** — album support (photos, videos, audio, documents)
+- **Blocking** — `/ban` to block/unblock users
+- **Silent mode** — `/silent` disables reply forwarding for a specific user
+- **Newsletter** — `/newsletter` for mass messaging via aiogram-newsletter
+- **Localization** — English and Russian with per-user language selection
+- **Throttling** — spam protection with configurable cooldown
+- **Policy engine** *(optional)* — declarative YAML rules to auto-reply, tag, close, suppress notifications, or skip topic creation
+- **LLM drafts** *(optional)* — classify the first message and suggest a reply to the manager via inline buttons (any OpenAI-compatible provider)
 
-## ✨ Features
+## C4
 
-When a user sends a message to the support chat it will create a ticket which will be forwarded to the staff group. Any admin in the staff group may answer that ticket by just replying to it. Salutation is added automatically. Photos will be forwarded too.
+```mermaid
+graph TB
+    A[Telegram Users] --> B[HM Support Bot]
+    B --> C[Topic Manager]
+    B --> D[User Manager]
+    B --> E[Newsletter Service]
+    C --> F[SQLite Database]
+    D --> F
+    E --> F
+    F --> G[Redis Cache]
+    B --> H[Telegram Bot API]
+    H --> A
 
-- [x] File forwarding from and to user
-- [x] Database for handling open and closed tickets
-- [x] Restrict users
-- [x] Simple anti spam system
-- [x] Send tickets to different staff groups
-- [x] Private reply to user
-- [x] Anonymize users
-- [x] Auto reply based on keywords [beta]
-- [x] Web chat [beta]
-- [x] **Staff groups can now be on Telegram _or_ Signal**
-- [x] **LLM support (OpenAI, OpenAI-compatible APIs)** – generate automatic responses using large language models
+    subgraph AdminCommands
+        I["/newsletter - Newsletter"]
+        J["/ban - Block User"]
+        K["/silent - Silent Mode"]
+        L["/information - User Info"]
+    end
 
-## 🤖 OpenAi Integration
-
-The bot can now optionally connect to an LLM like OpenAI (or any OpenAI-compatible API) to automatically respond to users, especially for common questions or when no staff is available.
-
-You can enable this by configuring the following in your `config.yaml`:
-
-```yaml
-use_llm: true # Will enable show_auto_replied when set to true
-llm_api_key: 'API_KEY'
-llm_base_url: 'https://api.openai.com/v1'
-llm_model: 'gpt-4o-mini'
-llm_knowledge: >
-    Q: What is Botspace?
-    A: Botspace is a cloud-based project management tool designed for teams to collaborate, track tasks, and manage workflows efficiently.
-
-    Q: What platforms are supported?
-    A: Web, iOS, and Android.
+    AdminCommands --> B
 ```
 
-> Use cases: FAQ generation, fallback replies when no staff replies, 24/7 automated assistant, hybrid staff-AI workflows.
+## Quick Start
 
-## 📜 Commands
+1. deps: Linux, Docker, Python 3.11+, Redis
+2. env: `cp .env.example .env` and fill in the variables
+3. install: `pip install -r requirements.txt`
+4. dev: `python -m app`
+5. prod: `docker compose up -d`
 
-Currently the support chat offers these commands (staff commands):
+## Policy & AI extensions
 
-- `/open` - lists all open tickets (messages where no one has replied yet)
-- `/reopen` - reopen a closed ticket
-- `/close` - close a ticket manually (in case someone writes 'thank you')
-- `/ban` - ban a person from writing to your chat
+Both layers are **off by default** — leaving the env vars at their defaults
+keeps the bot behaving exactly as without them.
 
-User commands:
+### Policy engine
 
-- `/start` - tells the user how to use this bot
-- `/help` - an overview over the commands or some explanation for the user
-- `/faq` - shows the FAQ
-- `/id` - returns your Telegram or Signal id and the group chat id
-
-## 📦 Install
-
-See the [wiki](https://github.com/bostrot/telegram-support-bot/wiki) for more detailed instructions.
+Declarative rules in a YAML file decide what happens to incoming messages and
+lifecycle events, with no business logic in the code.
 
 ```bash
-mv config/config-sample.yaml config.yaml
-docker-compose up -d
+cp config/policy.example.yaml config/policy.yaml   # then edit
+# in .env:
+POLICY_ENABLED=true
+POLICY_CONFIG_PATH=config/policy.yaml
 ```
 
-## 📝 Upgrading from older versions
+Matchers: `event_type` (`user_message` | `user_started` | `user_stopped` |
+`topic_created`), `keywords_any`, `regex`, `message_length`, `has_link`,
+combined with `all` / `any`. Actions: `auto_reply`, `set_tag`, `close_topic`,
+`escalate`, `suppress_group_notify`, `suppress_topic_creation`. See
+`config/policy.example.yaml` for a documented example.
 
-There are some breaking changes in the new versions. Please read the following instructions carefully when updating.
+Manager commands in a topic: `/template <key>`, `/tag [name]`, `/close`,
+`/escalate`.
 
-<details>
-<summary>click here to show</summary>
+### LLM drafts
 
-Since version v4 this bot uses the grammY Telegram Bot Framework instead of the telegraf framework for various reasons.
+| Env var | Default | Description |
+|---|---|---|
+| `AI_PROVIDER` | `none` | `none` disables; `openai_compatible` enables |
+| `AI_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible base URL |
+| `AI_API_KEY` | _(empty)_ | API key; empty also disables |
+| `AI_MODEL` | `openai/gpt-5-nano` | Model id |
+| `AI_SYSTEM_PROMPT_PATH` | `config/system_prompt.txt` | System prompt file |
+| `AI_TIMEOUT_S` | `8` | Per-request timeout |
 
-### Upgrading to v4.0.0
-
-Make sure you add the new settings strings to your config.yaml file. Check the config-sample.yaml for all configs.
-Here are some of the new settings that you should add when migrating:
-
-    parse_mode: 'Markdown' # DO NOT CHANGE!
-    autoreply: (see config-sample.yaml for an example)
-
-The config-sample.yaml settings now all use markdown instead of HTML so you have to adjust that. e.g. instead of <br/> line break use \n instead. For a full list check the telegram bot API docs.
-
-Upgrade to the new version. e.g. by pulling the main branch from GitHub or using the docker image bostrot/telegram-support-bot:4.0.0.
-
-Start it.
-
-The old database should work with the new version without changing anything.
-
-### Upgrading to v3.0.0
-
-The latest version uses a new config file in YAML format which would break old versions.
-
-In order to make old versions work with the master you would need to use the new config.yaml file instead of the config.ts file from before. The easiest would be if you copy the config-sample.yaml to config.yaml (both in the config folder) and edit the settings similar to your old config.ts file. There is no need to delete the database file so old tickets can be kept open.
-
-</details>
-
-You might also want to check out the [wiki](https://github.com/bostrot/telegram-support-bot/wiki) for more info.
-
-## Author
-
-👤 **Eric Trenkel**
-
-- Website: [erictrenkel.com](erictrenkel.com)
-- Github: [@bostrot](https://github.com/bostrot)
-- LinkedIn: [@erictrenkel](https://linkedin.com/in/erictrenkel)
-
-👥 **Contributors**
-
-[![Contributors](https://contrib.rocks/image?repo=bostrot/telegram-support-bot)](https://github.com/bostrot/telegram-support-bot/graphs/contributors)
-
-## 🤝 Contributing
-
-Contributions, issues and feature requests are welcome!<br />Feel free to check [issues page](https://github.com/bostrot/telegram-support-bot/issues). You can also take a look at the [contributing guide](https://github.com/bostrot/telegram-support-bot/blob/master/CONTRIBUTING.md).
-
-## Show your support
-
-Give a ⭐️ if this project helped you!
-
-## 📝 License
-
-Copyright © 2025 [Eric Trenkel](https://github.com/bostrot).  
-This project is [GPL-3.0](https://github.com/bostrot/telegram-support-bot/blob/master/LICENSE) licensed.
-
----
-
-_Not found what you were looking for? Check out the [Wiki](https://github.com/bostrot/telegram-support-bot/wiki)_
-
-If you need help or need a hosted solution of this check out [Botspace](https://botspace.bostrot.com) for a one-click setup.
+When enabled, the first message of a conversation is classified and a draft
+reply is posted into the topic with **Send / Skip** buttons. Install the extra
+dependency with `pip install -r requirements-ai.txt` (or build the image with
+`--build-arg INSTALL_AI=1`).

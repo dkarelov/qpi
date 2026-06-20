@@ -1,43 +1,17 @@
-# Build stage
-FROM node:22-alpine AS builder
+FROM python:3.11-slim-buster
 
-WORKDIR /bot
+WORKDIR /usr/src/app
 
-# Copy package files
-COPY ./package.json /bot/package.json
-COPY ./package-lock.json /bot/package-lock.json
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
-# Install build dependencies and all dependencies (including devDependencies for building)
-RUN apk add --no-cache python3 build-base
-RUN npm ci
+COPY requirements.txt requirements-ai.txt ./
 
-# Copy source code and build configuration
-COPY ./src /bot/src
-COPY ./tsconfig.json /bot/tsconfig.json
+ARG INSTALL_AI=0
+RUN pip install --no-cache-dir --upgrade pip &&  \
+    pip install --no-cache-dir -r requirements.txt && \
+    if [ "$INSTALL_AI" = "1" ]; then pip install --no-cache-dir -r requirements-ai.txt; fi
 
-# Build the application
-RUN npm run build
+RUN mkdir -p config
 
-# Production stage
-FROM node:22-alpine AS production
-
-WORKDIR /bot
-
-# Copy package files
-COPY ./package.json /bot/package.json
-COPY ./package-lock.json /bot/package-lock.json
-
-# Install build dependencies for native modules
-RUN apk add --no-cache python3 build-base
-
-# Install only production dependencies
-RUN npm ci --only=production && npm cache clean --force
-
-# Copy built application from builder stage
-COPY --from=builder /bot/build /bot/build
-
-# Set NODE_ENV to production
-ENV NODE_ENV=production
-
-# Run the application
-CMD ["npm", "run", "prod", "--prefix", "/bot"]
+COPY . .
