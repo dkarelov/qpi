@@ -42,6 +42,31 @@ def test_user_data_created_at_uses_per_instance_default_factory() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_bot_supports_configured_proxy() -> None:
+    from app.bot.telegram_client import create_bot
+    from app.config import AIConfig, BotConfig, Config, DatabaseConfig, PolicyConfig, RedisConfig, TelegramConfig
+
+    bot = create_bot(
+        Config(
+            bot=BotConfig(TOKEN="123456:abcdefghijklmnopqrstuvwxyz", DEV_IDS=[111], GROUP_ID=-1001234567890),
+            redis=RedisConfig(HOST="redis", PORT=6379, DB=7),
+            db=DatabaseConfig(URL="postgresql://support:secret@db.local:5432/qpi"),
+            telegram=TelegramConfig(PROXY_URL="http://proxy.example:8080"),
+            policy=PolicyConfig(ENABLED=False, PATH="config/policy.yaml"),
+            ai=AIConfig(
+                PROVIDER="none",
+                BASE_URL="https://openrouter.ai/api/v1",
+                API_KEY="",
+                MODEL="openai/gpt-5.4-nano",
+                SYSTEM_PROMPT_PATH="config/system_prompt.txt",
+                TIMEOUT_S=8,
+            ),
+        )
+    )
+    await bot.session.close()
+
+
+@pytest.mark.asyncio
 async def test_create_schema_uses_support_bot_schema() -> None:
     from app.bot.storage import create_schema
 
@@ -108,6 +133,8 @@ async def test_text_round_trip_creates_support_topic_and_reuses_it() -> None:
 
     topic = await service.forward_user_text(account, "Первый вопрос")
     same_topic = await service.forward_user_text(account, "Второй вопрос")
+    assert topic is not None
+    assert same_topic is not None
     await service.forward_staff_text(thread_id=topic.thread_id, text="Ответ поддержки")
 
     assert same_topic.thread_id == topic.thread_id
