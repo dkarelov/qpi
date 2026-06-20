@@ -92,6 +92,12 @@ Deploy smoke checks include:
 - PostgreSQL schema creation/verification through the deployed `supportbot` container,
 - Telegram `getMe` through `TELEGRAM_API_PROXY_URLS`.
 
+Cutover behavior:
+
+- The deploy script stops the existing support-bot compose stack before switching `/opt/support-bot/current` to the new release.
+- Startup preserves pending Telegram updates with `drop_pending_updates=False`.
+- After Redis, PostgreSQL schema, and proxy `getMe` checks pass, the deploy script deletes `/var/lib/support-bot/mongodb` without backup.
+
 ## Live verification
 
 ```bash
@@ -108,6 +114,16 @@ The deploy wrapper already verifies PostgreSQL schema access from inside the run
 ```bash
 sudo docker compose --project-directory /opt/support-bot/current -f /opt/support-bot/current/compose.prod.yml logs --no-color --tail 100 supportbot
 ```
+
+Manual Telegram smoke after cutover:
+
+- Open the bot with a contextual payload such as `/start seller_listing_L21_S11`.
+- Send the first real private support message and verify one Support Topic is created in the support supergroup.
+- Verify the topic title and pinned metadata include the role/topic/reference context.
+- Reply as staff with text and verify the user receives it in private chat.
+- Send user media and verify it appears in the same Support Topic.
+- Close the topic from staff controls, then send a new user message and verify the same topic reopens.
+- Ban the user from the topic controls and verify further user messages are ignored until unbanned.
 
 ## Code map
 

@@ -64,6 +64,8 @@ ssh_key_path=""
 temp_dir=""
 support_bot_host=""
 support_bot_database_url=""
+ssh_args=()
+scp_args=()
 
 cleanup() {
   if [[ -n "${temp_dir}" && -d "${temp_dir}" ]]; then
@@ -287,12 +289,20 @@ asyncio.run(main())
 telegram_get_me_output="$(support_bot_telegram_get_me)"
 qpi_phase_end
 
+qpi_phase_start "cleanup-old-mongo"
+old_mongo_cleanup="$(
+  remote_output \
+    "if sudo test -d /var/lib/support-bot/mongodb; then sudo rm -rf /var/lib/support-bot/mongodb && echo old_mongo_deleted=true; else echo old_mongo_deleted=absent; fi"
+)"
+qpi_phase_end
+
 echo "release_id=${release_id}"
 echo "support_bot_host=${support_bot_host}"
 echo "image_ref=${image_ref}"
 echo "support_bot_redis_ping=${support_bot_redis_ping}"
 echo "${postgres_status}"
 echo "${telegram_get_me_output}"
+echo "${old_mongo_cleanup}"
 
 qpi_append_step_summary "### Support Bot Deploy Result"
 qpi_append_step_summary ""
@@ -301,5 +311,6 @@ qpi_append_step_summary "- Image: \`${image_ref}\`"
 qpi_append_step_summary "- Redis ping: \`${support_bot_redis_ping}\`"
 qpi_append_step_summary "- PostgreSQL schema: \`ok\`"
 qpi_append_step_summary "- Telegram getMe via proxy: \`ok\`"
+qpi_append_step_summary "- Old Mongo state cleanup: \`${old_mongo_cleanup}\`"
 qpi_append_step_summary ""
 qpi_emit_timing_summary "Support Bot Deploy"

@@ -640,6 +640,17 @@ sudo docker compose --project-directory /opt/support-bot/current -f /opt/support
 ```
 
 Support-bot deploy smoke checks also verify PostgreSQL schema access from inside the deployed `supportbot` container and Telegram `getMe` through `TELEGRAM_API_PROXY_URLS`.
+The support-bot cutover path stops the existing compose stack before switching `/opt/support-bot/current`, starts the new long-polling bot with pending updates preserved, and deletes `/var/lib/support-bot/mongodb` without backup only after Redis, PostgreSQL, and proxy `getMe` checks pass.
+
+Manual Telegram smoke after support-bot cutover:
+
+- contextual `/start` payload,
+- first real private message creates a Support Topic,
+- topic title and pinned metadata render role/topic/reference context,
+- staff text reply reaches the user,
+- user media appears in the same Support Topic,
+- close/reopen keeps the same topic,
+- ban ignores further user messages until unbanned.
 
 DB tunnel (default session policy):
 

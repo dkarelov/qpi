@@ -50,6 +50,14 @@ fi
 printf '%s' "${registry_token}" | sudo docker login --username iam --password-stdin "${registry_host}" 2>&1 | sudo tee /tmp/support-bot-docker-login.log >/dev/null
 sudo docker pull "${image_ref}" 2>&1 | sudo tee /tmp/support-bot-docker-pull.log >/dev/null
 
+if [[ -n "${previous_target}" && -f "${previous_target}/compose.prod.yml" ]]; then
+  sudo systemctl stop support-bot.service || true
+  sudo docker compose \
+    --project-directory "${current_link}" \
+    -f "${previous_target}/compose.prod.yml" \
+    down --remove-orphans || true
+fi
+
 sudo rm -rf "${current_link}"
 sudo ln -sfn "${release_dir}" "${current_link}"
 sudo chown -h ubuntu:ubuntu "${current_link}"

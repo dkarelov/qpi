@@ -77,6 +77,7 @@ def test_support_bot_deploy_scripts_validate_postgres_redis_and_proxy_get_me() -
     assert "ensure_support_bot_schema" in deploy
     assert "support_bot_postgres_ok=true" in deploy
     assert "support_bot_redis_ping" in deploy
+    assert deploy.index("ssh_args=()") < deploy.index("cleanup()")
 
     assert "SUPPORT_BOT_GROUP_ID" in preflight
     assert "SUPPORT_BOT_STAFFCHAT_ID" not in preflight
