@@ -4,6 +4,8 @@ import logging
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 
+from app.bot.support_context import render_topic_title
+from app.bot.support_topics import TelegramAccount
 from app.config import Config
 
 from .exceptions import CreateForumTopicException, NotAForumException, NotEnoughRightsException
@@ -20,10 +22,11 @@ async def get_or_create_forum_topic(
     if user_data.message_thread_id is None:
         try:
             # If message_thread_id is not found, create a forum topic
+            account = TelegramAccount(id=user_data.id, full_name=user_data.full_name, username=user_data.username)
             message_thread_id = await create_forum_topic(
                 bot,
                 config,
-                user_data.full_name,
+                render_topic_title(account, user_data.support_context()),
             )
             user_data.message_thread_id = message_thread_id
             await redis.update_user(user_data.id, user_data)

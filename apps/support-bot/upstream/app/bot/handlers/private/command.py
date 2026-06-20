@@ -1,9 +1,10 @@
 from aiogram import F, Router
-from aiogram.filters import BaseFilter, Command
+from aiogram.filters import BaseFilter, Command, CommandObject
 from aiogram.types import Message
 
 from app.bot.handlers.private.windows import Window
 from app.bot.manager import Manager
+from app.bot.support_context import parse_start_payload
 from app.bot.utils.redis import RedisStorage
 from app.bot.utils.redis.models import UserData
 from app.config import Config
@@ -22,6 +23,7 @@ class IsDev(BaseFilter):
 @router.message(Command("start"))
 async def handler(
     message: Message,
+    command: CommandObject,
     manager: Manager,
     redis: RedisStorage,
     user_data: UserData,
@@ -38,6 +40,9 @@ async def handler(
     :param user_data: UserData object.
     :return: None
     """
+    user_data.set_support_context(parse_start_payload(command.args))
+    await redis.update_user(user_data.id, user_data)
+
     if user_data.language_code:
         await Window.main_menu(manager)
     else:

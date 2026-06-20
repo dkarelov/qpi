@@ -5,10 +5,13 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
+from app.bot.support_context import GENERIC_CONTEXT, SupportContext, SupportRef
+
 if TYPE_CHECKING:
     from asyncpg import Pool, Record
 
 _IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+_SUPPORTED_TOPICS = {"generic", "shop", "listing", "purchase", "withdraw", "deposit"}
 
 
 @dataclass
@@ -26,9 +29,29 @@ class UserData:
     language_code: str | None = None
     created_at: str = datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d %H:%M:%S %Z")
     status: str = "open"
+    support_role: str | None = None
+    support_topic: str = "generic"
+    support_refs: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    def support_context(self) -> SupportContext:
+        if self.support_role not in {"buyer", "seller"} or self.support_topic not in _SUPPORTED_TOPICS:
+            return GENERIC_CONTEXT
+        refs: list[SupportRef] = []
+        for raw_ref in self.support_refs:
+            match = re.fullmatch(r"(TX|[SLPWD])([1-9][0-9]*)", raw_ref)
+            if match is None:
+                return GENERIC_CONTEXT
+            kind, raw_id = match.groups()
+            refs.append(SupportRef(kind=kind, id=int(raw_id)))
+        return SupportContext(role=self.support_role, topic=self.support_topic, refs=tuple(refs))  # type: ignore[arg-type]
+
+    def set_support_context(self, context: SupportContext) -> None:
+        self.support_role = context.role
+        self.support_topic = context.topic
+        self.support_refs = tuple(ref.render() for ref in context.refs)
 
 
 def validate_schema_name(schema: str) -> str:
@@ -64,10 +87,18 @@ async def create_schema(pool: Pool, schema: str = "support_bot") -> None:
                 is_banned BOOLEAN NOT NULL DEFAULT FALSE,
                 language_code TEXT,
                 created_at TEXT,
-                status TEXT NOT NULL DEFAULT 'open'
+                status TEXT NOT NULL DEFAULT 'open',
+                support_role TEXT,
+                support_topic TEXT NOT NULL DEFAULT 'generic',
+                support_refs TEXT[] NOT NULL DEFAULT '{{}}'
             )
             """
         )
+        await conn.execute(f"ALTER TABLE {users} ADD COLUMN IF NOT EXISTS support_role TEXT")
+        await conn.execute(
+            f"ALTER TABLE {users} ADD COLUMN IF NOT EXISTS support_topic TEXT NOT NULL DEFAULT 'generic'"
+        )
+        await conn.execute(f"ALTER TABLE {users} ADD COLUMN IF NOT EXISTS support_refs TEXT[] NOT NULL DEFAULT '{{}}'")
         await conn.execute(
             f"CREATE UNIQUE INDEX IF NOT EXISTS users_thread_idx "
             f"ON {users} (message_thread_id) WHERE message_thread_id IS NOT NULL"
@@ -120,6 +151,9 @@ class RedisStorage:
             language_code=row["language_code"],
             created_at=row["created_at"],
             status=row["status"],
+            support_role=row["support_role"],
+            support_topic=row["support_topic"],
+            support_refs=tuple(row["support_refs"] or ()),
         )
 
     async def get_by_message_thread_id(self, message_thread_id: int) -> UserData | None:
@@ -141,9 +175,10 @@ class RedisStorage:
                 f"""
                 INSERT INTO {self._table("users")} (
                     id, message_thread_id, message_silent_id, message_silent_mode,
-                    full_name, username, state, is_banned, language_code, created_at, status
+                    full_name, username, state, is_banned, language_code, created_at, status,
+                    support_role, support_topic, support_refs
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 ON CONFLICT (id) DO UPDATE SET
                     message_thread_id = EXCLUDED.message_thread_id,
                     message_silent_id = EXCLUDED.message_silent_id,
@@ -154,7 +189,10 @@ class RedisStorage:
                     is_banned = EXCLUDED.is_banned,
                     language_code = EXCLUDED.language_code,
                     created_at = EXCLUDED.created_at,
-                    status = EXCLUDED.status
+                    status = EXCLUDED.status,
+                    support_role = EXCLUDED.support_role,
+                    support_topic = EXCLUDED.support_topic,
+                    support_refs = EXCLUDED.support_refs
                 """,
                 id_,
                 data.message_thread_id,
@@ -167,6 +205,9 @@ class RedisStorage:
                 data.language_code,
                 data.created_at,
                 data.status,
+                data.support_role,
+                data.support_topic,
+                list(data.support_refs),
             )
 
     async def get_all_users_ids(self) -> list[int]:

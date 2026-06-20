@@ -58,6 +58,9 @@ async def test_create_schema_uses_support_bot_schema() -> None:
     assert "CREATE SCHEMA IF NOT EXISTS support_bot" in rendered
     assert "support_bot.users" in rendered
     assert "support_bot.conversations" in rendered
+    assert "support_role TEXT" in rendered
+    assert "support_topic TEXT" in rendered
+    assert "support_refs TEXT[]" in rendered
     assert "public.users" not in rendered
 
 
