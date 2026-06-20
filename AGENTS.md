@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-06-17 UTC
+Last updated: 2026-06-20 UTC
 
 ## 0. Completion Gate
 
@@ -53,6 +53,7 @@ Glossary for Telegram UX:
 - `Объявление` = seller-created buyer-facing offer for one WB product.
 - `Покупка` = buyer reservation/work item tied to one announcement.
 - `Активно` = user-facing wording for active/open availability or status.
+- `Support Topic` = canonical support conversation unit: one Telegram forum topic per Telegram Account in the support supergroup.
 
 ## Agent skills
 
@@ -107,7 +108,7 @@ Companion support-bot (current decision boundary):
 - Redis is ephemeral support-bot runtime state and is capped separately from PostgreSQL state,
 - Telegram Bot API egress uses the first URL from `TELEGRAM_API_PROXY_URLS`,
 - marketplace buyer/seller screens may deep-link into the support bot when `SUPPORT_BOT_USERNAME` is configured,
-- support-bot `/start` payload parsing and rich Support Topic metadata are being implemented incrementally under GitHub issues #14-#22.
+- support-bot `/start` payload parsing, rich Support Topic metadata, Russian delivery semantics, media/albums, lifecycle controls, optional capabilities, and Python deploy workflow are the active runtime baseline.
 
 ## 3. Implemented System Components
 
@@ -595,7 +596,12 @@ Manual support-bot deploy via workstation bastion:
 
 ```bash
 SUPPORT_BOT_VM_SSH_PROXY_HOST=158.160.187.114 \
-scripts/deploy/support_bot.sh <image-archive> <image-tag>
+SUPPORT_BOT_TELEGRAM_BOT_TOKEN=<bot-token> \
+SUPPORT_BOT_GROUP_ID=<topic-enabled-supergroup-id> \
+SUPPORT_BOT_OWNER_ID=<owner-telegram-id> \
+SUPPORT_BOT_DATABASE_URL=postgresql://<user>:<password>@<host>:5432/qpi \
+TELEGRAM_API_PROXY_URLS=http://<proxy-host>:<proxy-port> \
+scripts/deploy/support_bot.sh cr.yandex/<registry-id>/support-bot:<sha>
 ```
 
 Read-only production PostgreSQL MCP:
@@ -630,8 +636,10 @@ readlink -f /opt/support-bot/current
 systemctl is-active support-bot.service
 sudo docker inspect -f '{{.Config.Image}}' current-supportbot-1
 sudo docker compose --project-directory /opt/support-bot/current -f /opt/support-bot/current/compose.prod.yml \
-  exec -T mongodb mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' mongodb://127.0.0.1:27017/admin
+  exec -T redis redis-cli ping
 ```
+
+Support-bot deploy smoke checks also verify PostgreSQL schema access from inside the deployed `supportbot` container and Telegram `getMe` through `TELEGRAM_API_PROXY_URLS`.
 
 DB tunnel (default session policy):
 
@@ -723,19 +731,23 @@ Support-bot local validation:
 
 ```bash
 cd apps/support-bot/upstream
-npm ci
-npm run build
-npm test
+uv sync --locked
+uv run ruff check .
+uv run mypy app/config.py app/bot/storage.py app/bot/support_context.py app/bot/support_topics.py app/bot/support_metadata.py app/bot/newsletter.py app/bot/telegram_client.py
+uv run pytest
 docker compose -f ../compose.dev.yml up -d
 ```
 
 Support-bot live behavior defaults:
 
-- `clean_replies=true`: user-facing staff replies are plain message bodies without greeting/signature wrappers.
-- `auto_close_tickets=true`: a successful staff reply closes the ticket, so `/open` will no longer list it.
-- Staff-facing ticket headers omit Telegram `language_code`; it is Telegram client metadata, not actual message-language detection.
-- If `support-bot.service` fails during startup with `supportbot is missing dependency mongodb`, recover by starting `mongodb` first, waiting for a healthy container, then starting `supportbot`, and only then reconciling the systemd unit.
-- Avoid overlapping ad-hoc support-bot image builds on the VM. Concurrent remote `docker build` attempts can contend on containerd refs and stall or wedge the rollout until stale build processes are killed.
+- one Support Topic per Telegram Account in the configured topic-enabled support supergroup,
+- `SUPPORT_BOT_GROUP_ID` selects the target support supergroup,
+- `SUPPORT_BOT_DATABASE_URL` or `DATABASE_URL` points at the existing PostgreSQL cluster,
+- `SUPPORT_BOT_DB_SCHEMA` defaults to `support_bot`,
+- `SUPPORT_BOT_REDIS_DB` defaults to `7`,
+- `TELEGRAM_API_PROXY_URLS` is required and is used for Telegram Bot API verification,
+- Redis PING, PostgreSQL schema access, and Telegram `getMe` through the proxy are deploy gates,
+- old Mongo data, `/open`, orphan-ticket recovery, old ticket ids, private staff group support, and old queue preservation are out of scope for the new runtime.
 
 ### 7.5 Test runbook
 
@@ -863,12 +875,12 @@ Runbook shortcuts:
   - do not treat a reachable general HTTPS target such as `google.com` or `ya.ru` as proof that Telegram API egress works,
   - in normal polling mode, verify Telegram `getWebhookInfo` has an empty URL and no growing `pending_update_count`,
   - in explicit webhook fallback mode, verify Telegram `getWebhookInfo` URL/secret alignment.
-- Support-bot orphan ticket:
-  - a user success confirmation means staff delivery succeeded and the staff message id was recorded in `internalIds`,
-  - if staff delivery fails, the user receives a temporary failure message instead of `Спасибо. Мы получили...`,
-  - inspect logs for `support_ticket_staff_forward_failed` and Monitoring metric `qpi.support.ticket.staff_forward_failure`,
-  - dry-run orphan recovery from the deployed support-bot app: `node ./build/resendOrphanTickets.js --dry-run --ticket-id T000006`,
-  - apply recovery after confirming the dry-run target: `node ./build/resendOrphanTickets.js --apply --ticket-id T000006`.
+- Support-bot Support Topic incident:
+  - verify `support-bot.service`, `current-supportbot-1`, and `current-redis-1` are running,
+  - run Redis PING through compose,
+  - inspect `supportbot` logs for delivery or PostgreSQL errors,
+  - verify Telegram `getMe` through `TELEGRAM_API_PROXY_URLS`,
+  - old Mongo data, `/open`, orphan-ticket recovery, old ticket ids, and private staff group routing are not active repair paths.
 - CF degradation:
   - inspect logs for `daily_report_scrapper`, `order_tracker`, `blockchain_checker`,
   - verify DB connectivity and runtime env key alignment.
@@ -896,7 +908,7 @@ Workflows:
   - runs fast tests, `actionlint`, and `shellcheck` on GitHub-hosted runners,
   - starts the private runner only for trusted same-repo PRs / manual runs that actually need DB-backed validation, and now overlaps runner boot with fast validation,
   - skips migration smoke unless schema-related files changed,
-  - intentionally ignores support-bot-only paths so companion Node changes do not trigger qpi DB validation.
+  - intentionally ignores support-bot-only paths so companion support-bot changes do not trigger qpi DB validation.
 - `.github/workflows/post_merge.yml`:
   - single post-merge orchestrator for `main` pushes and manual reruns,
   - runs fast validation once,
@@ -922,7 +934,7 @@ Workflows:
   - `preflight_only=true` runs checks plus bundle build without publishing.
 - `.github/workflows/support_bot_ci.yml`:
   - support-bot PR/manual workflow,
-  - runs Node 24 build/test plus production image build,
+  - runs `uv sync --locked`, Ruff, mypy, pytest, and production image build,
   - also runs repo workflow/shell lint so support-bot workflow/script changes are validated without triggering qpi DB suites.
 - `.github/workflows/support_bot_deploy.yml`:
   - support-bot `main` auto-deploy plus manual dispatch,

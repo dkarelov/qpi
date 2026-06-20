@@ -1,126 +1,120 @@
-# qpi Support Bot Overlay
+# qpi Support Bot
 
-This directory contains the qpi-owned overlay around the vendored upstream Telegram support bot in `apps/support-bot/upstream`.
+This directory contains the qpi-owned Python support-bot runtime imported from `DefaultPerson/telegram-support-bot`.
 
 ## Pinned upstream
 
-- Repository: `https://github.com/bostrot/telegram-support-bot`
-- Imported via `git subtree`
-- Pinned upstream commit: `db5edbeebec4e0ed6c553700c871d8f11c793be5`
+- Repository: `https://github.com/DefaultPerson/telegram-support-bot`
+- Imported source lives in `apps/support-bot/upstream`
+- Current imported upstream commit: `b74e7b73107ea1f59cc05b878a488470fc84bd6b`
+- Upstream updates are manual. Reconcile future upstream commits selectively into this fork and keep qpi tests authoritative.
 
-## Local layout
+## Runtime model
 
-- `upstream/`: vendored upstream source tree
-- `Dockerfile`: qpi production image on Node 24
-- `compose.dev.yml`: local Mongo helper compose file
-- `compose.prod.yml`: production compose stack for the VM
-- `config/config.template.yaml`: Russian Telegram-only production config template
+- Telegram-only, private-only, long polling.
+- Canonical support unit: **Support Topic**, one Telegram forum topic per Telegram Account in the configured support supergroup.
+- User messages are delivered from private chat into the matching Support Topic.
+- Staff replies are handled in the support supergroup topic.
+- Persistent state uses the existing qpi PostgreSQL cluster and app-owned schema `support_bot`.
+- Redis is ephemeral FSM/session state. The container deployment caps it with `--maxmemory 512mb`.
+- Telegram Bot API egress uses `TELEGRAM_API_PROXY_URLS`; deploy and preflight validate `getMe` through the configured proxy.
+- End-user private-chat text is Russian. Staff commands and operational metadata may remain English.
 
-## Local workflow
+Out of scope for the new runtime:
 
-1. Upgrade local NodeSource from `node_22.x` to `node_24.x`.
-2. Copy `config/config.template.yaml` to `config/config.local.yaml`.
-3. Replace the placeholder token/chat/owner values in `config/config.local.yaml`.
-4. For local host-node development, set `mongodb_uri: 'mongodb://127.0.0.1:27017/support'`.
-5. Start Mongo:
+- old Mongo data,
+- `/open`,
+- orphan-ticket recovery,
+- old ticket ids,
+- private staff group support,
+- importing or preserving the old queue.
 
-   ```bash
-   docker compose -f apps/support-bot/compose.dev.yml up -d
-   ```
+## Local validation
 
-6. Validate upstream app:
+```bash
+cd apps/support-bot/upstream
+uv sync --locked
+uv run ruff check .
+uv run mypy app/config.py app/bot/storage.py app/bot/support_context.py app/bot/support_topics.py app/bot/support_metadata.py app/bot/newsletter.py app/bot/telegram_client.py
+uv run pytest
+```
 
-   ```bash
-   cd apps/support-bot/upstream
-   npm ci
-   npm run build
-   npm test
-   ```
+Docker image build:
 
-7. Run the upstream dev server:
+```bash
+docker build -f apps/support-bot/Dockerfile -t qpi-support-bot:local apps/support-bot
+```
 
-   ```bash
-   cd apps/support-bot/upstream
-   npm run dev
-   ```
+Local Redis helper:
 
-## qpi-owned behavior
+```bash
+docker compose -f apps/support-bot/compose.dev.yml up -d
+```
 
-- Node 24 is the target for local dev, CI, and production image builds.
-- Production deploys build the Docker image in GitHub Actions and load it on the target VM.
-- V1 production stack runs only `supportbot` and `mongodb`.
-- Signal, web chat, LLM, backups, and restore automation are intentionally out of scope for V1.
+Set these variables when running the bot locally:
 
-## Operational gotchas
+```bash
+export SUPPORT_BOT_TELEGRAM_BOT_TOKEN=<bot-token>
+export SUPPORT_BOT_GROUP_ID=<topic-enabled-supergroup-id>
+export SUPPORT_BOT_OWNER_ID=<telegram-id>
+export SUPPORT_BOT_DATABASE_URL=postgresql://<user>:<password>@<host>:5432/qpi
+export SUPPORT_BOT_DB_SCHEMA=support_bot
+export SUPPORT_BOT_REDIS_DB=7
+export REDIS_HOST=127.0.0.1
+export TELEGRAM_API_PROXY_URLS=http://<proxy-host>:<proxy-port>
+```
 
-- The support-bot VM is private-only. Manual workstation deploys must set `SUPPORT_BOT_VM_SSH_PROXY_HOST=<qpi-bot-public-ip>` so `scripts/deploy/support_bot.sh` can use the qpi bot VM as a bastion.
-- The GitHub Actions support-bot deploy job currently reuses the `BOT_VM_SSH_PRIVATE_KEY` secret. If the deploy step fails with `Failed to decode ... private key`, fix the workflow/secret wiring first; the app payload itself may be fine.
-- `/opt/support-bot/current` is a deploy-managed symlink. Do not create it as a normal directory in cloud-init or by hand.
-- The support-bot security group allows TCP/22 from `0.0.0.0/0` only because Yandex instance-group health checks hit SSH from outside the runner/bot security groups; the VM still has no public IP.
-- Cloud-init `runcmd` sections that need `pipefail` must execute through `bash -lc`, not plain `sh`, or Docker/bootstrap installation will fail.
-- A normal private Telegram group works for `staffchat_id`; a supergroup is optional, not required.
-- The default qpi template currently ships with:
-  - `auto_close_tickets: true`
-  - `clean_replies: true`
-  - `staffchat_parse_mode: HTML`
-  - no Telegram `language_code` field in the staff-facing ticket header
-- Staff-ticket formatting escapes user names, usernames, message body, and marketplace refs for the configured `staffchat_parse_mode`.
-- User success confirmation is gated on successful staff delivery plus `internalIds` recording. If delivery fails, the bot sends: `Не удалось отправить обращение в поддержку. Пожалуйста, попробуйте ещё раз через пару минут.`
-- Support forwarding emits custom metrics when `yc_folder_id` is configured:
-  - `qpi.support.ticket.staff_forward_attempt`
-  - `qpi.support.ticket.staff_forward_failure`
-  - `qpi.support.ticket.user_confirmation_sent`
-- Orphan open-ticket recovery:
-  - dry-run: `cd apps/support-bot/upstream && npm run build && npm run resend-orphan-tickets -- --dry-run --ticket-id T000006`
-  - apply: `cd apps/support-bot/upstream && npm run build && npm run resend-orphan-tickets -- --apply --ticket-id T000006`
-- If `support-bot.service` fails with `supportbot is missing dependency mongodb`, recover with compose-level sequencing instead of repeated blind restarts:
-  - `docker compose ... up -d mongodb`
-  - wait until `current-mongodb-1` is healthy
-  - `docker compose ... up -d supportbot`
-- Avoid overlapping manual image builds on the support-bot VM. Multiple remote `docker build` attempts against the same checkout can contend on containerd refs and stall the rollout.
-- Live verification after deploy should always include:
-  - `readlink -f /opt/support-bot/current`
-  - `systemctl is-active support-bot.service`
-  - `sudo docker inspect -f '{{.Config.Image}}' current-supportbot-1`
-  - `sudo docker compose --project-directory /opt/support-bot/current -f /opt/support-bot/current/compose.prod.yml exec -T mongodb mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' mongodb://127.0.0.1:27017/admin`
+## Deployment
 
-## Editable template surface
+- Production image: `apps/support-bot/Dockerfile`.
+- Production compose stack: `apps/support-bot/compose.prod.yml`.
+- Deploy wrapper: `scripts/deploy/support_bot.sh <image-ref>`.
+- CI workflow: `.github/workflows/support_bot_ci.yml`.
+- Deploy workflow: `.github/workflows/support_bot_deploy.yml`.
+- Runtime VM is private-only; manual workstation deploys must set `SUPPORT_BOT_VM_SSH_PROXY_HOST=<qpi-bot-public-ip>` so SSH/scp can hop through the marketplace bot VM.
+- `/opt/support-bot/current` is a deploy-managed symlink. Do not create it as a normal directory.
+- Deploy archive contains `compose.prod.yml` plus `.env`; there is no rendered YAML config file.
 
-Primary editable template:
+Important deployment inputs:
 
-- `apps/support-bot/config/config.template.yaml`
+- `SUPPORT_BOT_TELEGRAM_BOT_TOKEN`
+- `SUPPORT_BOT_GROUP_ID`
+- `SUPPORT_BOT_OWNER_ID`
+- `SUPPORT_BOT_DEV_IDS` optional, falls back to owner behavior in the app
+- `SUPPORT_BOT_DATABASE_URL` or `DATABASE_URL`
+- `SUPPORT_BOT_DB_SCHEMA`, default `support_bot`
+- `SUPPORT_BOT_REDIS_DB`, default `7`
+- `TELEGRAM_API_PROXY_URLS`
 
-Useful fields there:
+Deploy smoke checks include:
 
-- `language.startCommandText`
-- `language.faqCommandText`
-- `language.helpCommandText`
-- `language.helpCommandStaffText`
-- `language.confirmationMessage`
-- `language.blockedSpam`
-- `language.ticketClosed`
-- `language.ticketClosedError`
-- `autoreply`
-- `categories`
-- `clean_replies`
-- `auto_close_tickets`
+- Redis PING through the compose `redis` service,
+- PostgreSQL schema creation/verification through the deployed `supportbot` container,
+- Telegram `getMe` through `TELEGRAM_API_PROXY_URLS`.
 
-Reference-only upstream template:
+## Live verification
 
-- `apps/support-bot/upstream/config/config-sample.yaml`
+```bash
+yc compute instance-group list-instances --name qpi-support-bot-ig --folder-id b1gmeblqlrrvm912n1uq
+ssh -o ProxyCommand="ssh -i ~/.ssh/id_rsa -W %h:%p ubuntu@<qpi-bot-public-ip>" -i ~/.ssh/id_rsa ubuntu@<support-bot-private-ip>
+readlink -f /opt/support-bot/current
+systemctl is-active support-bot.service
+sudo docker inspect -f '{{.Config.Image}}' current-supportbot-1
+sudo docker compose --project-directory /opt/support-bot/current -f /opt/support-bot/current/compose.prod.yml exec -T redis redis-cli ping
+```
 
-Formatting logic that consumes those template values:
+The deploy wrapper already verifies PostgreSQL schema access from inside the running container. For manual debugging, inspect container logs first:
 
-- staff ticket header/body: `apps/support-bot/upstream/src/users.ts`
-- staff reply formatting to user: `apps/support-bot/upstream/src/staff.ts`
-- `/start` and `/faq` handlers: `apps/support-bot/upstream/src/handlers.ts`
-- `/help`, `/open`, `/close`, `/reopen`: `apps/support-bot/upstream/src/commands.ts`
+```bash
+sudo docker compose --project-directory /opt/support-bot/current -f /opt/support-bot/current/compose.prod.yml logs --no-color --tail 100 supportbot
+```
 
-qpi-specific upstream patches currently in use:
+## Code map
 
-- `/start` parses marketplace support context payloads such as `seller_listing_L21_S11`.
-- ticket documents persist optional `username` and structured marketplace `context`.
-- staff-facing ticket headers include requester `telegram_id`, username, role, and marketplace refs.
-- file captions forwarded to staff reuse the same ticket-header formatting as text messages.
-- staff ticket delivery happens before user success confirmation, and failed delivery returns a temporary retry message.
-- orphan open tickets with empty `internalIds` can be resent with `resendOrphanTickets.js`.
+- `apps/support-bot/upstream/app/config.py`: qpi env mapping.
+- `apps/support-bot/upstream/app/__main__.py`: long-polling startup.
+- `apps/support-bot/upstream/app/bot/storage.py`: PostgreSQL schema and repository.
+- `apps/support-bot/upstream/app/bot/support_context.py`: `/start` payload parsing and metadata rendering.
+- `apps/support-bot/upstream/app/bot/support_topics.py`: Support Topic service seam.
+- `apps/support-bot/upstream/app/bot/support_metadata.py`: pinned metadata helpers.
+- `apps/support-bot/upstream/app/bot/telegram_client.py`: aiogram Bot construction with proxy support.

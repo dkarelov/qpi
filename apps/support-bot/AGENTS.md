@@ -27,8 +27,22 @@ Last updated: 2026-06-20 UTC
 
 - The bot keeps pending Telegram updates on startup by deleting the webhook with `drop_pending_updates=False`.
 - `/start` currently does not create a topic on its own; Support Topic creation happens on the first real support message.
-- The initial qpi tracer bullet supports Python/uv startup, PostgreSQL schema creation, Redis FSM configuration, first-proxy Telegram config, and text DM-to-topic round trip.
-- Rich qpi `/start` context metadata, Russian delivery semantics, media/albums, lifecycle controls, deploy workflow cleanup, and production cutover are tracked in GitHub issues #15-#22.
+- `/start` payloads may carry qpi role/topic/reference context; metadata is reflected in topic titles and pinned topic metadata.
+- Text, media, and album forwarding share the Support Topic service seam.
+- Closed Support Topics reopen when the user writes again.
+- Banned Telegram accounts are ignored until unbanned by staff action.
+- Old Mongo data, `/open`, orphan-ticket recovery, old ticket ids, private staff group support, and old queue preservation are out of scope for this runtime.
+
+## Environment
+
+- `SUPPORT_BOT_TELEGRAM_BOT_TOKEN`: Telegram bot token.
+- `SUPPORT_BOT_GROUP_ID`: topic-enabled support supergroup id.
+- `SUPPORT_BOT_OWNER_ID`: owner Telegram id.
+- `SUPPORT_BOT_DEV_IDS`: optional developer ids; omitted value falls back to owner behavior in the app.
+- `SUPPORT_BOT_DATABASE_URL` or `DATABASE_URL`: existing qpi PostgreSQL cluster connection string.
+- `SUPPORT_BOT_DB_SCHEMA`: default `support_bot`.
+- `SUPPORT_BOT_REDIS_DB`: default `7`.
+- `TELEGRAM_API_PROXY_URLS`: HTTP(S) proxy list used for Telegram Bot API egress.
 
 ## Optional Capabilities
 
@@ -44,6 +58,7 @@ Last updated: 2026-06-20 UTC
 - Production deploys are expected to run from the existing private runner workflow, not from the workstation.
 - Manual workstation deploys to the private-only VM must set `SUPPORT_BOT_VM_SSH_PROXY_HOST=<qpi-bot-public-ip>` so SSH/scp can hop through the always-on qpi bot VM.
 - `/opt/support-bot/current` is a symlink managed by the deploy wrapper; it must never be pre-created as a real directory.
+- Deploy smoke checks verify Redis PING, PostgreSQL schema access, and Telegram `getMe` through `TELEGRAM_API_PROXY_URLS`.
 
 ## Upstream Update Policy
 

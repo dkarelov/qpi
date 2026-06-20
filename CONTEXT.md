@@ -60,9 +60,14 @@ A manual queue item requiring an admin decision, including deposit anomalies and
 **Support Reference**:
 A short public identifier used for support conversations, such as `S4`, `L8`, `P31`, `W7`, `D12`, or `TX5`.
 
+**Support Topic**:
+The canonical support conversation unit: one Telegram forum topic per **Telegram Account** in the configured support supergroup.
+_Avoid_: ticket, private staff chat
+
 ## Relationships
 
 - A **Telegram Account** can hold one or more **Capabilities**.
+- A **Telegram Account** has at most one active **Support Topic** in the support supergroup.
 - A **Seller** owns zero or more **Shops**.
 - A **Shop** contains zero or more **Announcements**.
 - A **Buyer** can save zero or more **Shops**.
@@ -74,6 +79,7 @@ A short public identifier used for support conversations, such as `S4`, `L8`, `P
 - A **Seller Deposit Invoice** belongs to exactly one **Seller**.
 - An **Admin Exception** references a **Purchase**, **Seller Deposit Invoice**, or incoming chain transaction.
 - A **Support Reference** points to one marketplace entity but does not replace the entity itself.
+- A **Support Topic** can carry zero or more **Support References** as metadata in its title and pinned first message.
 
 ## Example Dialogue
 
@@ -89,3 +95,4 @@ A short public identifier used for support conversations, such as `S4`, `L8`, `P
 - "listing" is code vocabulary for **Announcement**; use **Announcement** in product/domain discussion.
 - "assignment" and "task" are code vocabulary for **Purchase**; use **Purchase** in product/domain discussion.
 - "order" means **WB Order** unless explicitly qualified; it is not the same as a **Purchase**.
+- "ticket" is old support-bot vocabulary; use **Support Topic** for the active support runtime.

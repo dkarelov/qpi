@@ -16,7 +16,7 @@ Notes:
 - `.venv` remains the runtime environment path, but `uv` manages it.
 - `requirements.txt` is generated from `uv.lock` and is only kept for Cloud Function/Terraform compatibility.
 - If `GH_TOKEN` is unavailable, repo wrappers also accept `TOKEN_YC_JSON_LOGGER` and map it automatically.
-- Companion support-bot work uses Node 24 plus Docker Compose; see `apps/support-bot/README.local.md` for the local overlay commands.
+- Companion support-bot work uses the nested Python/uv project plus Docker Compose; see `apps/support-bot/README.local.md` for the local commands.
 
 ## Execution Split
 
@@ -57,8 +57,8 @@ The supported execution model is:
    - keeps targeted rerun/recovery paths separate from the post-merge orchestrator.
 
 7. `support-bot ci`
-   - GitHub-hosted Node 24 workflow for `apps/support-bot/**`,
-   - runs upstream `npm ci`, `npm run build`, `npm test`,
+   - GitHub-hosted Python/uv workflow for `apps/support-bot/**`,
+   - runs `uv sync --locked`, Ruff, mypy, and pytest,
    - builds the production support-bot image,
    - also lints repository workflow/shell files.
 
@@ -305,6 +305,10 @@ Support-bot deploys:
 - For workstation/manual use, set `SUPPORT_BOT_VM_SSH_PROXY_HOST=<qpi-bot-public-ip>` so the wrapper can proxy through the always-on qpi bot VM.
 - The support-bot workflow builds the image in GitHub Actions and loads it onto the VM; the VM does not build the image locally.
 - The support-bot release path expects `/opt/support-bot/current` to be a symlink owned by the deploy wrapper, not a pre-created directory.
+- Required runtime inputs are `SUPPORT_BOT_TELEGRAM_BOT_TOKEN`, `SUPPORT_BOT_GROUP_ID`, `SUPPORT_BOT_OWNER_ID`, `SUPPORT_BOT_DATABASE_URL` or `DATABASE_URL`, and `TELEGRAM_API_PROXY_URLS`.
+- Optional runtime inputs include `SUPPORT_BOT_DEV_IDS`, `SUPPORT_BOT_DB_SCHEMA`, and `SUPPORT_BOT_REDIS_DB`.
+- The deploy wrapper validates Redis PING, PostgreSQL schema access, and Telegram `getMe` through the configured proxy before reporting success.
+- Old Mongo data, `/open`, orphan-ticket recovery, old ticket ids, and private staff group support are intentionally outside the new runtime.
 - Support-bot cloud-init `runcmd` sections that use `pipefail` must execute through `bash -lc`, not default `sh`.
 
 ## Troubleshooting
