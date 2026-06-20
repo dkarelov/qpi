@@ -43,6 +43,7 @@ Last updated: 2026-06-20 UTC
 - `SUPPORT_BOT_DB_SCHEMA`: default `support_bot`.
 - `SUPPORT_BOT_REDIS_DB`: default `7`.
 - `TELEGRAM_API_PROXY_URLS`: HTTP(S) proxy list used for Telegram Bot API egress.
+- Deploy preflight validates that `SUPPORT_BOT_GROUP_ID` is a Telegram `supergroup` with forum topics enabled.
 
 ## Optional Capabilities
 

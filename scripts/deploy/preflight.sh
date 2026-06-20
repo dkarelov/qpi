@@ -186,6 +186,53 @@ support_bot_telegram_get_me() {
   return 1
 }
 
+support_bot_telegram_get_chat() {
+  local chat_is_forum
+  local chat_title
+  local chat_type
+  local proxy_url
+  local telegram_get_chat
+
+  qpi_reject_legacy_telegram_api_proxy_url
+  qpi_validate_telegram_api_proxy_urls "${TELEGRAM_API_PROXY_URLS:-}" 1
+
+  mapfile -t telegram_proxy_urls < <(qpi_parse_telegram_api_proxy_urls "${TELEGRAM_API_PROXY_URLS:-}")
+  for _round in 1 2 3; do
+    for proxy_url in "${telegram_proxy_urls[@]}"; do
+      if telegram_get_chat="$(
+        curl -fsS --connect-timeout 5 --max-time 15 --proxy "${proxy_url}" \
+          --get --data-urlencode "chat_id=${SUPPORT_BOT_GROUP_ID}" \
+          "https://api.telegram.org/bot${SUPPORT_BOT_TELEGRAM_BOT_TOKEN}/getChat"
+      )" && jq -e '.ok == true' >/dev/null <<<"${telegram_get_chat}"; then
+        chat_type="$(jq -r '.result.type // "-"' <<<"${telegram_get_chat}")"
+        chat_is_forum="$(jq -r '.result.is_forum // false' <<<"${telegram_get_chat}")"
+        chat_title="$(jq -r '.result.title // "-"' <<<"${telegram_get_chat}")"
+        if [[ "${chat_type}" == "supergroup" && "${chat_is_forum}" == "true" ]]; then
+          printf 'telegram_get_chat_ok=%q\n' "true"
+          printf 'telegram_get_chat_title=%q\n' "${chat_title}"
+          printf 'telegram_get_chat_type=%q\n' "${chat_type}"
+          printf 'telegram_get_chat_is_forum=%q\n' "${chat_is_forum}"
+          return 0
+        fi
+        echo "SUPPORT_BOT_GROUP_ID must point to a topic-enabled supergroup; got type=${chat_type}, is_forum=${chat_is_forum}, title=${chat_title}." >&2
+        return 1
+      fi
+    done
+  done
+
+  if [[ "${QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE}" == "1" ]]; then
+    echo "Telegram getChat failed, continuing because QPI_ALLOW_DEPLOY_WHEN_TELEGRAM_UNREACHABLE=1." >&2
+    printf 'telegram_get_chat_ok=%q\n' "false"
+    printf 'telegram_get_chat_title=%q\n' "unknown"
+    printf 'telegram_get_chat_type=%q\n' "unknown"
+    printf 'telegram_get_chat_is_forum=%q\n' "unknown"
+    return 0
+  fi
+
+  echo "Telegram getChat failed through TELEGRAM_API_PROXY_URLS. SUPPORT_BOT_GROUP_ID may be wrong or the bot may not be in the group." >&2
+  return 1
+}
+
 qpi_timing_init
 qpi_phase_start "validate"
 
@@ -283,6 +330,7 @@ fi
 if [[ "${mode}" == "support-bot" ]]; then
   qpi_phase_start "telegram"
   support_bot_telegram_get_me
+  support_bot_telegram_get_chat
   qpi_phase_end
 fi
 

@@ -175,6 +175,44 @@ support_bot_telegram_get_me() {
   return 1
 }
 
+support_bot_telegram_get_chat() {
+  local chat_is_forum
+  local chat_title
+  local chat_type
+  local proxy_url
+  local telegram_get_chat
+
+  qpi_reject_legacy_telegram_api_proxy_url
+  qpi_validate_telegram_api_proxy_urls "${TELEGRAM_API_PROXY_URLS:-}" 1
+
+  mapfile -t telegram_proxy_urls < <(qpi_parse_telegram_api_proxy_urls "${TELEGRAM_API_PROXY_URLS:-}")
+  for _round in 1 2 3; do
+    for proxy_url in "${telegram_proxy_urls[@]}"; do
+      if telegram_get_chat="$(
+        curl -fsS --connect-timeout 5 --max-time 15 --proxy "${proxy_url}" \
+          --get --data-urlencode "chat_id=${SUPPORT_BOT_GROUP_ID}" \
+          "https://api.telegram.org/bot${SUPPORT_BOT_TELEGRAM_BOT_TOKEN}/getChat"
+      )" && jq -e '.ok == true' >/dev/null <<<"${telegram_get_chat}"; then
+        chat_type="$(jq -r '.result.type // "-"' <<<"${telegram_get_chat}")"
+        chat_is_forum="$(jq -r '.result.is_forum // false' <<<"${telegram_get_chat}")"
+        chat_title="$(jq -r '.result.title // "-"' <<<"${telegram_get_chat}")"
+        if [[ "${chat_type}" == "supergroup" && "${chat_is_forum}" == "true" ]]; then
+          printf 'telegram_get_chat_ok=%q\n' "true"
+          printf 'telegram_get_chat_title=%q\n' "${chat_title}"
+          printf 'telegram_get_chat_type=%q\n' "${chat_type}"
+          printf 'telegram_get_chat_is_forum=%q\n' "${chat_is_forum}"
+          return 0
+        fi
+        echo "SUPPORT_BOT_GROUP_ID must point to a topic-enabled supergroup; got type=${chat_type}, is_forum=${chat_is_forum}, title=${chat_title}." >&2
+        return 1
+      fi
+    done
+  done
+
+  echo "Telegram getChat failed through TELEGRAM_API_PROXY_URLS. SUPPORT_BOT_GROUP_ID may be wrong or the bot may not be in the group." >&2
+  return 1
+}
+
 run_preflight() {
   eval "$("${script_dir}/preflight.sh" support-bot)"
 }
@@ -287,6 +325,7 @@ asyncio.run(main())
 )"
 
 telegram_get_me_output="$(support_bot_telegram_get_me)"
+telegram_get_chat_output="$(support_bot_telegram_get_chat)"
 qpi_phase_end
 
 qpi_phase_start "cleanup-old-mongo"
@@ -302,6 +341,7 @@ echo "image_ref=${image_ref}"
 echo "support_bot_redis_ping=${support_bot_redis_ping}"
 echo "${postgres_status}"
 echo "${telegram_get_me_output}"
+echo "${telegram_get_chat_output}"
 echo "${old_mongo_cleanup}"
 
 qpi_append_step_summary "### Support Bot Deploy Result"
@@ -311,6 +351,7 @@ qpi_append_step_summary "- Image: \`${image_ref}\`"
 qpi_append_step_summary "- Redis ping: \`${support_bot_redis_ping}\`"
 qpi_append_step_summary "- PostgreSQL schema: \`ok\`"
 qpi_append_step_summary "- Telegram getMe via proxy: \`ok\`"
+qpi_append_step_summary "- Telegram forum group validation: \`ok\`"
 qpi_append_step_summary "- Old Mongo state cleanup: \`${old_mongo_cleanup}\`"
 qpi_append_step_summary ""
 qpi_emit_timing_summary "Support Bot Deploy"

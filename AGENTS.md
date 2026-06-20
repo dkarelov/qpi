@@ -757,7 +757,7 @@ Support-bot live behavior defaults:
 - `SUPPORT_BOT_DB_SCHEMA` defaults to `support_bot`,
 - `SUPPORT_BOT_REDIS_DB` defaults to `7`,
 - `TELEGRAM_API_PROXY_URLS` is required and is used for Telegram Bot API verification,
-- Redis PING, PostgreSQL schema access, and Telegram `getMe` through the proxy are deploy gates,
+- Redis PING, PostgreSQL schema access, Telegram `getMe`, and Telegram `getChat` forum-supergroup validation through the proxy are deploy gates,
 - old Mongo data, `/open`, orphan-ticket recovery, old ticket ids, private staff group support, and old queue preservation are out of scope for the new runtime.
 
 ### 7.5 Test runbook

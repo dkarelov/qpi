@@ -71,7 +71,11 @@ def test_support_bot_deploy_scripts_validate_postgres_redis_and_proxy_get_me() -
     assert "SUPPORT_BOT_STAFFCHAT_ID" not in deploy
     assert "resolve_support_bot_database_url" in deploy
     assert "support_bot_telegram_get_me" in deploy
+    assert "support_bot_telegram_get_chat" in deploy
     assert "--proxy" in deploy
+    assert "getChat" in deploy
+    assert '.result.type // "-"' in deploy
+    assert '.result.is_forum // false' in deploy
     assert "redis-cli ping" in deploy
     assert "asyncpg.create_pool" in deploy
     assert "create_schema" in deploy
@@ -83,6 +87,9 @@ def test_support_bot_deploy_scripts_validate_postgres_redis_and_proxy_get_me() -
     assert "SUPPORT_BOT_STAFFCHAT_ID" not in preflight
     assert "resolve_support_bot_database_url" in preflight
     assert "support_bot_telegram_get_me" in preflight
+    assert "support_bot_telegram_get_chat" in preflight
+    assert "getChat" in preflight
+    assert "topic-enabled supergroup" in preflight
     assert 'qpi_validate_telegram_api_proxy_urls "${TELEGRAM_API_PROXY_URLS:-}" 1' in preflight
 
     assert "mongodb" not in remote_rollout.lower()
