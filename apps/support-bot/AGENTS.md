@@ -31,6 +31,7 @@ Last updated: 2026-06-20 UTC
 - Text, media, and album forwarding share the Support Topic service seam.
 - Closed Support Topics reopen when the user writes again.
 - Banned Telegram accounts are ignored until unbanned by staff action.
+- Forum service-message cleanup is best effort; `can_delete_messages` is useful but not required for core support delivery.
 - Old Mongo data, `/open`, orphan-ticket recovery, old ticket ids, private staff group support, and old queue preservation are out of scope for this runtime.
 
 ## Environment

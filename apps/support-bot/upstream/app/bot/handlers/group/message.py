@@ -76,7 +76,8 @@ async def handler(message: Message) -> None:
     :param message: Message object.
     :return: None
     """
-    await message.delete()
+    with suppress(TelegramBadRequest):
+        await message.delete()
 
 
 @router.message(F.media_group_id, F.from_user[F.is_bot.is_(False)])

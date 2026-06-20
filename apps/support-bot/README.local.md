@@ -19,6 +19,7 @@ This directory contains the qpi-owned Python support-bot runtime imported from `
 - Redis is ephemeral FSM/session state. The container deployment caps it with `--maxmemory 512mb`.
 - Telegram Bot API egress uses `TELEGRAM_API_PROXY_URLS`; deploy and preflight validate `getMe`, forum-supergroup `getChat`, and administrator `getChatMember` with `can_manage_topics` through the configured proxy.
 - End-user private-chat text is Russian. Staff commands and operational metadata may remain English.
+- Telegram `Delete Messages` is optional: without it, forum service messages such as "pinned message" can remain visible, but they must not break delivery or page the developer.
 
 Out of scope for the new runtime:
 
