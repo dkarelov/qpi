@@ -7,7 +7,6 @@ from aiogram.types import Message
 from aiogram.utils.markdown import hbold, hcode
 
 from app.bot.manager import Manager
-from app.bot.support_metadata import pin_support_metadata
 from app.bot.utils.redis import RedisStorage
 
 router_id = Router()
@@ -53,31 +52,24 @@ async def handler(message: Message, manager: Manager, redis: RedisStorage) -> No
     if user_data.message_silent_mode:
         text = manager.text_message.get("silent_mode_disabled")
         with suppress(TelegramBadRequest):
-            # Reply with the specified text
             await message.reply(text)
-
-            # Unpin the chat message with the silent mode status
-            await message.bot.unpin_chat_message(
-                chat_id=message.chat.id,
-                message_id=user_data.message_silent_id,
-            )
+            if user_data.message_silent_id is not None:
+                await message.bot.unpin_chat_message(
+                    chat_id=message.chat.id,
+                    message_id=user_data.message_silent_id,
+                )
 
         user_data.message_silent_mode = False
         user_data.message_silent_id = None
     else:
         text = manager.text_message.get("silent_mode_enabled")
         with suppress(TelegramBadRequest):
-            # Reply with the specified text
-            msg = await message.reply(text)
-
-            # Pin the chat message with the silent mode status
-            await msg.pin(disable_notification=True)
+            await message.reply(text)
 
         user_data.message_silent_mode = True
-        user_data.message_silent_id = msg.message_id
+        user_data.message_silent_id = None
 
     await redis.update_user(user_data.id, user_data)
-    await pin_support_metadata(message.bot, manager.config, user_data)
 
 
 @router.message(Command("information"))
@@ -126,4 +118,3 @@ async def handler(message: Message, manager: Manager, redis: RedisStorage) -> No
     # Reply with the specified text
     await message.reply(text)
     await redis.update_user(user_data.id, user_data)
-    await pin_support_metadata(message.bot, manager.config, user_data)

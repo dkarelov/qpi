@@ -8,8 +8,8 @@ from aiogram.types import Message
 from app.bot.llm import LLMProvider
 from app.bot.manager import Manager
 from app.bot.policy import PolicyEngine
-from app.bot.support_metadata import pin_support_metadata
-from app.bot.support_topics import USER_DELIVERY_ACK, USER_DELIVERY_FAILURE
+from app.bot.support_context import render_topic_title
+from app.bot.support_topics import USER_DELIVERY_ACK, USER_DELIVERY_FAILURE, TelegramAccount
 from app.bot.types.album import Album
 from app.bot.utils.create_forum_topic import (
     create_forum_topic,
@@ -87,7 +87,6 @@ async def handle_incoming_message(
             pass
         user_data.status = "open"
         await redis.update_user(user_data.id, user_data)
-        await pin_support_metadata(message.bot, manager.config, user_data)
 
     # Record the incoming message in the conversation transcript (LLM context).
     await redis.append_conversation(user_data.id, "user", message_text(message))
@@ -132,10 +131,12 @@ async def handle_incoming_message(
             await message.reply(USER_DELIVERY_FAILURE)
             return
         try:
+            username = None if user_data.username == "-" else user_data.username
+            account = TelegramAccount(id=user_data.id, full_name=user_data.full_name, username=username)
             user_data.message_thread_id = await create_forum_topic(
                 message.bot,
                 manager.config,
-                user_data.full_name,
+                render_topic_title(account, user_data.support_context()),
             )
             await redis.update_user(user_data.id, user_data)
             await copy_message_to_topic()

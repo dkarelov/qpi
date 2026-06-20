@@ -9,7 +9,6 @@ from aiogram.types import Message
 from app.bot.manager import Manager
 from app.bot.policy import PolicyEngine
 from app.bot.policy.actions import render_template
-from app.bot.support_metadata import pin_support_metadata
 from app.bot.utils.redis import RedisStorage
 
 router = Router()
@@ -70,7 +69,6 @@ async def close_handler(message: Message, manager: Manager, redis: RedisStorage)
 
     user_data.status = "closed"
     await redis.update_user(user_data.id, user_data)
-    await pin_support_metadata(message.bot, manager.config, user_data)
     with suppress(TelegramBadRequest):
         await message.bot.close_forum_topic(
             chat_id=message.chat.id,
@@ -87,7 +85,6 @@ async def escalate_handler(message: Message, manager: Manager, redis: RedisStora
 
     user_data.status = "escalated"
     await redis.update_user(user_data.id, user_data)
-    await pin_support_metadata(message.bot, manager.config, user_data)
     with suppress(Exception):
         await message.bot.send_message(
             chat_id=manager.config.bot.DEV_ID,

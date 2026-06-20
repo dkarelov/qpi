@@ -14,6 +14,8 @@ Telegram forum topics are now the better operator interface for support because 
 
 Use a forum-topic model. The canonical support unit is **Support Topic**: one Telegram forum topic per Telegram Account in the configured support supergroup.
 
+Render operator context in the topic title as `{Telegram Account name} · {Role topic} · {Support References}`. Do not create qpi metadata pinned messages; staff can use `/information` for on-demand Telegram identity and state details.
+
 Run the replacement as an immediate no-migration cutover. The old runtime is not kept in coexistence, and no old queue state is imported.
 
 Persist support state in the existing PostgreSQL cluster under an app-owned `support_bot` schema. Redis is ephemeral Redis for FSM/session state only and is capped separately in the container deployment.

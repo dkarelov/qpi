@@ -11,7 +11,6 @@ from aiogram.utils.markdown import hlink
 from app.bot.manager import Manager
 from app.bot.policy import EvalContext, PolicyEngine
 from app.bot.policy.context import EVENT_TOPIC_CREATED
-from app.bot.support_metadata import pin_support_metadata
 from app.bot.types.album import Album
 from app.bot.utils.redis import RedisStorage
 
@@ -65,7 +64,7 @@ async def handler(
                 )
             return
 
-    await pin_support_metadata(message.bot, manager.config, user_data)
+    return None
 
 
 @router.message(F.pinned_message | F.forum_topic_edited | F.forum_topic_closed | F.forum_topic_reopened)

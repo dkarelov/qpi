@@ -13,7 +13,7 @@ This directory contains the qpi-owned Python support-bot runtime imported from `
 
 - Telegram-only, private-only, long polling.
 - Canonical support unit: **Support Topic**, one Telegram forum topic per Telegram Account in the configured support supergroup.
-- User messages are delivered from private chat into the matching Support Topic; closed topics reopen on the next user message and refresh pinned metadata to `State: open`.
+- User messages are delivered from private chat into the matching Support Topic; closed topics reopen on the next user message without creating metadata pins.
 - Staff replies are handled in the support supergroup topic.
 - Persistent state uses the existing qpi PostgreSQL cluster and app-owned schema `support_bot`.
 - Redis is ephemeral FSM/session state. The container deployment caps it with `--maxmemory 512mb`.
@@ -36,7 +36,7 @@ Out of scope for the new runtime:
 cd apps/support-bot/upstream
 uv sync --locked
 uv run ruff check .
-uv run mypy app/config.py app/bot/storage.py app/bot/support_context.py app/bot/support_topics.py app/bot/support_metadata.py app/bot/newsletter.py app/bot/telegram_client.py
+uv run mypy app/config.py app/bot/storage.py app/bot/support_context.py app/bot/support_topics.py app/bot/newsletter.py app/bot/telegram_client.py
 uv run pytest
 ```
 
@@ -120,7 +120,7 @@ Manual Telegram smoke after cutover:
 
 - Open the bot with a contextual payload such as `/start seller_listing_L21_S11`.
 - Send the first real private support message and verify one Support Topic is created in the support supergroup.
-- Verify the topic title and pinned metadata include the role/topic/reference context.
+- Verify the topic title is ordered as `{name} · {Role topic} · {refs}` and includes the role/topic/reference context.
 - Reply as staff with text and verify the user receives it in private chat.
 - Send user media and verify it appears in the same Support Topic.
 - Close the topic from staff controls, then send a new user message and verify the same topic reopens.
@@ -131,7 +131,6 @@ Manual Telegram smoke after cutover:
 - `apps/support-bot/upstream/app/config.py`: qpi env mapping.
 - `apps/support-bot/upstream/app/__main__.py`: long-polling startup.
 - `apps/support-bot/upstream/app/bot/storage.py`: PostgreSQL schema and repository.
-- `apps/support-bot/upstream/app/bot/support_context.py`: `/start` payload parsing and metadata rendering.
+- `apps/support-bot/upstream/app/bot/support_context.py`: `/start` payload parsing and Support Topic title rendering.
 - `apps/support-bot/upstream/app/bot/support_topics.py`: Support Topic service seam.
-- `apps/support-bot/upstream/app/bot/support_metadata.py`: pinned metadata helpers.
 - `apps/support-bot/upstream/app/bot/telegram_client.py`: aiogram Bot construction with proxy support.

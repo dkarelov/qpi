@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
 if TYPE_CHECKING:
-    from app.bot.support_topics import SupportTopic, TelegramAccount
+    from app.bot.support_topics import TelegramAccount
 
 Role = Literal["buyer", "seller"]
 Topic = Literal["generic", "shop", "listing", "purchase", "withdraw", "deposit"]
@@ -93,31 +93,6 @@ def render_topic_title(account: "TelegramAccount", context: SupportContext, max_
     else:
         label = f"{context.role.title()} {context.topic}" if context.role else context.topic
         refs = render_refs(context.refs)
-        prefix = f"{refs} · " if refs else ""
-        title = f"{prefix}{label} · {account_name}"
+        suffix = f" · {refs}" if refs else ""
+        title = f"{account_name} · {label}{suffix}"
     return _truncate_title(title, max_length=max_length)
-
-
-def render_pinned_metadata(account: "TelegramAccount", topic: "SupportTopic") -> str:
-    context = topic.context
-    username = "-"
-    if account.username:
-        username = account.username if account.username.startswith("@") else f"@{account.username}"
-    refs = render_refs(context.refs, separator=", ") or "-"
-    flags = []
-    if topic.is_banned:
-        flags.append("banned")
-    if topic.is_silent:
-        flags.append("silent")
-    return "\n".join(
-        [
-            "Support Topic",
-            f"Telegram ID: {account.id}",
-            f"Username: {username}",
-            f"Name: {account.full_name}",
-            f"Context: {context.label()}",
-            f"Refs: {refs}",
-            f"State: {topic.status}",
-            f"Flags: {', '.join(flags) if flags else '-'}",
-        ]
-    )

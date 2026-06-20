@@ -79,7 +79,7 @@ _Avoid_: ticket, private staff chat
 - A **Seller Deposit Invoice** belongs to exactly one **Seller**.
 - An **Admin Exception** references a **Purchase**, **Seller Deposit Invoice**, or incoming chain transaction.
 - A **Support Reference** points to one marketplace entity but does not replace the entity itself.
-- A **Support Topic** can carry zero or more **Support References** as metadata in its title and pinned first message.
+- A **Support Topic** carries operator-visible **Support References** in its topic title.
 
 ## Example Dialogue
 

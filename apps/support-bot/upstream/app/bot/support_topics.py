@@ -7,7 +7,6 @@ from app.bot.support_context import (
     GENERIC_CONTEXT,
     SupportContext,
     parse_start_payload,
-    render_pinned_metadata,
     render_topic_title,
 )
 
@@ -112,7 +111,6 @@ class SupportTopicService:
             username=account.username,
         )
         await self.store.save(topic)
-        await self._pin_metadata(account, topic)
         return topic
 
     async def record_start_payload(self, account: TelegramAccount, payload: str | None) -> SupportContext:
@@ -126,7 +124,6 @@ class SupportTopicService:
             existing.username = account.username
             await self.store.save(existing)
             await self._edit_topic_title(existing)
-            await self._pin_metadata(account, existing)
         return context
 
     async def forward_user_text(self, account: TelegramAccount, text: str) -> SupportTopic | None:
@@ -224,7 +221,6 @@ class SupportTopicService:
         close_topic = getattr(self.telegram, "close_topic", None)
         if close_topic is not None:
             await close_topic(group_id=self.group_id, thread_id=thread_id)
-        await self._pin_metadata(self._account_from_topic(topic), topic)
         return topic
 
     async def set_banned(self, *, thread_id: int, is_banned: bool) -> SupportTopic | None:
@@ -233,7 +229,6 @@ class SupportTopicService:
             return None
         topic.is_banned = is_banned
         await self.store.save(topic)
-        await self._pin_metadata(self._account_from_topic(topic), topic)
         return topic
 
     async def set_silent(self, *, thread_id: int, is_silent: bool) -> SupportTopic | None:
@@ -242,7 +237,6 @@ class SupportTopicService:
             return None
         topic.is_silent = is_silent
         await self.store.save(topic)
-        await self._pin_metadata(self._account_from_topic(topic), topic)
         return topic
 
     async def escalate_topic(self, *, thread_id: int) -> SupportTopic | None:
@@ -254,18 +248,7 @@ class SupportTopicService:
         notify_developer = getattr(self.telegram, "notify_developer", None)
         if notify_developer is not None:
             await notify_developer(text=f"Escalated Support Topic for Telegram ID {topic.telegram_id}")
-        await self._pin_metadata(self._account_from_topic(topic), topic)
         return topic
-
-    async def _pin_metadata(self, account: TelegramAccount, topic: SupportTopic) -> None:
-        pin_topic_metadata = getattr(self.telegram, "pin_topic_metadata", None)
-        if pin_topic_metadata is None:
-            return
-        await pin_topic_metadata(
-            group_id=self.group_id,
-            thread_id=topic.thread_id,
-            text=render_pinned_metadata(account, topic),
-        )
 
     async def _edit_topic_title(self, topic: SupportTopic) -> None:
         edit_topic_title = getattr(self.telegram, "edit_topic_title", None)
@@ -298,13 +281,4 @@ class SupportTopicService:
                 await reopen_topic(group_id=self.group_id, thread_id=topic.thread_id)
             topic.status = "open"
             await self.store.save(topic)
-            await self._pin_metadata(account, topic)
         return topic
-
-    @staticmethod
-    def _account_from_topic(topic: SupportTopic) -> TelegramAccount:
-        return TelegramAccount(
-            id=topic.telegram_id,
-            full_name=topic.full_name or f"User {topic.telegram_id}",
-            username=topic.username,
-        )

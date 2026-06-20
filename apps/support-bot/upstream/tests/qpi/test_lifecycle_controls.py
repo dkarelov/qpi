@@ -11,7 +11,7 @@ async def test_closed_topic_reopens_same_topic_on_next_user_message() -> None:
             self.reopened: list[int] = []
             self.topic_messages: list[tuple[int, str]] = []
             self.private_messages: list[str] = []
-            self.metadata: list[str] = []
+            self.metadata_calls: list[str] = []
 
         async def create_topic(self, *, group_id: int, title: str) -> int:
             self.created += 1
@@ -30,7 +30,7 @@ async def test_closed_topic_reopens_same_topic_on_next_user_message() -> None:
             self.private_messages.append(text)
 
         async def pin_topic_metadata(self, *, group_id: int, thread_id: int, text: str) -> None:
-            self.metadata.append(text)
+            self.metadata_calls.append(text)
 
     telegram = FakeTelegram()
     service = SupportTopicService(
@@ -49,8 +49,8 @@ async def test_closed_topic_reopens_same_topic_on_next_user_message() -> None:
     assert telegram.reopened == [topic.thread_id]
     assert telegram.private_messages == []
     assert telegram.topic_messages == [(topic.thread_id, "Первый вопрос"), (topic.thread_id, "Новый вопрос")]
-    assert "State: closed" in telegram.metadata[-2]
-    assert "State: open" in telegram.metadata[-1]
+    assert topic.status == "open"
+    assert telegram.metadata_calls == []
 
 
 @pytest.mark.asyncio
@@ -170,13 +170,13 @@ async def test_silent_topic_suppresses_staff_reply_delivery() -> None:
 
 
 @pytest.mark.asyncio
-async def test_escalation_sets_state_notifies_developer_and_pins_metadata() -> None:
+async def test_escalation_sets_state_and_notifies_developer_without_pinning_metadata() -> None:
     from app.bot.support_topics import InMemorySupportTopicStore, SupportTopicService, TelegramAccount
 
     class FakeTelegram:
         def __init__(self) -> None:
             self.dev_notifications: list[str] = []
-            self.metadata: list[str] = []
+            self.metadata_calls: list[str] = []
 
         async def create_topic(self, *, group_id: int, title: str) -> int:
             return 701
@@ -191,7 +191,7 @@ async def test_escalation_sets_state_notifies_developer_and_pins_metadata() -> N
             self.dev_notifications.append(text)
 
         async def pin_topic_metadata(self, *, group_id: int, thread_id: int, text: str) -> None:
-            self.metadata.append(text)
+            self.metadata_calls.append(text)
 
     telegram = FakeTelegram()
     service = SupportTopicService(
@@ -206,4 +206,4 @@ async def test_escalation_sets_state_notifies_developer_and_pins_metadata() -> N
     assert escalated is topic
     assert topic.status == "escalated"
     assert telegram.dev_notifications == ["Escalated Support Topic for Telegram ID 1001"]
-    assert "State: escalated" in telegram.metadata[-1]
+    assert telegram.metadata_calls == []

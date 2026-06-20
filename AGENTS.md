@@ -646,10 +646,10 @@ Manual Telegram smoke after support-bot cutover:
 
 - contextual `/start` payload,
 - first real private message creates a Support Topic,
-- topic title and pinned metadata render role/topic/reference context,
+- topic title renders Telegram account name first, then role/topic/reference context,
 - staff text reply reaches the user,
 - user media appears in the same Support Topic,
-- close/reopen keeps the same topic and refreshes pinned metadata to `State: open`,
+- close/reopen keeps the same topic without creating metadata pins,
 - ban ignores further user messages until unbanned.
 
 DB tunnel (default session policy):
@@ -744,7 +744,7 @@ Support-bot local validation:
 cd apps/support-bot/upstream
 uv sync --locked
 uv run ruff check .
-uv run mypy app/config.py app/bot/storage.py app/bot/support_context.py app/bot/support_topics.py app/bot/support_metadata.py app/bot/newsletter.py app/bot/telegram_client.py
+uv run mypy app/config.py app/bot/storage.py app/bot/support_context.py app/bot/support_topics.py app/bot/newsletter.py app/bot/telegram_client.py
 uv run pytest
 docker compose -f ../compose.dev.yml up -d
 ```
@@ -758,6 +758,7 @@ Support-bot live behavior defaults:
 - `SUPPORT_BOT_REDIS_DB` defaults to `7`,
 - `TELEGRAM_API_PROXY_URLS` is required and is used for Telegram Bot API verification,
 - Redis PING, PostgreSQL schema access, Telegram `getMe`, Telegram `getChat` forum-supergroup validation, and Telegram `getChatMember` administrator `can_manage_topics` validation through the proxy are deploy gates,
+- Support Topic titles are the operator metadata surface and use `{name} · {Role topic} · {refs}` so Telegram sidebar truncation preserves the person name,
 - Telegram `can_delete_messages` is optional; forum service-message cleanup is best effort and must not fail support delivery,
 - old Mongo data, `/open`, orphan-ticket recovery, old ticket ids, private staff group support, and old queue preservation are out of scope for the new runtime.
 

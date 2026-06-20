@@ -181,7 +181,7 @@ async def test_private_message_is_not_forwarded_to_general_group_when_topic_crea
 
 
 @pytest.mark.asyncio
-async def test_reopened_topic_re_pins_open_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reopened_topic_does_not_pin_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.bot.handlers.private import message as private_message
     from app.bot.utils.redis.models import UserData
     from app.config import AIConfig, BotConfig, Config, DatabaseConfig, PolicyConfig, RedisConfig, TelegramConfig
@@ -191,19 +191,10 @@ async def test_reopened_topic_re_pins_open_metadata(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(private_message.asyncio, "sleep", no_sleep)
 
-    class FakePinnedMetadataMessage:
-        def __init__(self, text: str) -> None:
-            self.text = text
-            self.pinned = False
-
-        async def pin(self, *, disable_notification: bool) -> None:
-            assert disable_notification is True
-            self.pinned = True
-
     class FakeBot:
         def __init__(self) -> None:
             self.reopened_threads: list[tuple[int, int]] = []
-            self.metadata_messages: list[FakePinnedMetadataMessage] = []
+            self.metadata_messages: list[str] = []
 
         async def reopen_forum_topic(self, *, chat_id: int, message_thread_id: int) -> None:
             self.reopened_threads.append((chat_id, message_thread_id))
@@ -215,12 +206,8 @@ async def test_reopened_topic_re_pins_open_metadata(monkeypatch: pytest.MonkeyPa
             *,
             message_thread_id: int | None = None,
             **_kwargs: object,
-        ) -> FakePinnedMetadataMessage:
-            assert chat_id == -1004355595623
-            assert message_thread_id == 701
-            metadata = FakePinnedMetadataMessage(text)
-            self.metadata_messages.append(metadata)
-            return metadata
+        ) -> None:
+            self.metadata_messages.append(text)
 
     class FakeReply:
         async def delete(self) -> None:
@@ -294,7 +281,108 @@ async def test_reopened_topic_re_pins_open_metadata(monkeypatch: pytest.MonkeyPa
     assert message.bot.reopened_threads == [(-1004355595623, 701)]
     assert message.forwards == [(-1004355595623, 701)]
     assert any(update.status == "open" for update in redis.updated)
-    assert [metadata.pinned for metadata in message.bot.metadata_messages] == [True]
-    assert "Context: seller/listing" in message.bot.metadata_messages[0].text
-    assert "Refs: L21, S11" in message.bot.metadata_messages[0].text
-    assert "State: open" in message.bot.metadata_messages[0].text
+    assert message.bot.metadata_messages == []
+
+
+@pytest.mark.asyncio
+async def test_deleted_topic_recovery_creates_replacement_with_context_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiogram.exceptions import TelegramBadRequest
+
+    from app.bot.handlers.private import message as private_message
+    from app.bot.utils.redis.models import UserData
+    from app.config import AIConfig, BotConfig, Config, DatabaseConfig, PolicyConfig, RedisConfig, TelegramConfig
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(private_message.asyncio, "sleep", no_sleep)
+
+    class FakeForumTopic:
+        message_thread_id = 702
+
+    class FakeBot:
+        def __init__(self) -> None:
+            self.created_topic_names: list[str] = []
+
+        async def create_forum_topic(self, *, name: str, **_kwargs: object) -> FakeForumTopic:
+            self.created_topic_names.append(name)
+            return FakeForumTopic()
+
+    class FakeReply:
+        async def delete(self) -> None:
+            return None
+
+    class FakeMessage:
+        def __init__(self) -> None:
+            self.bot = FakeBot()
+            self.text = "Снова пишу после удаления темы."
+            self.caption = None
+            self.forwards: list[tuple[int, int | None]] = []
+            self.replies: list[str] = []
+
+        async def forward(self, *, chat_id: int, message_thread_id: int | None = None) -> None:
+            if message_thread_id == 701:
+                raise TelegramBadRequest(method=object(), message="Bad Request: message thread not found")
+            self.forwards.append((chat_id, message_thread_id))
+
+        async def reply(self, text: str) -> FakeReply:
+            self.replies.append(text)
+            return FakeReply()
+
+    class FakeRedis:
+        def __init__(self) -> None:
+            self.conversation: list[tuple[int, str, str]] = []
+            self.updated: list[UserData] = []
+
+        async def append_conversation(self, user_id: int, role: str, text: str) -> None:
+            self.conversation.append((user_id, role, text))
+
+        async def update_user(self, _id: int, data: UserData) -> None:
+            self.updated.append(data)
+
+    class FakeManager:
+        config = Config(
+            bot=BotConfig(TOKEN="123:token", DEV_IDS=[111], GROUP_ID=-1004355595623),
+            redis=RedisConfig(HOST="redis", PORT=6379, DB=7),
+            db=DatabaseConfig(URL="postgresql://support:secret@db.local:5432/qpi"),
+            telegram=TelegramConfig(PROXY_URL="http://proxy.example:8080"),
+            policy=PolicyConfig(ENABLED=False, PATH="config/policy.yaml"),
+            ai=AIConfig(
+                PROVIDER="none",
+                BASE_URL="https://openrouter.ai/api/v1",
+                API_KEY="",
+                MODEL="openai/gpt-5.4-nano",
+                SYSTEM_PROMPT_PATH="config/system_prompt.txt",
+                TIMEOUT_S=8,
+            ),
+        )
+
+    message = FakeMessage()
+    redis = FakeRedis()
+    user_data = UserData(
+        message_thread_id=701,
+        message_silent_id=None,
+        message_silent_mode=False,
+        id=1001,
+        full_name="Карина",
+        username="-",
+        status="open",
+        support_role="seller",
+        support_topic="listing",
+        support_refs=("L21", "S11"),
+    )
+
+    await private_message.handle_incoming_message(
+        message=message,  # type: ignore[arg-type]
+        manager=FakeManager(),  # type: ignore[arg-type]
+        redis=redis,  # type: ignore[arg-type]
+        user_data=user_data,
+    )
+
+    assert message.bot.created_topic_names == ["Карина · Seller listing · L21 S11"]
+    assert message.forwards == [(-1004355595623, 702)]
+    assert message.replies == ["Сообщение отправлено в поддержку. Ответим здесь."]
+    assert user_data.message_thread_id == 702
+    assert any(update.message_thread_id == 702 for update in redis.updated)
