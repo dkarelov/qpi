@@ -3,24 +3,27 @@ services:
     image: ${SUPPORT_BOT_IMAGE}
     restart: unless-stopped
     depends_on:
-      mongodb:
+      redis:
         condition: service_healthy
-    volumes:
-      - /etc/support-bot/config.yaml:/bot/config/config.yaml:ro
+    env_file:
+      - .env
 
-  mongodb:
-    image: mongo:8.0
+  redis:
+    image: redis:8-alpine
     restart: unless-stopped
-    volumes:
-      - /var/lib/support-bot/mongodb:/data/db
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - allkeys-lru
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "mongosh --quiet --eval \"db.adminCommand({ ping: 1 }).ok\" mongodb://127.0.0.1:27017/admin | grep 1",
-        ]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 15s
-
+      start_period: 5s

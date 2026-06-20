@@ -17,7 +17,7 @@ write_files:
       After=docker.service network-online.target
       Wants=network-online.target
       ConditionPathExists=/opt/support-bot/current/compose.prod.yml
-      ConditionPathExists=/etc/support-bot/config.yaml
+      ConditionPathExists=/opt/support-bot/current/.env
 
       [Service]
       Type=oneshot
@@ -45,9 +45,7 @@ runcmd:
       systemctl enable --now docker
       install -d -m 0755 /opt/support-bot
       install -d -m 0755 /opt/support-bot/releases
-      install -d -m 0755 /etc/support-bot
       install -d -m 0755 /var/lib/support-bot
-      install -d -m 0755 /var/lib/support-bot/mongodb
       chown -R ubuntu:ubuntu /opt/support-bot
       systemctl daemon-reload
       systemctl enable support-bot.service

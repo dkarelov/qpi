@@ -1,9 +1,16 @@
 services:
-  mongodb:
-    image: mongo:8.0
+  redis:
+    image: redis:8-alpine
     restart: unless-stopped
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - allkeys-lru
     ports:
-      - "27017:27017"
-    volumes:
-      - ./.tmp/mongodb:/data/db
-
+      - "6379:6379"

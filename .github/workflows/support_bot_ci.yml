@@ -22,12 +22,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - name: Setup Python
+        uses: actions/setup-python@v6
         with:
-          node-version: "24"
-          cache: "npm"
-          cache-dependency-path: apps/support-bot/upstream/package-lock.json
+          python-version-file: apps/support-bot/upstream/.python-version
+
+      - name: Setup uv
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          setup-python: "false"
+          install-uv: "true"
+          install-yc: "false"
 
       - name: Install CI lint tools
         run: |
@@ -40,21 +45,32 @@ jobs:
             echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
           fi
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         working-directory: apps/support-bot/upstream
-        run: npm ci
+        run: uv sync --locked
 
-      - name: Build upstream app
+      - name: Run Ruff
         working-directory: apps/support-bot/upstream
-        run: npm run build
+        run: uv run ruff check .
 
-      - name: Run upstream tests
+      - name: Run mypy
         working-directory: apps/support-bot/upstream
-        run: npm test
+        run: >-
+          uv run mypy
+          app/config.py
+          app/bot/storage.py
+          app/bot/support_context.py
+          app/bot/support_topics.py
+          app/bot/support_metadata.py
+          app/bot/newsletter.py
+          app/bot/telegram_client.py
+
+      - name: Run support-bot tests
+        working-directory: apps/support-bot/upstream
+        run: uv run pytest
 
       - name: Validate workflow and shell files
         run: scripts/dev/check_ci_files.sh
 
       - name: Build production image
         run: docker build -f apps/support-bot/Dockerfile -t qpi-support-bot-ci:${{ github.sha }} apps/support-bot
-

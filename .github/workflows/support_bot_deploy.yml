@@ -34,31 +34,41 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - name: Setup Python
+        uses: actions/setup-python@v6
         with:
-          node-version: "24"
-          cache: "npm"
-          cache-dependency-path: apps/support-bot/upstream/package-lock.json
+          python-version-file: apps/support-bot/upstream/.python-version
 
-      - name: Setup yc CLI
+      - name: Setup uv and yc CLI
         uses: ./.github/actions/setup-qpi-deploy
         with:
           setup-python: "false"
-          install-uv: "false"
+          install-uv: "true"
           install-yc: "true"
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         working-directory: apps/support-bot/upstream
-        run: npm ci
+        run: uv sync --locked
 
-      - name: Build upstream app
+      - name: Run Ruff
         working-directory: apps/support-bot/upstream
-        run: npm run build
+        run: uv run ruff check .
 
-      - name: Run upstream tests
+      - name: Run mypy
         working-directory: apps/support-bot/upstream
-        run: npm test
+        run: >-
+          uv run mypy
+          app/config.py
+          app/bot/storage.py
+          app/bot/support_context.py
+          app/bot/support_topics.py
+          app/bot/support_metadata.py
+          app/bot/newsletter.py
+          app/bot/telegram_client.py
+
+      - name: Run support-bot tests
+        working-directory: apps/support-bot/upstream
+        run: uv run pytest
 
       - name: Resolve image metadata
         id: meta
@@ -160,8 +170,13 @@ jobs:
       SUPPORT_BOT_INSTANCE_GROUP_NAME: ${{ vars.SUPPORT_BOT_INSTANCE_GROUP_NAME }}
       SUPPORT_BOT_VM_SSH_USER: ${{ vars.SUPPORT_BOT_VM_SSH_USER }}
       SUPPORT_BOT_TELEGRAM_BOT_TOKEN: ${{ secrets.SUPPORT_BOT_TELEGRAM_BOT_TOKEN }}
-      SUPPORT_BOT_STAFFCHAT_ID: ${{ vars.SUPPORT_BOT_STAFFCHAT_ID }}
+      SUPPORT_BOT_GROUP_ID: ${{ vars.SUPPORT_BOT_GROUP_ID }}
       SUPPORT_BOT_OWNER_ID: ${{ vars.SUPPORT_BOT_OWNER_ID }}
+      SUPPORT_BOT_DEV_IDS: ${{ vars.SUPPORT_BOT_DEV_IDS }}
+      SUPPORT_BOT_DATABASE_URL: ${{ secrets.SUPPORT_BOT_DATABASE_URL }}
+      SUPPORT_BOT_DB_SCHEMA: ${{ vars.SUPPORT_BOT_DB_SCHEMA }}
+      SUPPORT_BOT_REDIS_DB: ${{ vars.SUPPORT_BOT_REDIS_DB }}
+      TELEGRAM_API_PROXY_URLS: ${{ secrets.TELEGRAM_API_PROXY_URLS }}
       SUPPORT_BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
     steps:
       - name: Checkout
@@ -196,8 +211,13 @@ jobs:
       SUPPORT_BOT_INSTANCE_GROUP_NAME: ${{ vars.SUPPORT_BOT_INSTANCE_GROUP_NAME }}
       SUPPORT_BOT_VM_SSH_USER: ${{ vars.SUPPORT_BOT_VM_SSH_USER }}
       SUPPORT_BOT_TELEGRAM_BOT_TOKEN: ${{ secrets.SUPPORT_BOT_TELEGRAM_BOT_TOKEN }}
-      SUPPORT_BOT_STAFFCHAT_ID: ${{ vars.SUPPORT_BOT_STAFFCHAT_ID }}
+      SUPPORT_BOT_GROUP_ID: ${{ vars.SUPPORT_BOT_GROUP_ID }}
       SUPPORT_BOT_OWNER_ID: ${{ vars.SUPPORT_BOT_OWNER_ID }}
+      SUPPORT_BOT_DEV_IDS: ${{ vars.SUPPORT_BOT_DEV_IDS }}
+      SUPPORT_BOT_DATABASE_URL: ${{ secrets.SUPPORT_BOT_DATABASE_URL }}
+      SUPPORT_BOT_DB_SCHEMA: ${{ vars.SUPPORT_BOT_DB_SCHEMA }}
+      SUPPORT_BOT_REDIS_DB: ${{ vars.SUPPORT_BOT_REDIS_DB }}
+      TELEGRAM_API_PROXY_URLS: ${{ secrets.TELEGRAM_API_PROXY_URLS }}
       SUPPORT_BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
       SUPPORT_BOT_RELEASE_ID: ${{ github.sha }}
     steps:

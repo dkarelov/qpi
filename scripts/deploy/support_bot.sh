@@ -16,13 +16,18 @@ Required environment:
   YC_FOLDER_ID
   SUPPORT_BOT_INSTANCE_GROUP_NAME
   SUPPORT_BOT_TELEGRAM_BOT_TOKEN
-  SUPPORT_BOT_STAFFCHAT_ID
+  SUPPORT_BOT_GROUP_ID
   SUPPORT_BOT_OWNER_ID
+  SUPPORT_BOT_DATABASE_URL or DATABASE_URL
+  TELEGRAM_API_PROXY_URLS
 
 SSH auth:
   SUPPORT_BOT_VM_SSH_PRIVATE_KEY or SUPPORT_BOT_VM_SSH_KEY_PATH
 
 Optional environment:
+  SUPPORT_BOT_DEV_IDS
+  SUPPORT_BOT_DB_SCHEMA (default: support_bot)
+  SUPPORT_BOT_REDIS_DB (default: 7)
   SUPPORT_BOT_VM_SSH_USER (default: ubuntu)
   SUPPORT_BOT_VM_SSH_PORT (default: 22)
   SUPPORT_BOT_VM_SSH_PROXY_HOST
@@ -50,11 +55,15 @@ SUPPORT_BOT_VM_SSH_PROXY_USER="${SUPPORT_BOT_VM_SSH_PROXY_USER:-ubuntu}"
 SUPPORT_BOT_VM_SSH_PROXY_PORT="${SUPPORT_BOT_VM_SSH_PROXY_PORT:-22}"
 SUPPORT_BOT_ARTIFACT_RETENTION_COUNT="${SUPPORT_BOT_ARTIFACT_RETENTION_COUNT:-10}"
 SUPPORT_BOT_ARTIFACT_RETENTION_DAYS="${SUPPORT_BOT_ARTIFACT_RETENTION_DAYS:-14}"
+SUPPORT_BOT_DB_SCHEMA="${SUPPORT_BOT_DB_SCHEMA:-support_bot}"
+SUPPORT_BOT_REDIS_DB="${SUPPORT_BOT_REDIS_DB:-7}"
+TELEGRAM_API_PROXY_URLS="${TELEGRAM_API_PROXY_URLS:-}"
 
 generated_ssh_key=0
 ssh_key_path=""
 temp_dir=""
 support_bot_host=""
+support_bot_database_url=""
 
 cleanup() {
   if [[ -n "${temp_dir}" && -d "${temp_dir}" ]]; then
@@ -64,10 +73,18 @@ cleanup() {
     rm -f "${ssh_key_path}"
   fi
   if [[ "${remote_uploaded:-0}" == "1" && -n "${support_bot_host:-}" && "${#ssh_args[@]}" -gt 0 ]]; then
-    remote_exec "rm -f /tmp/support-bot-config.yaml /tmp/support-bot-config.previous.yaml /tmp/remote_rollout_support_bot.sh /tmp/$(basename "${release_archive:-}")" >/dev/null 2>&1 || true
+    remote_exec "rm -f /tmp/remote_rollout_support_bot.sh /tmp/$(basename "${release_archive:-}")" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
+
+resolve_support_bot_database_url() {
+  support_bot_database_url="${SUPPORT_BOT_DATABASE_URL:-${DATABASE_URL:-}}"
+  if [[ -z "${support_bot_database_url}" ]]; then
+    echo "SUPPORT_BOT_DATABASE_URL or DATABASE_URL is required." >&2
+    exit 1
+  fi
+}
 
 resolve_support_bot_host() {
   support_bot_host="$(qpi_resolve_support_bot_host "${YC_FOLDER_ID}" "${SUPPORT_BOT_INSTANCE_GROUP_NAME}")"
@@ -111,8 +128,49 @@ prune_artifacts() {
   fi
 }
 
-escape_sed_replacement() {
-  printf '%s' "$1" | sed -e 's/[\/&]/\\&/g'
+write_env_file() {
+  local target="$1"
+
+  {
+    printf 'SUPPORT_BOT_IMAGE=%s\n' "${image_ref}"
+    printf 'SUPPORT_BOT_TELEGRAM_BOT_TOKEN=%s\n' "${SUPPORT_BOT_TELEGRAM_BOT_TOKEN}"
+    printf 'SUPPORT_BOT_GROUP_ID=%s\n' "${SUPPORT_BOT_GROUP_ID}"
+    printf 'SUPPORT_BOT_OWNER_ID=%s\n' "${SUPPORT_BOT_OWNER_ID}"
+    printf 'SUPPORT_BOT_DEV_IDS=%s\n' "${SUPPORT_BOT_DEV_IDS:-}"
+    printf 'DATABASE_URL=%s\n' "${support_bot_database_url}"
+    printf 'SUPPORT_BOT_DB_SCHEMA=%s\n' "${SUPPORT_BOT_DB_SCHEMA}"
+    printf 'REDIS_HOST=%s\n' "redis"
+    printf 'REDIS_PORT=%s\n' "6379"
+    printf 'REDIS_DB=%s\n' "${SUPPORT_BOT_REDIS_DB}"
+    printf 'TELEGRAM_API_PROXY_URLS=%s\n' "${TELEGRAM_API_PROXY_URLS}"
+    printf 'POLICY_ENABLED=%s\n' "${SUPPORT_BOT_POLICY_ENABLED:-false}"
+    printf 'AI_PROVIDER=%s\n' "${SUPPORT_BOT_AI_PROVIDER:-none}"
+  } > "${target}"
+}
+
+support_bot_telegram_get_me() {
+  local telegram_get_me
+  local telegram_username
+  local proxy_url
+
+  qpi_reject_legacy_telegram_api_proxy_url
+  qpi_validate_telegram_api_proxy_urls "${TELEGRAM_API_PROXY_URLS:-}" 1
+
+  mapfile -t telegram_proxy_urls < <(qpi_parse_telegram_api_proxy_urls "${TELEGRAM_API_PROXY_URLS:-}")
+  for _round in 1 2 3; do
+    for proxy_url in "${telegram_proxy_urls[@]}"; do
+      if telegram_get_me="$(curl -fsS --connect-timeout 5 --max-time 15 --proxy "${proxy_url}" "https://api.telegram.org/bot${SUPPORT_BOT_TELEGRAM_BOT_TOKEN}/getMe")" &&
+        jq -e '.ok == true' >/dev/null <<<"${telegram_get_me}"; then
+        telegram_username="$(jq -r '.result.username // "-"' <<<"${telegram_get_me}")"
+        printf 'telegram_get_me_ok=%q\n' "true"
+        printf 'telegram_get_me_username=%q\n' "${telegram_username}"
+        return 0
+      fi
+    done
+  done
+
+  echo "Telegram getMe failed through TELEGRAM_API_PROXY_URLS." >&2
+  return 1
 }
 
 run_preflight() {
@@ -122,6 +180,7 @@ run_preflight() {
 qpi_timing_init
 
 qpi_phase_start "preflight"
+resolve_support_bot_database_url
 run_preflight
 qpi_phase_end
 
@@ -161,22 +220,11 @@ release_id="${SUPPORT_BOT_RELEASE_ID:-${release_stamp}-${release_sha}}"
 temp_dir="$(mktemp -d)"
 release_stage="${temp_dir}/release"
 release_archive="${artifacts_dir}/support-bot-release-${release_id}.tar.gz"
-rendered_config="${temp_dir}/config.yaml"
 
 mkdir -p "${release_stage}"
 cp "${repo_root}/apps/support-bot/compose.prod.yml" "${release_stage}/compose.prod.yml"
-cat > "${release_stage}/.env" <<EOF
-SUPPORT_BOT_IMAGE=${image_ref}
-EOF
-
+write_env_file "${release_stage}/.env"
 tar -czf "${release_archive}" -C "${release_stage}" .
-
-sed \
-  -e "s/__SUPPORT_BOT_TELEGRAM_BOT_TOKEN__/$(escape_sed_replacement "${SUPPORT_BOT_TELEGRAM_BOT_TOKEN}")/g" \
-  -e "s/__SUPPORT_BOT_STAFFCHAT_ID__/$(escape_sed_replacement "${SUPPORT_BOT_STAFFCHAT_ID}")/g" \
-  -e "s/__SUPPORT_BOT_OWNER_ID__/$(escape_sed_replacement "${SUPPORT_BOT_OWNER_ID}")/g" \
-  -e "s/__YC_FOLDER_ID__/$(escape_sed_replacement "${YC_FOLDER_ID}")/g" \
-  "${repo_root}/apps/support-bot/config/config.template.yaml" > "${rendered_config}"
 qpi_phase_end
 
 if [[ "${QPI_PREDEPLOY_ONLY}" == "1" ]]; then
@@ -193,56 +241,65 @@ scp "${scp_args[@]}" \
   "${release_archive}" \
   "${repo_root}/infra/scripts/remote_rollout_support_bot.sh" \
   "${SUPPORT_BOT_VM_SSH_USER}@${support_bot_host}:/tmp/"
-
-scp "${scp_args[@]}" \
-  "${rendered_config}" \
-  "${SUPPORT_BOT_VM_SSH_USER}@${support_bot_host}:/tmp/support-bot-config.yaml"
 remote_uploaded=1
 qpi_phase_end
 
 qpi_phase_start "rollout"
 remote_exec \
   "set -euo pipefail && \
-   sudo install -d -m 0755 /etc/support-bot /opt/support-bot/releases /var/lib/support-bot /var/lib/support-bot/mongodb && \
-   if sudo test -f /etc/support-bot/config.yaml; then \
-     sudo cp /etc/support-bot/config.yaml /tmp/support-bot-config.previous.yaml; \
-   fi && \
-   sudo install -m 0640 /tmp/support-bot-config.yaml /etc/support-bot/config.yaml && \
-   sudo chown root:${SUPPORT_BOT_VM_SSH_USER} /etc/support-bot/config.yaml && \
+   sudo install -d -m 0755 /opt/support-bot/releases /var/lib/support-bot && \
    chmod +x /tmp/remote_rollout_support_bot.sh && \
-   if ! /tmp/remote_rollout_support_bot.sh '${release_id}' '/tmp/$(basename "${release_archive}")' '${image_ref}'; then \
-     if sudo test -f /tmp/support-bot-config.previous.yaml; then \
-       sudo install -m 0640 /tmp/support-bot-config.previous.yaml /etc/support-bot/config.yaml; \
-       sudo chown root:${SUPPORT_BOT_VM_SSH_USER} /etc/support-bot/config.yaml; \
-     fi; \
-     exit 1; \
-   fi"
+   /tmp/remote_rollout_support_bot.sh '${release_id}' '/tmp/$(basename "${release_archive}")' '${image_ref}'"
 qpi_phase_end
 
-qpi_phase_start "smoke"
-mongo_ping="$(
-  remote_output \
-    "sudo docker compose --project-directory /opt/support-bot/current -f /opt/support-bot/current/compose.prod.yml \
-      exec -T mongodb mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' mongodb://127.0.0.1:27017/admin"
-)"
+compose_command="sudo docker compose --project-directory /opt/support-bot/current -f /opt/support-bot/current/compose.prod.yml"
 
-telegram_get_me="$(curl -fsSL "https://api.telegram.org/bot${SUPPORT_BOT_TELEGRAM_BOT_TOKEN}/getMe")"
-if ! jq -e '.ok == true' >/dev/null <<<"${telegram_get_me}"; then
-  echo "Telegram getMe failed." >&2
+qpi_phase_start "smoke"
+support_bot_redis_ping="$(
+  remote_output "${compose_command} exec -T redis redis-cli ping"
+)"
+if [[ "${support_bot_redis_ping}" != "PONG" ]]; then
+  echo "Redis PING failed: ${support_bot_redis_ping}" >&2
   exit 1
 fi
+
+postgres_status="$(
+  remote_output \
+    "${compose_command} exec -T supportbot uv run --no-sync python -c 'exec(\"\"\"import asyncio
+import os
+
+import asyncpg
+
+from app.bot.storage import ensure_support_bot_schema
+
+async def main():
+    conn = await asyncpg.connect(os.environ[\"DATABASE_URL\"])
+    try:
+        await ensure_support_bot_schema(conn, os.environ.get(\"SUPPORT_BOT_DB_SCHEMA\", \"support_bot\"))
+    finally:
+        await conn.close()
+    print(\"support_bot_postgres_ok=true\")
+
+asyncio.run(main())
+\"\"\")'"
+)"
+
+telegram_get_me_output="$(support_bot_telegram_get_me)"
 qpi_phase_end
 
 echo "release_id=${release_id}"
 echo "support_bot_host=${support_bot_host}"
 echo "image_ref=${image_ref}"
-echo "mongo_ping=${mongo_ping}"
-echo "telegram_get_me_ok=true"
+echo "support_bot_redis_ping=${support_bot_redis_ping}"
+echo "${postgres_status}"
+echo "${telegram_get_me_output}"
 
 qpi_append_step_summary "### Support Bot Deploy Result"
 qpi_append_step_summary ""
 qpi_append_step_summary "- Release ID: \`${release_id}\`"
 qpi_append_step_summary "- Image: \`${image_ref}\`"
-qpi_append_step_summary "- Mongo ping: \`${mongo_ping}\`"
+qpi_append_step_summary "- Redis ping: \`${support_bot_redis_ping}\`"
+qpi_append_step_summary "- PostgreSQL schema: \`ok\`"
+qpi_append_step_summary "- Telegram getMe via proxy: \`ok\`"
 qpi_append_step_summary ""
 qpi_emit_timing_summary "Support Bot Deploy"

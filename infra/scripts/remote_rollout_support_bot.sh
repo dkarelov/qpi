@@ -65,7 +65,7 @@ for _ in {1..30}; do
   )"
 
   if printf '%s\n' "${running_services}" | grep -qx 'supportbot' \
-    && printf '%s\n' "${running_services}" | grep -qx 'mongodb'; then
+    && printf '%s\n' "${running_services}" | grep -qx 'redis'; then
     exit 0
   fi
 
