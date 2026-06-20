@@ -38,6 +38,9 @@ class SupportTopic:
     context: SupportContext = GENERIC_CONTEXT
     status: str = "open"
     is_banned: bool = False
+    is_silent: bool = False
+    full_name: str = ""
+    username: str | None = None
 
 
 class SupportTopicStore(Protocol):
@@ -100,7 +103,14 @@ class SupportTopicService:
         context = await self.store.get_context(account.id)
         title = render_topic_title(account, context)
         thread_id = await self.telegram.create_topic(group_id=self.group_id, title=title)
-        topic = SupportTopic(telegram_id=account.id, thread_id=thread_id, title=title, context=context)
+        topic = SupportTopic(
+            telegram_id=account.id,
+            thread_id=thread_id,
+            title=title,
+            context=context,
+            full_name=account.full_name,
+            username=account.username,
+        )
         await self.store.save(topic)
         await self._pin_metadata(account, topic)
         return topic
@@ -112,6 +122,8 @@ class SupportTopicService:
         if existing is not None:
             existing.context = context
             existing.title = render_topic_title(account, context)
+            existing.full_name = account.full_name
+            existing.username = account.username
             await self.store.save(existing)
             await self._edit_topic_title(existing)
             await self._pin_metadata(account, existing)
@@ -119,7 +131,9 @@ class SupportTopicService:
 
     async def forward_user_text(self, account: TelegramAccount, text: str) -> SupportTopic | None:
         try:
-            topic = await self.get_or_create_topic(account)
+            topic = await self._prepare_user_topic(account)
+            if topic is None:
+                return None
             await self.telegram.send_topic_text(group_id=self.group_id, thread_id=topic.thread_id, text=text)
         except Exception:
             await self._send_user_failure(account)
@@ -129,7 +143,9 @@ class SupportTopicService:
 
     async def forward_user_media(self, account: TelegramAccount, media: MediaItem) -> SupportTopic | None:
         try:
-            topic = await self.get_or_create_topic(account)
+            topic = await self._prepare_user_topic(account)
+            if topic is None:
+                return None
             send_topic_media = getattr(self.telegram, "send_topic_media")
             await send_topic_media(group_id=self.group_id, thread_id=topic.thread_id, media=media)
         except Exception:
@@ -144,7 +160,9 @@ class SupportTopicService:
         media: tuple[MediaItem, ...],
     ) -> SupportTopic | None:
         try:
-            topic = await self.get_or_create_topic(account)
+            topic = await self._prepare_user_topic(account)
+            if topic is None:
+                return None
             send_topic_album = getattr(self.telegram, "send_topic_album", None)
             if send_topic_album is not None:
                 await send_topic_album(group_id=self.group_id, thread_id=topic.thread_id, media=media)
@@ -162,6 +180,8 @@ class SupportTopicService:
         topic = await self.store.get_by_thread_id(thread_id)
         if topic is None:
             return None
+        if topic.is_silent:
+            return topic
         await self.telegram.send_private_text(telegram_id=topic.telegram_id, text=text)
         return topic
 
@@ -169,6 +189,8 @@ class SupportTopicService:
         topic = await self.store.get_by_thread_id(thread_id)
         if topic is None:
             return None
+        if topic.is_silent:
+            return topic
         send_private_media = getattr(self.telegram, "send_private_media")
         await send_private_media(telegram_id=topic.telegram_id, media=media)
         return topic
@@ -182,6 +204,8 @@ class SupportTopicService:
         topic = await self.store.get_by_thread_id(thread_id)
         if topic is None:
             return None
+        if topic.is_silent:
+            return topic
         send_private_album = getattr(self.telegram, "send_private_album", None)
         if send_private_album is not None:
             await send_private_album(telegram_id=topic.telegram_id, media=media)
@@ -189,6 +213,48 @@ class SupportTopicService:
             send_private_media = getattr(self.telegram, "send_private_media")
             for item in media:
                 await send_private_media(telegram_id=topic.telegram_id, media=item)
+        return topic
+
+    async def close_topic(self, *, thread_id: int) -> SupportTopic | None:
+        topic = await self.store.get_by_thread_id(thread_id)
+        if topic is None:
+            return None
+        topic.status = "closed"
+        await self.store.save(topic)
+        close_topic = getattr(self.telegram, "close_topic", None)
+        if close_topic is not None:
+            await close_topic(group_id=self.group_id, thread_id=thread_id)
+        await self._pin_metadata(self._account_from_topic(topic), topic)
+        return topic
+
+    async def set_banned(self, *, thread_id: int, is_banned: bool) -> SupportTopic | None:
+        topic = await self.store.get_by_thread_id(thread_id)
+        if topic is None:
+            return None
+        topic.is_banned = is_banned
+        await self.store.save(topic)
+        await self._pin_metadata(self._account_from_topic(topic), topic)
+        return topic
+
+    async def set_silent(self, *, thread_id: int, is_silent: bool) -> SupportTopic | None:
+        topic = await self.store.get_by_thread_id(thread_id)
+        if topic is None:
+            return None
+        topic.is_silent = is_silent
+        await self.store.save(topic)
+        await self._pin_metadata(self._account_from_topic(topic), topic)
+        return topic
+
+    async def escalate_topic(self, *, thread_id: int) -> SupportTopic | None:
+        topic = await self.store.get_by_thread_id(thread_id)
+        if topic is None:
+            return None
+        topic.status = "escalated"
+        await self.store.save(topic)
+        notify_developer = getattr(self.telegram, "notify_developer", None)
+        if notify_developer is not None:
+            await notify_developer(text=f"Escalated Support Topic for Telegram ID {topic.telegram_id}")
+        await self._pin_metadata(self._account_from_topic(topic), topic)
         return topic
 
     async def _pin_metadata(self, account: TelegramAccount, topic: SupportTopic) -> None:
@@ -218,3 +284,27 @@ class SupportTopicService:
         if send_user_failure is None:
             return
         await send_user_failure(telegram_id=account.id, text=USER_DELIVERY_FAILURE, persistent=True)
+
+    async def _prepare_user_topic(self, account: TelegramAccount) -> SupportTopic | None:
+        topic = await self.get_or_create_topic(account)
+        topic.full_name = account.full_name
+        topic.username = account.username
+        if topic.is_banned:
+            await self.store.save(topic)
+            return None
+        if topic.status == "closed":
+            topic.status = "open"
+            await self.store.save(topic)
+            reopen_topic = getattr(self.telegram, "reopen_topic", None)
+            if reopen_topic is not None:
+                await reopen_topic(group_id=self.group_id, thread_id=topic.thread_id)
+            await self._pin_metadata(account, topic)
+        return topic
+
+    @staticmethod
+    def _account_from_topic(topic: SupportTopic) -> TelegramAccount:
+        return TelegramAccount(
+            id=topic.telegram_id,
+            full_name=topic.full_name or f"User {topic.telegram_id}",
+            username=topic.username,
+        )

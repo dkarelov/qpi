@@ -11,8 +11,7 @@ from aiogram.utils.markdown import hlink
 from app.bot.manager import Manager
 from app.bot.policy import EvalContext, PolicyEngine
 from app.bot.policy.context import EVENT_TOPIC_CREATED
-from app.bot.support_context import render_pinned_metadata
-from app.bot.support_topics import SupportTopic, TelegramAccount
+from app.bot.support_metadata import pin_support_metadata
 from app.bot.types.album import Album
 from app.bot.utils.redis import RedisStorage
 
@@ -66,26 +65,7 @@ async def handler(
                 )
             return
 
-    username = None if user_data.username == "-" else user_data.username
-    account = TelegramAccount(id=user_data.id, full_name=user_data.full_name, username=username)
-    topic = SupportTopic(
-        telegram_id=user_data.id,
-        thread_id=user_data.message_thread_id,
-        title="",
-        context=user_data.support_context(),
-        status=user_data.status,
-        is_banned=user_data.is_banned,
-    )
-    text = render_pinned_metadata(account, topic)
-
-    message = await message.bot.send_message(
-        chat_id=manager.config.bot.GROUP_ID,
-        text=text,
-        message_thread_id=user_data.message_thread_id,
-    )
-
-    # Pin the message
-    await message.pin()
+    await pin_support_metadata(message.bot, manager.config, user_data)
 
 
 @router.message(F.pinned_message | F.forum_topic_edited | F.forum_topic_closed | F.forum_topic_reopened)

@@ -75,6 +75,17 @@ async def handle_incoming_message(
     if user_data.is_banned:
         return
 
+    if user_data.status == "closed" and user_data.message_thread_id is not None:
+        try:
+            await message.bot.reopen_forum_topic(
+                chat_id=manager.config.bot.GROUP_ID,
+                message_thread_id=user_data.message_thread_id,
+            )
+        except TelegramBadRequest:
+            pass
+        user_data.status = "open"
+        await redis.update_user(user_data.id, user_data)
+
     # Record the incoming message in the conversation transcript (LLM context).
     await redis.append_conversation(user_data.id, "user", message_text(message))
 

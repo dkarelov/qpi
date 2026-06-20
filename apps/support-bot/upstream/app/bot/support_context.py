@@ -104,6 +104,11 @@ def render_pinned_metadata(account: "TelegramAccount", topic: "SupportTopic") ->
     if account.username:
         username = account.username if account.username.startswith("@") else f"@{account.username}"
     refs = render_refs(context.refs, separator=", ") or "-"
+    flags = []
+    if topic.is_banned:
+        flags.append("banned")
+    if topic.is_silent:
+        flags.append("silent")
     return "\n".join(
         [
             "Support Topic",
@@ -113,5 +118,6 @@ def render_pinned_metadata(account: "TelegramAccount", topic: "SupportTopic") ->
             f"Context: {context.label()}",
             f"Refs: {refs}",
             f"State: {topic.status}",
+            f"Flags: {', '.join(flags) if flags else '-'}",
         ]
     )

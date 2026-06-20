@@ -7,6 +7,7 @@ from aiogram.types import Message
 from aiogram.utils.markdown import hbold, hcode
 
 from app.bot.manager import Manager
+from app.bot.support_metadata import pin_support_metadata
 from app.bot.utils.redis import RedisStorage
 
 router_id = Router()
@@ -76,6 +77,7 @@ async def handler(message: Message, manager: Manager, redis: RedisStorage) -> No
         user_data.message_silent_id = msg.message_id
 
     await redis.update_user(user_data.id, user_data)
+    await pin_support_metadata(message.bot, manager.config, user_data)
 
 
 @router.message(Command("information"))
@@ -124,3 +126,4 @@ async def handler(message: Message, manager: Manager, redis: RedisStorage) -> No
     # Reply with the specified text
     await message.reply(text)
     await redis.update_user(user_data.id, user_data)
+    await pin_support_metadata(message.bot, manager.config, user_data)
