@@ -73,8 +73,8 @@ def test_support_bot_deploy_scripts_validate_postgres_redis_and_proxy_get_me() -
     assert "support_bot_telegram_get_me" in deploy
     assert "--proxy" in deploy
     assert "redis-cli ping" in deploy
-    assert "asyncpg.connect" in deploy
-    assert "ensure_support_bot_schema" in deploy
+    assert "asyncpg.create_pool" in deploy
+    assert "create_schema" in deploy
     assert "support_bot_postgres_ok=true" in deploy
     assert "support_bot_redis_ping" in deploy
     assert deploy.index("ssh_args=()") < deploy.index("cleanup()")

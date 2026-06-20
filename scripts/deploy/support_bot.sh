@@ -272,14 +272,14 @@ import os
 
 import asyncpg
 
-from app.bot.storage import ensure_support_bot_schema
+from app.bot.storage import create_schema
 
 async def main():
-    conn = await asyncpg.connect(os.environ[\"DATABASE_URL\"])
+    pool = await asyncpg.create_pool(os.environ[\"DATABASE_URL\"], min_size=1, max_size=1)
     try:
-        await ensure_support_bot_schema(conn, os.environ.get(\"SUPPORT_BOT_DB_SCHEMA\", \"support_bot\"))
+        await create_schema(pool, os.environ.get(\"SUPPORT_BOT_DB_SCHEMA\", \"support_bot\"))
     finally:
-        await conn.close()
+        await pool.close()
     print(\"support_bot_postgres_ok=true\")
 
 asyncio.run(main())
