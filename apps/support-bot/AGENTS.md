@@ -30,6 +30,12 @@ Last updated: 2026-06-20 UTC
 - The initial qpi tracer bullet supports Python/uv startup, PostgreSQL schema creation, Redis FSM configuration, first-proxy Telegram config, and text DM-to-topic round trip.
 - Rich qpi `/start` context metadata, Russian delivery semantics, media/albums, lifecycle controls, deploy workflow cleanup, and production cutover are tracked in GitHub issues #15-#22.
 
+## Optional Capabilities
+
+- Newsletter registration is available as an explicit support-bot service surface and keys subscribers by Telegram account id.
+- Policy rules remain disabled by default with `POLICY_ENABLED=false`; enabling them must not change qpi's baseline support flow unless a policy file is configured.
+- LLM draft support remains disabled by default with `AI_PROVIDER=none`; the production dependency set includes the OpenAI-compatible client so drafts can be enabled later through config.
+
 ## Deploy
 
 - Terraform for support-bot infra lives under `infra/support_bot*.tf`.
