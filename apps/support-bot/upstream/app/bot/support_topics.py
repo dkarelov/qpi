@@ -11,6 +11,9 @@ from app.bot.support_context import (
     render_topic_title,
 )
 
+USER_DELIVERY_ACK = "Сообщение отправлено в поддержку. Ответим здесь."
+USER_DELIVERY_FAILURE = "Не удалось отправить сообщение в поддержку. Пожалуйста, попробуйте ещё раз через пару минут."
+
 
 @dataclass(frozen=True)
 class TelegramAccount:
@@ -106,9 +109,14 @@ class SupportTopicService:
             await self._pin_metadata(account, existing)
         return context
 
-    async def forward_user_text(self, account: TelegramAccount, text: str) -> SupportTopic:
-        topic = await self.get_or_create_topic(account)
-        await self.telegram.send_topic_text(group_id=self.group_id, thread_id=topic.thread_id, text=text)
+    async def forward_user_text(self, account: TelegramAccount, text: str) -> SupportTopic | None:
+        try:
+            topic = await self.get_or_create_topic(account)
+            await self.telegram.send_topic_text(group_id=self.group_id, thread_id=topic.thread_id, text=text)
+        except Exception:
+            await self._send_user_failure(account)
+            return None
+        await self._send_user_ack(account)
         return topic
 
     async def forward_staff_text(self, *, thread_id: int, text: str) -> SupportTopic | None:
@@ -133,3 +141,15 @@ class SupportTopicService:
         if edit_topic_title is None:
             return
         await edit_topic_title(group_id=self.group_id, thread_id=topic.thread_id, title=topic.title)
+
+    async def _send_user_ack(self, account: TelegramAccount) -> None:
+        send_user_ack = getattr(self.telegram, "send_user_ack", None)
+        if send_user_ack is None:
+            return
+        await send_user_ack(telegram_id=account.id, text=USER_DELIVERY_ACK, ttl_seconds=5)
+
+    async def _send_user_failure(self, account: TelegramAccount) -> None:
+        send_user_failure = getattr(self.telegram, "send_user_failure", None)
+        if send_user_failure is None:
+            return
+        await send_user_failure(telegram_id=account.id, text=USER_DELIVERY_FAILURE, persistent=True)

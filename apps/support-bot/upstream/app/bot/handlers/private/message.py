@@ -8,6 +8,7 @@ from aiogram.types import Message
 from app.bot.llm import LLMProvider
 from app.bot.manager import Manager
 from app.bot.policy import PolicyEngine
+from app.bot.support_topics import USER_DELIVERY_ACK, USER_DELIVERY_FAILURE
 from app.bot.types.album import Album
 from app.bot.utils.create_forum_topic import (
     create_forum_topic,
@@ -111,7 +112,10 @@ async def handle_incoming_message(
     try:
         await copy_message_to_topic()
     except TelegramBadRequest as ex:
-        if "message thread not found" in ex.message:
+        if "message thread not found" not in ex.message:
+            await message.reply(USER_DELIVERY_FAILURE)
+            return
+        try:
             user_data.message_thread_id = await create_forum_topic(
                 message.bot,
                 manager.config,
@@ -119,8 +123,12 @@ async def handle_incoming_message(
             )
             await redis.update_user(user_data.id, user_data)
             await copy_message_to_topic()
-        else:
-            raise
+        except Exception:
+            await message.reply(USER_DELIVERY_FAILURE)
+            return
+    except Exception:
+        await message.reply(USER_DELIVERY_FAILURE)
+        return
 
     # Apply post-forward policy side effects (tags, close, escalate).
     if decision is not None:
@@ -132,7 +140,7 @@ async def handle_incoming_message(
         asyncio.create_task(run_ai_draft(llm_provider, manager.config, message, redis, user_data, max_context))
 
     # Send a confirmation message to the user
-    text = manager.text_message.get("message_sent")
+    text = USER_DELIVERY_ACK
     # Reply to the edited message with the specified text
     msg = await message.reply(text)
     # Wait for 5 seconds before deleting the reply

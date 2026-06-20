@@ -21,7 +21,7 @@ class Text(metaclass=ABCMeta):
 
         :param language_code: The language code (e.g., "ru" or "en").
         """
-        self.language_code = language_code if language_code in SUPPORTED_LANGUAGES.keys() else "en"
+        self.language_code = "ru"
 
     @property
     @abstractmethod
@@ -121,7 +121,7 @@ class TextMessage(Text):
             "ru": {
                 "select_language": f"👋 <b>Привет</b>, {hbold('{full_name}')}!\n\nВыберите язык:",
                 "change_language": "<b>Выберите язык:</b>",
-                "main_menu": "<b>Здравствуйте!</b> Напишите ваш вопрос — ответим в ближайшее время.\n\nЕсли хотите добавить канал в агрегатор, ознакомьтесь с правилами: https://t.me/clear_blog/14\n\nСменить язык — /language",
+                "main_menu": "<b>Здравствуйте!</b> Напишите ваш вопрос — ответим в ближайшее время.",
                 "message_sent": "<b>Сообщение отправлено!</b> Ожидайте ответа.",
                 "message_edited": (
                     "<b>Сообщение отредактировано только в вашем чате.</b> "
