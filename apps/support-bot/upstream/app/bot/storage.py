@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
@@ -27,7 +27,9 @@ class UserData:
     state: str = "member"
     is_banned: bool = False
     language_code: str | None = None
-    created_at: str = datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d %H:%M:%S %Z")
+    created_at: str = field(
+        default_factory=lambda: datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d %H:%M:%S %Z")
+    )
     status: str = "open"
     support_role: str | None = None
     support_topic: str = "generic"

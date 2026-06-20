@@ -30,6 +30,17 @@ def test_load_config_uses_qpi_env_and_first_telegram_proxy(monkeypatch: pytest.M
     assert config.telegram.PROXY_URL == "http://proxy-a.example:8080"
 
 
+def test_user_data_created_at_uses_per_instance_default_factory() -> None:
+    from dataclasses import MISSING
+
+    from app.bot.storage import UserData
+
+    created_at_field = UserData.__dataclass_fields__["created_at"]
+
+    assert created_at_field.default is MISSING
+    assert created_at_field.default_factory is not MISSING
+
+
 @pytest.mark.asyncio
 async def test_create_schema_uses_support_bot_schema() -> None:
     from app.bot.storage import create_schema

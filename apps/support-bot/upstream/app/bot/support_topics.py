@@ -293,11 +293,11 @@ class SupportTopicService:
             await self.store.save(topic)
             return None
         if topic.status == "closed":
-            topic.status = "open"
-            await self.store.save(topic)
             reopen_topic = getattr(self.telegram, "reopen_topic", None)
             if reopen_topic is not None:
                 await reopen_topic(group_id=self.group_id, thread_id=topic.thread_id)
+            topic.status = "open"
+            await self.store.save(topic)
             await self._pin_metadata(account, topic)
         return topic
 
