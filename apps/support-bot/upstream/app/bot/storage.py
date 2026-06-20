@@ -3,17 +3,22 @@ from __future__ import annotations
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from app.bot.support_context import GENERIC_CONTEXT, SupportContext, SupportRef
+from app.bot.support_context import (
+    GENERIC_CONTEXT,
+    SUPPORTED_ROLES,
+    SUPPORTED_TOPICS,
+    Role,
+    SupportContext,
+    Topic,
+    parse_support_ref,
+)
 
 if TYPE_CHECKING:
     from asyncpg import Pool, Record
 
 _IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
-_SUPPORTED_TOPICS = {"generic", "shop", "listing", "purchase", "withdraw", "deposit"}
-
-
 @dataclass
 class UserData:
     """Persistent support user record."""
@@ -39,16 +44,19 @@ class UserData:
         return asdict(self)
 
     def support_context(self) -> SupportContext:
-        if self.support_role not in {"buyer", "seller"} or self.support_topic not in _SUPPORTED_TOPICS:
+        if self.support_role not in SUPPORTED_ROLES or self.support_topic not in SUPPORTED_TOPICS:
             return GENERIC_CONTEXT
-        refs: list[SupportRef] = []
+        refs = []
         for raw_ref in self.support_refs:
-            match = re.fullmatch(r"(TX|[SLPWD])([1-9][0-9]*)", raw_ref)
-            if match is None:
+            ref = parse_support_ref(raw_ref)
+            if ref is None:
                 return GENERIC_CONTEXT
-            kind, raw_id = match.groups()
-            refs.append(SupportRef(kind=kind, id=int(raw_id)))
-        return SupportContext(role=self.support_role, topic=self.support_topic, refs=tuple(refs))  # type: ignore[arg-type]
+            refs.append(ref)
+        return SupportContext(
+            role=cast(Role, self.support_role),
+            topic=cast(Topic, self.support_topic),
+            refs=tuple(refs),
+        )
 
     def set_support_context(self, context: SupportContext) -> None:
         self.support_role = context.role

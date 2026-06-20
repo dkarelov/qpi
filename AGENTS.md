@@ -107,8 +107,9 @@ Companion support-bot (current decision boundary):
 - no Signal, web chat, or backup automation in V1,
 - Redis is ephemeral support-bot runtime state and is capped separately from PostgreSQL state,
 - Telegram Bot API egress uses the first URL from `TELEGRAM_API_PROXY_URLS`,
+- end-user support-bot private chat UX is Russian-only and does not expose a language-selection step,
 - marketplace buyer/seller screens may deep-link into the support bot when `SUPPORT_BOT_USERNAME` is configured,
-- support-bot `/start` payload parsing, rich Support Topic metadata, Russian delivery semantics, media/albums, lifecycle controls, optional capabilities, and Python deploy workflow are the active runtime baseline.
+- support-bot `/start` payload parsing, Support Topic title metadata, Russian delivery semantics, media/albums, service-backed lifecycle controls, optional capabilities, and Python deploy workflow are the active runtime baseline.
 
 ## 3. Implemented System Components
 
@@ -640,6 +641,7 @@ sudo docker compose --project-directory /opt/support-bot/current -f /opt/support
 ```
 
 Support-bot deploy smoke checks also verify PostgreSQL schema access from inside the deployed `supportbot` container and Telegram `getMe`, forum-supergroup `getChat`, and administrator `getChatMember` with `can_manage_topics` through `TELEGRAM_API_PROXY_URLS`.
+Support-bot release archives contain non-secret runtime files only; `.env` is uploaded separately during rollout and installed on the VM as `0600 ubuntu:ubuntu`.
 The support-bot cutover path stops the existing compose stack before switching `/opt/support-bot/current`, starts the new long-polling bot with pending updates preserved, and deletes `/var/lib/support-bot/mongodb` without backup only after Redis, PostgreSQL, proxy `getMe`, forum-supergroup `getChat`, and administrator `getChatMember` checks pass.
 
 Manual Telegram smoke after support-bot cutover:
@@ -759,6 +761,7 @@ Support-bot live behavior defaults:
 - `TELEGRAM_API_PROXY_URLS` is required and is used for Telegram Bot API verification,
 - Redis PING, PostgreSQL schema access, Telegram `getMe`, Telegram `getChat` forum-supergroup validation, and Telegram `getChatMember` administrator `can_manage_topics` validation through the proxy are deploy gates,
 - Support Topic titles are the operator metadata surface and use `{name} · {Role topic} · {refs}` so Telegram sidebar truncation preserves the person name,
+- runtime handlers use the Support Topic service seam for user delivery, staff replies, topic reopen/recreate, ban, silent, close, and escalation state,
 - Telegram `can_delete_messages` is optional; forum service-message cleanup is best effort and must not fail support delivery,
 - old Mongo data, `/open`, orphan-ticket recovery, old ticket ids, private staff group support, and old queue preservation are out of scope for the new runtime.
 

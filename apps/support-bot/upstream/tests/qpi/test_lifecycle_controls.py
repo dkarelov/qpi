@@ -29,6 +29,9 @@ async def test_closed_topic_reopens_same_topic_on_next_user_message() -> None:
         async def send_private_text(self, *, telegram_id: int, text: str) -> None:
             self.private_messages.append(text)
 
+        async def send_user_ack(self, *, telegram_id: int, text: str, ttl_seconds: int) -> None:
+            return None
+
         async def pin_topic_metadata(self, *, group_id: int, thread_id: int, text: str) -> None:
             self.metadata_calls.append(text)
 
@@ -76,6 +79,9 @@ async def test_failed_reopen_keeps_topic_closed_in_storage() -> None:
         async def send_private_text(self, *, telegram_id: int, text: str) -> None:
             return None
 
+        async def send_user_ack(self, *, telegram_id: int, text: str, ttl_seconds: int) -> None:
+            return None
+
         async def send_user_failure(self, *, telegram_id: int, text: str, persistent: bool) -> None:
             self.failures.append(text)
 
@@ -117,6 +123,9 @@ async def test_banned_user_messages_are_silently_ignored() -> None:
         async def send_private_text(self, *, telegram_id: int, text: str) -> None:
             return None
 
+        async def send_user_ack(self, *, telegram_id: int, text: str, ttl_seconds: int) -> None:
+            return None
+
         async def send_user_failure(self, *, telegram_id: int, text: str, persistent: bool) -> None:
             self.failures.append(text)
 
@@ -154,6 +163,9 @@ async def test_silent_topic_suppresses_staff_reply_delivery() -> None:
         async def send_private_text(self, *, telegram_id: int, text: str) -> None:
             self.private_messages.append(text)
 
+        async def send_user_ack(self, *, telegram_id: int, text: str, ttl_seconds: int) -> None:
+            return None
+
     telegram = FakeTelegram()
     service = SupportTopicService(
         store=InMemorySupportTopicStore(),
@@ -185,6 +197,9 @@ async def test_escalation_sets_state_and_notifies_developer_without_pinning_meta
             return None
 
         async def send_private_text(self, *, telegram_id: int, text: str) -> None:
+            return None
+
+        async def send_user_ack(self, *, telegram_id: int, text: str, ttl_seconds: int) -> None:
             return None
 
         async def notify_developer(self, *, text: str) -> None:

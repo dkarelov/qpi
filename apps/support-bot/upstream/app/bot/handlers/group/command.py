@@ -7,6 +7,7 @@ from aiogram.types import Message
 from aiogram.utils.markdown import hbold, hcode
 
 from app.bot.manager import Manager
+from app.bot.support_runtime import build_support_topic_service
 from app.bot.utils.redis import RedisStorage
 
 router_id = Router()
@@ -49,6 +50,10 @@ async def handler(message: Message, manager: Manager, redis: RedisStorage) -> No
     if not user_data:
         return None  # noqa
 
+    service = build_support_topic_service(message.bot, redis, manager.config, current_user=user_data)
+    thread_id = message.message_thread_id
+    assert thread_id is not None
+
     if user_data.message_silent_mode:
         text = manager.text_message.get("silent_mode_disabled")
         with suppress(TelegramBadRequest):
@@ -59,17 +64,13 @@ async def handler(message: Message, manager: Manager, redis: RedisStorage) -> No
                     message_id=user_data.message_silent_id,
                 )
 
-        user_data.message_silent_mode = False
-        user_data.message_silent_id = None
+        await service.set_silent(thread_id=thread_id, is_silent=False)
     else:
         text = manager.text_message.get("silent_mode_enabled")
         with suppress(TelegramBadRequest):
             await message.reply(text)
 
-        user_data.message_silent_mode = True
-        user_data.message_silent_id = None
-
-    await redis.update_user(user_data.id, user_data)
+        await service.set_silent(thread_id=thread_id, is_silent=True)
 
 
 @router.message(Command("information"))
@@ -108,13 +109,16 @@ async def handler(message: Message, manager: Manager, redis: RedisStorage) -> No
     if not user_data:
         return None  # noqa
 
+    service = build_support_topic_service(message.bot, redis, manager.config, current_user=user_data)
+    thread_id = message.message_thread_id
+    assert thread_id is not None
+
     if user_data.is_banned:
-        user_data.is_banned = False
+        await service.set_banned(thread_id=thread_id, is_banned=False)
         text = manager.text_message.get("user_unblocked")
     else:
-        user_data.is_banned = True
+        await service.set_banned(thread_id=thread_id, is_banned=True)
         text = manager.text_message.get("user_blocked")
 
     # Reply with the specified text
     await message.reply(text)
-    await redis.update_user(user_data.id, user_data)

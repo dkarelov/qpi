@@ -4,7 +4,7 @@ from aiogram.types import Message
 
 from app.bot.handlers.private.windows import Window
 from app.bot.manager import Manager
-from app.bot.support_context import parse_start_payload
+from app.bot.support_runtime import account_from_user_data, build_support_topic_service
 from app.bot.utils.redis import RedisStorage
 from app.bot.utils.redis.models import UserData
 from app.config import Config
@@ -21,7 +21,7 @@ class IsDev(BaseFilter):
 
 
 @router.message(Command("start"))
-async def handler(
+async def start_handler(
     message: Message,
     command: CommandObject,
     manager: Manager,
@@ -40,38 +40,35 @@ async def handler(
     :param user_data: UserData object.
     :return: None
     """
-    user_data.set_support_context(parse_start_payload(command.args))
+    user_data.language_code = "ru"
     await redis.update_user(user_data.id, user_data)
-
-    if user_data.language_code:
-        await Window.main_menu(manager)
-    else:
-        await Window.select_language(manager)
+    service = build_support_topic_service(message.bot, redis, manager.config, current_user=user_data)
+    await service.record_start_payload(account_from_user_data(user_data), command.args)
+    await Window.main_menu(manager)
     await manager.delete_message(message)
 
 
 @router.message(Command("language"))
-async def handler(message: Message, manager: Manager, user_data: UserData) -> None:
+async def language_handler(message: Message, manager: Manager, redis: RedisStorage, user_data: UserData) -> None:
     """
     Handles the /language command.
 
-    If the user has already selected a language, prompts the user to select a new language.
-    Otherwise, prompts the user to select a language.
+    qpi support-bot end-user UX is Russian-only, so this command confirms the
+    fixed language instead of opening a selector.
 
     :param message: Message object.
     :param manager: Manager object.
     :param user_data: UserData object.
     :return: None
     """
-    if user_data.language_code:
-        await Window.change_language(manager)
-    else:
-        await Window.select_language(manager)
+    user_data.language_code = "ru"
+    await redis.update_user(user_data.id, user_data)
+    await manager.send_message(manager.text_message.get("language_fixed"))
     await manager.delete_message(message)
 
 
 @router.message(Command("newsletter"), IsDev())
-async def handler(
+async def newsletter_handler(
     message: Message,
     manager: Manager,
 ) -> None:

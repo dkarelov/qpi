@@ -13,8 +13,8 @@ This directory contains the qpi-owned Python support-bot runtime imported from `
 
 - Telegram-only, private-only, long polling.
 - Canonical support unit: **Support Topic**, one Telegram forum topic per Telegram Account in the configured support supergroup.
-- User messages are delivered from private chat into the matching Support Topic; closed topics reopen on the next user message without creating metadata pins.
-- Staff replies are handled in the support supergroup topic.
+- User messages are delivered from private chat into the matching Support Topic through the runtime Support Topic service seam; closed topics reopen on the next user message without creating metadata pins.
+- Staff replies and lifecycle controls are handled in the support supergroup topic through the same service seam.
 - Persistent state uses the existing qpi PostgreSQL cluster and app-owned schema `support_bot`.
 - Redis is ephemeral FSM/session state. The container deployment caps it with `--maxmemory 512mb`.
 - Telegram Bot API egress uses `TELEGRAM_API_PROXY_URLS`; deploy and preflight validate `getMe`, forum-supergroup `getChat`, and administrator `getChatMember` with `can_manage_topics` through the configured proxy.
@@ -36,7 +36,7 @@ Out of scope for the new runtime:
 cd apps/support-bot/upstream
 uv sync --locked
 uv run ruff check .
-uv run mypy app/config.py app/bot/storage.py app/bot/support_context.py app/bot/support_topics.py app/bot/newsletter.py app/bot/telegram_client.py
+uv run mypy app/config.py app/bot/storage.py app/bot/support_context.py app/bot/support_runtime.py app/bot/support_topics.py app/bot/newsletter.py app/bot/postgres_smoke.py app/bot/telegram_client.py
 uv run pytest
 ```
 
@@ -74,7 +74,7 @@ export TELEGRAM_API_PROXY_URLS=http://<proxy-host>:<proxy-port>
 - Deploy workflow: `.github/workflows/support_bot_deploy.yml`.
 - Runtime VM is private-only; manual workstation deploys must set `SUPPORT_BOT_VM_SSH_PROXY_HOST=<qpi-bot-public-ip>` so SSH/scp can hop through the marketplace bot VM.
 - `/opt/support-bot/current` is a deploy-managed symlink. Do not create it as a normal directory.
-- Deploy archive contains `compose.prod.yml` plus `.env`; there is no rendered YAML config file.
+- Deploy archive contains non-secret runtime files such as `compose.prod.yml`; `.env` is uploaded separately, installed as `0600 ubuntu:ubuntu`, and not retained in release archives.
 
 Important deployment inputs:
 
@@ -133,4 +133,6 @@ Manual Telegram smoke after cutover:
 - `apps/support-bot/upstream/app/bot/storage.py`: PostgreSQL schema and repository.
 - `apps/support-bot/upstream/app/bot/support_context.py`: `/start` payload parsing and Support Topic title rendering.
 - `apps/support-bot/upstream/app/bot/support_topics.py`: Support Topic service seam.
+- `apps/support-bot/upstream/app/bot/support_runtime.py`: aiogram/PostgreSQL adapters that wire runtime handlers onto the service seam.
+- `apps/support-bot/upstream/app/bot/postgres_smoke.py`: deployed container PostgreSQL schema smoke check.
 - `apps/support-bot/upstream/app/bot/telegram_client.py`: aiogram Bot construction with proxy support.

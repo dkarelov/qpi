@@ -1,21 +1,14 @@
 import asyncio
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
 from aiogram.types import Message
 
 from app.bot.llm import LLMProvider
 from app.bot.manager import Manager
 from app.bot.policy import PolicyEngine
-from app.bot.support_context import render_topic_title
-from app.bot.support_topics import USER_DELIVERY_ACK, USER_DELIVERY_FAILURE, TelegramAccount
+from app.bot.support_runtime import account_from_user_data, build_support_topic_service
 from app.bot.types.album import Album
-from app.bot.utils.create_forum_topic import (
-    create_forum_topic,
-    get_or_create_forum_topic,
-)
-from app.bot.utils.exceptions import CreateForumTopicException
 from app.bot.utils.policy_runtime import (
     apply_auto_replies,
     apply_post_forward,
@@ -77,17 +70,6 @@ async def handle_incoming_message(
     if user_data.is_banned:
         return
 
-    if user_data.status == "closed" and user_data.message_thread_id is not None:
-        try:
-            await message.bot.reopen_forum_topic(
-                chat_id=manager.config.bot.GROUP_ID,
-                message_thread_id=user_data.message_thread_id,
-            )
-        except TelegramBadRequest:
-            pass
-        user_data.status = "open"
-        await redis.update_user(user_data.id, user_data)
-
     # Record the incoming message in the conversation transcript (LLM context).
     await redis.append_conversation(user_data.id, "user", message_text(message))
 
@@ -99,52 +81,32 @@ async def handle_incoming_message(
         if decision.suppress_topic_creation:
             return
 
-    async def copy_message_to_topic():
+    async def copy_message_to_topic(group_id: int, message_thread_id: int) -> None:
         """
         Copies the message or album to the forum topic.
         If no album is provided, the message is copied. Otherwise, the album is copied.
         """
-        message_thread_id = await get_or_create_forum_topic(
-            message.bot,
-            redis,
-            manager.config,
-            user_data,
-        )
-        if message_thread_id is None:
-            raise CreateForumTopicException
-
         if not album:
             await message.forward(
-                chat_id=manager.config.bot.GROUP_ID,
+                chat_id=group_id,
                 message_thread_id=message_thread_id,
             )
         else:
             await album.copy_to(
-                chat_id=manager.config.bot.GROUP_ID,
+                chat_id=group_id,
                 message_thread_id=message_thread_id,
             )
 
-    try:
-        await copy_message_to_topic()
-    except TelegramBadRequest as ex:
-        if "message thread not found" not in ex.message:
-            await message.reply(USER_DELIVERY_FAILURE)
-            return
-        try:
-            username = None if user_data.username == "-" else user_data.username
-            account = TelegramAccount(id=user_data.id, full_name=user_data.full_name, username=username)
-            user_data.message_thread_id = await create_forum_topic(
-                message.bot,
-                manager.config,
-                render_topic_title(account, user_data.support_context()),
-            )
-            await redis.update_user(user_data.id, user_data)
-            await copy_message_to_topic()
-        except Exception:
-            await message.reply(USER_DELIVERY_FAILURE)
-            return
-    except Exception:
-        await message.reply(USER_DELIVERY_FAILURE)
+    service = build_support_topic_service(
+        message.bot,
+        redis,
+        manager.config,
+        reply_message=message,
+        current_user=user_data,
+    )
+    account = account_from_user_data(user_data)
+    topic = await service.forward_user_delivery(account, copy_message_to_topic)
+    if topic is None:
         return
 
     # Apply post-forward policy side effects (tags, close, escalate).
@@ -155,12 +117,3 @@ async def handle_incoming_message(
     if llm_provider is not None and not (decision and decision.auto_replies):
         max_context = policy_engine.ai.max_context_messages if policy_engine else 12
         asyncio.create_task(run_ai_draft(llm_provider, manager.config, message, redis, user_data, max_context))
-
-    # Send a confirmation message to the user
-    text = USER_DELIVERY_ACK
-    # Reply to the edited message with the specified text
-    msg = await message.reply(text)
-    # Wait for 5 seconds before deleting the reply
-    await asyncio.sleep(5)
-    # Delete the reply to the edited message
-    await msg.delete()

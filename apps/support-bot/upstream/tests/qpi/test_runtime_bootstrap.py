@@ -123,6 +123,9 @@ async def test_text_round_trip_creates_support_topic_and_reuses_it() -> None:
         async def send_private_text(self, *, telegram_id: int, text: str) -> None:
             self.private_messages.append((telegram_id, text))
 
+        async def send_user_ack(self, *, telegram_id: int, text: str, ttl_seconds: int) -> None:
+            return None
+
     telegram = FakeTelegram()
     service = SupportTopicService(
         store=InMemorySupportTopicStore(),

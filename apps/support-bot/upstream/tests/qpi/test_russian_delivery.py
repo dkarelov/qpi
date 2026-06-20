@@ -11,6 +11,12 @@ def test_private_user_texts_are_russian_even_for_english_telegram_locale() -> No
     assert "Message sent" not in text.get("message_sent")
 
 
+def test_russian_is_the_only_supported_end_user_language() -> None:
+    from app.bot.utils.texts import SUPPORTED_LANGUAGES
+
+    assert SUPPORTED_LANGUAGES == {"ru": "🇷🇺 Русский"}
+
+
 @pytest.mark.asyncio
 async def test_user_success_ack_is_sent_only_after_topic_delivery() -> None:
     from app.bot.support_topics import InMemorySupportTopicStore, SupportTopicService, TelegramAccount
@@ -47,6 +53,82 @@ async def test_user_success_ack_is_sent_only_after_topic_delivery() -> None:
         "topic:Нужна помощь",
         "ack:Сообщение отправлено в поддержку. Ответим здесь.",
     ]
+
+
+@pytest.mark.asyncio
+async def test_start_command_records_payload_and_opens_main_menu_without_language_selector() -> None:
+    from aiogram.filters import CommandObject
+
+    from app.bot.handlers.private.command import start_handler
+    from app.bot.utils.redis.models import UserData
+    from app.bot.utils.texts import TextMessage
+    from app.config import AIConfig, BotConfig, Config, DatabaseConfig, PolicyConfig, RedisConfig, TelegramConfig
+
+    class FakeState:
+        def __init__(self) -> None:
+            self.state: object = "old"
+
+        async def set_state(self, state: object) -> None:
+            self.state = state
+
+    class FakeManager:
+        def __init__(self) -> None:
+            self.config = Config(
+                bot=BotConfig(TOKEN="123:token", DEV_IDS=[111], GROUP_ID=-1004355595623),
+                redis=RedisConfig(HOST="redis", PORT=6379, DB=7),
+                db=DatabaseConfig(URL="postgresql://support:secret@db.local:5432/qpi"),
+                telegram=TelegramConfig(PROXY_URL="http://proxy.example:8080"),
+                policy=PolicyConfig(ENABLED=False, PATH="config/policy.yaml"),
+                ai=AIConfig(
+                    PROVIDER="none",
+                    BASE_URL="https://openrouter.ai/api/v1",
+                    API_KEY="",
+                    MODEL="openai/gpt-5.4-nano",
+                    SYSTEM_PROMPT_PATH="config/system_prompt.txt",
+                    TIMEOUT_S=8,
+                ),
+            )
+            self.text_message = TextMessage("en")
+            self.user = type("User", (), {"full_name": "Карина"})()
+            self.state = FakeState()
+            self.sent: list[tuple[str, object | None]] = []
+            self.deleted = 0
+
+        async def send_message(self, text: str, reply_markup: object | None = None) -> None:
+            self.sent.append((text, reply_markup))
+
+        async def delete_message(self, _message: object) -> None:
+            self.deleted += 1
+
+    class FakeRedis:
+        def __init__(self) -> None:
+            self.updated: list[UserData] = []
+
+        async def update_user(self, _id: int, data: UserData) -> None:
+            self.updated.append(data)
+
+    user_data = UserData(
+        message_thread_id=None,
+        message_silent_id=None,
+        message_silent_mode=False,
+        id=1001,
+        full_name="Карина",
+        username="-",
+    )
+    manager = FakeManager()
+
+    await start_handler(
+        message=type("Message", (), {"bot": object()})(),  # type: ignore[arg-type]
+        command=CommandObject(command="start", args="seller_listing_L21_S11"),
+        manager=manager,  # type: ignore[arg-type]
+        redis=FakeRedis(),  # type: ignore[arg-type]
+        user_data=user_data,
+    )
+
+    assert user_data.language_code == "ru"
+    assert user_data.support_refs == ("L21", "S11")
+    assert manager.sent == [("<b>Здравствуйте!</b> Напишите ваш вопрос — ответим в ближайшее время.", None)]
+    assert manager.deleted == 1
 
 
 @pytest.mark.asyncio
@@ -282,6 +364,101 @@ async def test_reopened_topic_does_not_pin_metadata(monkeypatch: pytest.MonkeyPa
     assert message.forwards == [(-1004355595623, 701)]
     assert any(update.status == "open" for update in redis.updated)
     assert message.bot.metadata_messages == []
+
+
+@pytest.mark.asyncio
+async def test_failed_reopen_keeps_live_topic_closed_and_reports_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiogram.exceptions import TelegramBadRequest
+
+    from app.bot.handlers.private import message as private_message
+    from app.bot.support_topics import USER_DELIVERY_FAILURE
+    from app.bot.utils.redis.models import UserData
+    from app.config import AIConfig, BotConfig, Config, DatabaseConfig, PolicyConfig, RedisConfig, TelegramConfig
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(private_message.asyncio, "sleep", no_sleep)
+
+    class FakeBot:
+        async def reopen_forum_topic(self, *, chat_id: int, message_thread_id: int) -> None:
+            raise TelegramBadRequest(method=object(), message="Bad Request: topic is closed")
+
+        async def send_message(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    class FakeReply:
+        async def delete(self) -> None:
+            return None
+
+    class FakeMessage:
+        def __init__(self) -> None:
+            self.bot = FakeBot()
+            self.text = "Переоткрываю обращение."
+            self.caption = None
+            self.forwards: list[tuple[int, int | None]] = []
+            self.replies: list[str] = []
+
+        async def forward(self, *, chat_id: int, message_thread_id: int | None = None) -> None:
+            self.forwards.append((chat_id, message_thread_id))
+
+        async def reply(self, text: str) -> FakeReply:
+            self.replies.append(text)
+            return FakeReply()
+
+    class FakeRedis:
+        def __init__(self) -> None:
+            self.conversation: list[tuple[int, str, str]] = []
+            self.updated: list[UserData] = []
+
+        async def append_conversation(self, user_id: int, role: str, text: str) -> None:
+            self.conversation.append((user_id, role, text))
+
+        async def update_user(self, _id: int, data: UserData) -> None:
+            self.updated.append(data)
+
+    class FakeManager:
+        config = Config(
+            bot=BotConfig(TOKEN="123:token", DEV_IDS=[111], GROUP_ID=-1004355595623),
+            redis=RedisConfig(HOST="redis", PORT=6379, DB=7),
+            db=DatabaseConfig(URL="postgresql://support:secret@db.local:5432/qpi"),
+            telegram=TelegramConfig(PROXY_URL="http://proxy.example:8080"),
+            policy=PolicyConfig(ENABLED=False, PATH="config/policy.yaml"),
+            ai=AIConfig(
+                PROVIDER="none",
+                BASE_URL="https://openrouter.ai/api/v1",
+                API_KEY="",
+                MODEL="openai/gpt-5.4-nano",
+                SYSTEM_PROMPT_PATH="config/system_prompt.txt",
+                TIMEOUT_S=8,
+            ),
+        )
+
+    message = FakeMessage()
+    redis = FakeRedis()
+    user_data = UserData(
+        message_thread_id=701,
+        message_silent_id=None,
+        message_silent_mode=False,
+        id=1001,
+        full_name="Карина",
+        username="-",
+        status="closed",
+    )
+
+    await private_message.handle_incoming_message(
+        message=message,  # type: ignore[arg-type]
+        manager=FakeManager(),  # type: ignore[arg-type]
+        redis=redis,  # type: ignore[arg-type]
+        user_data=user_data,
+    )
+
+    assert message.forwards == []
+    assert message.replies == [USER_DELIVERY_FAILURE]
+    assert user_data.status == "closed"
+    assert not any(update.status == "open" for update in redis.updated)
 
 
 @pytest.mark.asyncio

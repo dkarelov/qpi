@@ -3,11 +3,11 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF' >&2
-usage: remote_rollout_support_bot.sh <release-id> <release-archive> <image-ref>
+usage: remote_rollout_support_bot.sh <release-id> <release-archive> <image-ref> <env-file>
 EOF
 }
 
-if [[ $# -ne 3 ]]; then
+if [[ $# -ne 4 ]]; then
   usage
   exit 1
 fi
@@ -15,6 +15,7 @@ fi
 release_id="$1"
 archive_path="$2"
 image_ref="$3"
+env_path="$4"
 release_dir="/opt/support-bot/releases/${release_id}"
 current_link="/opt/support-bot/current"
 previous_target="$(readlink -f "${current_link}" || true)"
@@ -32,9 +33,10 @@ rollback() {
 trap rollback ERR
 
 sudo rm -rf "${release_dir}"
-sudo install -d -m 0755 "${release_dir}"
-sudo tar -xzf "${archive_path}" -C "${release_dir}"
-sudo chown -R ubuntu:ubuntu "${release_dir}"
+sudo install -d -m 0755 -o ubuntu -g ubuntu "${release_dir}"
+sudo tar --no-same-owner -xzf "${archive_path}" -C "${release_dir}"
+sudo chown ubuntu:ubuntu "${release_dir}/compose.prod.yml"
+sudo install -m 0600 -o ubuntu -g ubuntu "${env_path}" "${release_dir}/.env"
 
 registry_token="$(
   curl -fsSL \

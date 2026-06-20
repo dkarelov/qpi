@@ -62,6 +62,7 @@ TELEGRAM_API_PROXY_URLS="${TELEGRAM_API_PROXY_URLS:-}"
 generated_ssh_key=0
 ssh_key_path=""
 temp_dir=""
+release_env_file=""
 support_bot_host=""
 support_bot_database_url=""
 ssh_args=()
@@ -75,7 +76,7 @@ cleanup() {
     rm -f "${ssh_key_path}"
   fi
   if [[ "${remote_uploaded:-0}" == "1" && -n "${support_bot_host:-}" && "${#ssh_args[@]}" -gt 0 ]]; then
-    remote_exec "rm -f /tmp/remote_rollout_support_bot.sh /tmp/$(basename "${release_archive:-}")" >/dev/null 2>&1 || true
+    remote_exec "rm -f /tmp/remote_rollout_support_bot.sh /tmp/$(basename "${release_archive:-}") /tmp/$(basename "${release_env_file:-}")" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -303,10 +304,12 @@ release_id="${SUPPORT_BOT_RELEASE_ID:-${release_stamp}-${release_sha}}"
 temp_dir="$(mktemp -d)"
 release_stage="${temp_dir}/release"
 release_archive="${artifacts_dir}/support-bot-release-${release_id}.tar.gz"
+release_env_file="${temp_dir}/support-bot-${release_id}.env"
 
 mkdir -p "${release_stage}"
 cp "${repo_root}/apps/support-bot/compose.prod.yml" "${release_stage}/compose.prod.yml"
-write_env_file "${release_stage}/.env"
+write_env_file "${release_env_file}"
+chmod 0600 "${release_env_file}"
 tar -czf "${release_archive}" -C "${release_stage}" .
 qpi_phase_end
 
@@ -322,6 +325,7 @@ fi
 qpi_phase_start "upload"
 scp "${scp_args[@]}" \
   "${release_archive}" \
+  "${release_env_file}" \
   "${repo_root}/infra/scripts/remote_rollout_support_bot.sh" \
   "${SUPPORT_BOT_VM_SSH_USER}@${support_bot_host}:/tmp/"
 remote_uploaded=1
@@ -332,7 +336,7 @@ remote_exec \
   "set -euo pipefail && \
    sudo install -d -m 0755 /opt/support-bot/releases /var/lib/support-bot && \
    chmod +x /tmp/remote_rollout_support_bot.sh && \
-   /tmp/remote_rollout_support_bot.sh '${release_id}' '/tmp/$(basename "${release_archive}")' '${image_ref}'"
+   /tmp/remote_rollout_support_bot.sh '${release_id}' '/tmp/$(basename "${release_archive}")' '${image_ref}' '/tmp/$(basename "${release_env_file}")'"
 qpi_phase_end
 
 compose_command="sudo docker compose --project-directory /opt/support-bot/current -f /opt/support-bot/current/compose.prod.yml"
@@ -348,23 +352,7 @@ fi
 
 postgres_status="$(
   remote_output \
-    "${compose_command} exec -T supportbot uv run --no-sync python -c 'exec(\"\"\"import asyncio
-import os
-
-import asyncpg
-
-from app.bot.storage import create_schema
-
-async def main():
-    pool = await asyncpg.create_pool(os.environ[\"DATABASE_URL\"], min_size=1, max_size=1)
-    try:
-        await create_schema(pool, os.environ.get(\"SUPPORT_BOT_DB_SCHEMA\", \"support_bot\"))
-    finally:
-        await pool.close()
-    print(\"support_bot_postgres_ok=true\")
-
-asyncio.run(main())
-\"\"\")'"
+    "${compose_command} exec -T supportbot uv run --no-sync python -m app.bot.postgres_smoke"
 )"
 
 telegram_get_me_output="$(support_bot_telegram_get_me)"

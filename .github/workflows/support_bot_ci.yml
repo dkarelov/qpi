@@ -60,8 +60,10 @@ jobs:
           app/config.py
           app/bot/storage.py
           app/bot/support_context.py
+          app/bot/support_runtime.py
           app/bot/support_topics.py
           app/bot/newsletter.py
+          app/bot/postgres_smoke.py
           app/bot/telegram_client.py
 
       - name: Run support-bot tests

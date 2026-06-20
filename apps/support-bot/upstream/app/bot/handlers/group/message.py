@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import suppress
 from typing import Optional
 
@@ -11,8 +12,11 @@ from aiogram.utils.markdown import hlink
 from app.bot.manager import Manager
 from app.bot.policy import EvalContext, PolicyEngine
 from app.bot.policy.context import EVENT_TOPIC_CREATED
+from app.bot.support_runtime import build_support_topic_service
 from app.bot.types.album import Album
 from app.bot.utils.redis import RedisStorage
+
+logger = logging.getLogger(__name__)
 
 router = Router()
 router.message.filter(
@@ -40,13 +44,11 @@ async def handler(
             EvalContext(event_type=EVENT_TOPIC_CREATED, language=user_data.language_code or "en")
         )
         if decision.close_topic:
-            user_data.status = "closed"
-            await redis.update_user(user_data.id, user_data)
+            service = build_support_topic_service(message.bot, redis, manager.config, current_user=user_data)
+            thread_id = message.message_thread_id
+            assert thread_id is not None
             with suppress(TelegramBadRequest):
-                await message.bot.close_forum_topic(
-                    chat_id=manager.config.bot.GROUP_ID,
-                    message_thread_id=message.message_thread_id,
-                )
+                await service.close_topic(thread_id=thread_id)
         if decision.suppress_group_notify:
             # Drop the long "User X started the bot!" inside the per-user
             # topic but still surface a short, clickable notice in the
@@ -101,18 +103,31 @@ async def handler(message: Message, manager: Manager, redis: RedisStorage, album
         return
 
     text = manager.text_message.get("message_sent_to_user")
+    service = build_support_topic_service(message.bot, redis, manager.config, current_user=user_data)
+
+    async def copy_message_to_user(telegram_id: int) -> None:
+        if not album:
+            await message.copy_to(chat_id=telegram_id)
+        else:
+            await album.copy_to(chat_id=telegram_id)
 
     try:
-        if not album:
-            await message.copy_to(chat_id=user_data.id)
-        else:
-            await album.copy_to(chat_id=user_data.id)
+        topic = await service.forward_staff_delivery(
+            thread_id=message.message_thread_id,
+            deliver=copy_message_to_user,
+        )
+        if topic is None or topic.is_silent:
+            return
 
     except TelegramAPIError as ex:
         if "blocked" in ex.message:
             text = manager.text_message.get("blocked_by_user")
+        else:
+            logger.exception("Support topic staff Telegram API delivery failed for thread_id=%s", message.message_thread_id)
+            text = manager.text_message.get("message_not_sent")
 
     except (Exception,):
+        logger.exception("Support topic staff message handler failed for thread_id=%s", message.message_thread_id)
         text = manager.text_message.get("message_not_sent")
 
     # Record the manager's reply in the conversation transcript (LLM context).

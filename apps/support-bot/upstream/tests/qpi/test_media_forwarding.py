@@ -63,6 +63,9 @@ async def test_user_album_forwarding_preserves_grouping_and_captions() -> None:
         async def send_topic_album(self, *, group_id: int, thread_id: int, media: tuple[MediaItem, ...]) -> None:
             self.albums.append((group_id, thread_id, media))
 
+        async def send_user_ack(self, *, telegram_id: int, text: str, ttl_seconds: int) -> None:
+            return None
+
     telegram = FakeTelegram()
     service = SupportTopicService(
         store=InMemorySupportTopicStore(),
@@ -95,6 +98,9 @@ async def test_staff_media_reply_is_forwarded_back_to_private_user() -> None:
 
         async def send_private_text(self, *, telegram_id: int, text: str) -> None:
             raise AssertionError("staff text path is not part of this test")
+
+        async def send_user_ack(self, *, telegram_id: int, text: str, ttl_seconds: int) -> None:
+            return None
 
         async def send_private_media(self, *, telegram_id: int, media: MediaItem) -> None:
             self.private_media.append((telegram_id, media))

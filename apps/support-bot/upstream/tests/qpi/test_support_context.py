@@ -72,6 +72,9 @@ async def test_start_payload_updates_title_without_pinning_metadata() -> None:
         async def send_private_text(self, *, telegram_id: int, text: str) -> None:
             raise AssertionError("staff reply is not part of this test")
 
+        async def send_user_ack(self, *, telegram_id: int, text: str, ttl_seconds: int) -> None:
+            return None
+
         async def pin_topic_metadata(self, *, group_id: int, thread_id: int, text: str) -> None:
             self.pinned_metadata_calls.append((thread_id, text))
 

@@ -6,7 +6,6 @@ from aiogram.utils.markdown import hbold
 # You can also keep only one language by removing the line with the unwanted language.
 SUPPORTED_LANGUAGES = {
     "ru": "🇷🇺 Русский",
-    "en": "🇺🇸 English",
 }
 
 
@@ -59,6 +58,7 @@ class TextMessage(Text):
             "en": {
                 "select_language": f"👋 <b>Hello</b>, {hbold('{full_name}')}!\n\nSelect language:",
                 "change_language": "<b>Select language:</b>",
+                "language_fixed": "Support is available in Russian.",
                 "main_menu": "<b>Hello!</b> Write your question and we will reply as soon as possible.\n\nIf you would like to add a channel to the aggregator, please read the rules: https://t.me/clear_blog/14\n\nChange language — /language",
                 "message_sent": "<b>Message sent!</b> Expect a response.",
                 "message_edited": (
@@ -121,6 +121,7 @@ class TextMessage(Text):
             "ru": {
                 "select_language": f"👋 <b>Привет</b>, {hbold('{full_name}')}!\n\nВыберите язык:",
                 "change_language": "<b>Выберите язык:</b>",
+                "language_fixed": "<b>Интерфейс поддержки доступен на русском.</b>",
                 "main_menu": "<b>Здравствуйте!</b> Напишите ваш вопрос — ответим в ближайшее время.",
                 "message_sent": "<b>Сообщение отправлено!</b> Ожидайте ответа.",
                 "message_edited": (

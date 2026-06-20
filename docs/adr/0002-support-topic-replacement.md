@@ -30,6 +30,8 @@ The support-bot deploy workflow is Python/uv-based, builds the image in GitHub A
 
 The bot uses `SUPPORT_BOT_GROUP_ID` for the topic-enabled support supergroup. The old private staff group model is out of scope.
 
+Runtime handlers use the Support Topic service seam for private-user delivery, staff replies, topic reopen/recreate, and lifecycle controls. Release archives do not retain `.env`; rollout uploads the env file separately and installs it with owner-only permissions.
+
 old Mongo data, `/open`, orphan-ticket recovery, old ticket ids, and old queue behavior are out of scope for the new runtime. If old production artifacts are needed for audit, treat them as historical backups outside the active application path.
 
 End-user communication stays Russian. Staff commands and operational metadata can remain English.

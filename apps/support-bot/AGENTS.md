@@ -17,7 +17,7 @@ Last updated: 2026-06-20 UTC
 - Use the nested uv project:
   - `cd apps/support-bot/upstream && uv sync --locked`
   - `cd apps/support-bot/upstream && uv run ruff check .`
-  - `cd apps/support-bot/upstream && uv run mypy app/config.py app/bot/storage.py app/bot/support_topics.py app/bot/telegram_client.py`
+  - `cd apps/support-bot/upstream && uv run mypy app/config.py app/bot/storage.py app/bot/support_context.py app/bot/support_runtime.py app/bot/support_topics.py app/bot/newsletter.py app/bot/postgres_smoke.py app/bot/telegram_client.py`
   - `cd apps/support-bot/upstream && uv run pytest`
 - Docker image build:
   - `docker build -f apps/support-bot/Dockerfile -t qpi-support-bot:local apps/support-bot`
@@ -27,8 +27,8 @@ Last updated: 2026-06-20 UTC
 
 - The bot keeps pending Telegram updates on startup by deleting the webhook with `drop_pending_updates=False`.
 - `/start` currently does not create a topic on its own; Support Topic creation happens on the first real support message.
-- `/start` payloads may carry qpi role/topic/reference context; metadata is reflected in topic titles.
-- Text, media, and album forwarding share the Support Topic service seam.
+- `/start` payloads may carry qpi role/topic/reference context; metadata is reflected in topic titles and `/start` opens the Russian main menu directly.
+- Text, media, album forwarding, staff replies, and lifecycle controls share the Support Topic service seam used by runtime handlers.
 - Closed Support Topics reopen when the user writes again without creating metadata pins.
 - Banned Telegram accounts are ignored until unbanned by staff action.
 - Forum service-message cleanup is best effort; `can_delete_messages` is useful but not required for core support delivery.
@@ -48,7 +48,7 @@ Last updated: 2026-06-20 UTC
 
 ## Optional Capabilities
 
-- Newsletter registration is available as an explicit support-bot service surface and keys subscribers by Telegram account id.
+- Newsletter registration is a dormant optional service surface; it is not wired into the production command path until explicitly enabled later.
 - Policy rules remain disabled by default with `POLICY_ENABLED=false`; enabling them must not change qpi's baseline support flow unless a policy file is configured.
 - LLM draft support remains disabled by default with `AI_PROVIDER=none`; the production dependency set includes the OpenAI-compatible client so drafts can be enabled later through config.
 
@@ -60,6 +60,7 @@ Last updated: 2026-06-20 UTC
 - Production deploys are expected to run from the existing private runner workflow, not from the workstation.
 - Manual workstation deploys to the private-only VM must set `SUPPORT_BOT_VM_SSH_PROXY_HOST=<qpi-bot-public-ip>` so SSH/scp can hop through the always-on qpi bot VM.
 - `/opt/support-bot/current` is a symlink managed by the deploy wrapper; it must never be pre-created as a real directory.
+- Release archives contain non-secret tracked runtime files only; `.env` is uploaded separately and installed on the VM as `0600 ubuntu:ubuntu`.
 - Deploy smoke checks verify Redis PING, PostgreSQL schema access, Telegram `getMe`, forum-supergroup `getChat`, and administrator `getChatMember` with `can_manage_topics` through `TELEGRAM_API_PROXY_URLS`.
 
 ## Upstream Update Policy

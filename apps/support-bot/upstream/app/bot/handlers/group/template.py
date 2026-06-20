@@ -9,6 +9,7 @@ from aiogram.types import Message
 from app.bot.manager import Manager
 from app.bot.policy import PolicyEngine
 from app.bot.policy.actions import render_template
+from app.bot.support_runtime import build_support_topic_service
 from app.bot.utils.redis import RedisStorage
 
 router = Router()
@@ -67,13 +68,11 @@ async def close_handler(message: Message, manager: Manager, redis: RedisStorage)
     if not user_data:
         return None  # noqa
 
-    user_data.status = "closed"
-    await redis.update_user(user_data.id, user_data)
+    service = build_support_topic_service(message.bot, redis, manager.config, current_user=user_data)
+    thread_id = message.message_thread_id
+    assert thread_id is not None
     with suppress(TelegramBadRequest):
-        await message.bot.close_forum_topic(
-            chat_id=message.chat.id,
-            message_thread_id=message.message_thread_id,
-        )
+        await service.close_topic(thread_id=thread_id)
 
 
 @router.message(Command("escalate"))
@@ -83,11 +82,8 @@ async def escalate_handler(message: Message, manager: Manager, redis: RedisStora
     if not user_data:
         return None  # noqa
 
-    user_data.status = "escalated"
-    await redis.update_user(user_data.id, user_data)
-    with suppress(Exception):
-        await message.bot.send_message(
-            chat_id=manager.config.bot.DEV_ID,
-            text=manager.text_message.get("escalated_dev").format(full_name=user_data.full_name, id=user_data.id),
-        )
+    service = build_support_topic_service(message.bot, redis, manager.config, current_user=user_data)
+    thread_id = message.message_thread_id
+    assert thread_id is not None
+    await service.escalate_topic(thread_id=thread_id)
     await message.reply(manager.text_message.get("escalated"))

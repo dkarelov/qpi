@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Awaitable, Callable, Protocol
 
 from app.bot.support_context import (
     GENERIC_CONTEXT,
@@ -10,8 +11,12 @@ from app.bot.support_context import (
     render_topic_title,
 )
 
+logger = logging.getLogger(__name__)
+
 USER_DELIVERY_ACK = "Сообщение отправлено в поддержку. Ответим здесь."
 USER_DELIVERY_FAILURE = "Не удалось отправить сообщение в поддержку. Пожалуйста, попробуйте ещё раз через пару минут."
+TopicDelivery = Callable[[int, int], Awaitable[None]]
+PrivateDelivery = Callable[[int], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -57,9 +62,29 @@ class SupportTopicStore(Protocol):
 class SupportTopicTelegram(Protocol):
     async def create_topic(self, *, group_id: int, title: str) -> int: ...
 
+    async def reopen_topic(self, *, group_id: int, thread_id: int) -> None: ...
+
+    async def close_topic(self, *, group_id: int, thread_id: int) -> None: ...
+
+    async def edit_topic_title(self, *, group_id: int, thread_id: int, title: str) -> None: ...
+
     async def send_topic_text(self, *, group_id: int, thread_id: int, text: str) -> None: ...
 
+    async def send_topic_media(self, *, group_id: int, thread_id: int, media: MediaItem) -> None: ...
+
+    async def send_topic_album(self, *, group_id: int, thread_id: int, media: tuple[MediaItem, ...]) -> None: ...
+
     async def send_private_text(self, *, telegram_id: int, text: str) -> None: ...
+
+    async def send_private_media(self, *, telegram_id: int, media: MediaItem) -> None: ...
+
+    async def send_private_album(self, *, telegram_id: int, media: tuple[MediaItem, ...]) -> None: ...
+
+    async def send_user_ack(self, *, telegram_id: int, text: str, ttl_seconds: int) -> None: ...
+
+    async def send_user_failure(self, *, telegram_id: int, text: str, persistent: bool) -> None: ...
+
+    async def notify_developer(self, *, text: str) -> None: ...
 
 
 class InMemorySupportTopicStore:
@@ -81,6 +106,9 @@ class InMemorySupportTopicStore:
         return self._by_thread_id.get(thread_id)
 
     async def save(self, topic: SupportTopic) -> None:
+        existing = self._by_telegram_id.get(topic.telegram_id)
+        if existing is not None and existing.thread_id != topic.thread_id:
+            self._by_thread_id.pop(existing.thread_id, None)
         self._by_telegram_id[topic.telegram_id] = topic
         self._by_thread_id[topic.thread_id] = topic
 
@@ -127,70 +155,69 @@ class SupportTopicService:
         return context
 
     async def forward_user_text(self, account: TelegramAccount, text: str) -> SupportTopic | None:
-        try:
-            topic = await self._prepare_user_topic(account)
-            if topic is None:
-                return None
-            await self.telegram.send_topic_text(group_id=self.group_id, thread_id=topic.thread_id, text=text)
-        except Exception:
-            await self._send_user_failure(account)
-            return None
-        await self._send_user_ack(account)
-        return topic
+        return await self.forward_user_delivery(
+            account,
+            lambda group_id, thread_id: self.telegram.send_topic_text(
+                group_id=group_id,
+                thread_id=thread_id,
+                text=text,
+            ),
+        )
 
     async def forward_user_media(self, account: TelegramAccount, media: MediaItem) -> SupportTopic | None:
-        try:
-            topic = await self._prepare_user_topic(account)
-            if topic is None:
-                return None
-            send_topic_media = getattr(self.telegram, "send_topic_media")
-            await send_topic_media(group_id=self.group_id, thread_id=topic.thread_id, media=media)
-        except Exception:
-            await self._send_user_failure(account)
-            return None
-        await self._send_user_ack(account)
-        return topic
+        return await self.forward_user_delivery(
+            account,
+            lambda group_id, thread_id: self.telegram.send_topic_media(
+                group_id=group_id,
+                thread_id=thread_id,
+                media=media,
+            ),
+        )
 
     async def forward_user_album(
         self,
         account: TelegramAccount,
         media: tuple[MediaItem, ...],
     ) -> SupportTopic | None:
+        return await self.forward_user_delivery(
+            account,
+            lambda group_id, thread_id: self.telegram.send_topic_album(
+                group_id=group_id,
+                thread_id=thread_id,
+                media=media,
+            ),
+        )
+
+    async def forward_user_delivery(self, account: TelegramAccount, deliver: TopicDelivery) -> SupportTopic | None:
         try:
             topic = await self._prepare_user_topic(account)
             if topic is None:
                 return None
-            send_topic_album = getattr(self.telegram, "send_topic_album", None)
-            if send_topic_album is not None:
-                await send_topic_album(group_id=self.group_id, thread_id=topic.thread_id, media=media)
-            else:
-                send_topic_media = getattr(self.telegram, "send_topic_media")
-                for item in media:
-                    await send_topic_media(group_id=self.group_id, thread_id=topic.thread_id, media=item)
+            try:
+                await deliver(self.group_id, topic.thread_id)
+            except Exception as ex:
+                if not _is_message_thread_not_found(ex):
+                    raise
+                topic = await self._replace_user_topic(account, topic)
+                await deliver(self.group_id, topic.thread_id)
         except Exception:
+            logger.exception("Support topic user delivery failed for telegram_id=%s", account.id)
             await self._send_user_failure(account)
             return None
         await self._send_user_ack(account)
         return topic
 
     async def forward_staff_text(self, *, thread_id: int, text: str) -> SupportTopic | None:
-        topic = await self.store.get_by_thread_id(thread_id)
-        if topic is None:
-            return None
-        if topic.is_silent:
-            return topic
-        await self.telegram.send_private_text(telegram_id=topic.telegram_id, text=text)
-        return topic
+        return await self.forward_staff_delivery(
+            thread_id=thread_id,
+            deliver=lambda telegram_id: self.telegram.send_private_text(telegram_id=telegram_id, text=text),
+        )
 
     async def forward_staff_media(self, *, thread_id: int, media: MediaItem) -> SupportTopic | None:
-        topic = await self.store.get_by_thread_id(thread_id)
-        if topic is None:
-            return None
-        if topic.is_silent:
-            return topic
-        send_private_media = getattr(self.telegram, "send_private_media")
-        await send_private_media(telegram_id=topic.telegram_id, media=media)
-        return topic
+        return await self.forward_staff_delivery(
+            thread_id=thread_id,
+            deliver=lambda telegram_id: self.telegram.send_private_media(telegram_id=telegram_id, media=media),
+        )
 
     async def forward_staff_album(
         self,
@@ -198,18 +225,22 @@ class SupportTopicService:
         thread_id: int,
         media: tuple[MediaItem, ...],
     ) -> SupportTopic | None:
+        return await self.forward_staff_delivery(
+            thread_id=thread_id,
+            deliver=lambda telegram_id: self.telegram.send_private_album(telegram_id=telegram_id, media=media),
+        )
+
+    async def forward_staff_delivery(self, *, thread_id: int, deliver: PrivateDelivery) -> SupportTopic | None:
         topic = await self.store.get_by_thread_id(thread_id)
         if topic is None:
             return None
         if topic.is_silent:
             return topic
-        send_private_album = getattr(self.telegram, "send_private_album", None)
-        if send_private_album is not None:
-            await send_private_album(telegram_id=topic.telegram_id, media=media)
-        else:
-            send_private_media = getattr(self.telegram, "send_private_media")
-            for item in media:
-                await send_private_media(telegram_id=topic.telegram_id, media=item)
+        try:
+            await deliver(topic.telegram_id)
+        except Exception:
+            logger.exception("Support topic staff delivery failed for thread_id=%s", thread_id)
+            raise
         return topic
 
     async def close_topic(self, *, thread_id: int) -> SupportTopic | None:
@@ -218,9 +249,7 @@ class SupportTopicService:
             return None
         topic.status = "closed"
         await self.store.save(topic)
-        close_topic = getattr(self.telegram, "close_topic", None)
-        if close_topic is not None:
-            await close_topic(group_id=self.group_id, thread_id=thread_id)
+        await self.telegram.close_topic(group_id=self.group_id, thread_id=thread_id)
         return topic
 
     async def set_banned(self, *, thread_id: int, is_banned: bool) -> SupportTopic | None:
@@ -245,28 +274,20 @@ class SupportTopicService:
             return None
         topic.status = "escalated"
         await self.store.save(topic)
-        notify_developer = getattr(self.telegram, "notify_developer", None)
-        if notify_developer is not None:
-            await notify_developer(text=f"Escalated Support Topic for Telegram ID {topic.telegram_id}")
+        try:
+            await self.telegram.notify_developer(text=f"Escalated Support Topic for Telegram ID {topic.telegram_id}")
+        except Exception:
+            logger.exception("Support topic escalation notification failed for thread_id=%s", thread_id)
         return topic
 
     async def _edit_topic_title(self, topic: SupportTopic) -> None:
-        edit_topic_title = getattr(self.telegram, "edit_topic_title", None)
-        if edit_topic_title is None:
-            return
-        await edit_topic_title(group_id=self.group_id, thread_id=topic.thread_id, title=topic.title)
+        await self.telegram.edit_topic_title(group_id=self.group_id, thread_id=topic.thread_id, title=topic.title)
 
     async def _send_user_ack(self, account: TelegramAccount) -> None:
-        send_user_ack = getattr(self.telegram, "send_user_ack", None)
-        if send_user_ack is None:
-            return
-        await send_user_ack(telegram_id=account.id, text=USER_DELIVERY_ACK, ttl_seconds=5)
+        await self.telegram.send_user_ack(telegram_id=account.id, text=USER_DELIVERY_ACK, ttl_seconds=5)
 
     async def _send_user_failure(self, account: TelegramAccount) -> None:
-        send_user_failure = getattr(self.telegram, "send_user_failure", None)
-        if send_user_failure is None:
-            return
-        await send_user_failure(telegram_id=account.id, text=USER_DELIVERY_FAILURE, persistent=True)
+        await self.telegram.send_user_failure(telegram_id=account.id, text=USER_DELIVERY_FAILURE, persistent=True)
 
     async def _prepare_user_topic(self, account: TelegramAccount) -> SupportTopic | None:
         topic = await self.get_or_create_topic(account)
@@ -276,9 +297,22 @@ class SupportTopicService:
             await self.store.save(topic)
             return None
         if topic.status == "closed":
-            reopen_topic = getattr(self.telegram, "reopen_topic", None)
-            if reopen_topic is not None:
-                await reopen_topic(group_id=self.group_id, thread_id=topic.thread_id)
+            await self.telegram.reopen_topic(group_id=self.group_id, thread_id=topic.thread_id)
             topic.status = "open"
             await self.store.save(topic)
         return topic
+
+    async def _replace_user_topic(self, account: TelegramAccount, topic: SupportTopic) -> SupportTopic:
+        title = render_topic_title(account, topic.context)
+        thread_id = await self.telegram.create_topic(group_id=self.group_id, title=title)
+        topic.thread_id = thread_id
+        topic.title = title
+        topic.status = "open"
+        topic.full_name = account.full_name
+        topic.username = account.username
+        await self.store.save(topic)
+        return topic
+
+
+def _is_message_thread_not_found(ex: Exception) -> bool:
+    return "message thread not found" in str(getattr(ex, "message", ex)).lower()

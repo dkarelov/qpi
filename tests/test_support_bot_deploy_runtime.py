@@ -66,6 +66,7 @@ def test_support_bot_deploy_scripts_validate_postgres_redis_and_proxy_get_me() -
     deploy = _read("scripts", "deploy", "support_bot.sh")
     preflight = _read("scripts", "deploy", "preflight.sh")
     remote_rollout = _read("infra", "scripts", "remote_rollout_support_bot.sh")
+    postgres_smoke = _read("apps", "support-bot", "upstream", "app", "bot", "postgres_smoke.py")
 
     assert "SUPPORT_BOT_GROUP_ID" in deploy
     assert "SUPPORT_BOT_STAFFCHAT_ID" not in deploy
@@ -81,11 +82,13 @@ def test_support_bot_deploy_scripts_validate_postgres_redis_and_proxy_get_me() -
     assert '.result.status // "-"' in deploy
     assert '.result.can_manage_topics // false' in deploy
     assert "redis-cli ping" in deploy
-    assert "asyncpg.create_pool" in deploy
-    assert "create_schema" in deploy
-    assert "support_bot_postgres_ok=true" in deploy
+    assert "python -m app.bot.postgres_smoke" in deploy
     assert "support_bot_redis_ping" in deploy
     assert deploy.index("ssh_args=()") < deploy.index("cleanup()")
+
+    assert "asyncpg.create_pool" in postgres_smoke
+    assert "create_schema" in postgres_smoke
+    assert "support_bot_postgres_ok=true" in postgres_smoke
 
     assert "SUPPORT_BOT_GROUP_ID" in preflight
     assert "SUPPORT_BOT_STAFFCHAT_ID" not in preflight
@@ -101,3 +104,26 @@ def test_support_bot_deploy_scripts_validate_postgres_redis_and_proxy_get_me() -
 
     assert "mongodb" not in remote_rollout.lower()
     assert "redis" in remote_rollout.lower()
+
+
+def test_support_bot_deploy_archive_does_not_retain_secret_env() -> None:
+    deploy = _read("scripts", "deploy", "support_bot.sh")
+    remote_rollout = _read("infra", "scripts", "remote_rollout_support_bot.sh")
+
+    assert 'tar -czf "${release_archive}" -C "${release_stage}" .' in deploy
+    package_start = deploy.index('qpi_phase_start "package"')
+    package_end = deploy.index("qpi_phase_end", package_start)
+    package_block = deploy[package_start:package_end]
+
+    assert 'write_env_file "${release_env_file}"' in package_block
+    assert 'write_env_file "${release_stage}/.env"' not in package_block
+    assert '"${release_env_file}" \\' in deploy
+    assert '$(basename "${release_env_file}")' in deploy
+    expected_cleanup = (
+        'rm -f /tmp/remote_rollout_support_bot.sh /tmp/$(basename "${release_archive:-}") '
+        '/tmp/$(basename "${release_env_file:-}")'
+    )
+    assert expected_cleanup in deploy
+
+    assert 'sudo install -m 0600 -o ubuntu -g ubuntu "${env_path}" "${release_dir}/.env"' in remote_rollout
+    assert "sudo chown -R ubuntu:ubuntu" not in remote_rollout
