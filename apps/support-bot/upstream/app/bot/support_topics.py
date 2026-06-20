@@ -22,6 +22,14 @@ class TelegramAccount:
     username: str | None = None
 
 
+@dataclass(frozen=True)
+class MediaItem:
+    kind: str
+    file_id: str
+    caption: str | None = None
+    media_group_id: str | None = None
+
+
 @dataclass
 class SupportTopic:
     telegram_id: int
@@ -119,11 +127,68 @@ class SupportTopicService:
         await self._send_user_ack(account)
         return topic
 
+    async def forward_user_media(self, account: TelegramAccount, media: MediaItem) -> SupportTopic | None:
+        try:
+            topic = await self.get_or_create_topic(account)
+            send_topic_media = getattr(self.telegram, "send_topic_media")
+            await send_topic_media(group_id=self.group_id, thread_id=topic.thread_id, media=media)
+        except Exception:
+            await self._send_user_failure(account)
+            return None
+        await self._send_user_ack(account)
+        return topic
+
+    async def forward_user_album(
+        self,
+        account: TelegramAccount,
+        media: tuple[MediaItem, ...],
+    ) -> SupportTopic | None:
+        try:
+            topic = await self.get_or_create_topic(account)
+            send_topic_album = getattr(self.telegram, "send_topic_album", None)
+            if send_topic_album is not None:
+                await send_topic_album(group_id=self.group_id, thread_id=topic.thread_id, media=media)
+            else:
+                send_topic_media = getattr(self.telegram, "send_topic_media")
+                for item in media:
+                    await send_topic_media(group_id=self.group_id, thread_id=topic.thread_id, media=item)
+        except Exception:
+            await self._send_user_failure(account)
+            return None
+        await self._send_user_ack(account)
+        return topic
+
     async def forward_staff_text(self, *, thread_id: int, text: str) -> SupportTopic | None:
         topic = await self.store.get_by_thread_id(thread_id)
         if topic is None:
             return None
         await self.telegram.send_private_text(telegram_id=topic.telegram_id, text=text)
+        return topic
+
+    async def forward_staff_media(self, *, thread_id: int, media: MediaItem) -> SupportTopic | None:
+        topic = await self.store.get_by_thread_id(thread_id)
+        if topic is None:
+            return None
+        send_private_media = getattr(self.telegram, "send_private_media")
+        await send_private_media(telegram_id=topic.telegram_id, media=media)
+        return topic
+
+    async def forward_staff_album(
+        self,
+        *,
+        thread_id: int,
+        media: tuple[MediaItem, ...],
+    ) -> SupportTopic | None:
+        topic = await self.store.get_by_thread_id(thread_id)
+        if topic is None:
+            return None
+        send_private_album = getattr(self.telegram, "send_private_album", None)
+        if send_private_album is not None:
+            await send_private_album(telegram_id=topic.telegram_id, media=media)
+        else:
+            send_private_media = getattr(self.telegram, "send_private_media")
+            for item in media:
+                await send_private_media(telegram_id=topic.telegram_id, media=item)
         return topic
 
     async def _pin_metadata(self, account: TelegramAccount, topic: SupportTopic) -> None:
