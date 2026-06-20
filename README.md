@@ -24,9 +24,8 @@ cp .env.example .env
 
 Companion support-bot local prerequisites:
 
-- upgrade local NodeSource to `node_24.x`,
-- verify `docker compose version`,
-- verify `mongosh --version`.
+- use the repo-local uv-managed Python environment,
+- verify `docker compose version` if you need the local Redis sidecar.
 
 ## Local Commands
 
@@ -60,12 +59,12 @@ Support-bot validation:
 
 ```bash
 cd apps/support-bot/upstream
-npm ci
-npm run build
-npm test
+uv sync --locked
+uv run ruff check .
+uv run pytest -q
 ```
 
-Local Mongo for support-bot:
+Local Redis for support-bot:
 
 ```bash
 docker compose -f apps/support-bot/compose.dev.yml up -d
@@ -139,7 +138,7 @@ The repository now assumes:
 
 - `fast` runs on GitHub-hosted runners,
 - DB-backed validation and code-only deploys run on a dedicated preemptible private runner VM,
-- support-bot CI runs on GitHub-hosted runners with Node 24,
+- support-bot CI runs on GitHub-hosted runners with uv/Python checks,
 - support-bot auto-deploys reuse the same private runner but stay isolated from qpi Python workflows,
 - GitHub-hosted bootstrap jobs start that VM on demand,
 - a weekly keepalive workflow starts the runner briefly and then powers it down again.

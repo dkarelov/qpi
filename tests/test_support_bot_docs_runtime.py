@@ -27,6 +27,7 @@ def test_support_topic_glossary_and_adr_are_present() -> None:
 def test_support_bot_docs_do_not_preserve_old_node_mongo_runbooks() -> None:
     docs = {
         "AGENTS.md": _read("AGENTS.md"),
+        "README.md": _read("README.md"),
         "docs/dev_workflow.md": _read("docs", "dev_workflow.md"),
         "apps/support-bot/README.local.md": _read("apps", "support-bot", "README.local.md"),
     }
@@ -35,6 +36,7 @@ def test_support_bot_docs_do_not_preserve_old_node_mongo_runbooks() -> None:
         "Node 24",
         "npm ci",
         "npm run",
+        "Local Mongo for support-bot",
         "mongodb mongosh",
         "resendOrphanTickets",
         "staffchat_id",
