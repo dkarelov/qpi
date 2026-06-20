@@ -43,7 +43,7 @@ Last updated: 2026-06-20 UTC
 - `SUPPORT_BOT_DB_SCHEMA`: default `support_bot`.
 - `SUPPORT_BOT_REDIS_DB`: default `7`.
 - `TELEGRAM_API_PROXY_URLS`: HTTP(S) proxy list used for Telegram Bot API egress.
-- Deploy preflight validates that `SUPPORT_BOT_GROUP_ID` is a Telegram `supergroup` with forum topics enabled.
+- Deploy preflight validates that `SUPPORT_BOT_GROUP_ID` is a Telegram `supergroup` with forum topics enabled and that the bot is an administrator with `can_manage_topics`.
 
 ## Optional Capabilities
 
@@ -59,7 +59,7 @@ Last updated: 2026-06-20 UTC
 - Production deploys are expected to run from the existing private runner workflow, not from the workstation.
 - Manual workstation deploys to the private-only VM must set `SUPPORT_BOT_VM_SSH_PROXY_HOST=<qpi-bot-public-ip>` so SSH/scp can hop through the always-on qpi bot VM.
 - `/opt/support-bot/current` is a symlink managed by the deploy wrapper; it must never be pre-created as a real directory.
-- Deploy smoke checks verify Redis PING, PostgreSQL schema access, and Telegram `getMe` through `TELEGRAM_API_PROXY_URLS`.
+- Deploy smoke checks verify Redis PING, PostgreSQL schema access, Telegram `getMe`, forum-supergroup `getChat`, and administrator `getChatMember` with `can_manage_topics` through `TELEGRAM_API_PROXY_URLS`.
 
 ## Upstream Update Policy
 

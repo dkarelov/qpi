@@ -14,6 +14,7 @@ from app.bot.utils.create_forum_topic import (
     create_forum_topic,
     get_or_create_forum_topic,
 )
+from app.bot.utils.exceptions import CreateForumTopicException
 from app.bot.utils.policy_runtime import (
     apply_auto_replies,
     apply_post_forward,
@@ -108,6 +109,8 @@ async def handle_incoming_message(
             manager.config,
             user_data,
         )
+        if message_thread_id is None:
+            raise CreateForumTopicException
 
         if not album:
             await message.forward(

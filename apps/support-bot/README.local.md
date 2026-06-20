@@ -17,7 +17,7 @@ This directory contains the qpi-owned Python support-bot runtime imported from `
 - Staff replies are handled in the support supergroup topic.
 - Persistent state uses the existing qpi PostgreSQL cluster and app-owned schema `support_bot`.
 - Redis is ephemeral FSM/session state. The container deployment caps it with `--maxmemory 512mb`.
-- Telegram Bot API egress uses `TELEGRAM_API_PROXY_URLS`; deploy and preflight validate `getMe` through the configured proxy.
+- Telegram Bot API egress uses `TELEGRAM_API_PROXY_URLS`; deploy and preflight validate `getMe`, forum-supergroup `getChat`, and administrator `getChatMember` with `can_manage_topics` through the configured proxy.
 - End-user private-chat text is Russian. Staff commands and operational metadata may remain English.
 
 Out of scope for the new runtime:
@@ -90,13 +90,13 @@ Deploy smoke checks include:
 
 - Redis PING through the compose `redis` service,
 - PostgreSQL schema creation/verification through the deployed `supportbot` container,
-- Telegram `getMe` through `TELEGRAM_API_PROXY_URLS`.
+- Telegram `getMe`, forum-supergroup `getChat`, and administrator `getChatMember` with `can_manage_topics` through `TELEGRAM_API_PROXY_URLS`.
 
 Cutover behavior:
 
 - The deploy script stops the existing support-bot compose stack before switching `/opt/support-bot/current` to the new release.
 - Startup preserves pending Telegram updates with `drop_pending_updates=False`.
-- After Redis, PostgreSQL schema, and proxy `getMe` checks pass, the deploy script deletes `/var/lib/support-bot/mongodb` without backup.
+- After Redis, PostgreSQL schema, proxy `getMe`, forum-supergroup `getChat`, and administrator `getChatMember` checks pass, the deploy script deletes `/var/lib/support-bot/mongodb` without backup.
 
 ## Live verification
 

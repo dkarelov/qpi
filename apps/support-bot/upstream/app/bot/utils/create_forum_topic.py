@@ -18,7 +18,7 @@ async def get_or_create_forum_topic(
     redis: RedisStorage,
     config: Config,
     user_data: UserData,
-) -> int:
+) -> int | None:
     if user_data.message_thread_id is None:
         try:
             # If message_thread_id is not found, create a forum topic
@@ -34,6 +34,7 @@ async def get_or_create_forum_topic(
         except Exception as e:
             await bot.send_message(config.bot.DEV_ID, str(e))
             logging.exception(e)
+            return None
 
     return user_data.message_thread_id
 

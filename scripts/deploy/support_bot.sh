@@ -213,6 +213,49 @@ support_bot_telegram_get_chat() {
   return 1
 }
 
+support_bot_telegram_get_chat_member() {
+  local bot_id
+  local can_manage_topics
+  local member_status
+  local proxy_url
+  local telegram_get_me
+  local telegram_get_member
+
+  qpi_reject_legacy_telegram_api_proxy_url
+  qpi_validate_telegram_api_proxy_urls "${TELEGRAM_API_PROXY_URLS:-}" 1
+
+  mapfile -t telegram_proxy_urls < <(qpi_parse_telegram_api_proxy_urls "${TELEGRAM_API_PROXY_URLS:-}")
+  for _round in 1 2 3; do
+    for proxy_url in "${telegram_proxy_urls[@]}"; do
+      if telegram_get_me="$(curl -fsS --connect-timeout 5 --max-time 15 --proxy "${proxy_url}" "https://api.telegram.org/bot${SUPPORT_BOT_TELEGRAM_BOT_TOKEN}/getMe")" &&
+        jq -e '.ok == true' >/dev/null <<<"${telegram_get_me}"; then
+        bot_id="$(jq -r '.result.id' <<<"${telegram_get_me}")"
+        if telegram_get_member="$(
+          curl -fsS --connect-timeout 5 --max-time 15 --proxy "${proxy_url}" \
+            --get \
+            --data-urlencode "chat_id=${SUPPORT_BOT_GROUP_ID}" \
+            --data-urlencode "user_id=${bot_id}" \
+            "https://api.telegram.org/bot${SUPPORT_BOT_TELEGRAM_BOT_TOKEN}/getChatMember"
+        )" && jq -e '.ok == true' >/dev/null <<<"${telegram_get_member}"; then
+          member_status="$(jq -r '.result.status // "-"' <<<"${telegram_get_member}")"
+          can_manage_topics="$(jq -r '.result.can_manage_topics // false' <<<"${telegram_get_member}")"
+          if [[ "${member_status}" == "administrator" && "${can_manage_topics}" == "true" ]]; then
+            printf 'telegram_get_chat_member_ok=%q\n' "true"
+            printf 'telegram_get_chat_member_status=%q\n' "${member_status}"
+            printf 'telegram_get_chat_member_can_manage_topics=%q\n' "${can_manage_topics}"
+            return 0
+          fi
+          echo "Support bot must be an administrator with can_manage_topics=true; got status=${member_status}, can_manage_topics=${can_manage_topics}." >&2
+          return 1
+        fi
+      fi
+    done
+  done
+
+  echo "Telegram getChatMember failed through TELEGRAM_API_PROXY_URLS. Check bot membership and administrator rights." >&2
+  return 1
+}
+
 run_preflight() {
   eval "$("${script_dir}/preflight.sh" support-bot)"
 }
@@ -326,6 +369,7 @@ asyncio.run(main())
 
 telegram_get_me_output="$(support_bot_telegram_get_me)"
 telegram_get_chat_output="$(support_bot_telegram_get_chat)"
+telegram_get_chat_member_output="$(support_bot_telegram_get_chat_member)"
 qpi_phase_end
 
 qpi_phase_start "cleanup-old-mongo"
@@ -342,6 +386,7 @@ echo "support_bot_redis_ping=${support_bot_redis_ping}"
 echo "${postgres_status}"
 echo "${telegram_get_me_output}"
 echo "${telegram_get_chat_output}"
+echo "${telegram_get_chat_member_output}"
 echo "${old_mongo_cleanup}"
 
 qpi_append_step_summary "### Support Bot Deploy Result"
@@ -352,6 +397,7 @@ qpi_append_step_summary "- Redis ping: \`${support_bot_redis_ping}\`"
 qpi_append_step_summary "- PostgreSQL schema: \`ok\`"
 qpi_append_step_summary "- Telegram getMe via proxy: \`ok\`"
 qpi_append_step_summary "- Telegram forum group validation: \`ok\`"
+qpi_append_step_summary "- Telegram bot topic-admin validation: \`ok\`"
 qpi_append_step_summary "- Old Mongo state cleanup: \`${old_mongo_cleanup}\`"
 qpi_append_step_summary ""
 qpi_emit_timing_summary "Support Bot Deploy"
