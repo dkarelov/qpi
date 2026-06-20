@@ -30,14 +30,8 @@ from libs.domain.models import (
     TransferResult,
 )
 from libs.domain.notifications import NotificationService
+from libs.domain.purchase_lifecycle import PurchaseLifecycleService
 
-_OPEN_ASSIGNMENT_STATES = (
-    "reserved",
-    "order_verified",
-    "picked_up_wait_review",
-    "picked_up_wait_unlock",
-)
-_COLLATERAL_DEDUCTING_ASSIGNMENT_STATES = (*_OPEN_ASSIGNMENT_STATES, "withdraw_sent")
 _MANUAL_SOURCE = "manual"
 _SCRAPPER_WITHDRAWN_SOURCE = "scrapper_401_withdrawn"
 _SCRAPPER_EXPIRED_SOURCE = "scrapper_401_token_expired"
@@ -92,6 +86,11 @@ class SellerService:
         self._pool = pool
         self._finance_service = finance_service or FinanceService(pool)
         self._notifications = NotificationService(pool)
+        self._purchase_lifecycle = PurchaseLifecycleService(
+            pool,
+            finance_service=self._finance_service,
+            notification_service=self._notifications,
+        )
 
     async def bootstrap_seller(
         self,
@@ -387,7 +386,7 @@ class SellerService:
         async def operation(conn: AsyncConnection) -> DeletePreview:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await self._ensure_shop_owned(cur, seller_user_id=seller_user_id, shop_id=shop_id)
-                return await self._load_shop_delete_preview(cur, shop_id=shop_id)
+                return await self._purchase_lifecycle.load_shop_delete_preview_locked(cur, shop_id=shop_id)
 
         return await run_in_transaction(self._pool, operation, read_only=True)
 
@@ -442,12 +441,12 @@ class SellerService:
                 returned_unassigned = Decimal("0.000000")
                 buyer_payout_aggregates: dict[int, dict[str, Any]] = {}
                 for row in listings:
-                    listing_result = await self._delete_listing_locked(
+                    listing_result = await self._purchase_lifecycle.delete_announcement_locked(
                         cur,
                         seller_user_id=seller_user_id,
-                        listing_id=row["id"],
+                        announcement_id=row["id"],
                         deleted_by_user_id=deleted_by_user_id,
-                        idempotency_key=f"{idempotency_key}:listing:{row['id']}",
+                        idempotency_seed=f"{idempotency_key}:listing:{row['id']}",
                         buyer_payout_aggregates=buyer_payout_aggregates,
                     )
                     transferred_count += listing_result.assignment_transfers_count
@@ -467,7 +466,7 @@ class SellerService:
 
                 if buyer_payout_aggregates:
                     shop_title = await self._load_shop_title_locked(cur, shop_id=shop_id)
-                    await self._enqueue_buyer_early_payout_notifications_locked(
+                    await self._purchase_lifecycle.enqueue_buyer_early_payout_notifications_locked(
                         cur,
                         scope="shop",
                         scope_id=shop_id,
@@ -1299,7 +1298,10 @@ class SellerService:
                     seller_user_id=seller_user_id,
                     listing_id=listing_id,
                 )
-                return await self._load_listing_delete_preview(cur, listing_id=listing_id)
+                return await self._purchase_lifecycle.load_announcement_delete_preview_locked(
+                    cur,
+                    announcement_id=listing_id,
+                )
 
         return await run_in_transaction(self._pool, operation, read_only=True)
 
@@ -1313,12 +1315,12 @@ class SellerService:
     ) -> DeleteExecutionResult:
         async def operation(conn: AsyncConnection) -> DeleteExecutionResult:
             async with conn.cursor(row_factory=dict_row) as cur:
-                return await self._delete_listing_locked(
+                return await self._purchase_lifecycle.delete_announcement_locked(
                     cur,
                     seller_user_id=seller_user_id,
-                    listing_id=listing_id,
+                    announcement_id=listing_id,
                     deleted_by_user_id=deleted_by_user_id,
-                    idempotency_key=idempotency_key,
+                    idempotency_seed=idempotency_key,
                 )
 
         return await run_in_transaction(self._pool, operation)
@@ -1403,229 +1405,6 @@ class SellerService:
 
         return await run_in_transaction(self._pool, operation)
 
-    async def _delete_listing_locked(
-        self,
-        cur,
-        *,
-        seller_user_id: int,
-        listing_id: int,
-        deleted_by_user_id: int,
-        idempotency_key: str,
-        buyer_payout_aggregates: dict[int, dict[str, Any]] | None = None,
-    ) -> DeleteExecutionResult:
-        await cur.execute(
-            """
-            SELECT l.id, l.deleted_at, s.title AS shop_title
-            FROM listings l
-            JOIN shops s ON s.id = l.shop_id
-            WHERE l.id = %s
-              AND l.seller_user_id = %s
-            FOR UPDATE
-            """,
-            (listing_id, seller_user_id),
-        )
-        listing = await cur.fetchone()
-        if listing is None:
-            raise NotFoundError(f"listing {listing_id} not found")
-        if listing["deleted_at"] is not None:
-            return DeleteExecutionResult(
-                changed=False,
-                assignment_transfers_count=0,
-                assignment_transferred_usdt=Decimal("0.000000"),
-                unassigned_collateral_returned_usdt=Decimal("0.000000"),
-            )
-
-        seller_available_account_id = await self._ensure_owner_account(
-            cur,
-            owner_user_id=seller_user_id,
-            account_kind="seller_available",
-        )
-        seller_collateral_account_id = await self._ensure_owner_account(
-            cur,
-            owner_user_id=seller_user_id,
-            account_kind="seller_collateral",
-        )
-        reward_reserved_account_id = await self._ensure_system_account(
-            cur,
-            account_kind="reward_reserved",
-        )
-
-        await cur.execute(
-            """
-            SELECT
-                h.id,
-                h.assignment_id,
-                h.amount_usdt,
-                a.buyer_user_id,
-                u.telegram_id AS buyer_telegram_id
-            FROM balance_holds h
-            JOIN assignments a ON a.id = h.assignment_id
-            JOIN users u ON u.id = a.buyer_user_id
-            WHERE h.listing_id = %s
-              AND h.hold_type = 'slot_reserve'
-              AND h.status = 'active'
-            ORDER BY h.id ASC
-            FOR UPDATE OF h, a
-            """,
-            (listing_id,),
-        )
-        active_slot_holds = await cur.fetchall()
-        assigned_reward_deduction = await self._load_listing_collateral_deduction_locked(
-            cur,
-            listing_id=listing_id,
-        )
-
-        assignment_transfers_count = 0
-        assignment_transferred_usdt = Decimal("0.000000")
-        local_buyer_aggregates = (
-            buyer_payout_aggregates if buyer_payout_aggregates is not None else {}
-        )
-        for hold in active_slot_holds:
-            buyer_available_account_id = await self._ensure_owner_account(
-                cur,
-                owner_user_id=hold["buyer_user_id"],
-                account_kind="buyer_available",
-            )
-            amount = _normalize_amount(hold["amount_usdt"])
-            transfer_key = f"{idempotency_key}:assignment:{hold['assignment_id']}:hold:{hold['id']}"
-            transfer_result = await self._transfer_locked(
-                cur,
-                from_account_id=reward_reserved_account_id,
-                to_account_id=buyer_available_account_id,
-                amount_usdt=amount,
-                event_type="listing_delete_assignment_release",
-                idempotency_key=_ledger_key(transfer_key),
-                entity_type="assignment",
-                entity_id=hold["assignment_id"],
-                metadata={
-                    "listing_id": listing_id,
-                    "assignment_id": hold["assignment_id"],
-                    "hold_id": hold["id"],
-                },
-            )
-            if transfer_result.created:
-                assignment_transfers_count += 1
-                assignment_transferred_usdt += amount
-                aggregate = local_buyer_aggregates.setdefault(
-                    int(hold["buyer_user_id"]),
-                    {
-                        "telegram_id": int(hold["buyer_telegram_id"]),
-                        "item_count": 0,
-                        "total_reward_usdt": Decimal("0.000000"),
-                    },
-                )
-                aggregate["item_count"] += 1
-                aggregate["total_reward_usdt"] += amount
-
-            await cur.execute(
-                """
-                UPDATE assignments
-                SET status = 'withdraw_sent',
-                    updated_at = timezone('utc', now())
-                WHERE id = %s
-                  AND status <> 'withdraw_sent'
-                """,
-                (hold["assignment_id"],),
-            )
-            await cur.execute(
-                """
-                UPDATE balance_holds
-                SET status = 'consumed',
-                    released_at = timezone('utc', now())
-                WHERE id = %s
-                  AND status = 'active'
-                """,
-                (hold["id"],),
-            )
-
-        await cur.execute(
-            """
-            SELECT id, amount_usdt
-            FROM balance_holds
-            WHERE listing_id = %s
-              AND hold_type = 'collateral'
-              AND status = 'active'
-            ORDER BY id ASC
-            FOR UPDATE
-            """,
-            (listing_id,),
-        )
-        collateral_holds = await cur.fetchall()
-        collateral_sum = Decimal("0.000000")
-        for hold in collateral_holds:
-            collateral_sum += _normalize_amount(hold["amount_usdt"])
-
-        unassigned_collateral = collateral_sum - assigned_reward_deduction
-        if unassigned_collateral < Decimal("0.000000"):
-            unassigned_collateral = Decimal("0.000000")
-
-        unassigned_collateral = _normalize_amount(unassigned_collateral)
-        if unassigned_collateral > Decimal("0.000000"):
-            await self._transfer_locked(
-                cur,
-                from_account_id=seller_collateral_account_id,
-                to_account_id=seller_available_account_id,
-                amount_usdt=unassigned_collateral,
-                event_type="listing_delete_collateral_return",
-                idempotency_key=_ledger_key(f"{idempotency_key}:collateral"),
-                entity_type="listing",
-                entity_id=listing_id,
-                metadata={
-                    "listing_id": listing_id,
-                    "total_collateral": str(_normalize_amount(collateral_sum)),
-                    "assigned_reward_deduction_usdt": str(
-                        _normalize_amount(assigned_reward_deduction)
-                    ),
-                    "assignment_transferred_usdt": str(
-                        _normalize_amount(assignment_transferred_usdt)
-                    ),
-                },
-            )
-
-        if collateral_holds:
-            hold_ids = [row["id"] for row in collateral_holds]
-            await cur.execute(
-                """
-                UPDATE balance_holds
-                SET status = 'consumed',
-                    released_at = timezone('utc', now())
-                WHERE id = ANY(%s)
-                  AND status = 'active'
-                """,
-                (hold_ids,),
-            )
-
-        await cur.execute(
-            """
-            UPDATE listings
-            SET status = 'paused',
-                paused_at = timezone('utc', now()),
-                pause_reason = 'deleted_by_seller',
-                pause_source = %s,
-                deleted_at = timezone('utc', now()),
-                deleted_by_user_id = %s,
-                updated_at = timezone('utc', now())
-            WHERE id = %s
-            """,
-            (_MANUAL_SOURCE, deleted_by_user_id, listing_id),
-        )
-
-        if buyer_payout_aggregates is None and local_buyer_aggregates:
-            await self._enqueue_buyer_early_payout_notifications_locked(
-                cur,
-                scope="listing",
-                scope_id=listing_id,
-                shop_title=listing["shop_title"],
-                aggregates=local_buyer_aggregates,
-            )
-
-        return DeleteExecutionResult(
-            changed=True,
-            assignment_transfers_count=assignment_transfers_count,
-            assignment_transferred_usdt=_normalize_amount(assignment_transferred_usdt),
-            unassigned_collateral_returned_usdt=unassigned_collateral,
-        )
-
     async def _load_shop_title_locked(self, cur, *, shop_id: int) -> str:
         await cur.execute(
             """
@@ -1637,153 +1416,6 @@ class SellerService:
         )
         row = await cur.fetchone()
         return str(row["title"]) if row is not None else "Магазин"
-
-    async def _enqueue_buyer_early_payout_notifications_locked(
-        self,
-        cur,
-        *,
-        scope: str,
-        scope_id: int,
-        shop_title: str,
-        aggregates: dict[int, dict[str, Any]],
-    ) -> None:
-        for aggregate in aggregates.values():
-            await self._notifications.enqueue_buyer_early_payout_locked(
-                cur,
-                buyer_telegram_id=int(aggregate["telegram_id"]),
-                scope=scope,
-                scope_id=scope_id,
-                shop_title=shop_title,
-                item_count=int(aggregate["item_count"]),
-                total_reward_usdt=_normalize_amount(aggregate["total_reward_usdt"]),
-            )
-
-    async def _load_listing_delete_preview(self, cur, *, listing_id: int) -> DeletePreview:
-        await cur.execute(
-            """
-            SELECT
-                (
-                    SELECT COUNT(*)
-                    FROM assignments
-                    WHERE listing_id = %s
-                      AND status = ANY(%s)
-                ) AS open_assignments_count,
-                (
-                    SELECT COALESCE(SUM(amount_usdt), 0)
-                    FROM balance_holds
-                    WHERE listing_id = %s
-                      AND hold_type = 'slot_reserve'
-                      AND status = 'active'
-                ) AS assignment_linked_reserved_usdt,
-                (
-                    SELECT COALESCE(SUM(amount_usdt), 0)
-                    FROM balance_holds
-                    WHERE listing_id = %s
-                      AND hold_type = 'collateral'
-                      AND status = 'active'
-                ) AS collateral_usdt
-            """,
-            (listing_id, list(_OPEN_ASSIGNMENT_STATES), listing_id, listing_id),
-        )
-        row = await cur.fetchone()
-
-        assignment_linked_reserved = _normalize_amount(row["assignment_linked_reserved_usdt"])
-        collateral = _normalize_amount(row["collateral_usdt"])
-        assigned_reward_deduction = await self._load_listing_collateral_deduction_locked(
-            cur,
-            listing_id=listing_id,
-        )
-        unassigned_collateral = collateral - assigned_reward_deduction
-        if unassigned_collateral < Decimal("0.000000"):
-            unassigned_collateral = Decimal("0.000000")
-
-        return DeletePreview(
-            active_listings_count=1,
-            open_assignments_count=row["open_assignments_count"],
-            assignment_linked_reserved_usdt=assignment_linked_reserved,
-            unassigned_collateral_usdt=_normalize_amount(unassigned_collateral),
-        )
-
-    async def _load_listing_collateral_deduction_locked(self, cur, *, listing_id: int) -> Decimal:
-        await cur.execute(
-            """
-            SELECT COALESCE(SUM(reward_usdt), 0) AS assigned_reward_usdt
-            FROM assignments
-            WHERE listing_id = %s
-              AND status = ANY(%s)
-            """,
-            (listing_id, list(_COLLATERAL_DEDUCTING_ASSIGNMENT_STATES)),
-        )
-        row = await cur.fetchone()
-        return _normalize_amount(row["assigned_reward_usdt"])
-
-    async def _load_shop_delete_preview(self, cur, *, shop_id: int) -> DeletePreview:
-        await cur.execute(
-            """
-            SELECT
-                (
-                    SELECT COUNT(*)
-                    FROM listings
-                    WHERE shop_id = %s
-                      AND deleted_at IS NULL
-                      AND status = 'active'
-                ) AS active_listings_count,
-                (
-                    SELECT COUNT(*)
-                    FROM assignments a
-                    JOIN listings l ON l.id = a.listing_id
-                    WHERE l.shop_id = %s
-                      AND l.deleted_at IS NULL
-                      AND a.status = ANY(%s)
-                ) AS open_assignments_count,
-                (
-                    SELECT COALESCE(SUM(h.amount_usdt), 0)
-                    FROM balance_holds h
-                    JOIN listings l ON l.id = h.listing_id
-                    WHERE l.shop_id = %s
-                      AND l.deleted_at IS NULL
-                      AND h.hold_type = 'slot_reserve'
-                      AND h.status = 'active'
-                ) AS assignment_linked_reserved_usdt,
-                (
-                    SELECT COALESCE(SUM(h.amount_usdt), 0)
-                    FROM balance_holds h
-                    JOIN listings l ON l.id = h.listing_id
-                    WHERE l.shop_id = %s
-                      AND l.deleted_at IS NULL
-                      AND h.hold_type = 'collateral'
-                      AND h.status = 'active'
-                ) AS collateral_usdt
-            """,
-            (shop_id, shop_id, list(_OPEN_ASSIGNMENT_STATES), shop_id, shop_id),
-        )
-        row = await cur.fetchone()
-
-        assignment_linked_reserved = _normalize_amount(row["assignment_linked_reserved_usdt"])
-        collateral = _normalize_amount(row["collateral_usdt"])
-        await cur.execute(
-            """
-            SELECT COALESCE(SUM(a.reward_usdt), 0) AS assigned_reward_usdt
-            FROM assignments a
-            JOIN listings l ON l.id = a.listing_id
-            WHERE l.shop_id = %s
-              AND l.deleted_at IS NULL
-              AND a.status = ANY(%s)
-            """,
-            (shop_id, list(_COLLATERAL_DEDUCTING_ASSIGNMENT_STATES)),
-        )
-        deduction_row = await cur.fetchone()
-        assigned_reward_deduction = _normalize_amount(deduction_row["assigned_reward_usdt"])
-        unassigned_collateral = collateral - assigned_reward_deduction
-        if unassigned_collateral < Decimal("0.000000"):
-            unassigned_collateral = Decimal("0.000000")
-
-        return DeletePreview(
-            active_listings_count=row["active_listings_count"],
-            open_assignments_count=row["open_assignments_count"],
-            assignment_linked_reserved_usdt=assignment_linked_reserved,
-            unassigned_collateral_usdt=_normalize_amount(unassigned_collateral),
-        )
 
     async def _ensure_seller_user(self, cur, user_id: int) -> None:
         await cur.execute(

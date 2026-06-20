@@ -125,6 +125,9 @@ Runtime services:
 Shared layers:
 
 - `libs/domain/*`: transactional domain services (plain SQL).
+- `libs/domain/purchase_lifecycle.py`: deep Purchase lifecycle module; owns Purchase state transitions, semantic Cashback/Collateral movement, seller delete settlement for active purchases, and Purchase notification enqueueing while preserving the existing `assignments` table/status strings.
+- `libs/domain/purchase_tokens.py`: compact WB Order proof and Review Confirmation token decoders, including legacy no-type review-token compatibility.
+- `libs/domain/ledger.py`: generic finance primitive module for accounts, ledger transfers, holds, withdrawals, manual deposits, system provisions, and admin audit records; it does not expose Purchase-specific transition methods.
 - `libs/domain/seller_workflow.py`: backend seller activation/unpause facade that performs live WB product checks before mutating listing state.
 - `libs/integrations/*`: WB/TonAPI/FX clients.
 - `libs/config/settings.py`: runtime settings contracts.

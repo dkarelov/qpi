@@ -29,6 +29,7 @@ from libs.domain.notifications import (
     OUTBOX_STATUS_SENT,
     NotificationService,
 )
+from libs.domain.purchase_lifecycle import PurchaseLifecycleService
 from services.bot_api.telegram_notifications import render_telegram_notification
 from services.bot_api.telegram_runtime import TelegramWebhookRuntime
 from tests.e2e_harness import FakeBot, FakeTransport
@@ -430,9 +431,10 @@ async def _prepare_assignment(
     buyer_telegram_id: int,
     reward_usdt: Decimal,
     wb_product_id: int = 777,
-) -> tuple[BuyerService, FinanceService, int, int, int, int, int]:
+) -> tuple[BuyerService, PurchaseLifecycleService, int, int, int, int, int]:
     buyer_service = BuyerService(db_pool)
     finance_service = FinanceService(db_pool)
+    purchase_lifecycle = PurchaseLifecycleService(db_pool, finance_service=finance_service)
 
     async with db_pool.connection() as conn:
         async with conn.transaction():
@@ -494,7 +496,7 @@ async def _prepare_assignment(
     )
     return (
         buyer_service,
-        finance_service,
+        purchase_lifecycle,
         reservation.assignment_id,
         seller_collateral_account_id,
         reward_reserved_account_id,
@@ -604,11 +606,11 @@ async def test_reservation_expiry_enqueues_buyer_only(db_pool) -> None:
 async def test_reward_unlock_enqueues_buyer_and_seller_notifications(db_pool) -> None:
     (
         _,
-        finance_service,
+        purchase_lifecycle,
         assignment_id,
         _,
-        reward_reserved_account_id,
-        buyer_available_account_id,
+        _,
+        _,
         _,
     ) = await _prepare_assignment(
         db_pool,
@@ -630,11 +632,9 @@ async def test_reward_unlock_enqueues_buyer_and_seller_notifications(db_pool) ->
                     (assignment_id,),
                 )
 
-    result = await finance_service.unlock_assignment_reward(
-        assignment_id=assignment_id,
-        buyer_available_account_id=buyer_available_account_id,
-        reward_reserved_account_id=reward_reserved_account_id,
-        idempotency_key="unlock-notify",
+    result = await purchase_lifecycle.unlock_cashback(
+        purchase_id=assignment_id,
+        idempotency_seed="unlock-notify",
     )
     assert result.changed is True
 
@@ -754,11 +754,11 @@ async def test_runtime_dispatch_formats_buyer_reward_notification_in_rub(db_pool
 
     (
         _,
-        finance_service,
+        purchase_lifecycle,
         assignment_id,
         _,
-        reward_reserved_account_id,
-        buyer_available_account_id,
+        _,
+        _,
         _,
     ) = await _prepare_assignment(
         db_pool,
@@ -780,11 +780,9 @@ async def test_runtime_dispatch_formats_buyer_reward_notification_in_rub(db_pool
                     (assignment_id,),
                 )
 
-    result = await finance_service.unlock_assignment_reward(
-        assignment_id=assignment_id,
-        buyer_available_account_id=buyer_available_account_id,
-        reward_reserved_account_id=reward_reserved_account_id,
-        idempotency_key="unlock-notify-rub",
+    result = await purchase_lifecycle.unlock_cashback(
+        purchase_id=assignment_id,
+        idempotency_seed="unlock-notify-rub",
     )
     assert result.changed is True
 

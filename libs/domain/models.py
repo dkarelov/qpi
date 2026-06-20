@@ -14,12 +14,23 @@ class TransferResult:
 
 
 @dataclass(frozen=True)
-class AssignmentReservationResult:
-    assignment_id: int
+class PurchaseReservationResult:
+    purchase_id: int
     created: bool
-    reward_usdt: Decimal
+    cashback_usdt: Decimal
     reservation_expires_at: datetime
     task_uuid: UUID
+
+    @property
+    def assignment_id(self) -> int:
+        return self.purchase_id
+
+    @property
+    def reward_usdt(self) -> Decimal:
+        return self.cashback_usdt
+
+
+AssignmentReservationResult = PurchaseReservationResult
 
 
 @dataclass(frozen=True)
@@ -188,18 +199,25 @@ class BuyerListingDeepLinkResult:
 
 
 @dataclass(frozen=True)
-class BuyerOrderSubmitResult:
-    assignment_id: int
+class PurchaseOrderSubmitResult:
+    purchase_id: int
     changed: bool
     status: str
     order_id: str
     wb_product_id: int
     ordered_at: datetime
 
+    @property
+    def assignment_id(self) -> int:
+        return self.purchase_id
+
+
+BuyerOrderSubmitResult = PurchaseOrderSubmitResult
+
 
 @dataclass(frozen=True)
-class BuyerReviewSubmitResult:
-    assignment_id: int
+class PurchaseReviewSubmitResult:
+    purchase_id: int
     changed: bool
     status: str
     task_uuid: UUID
@@ -209,6 +227,13 @@ class BuyerReviewSubmitResult:
     review_text: str
     verification_status: str
     verification_reason: str | None = None
+
+    @property
+    def assignment_id(self) -> int:
+        return self.purchase_id
+
+
+BuyerReviewSubmitResult = PurchaseReviewSubmitResult
 
 
 @dataclass(frozen=True)
@@ -324,10 +349,12 @@ class WithdrawalRequestDetail:
 
 
 @dataclass(frozen=True)
-class ReservationExpiryResult:
+class PurchaseExpiryResult:
     processed_count: int
     expired_count: int
 
+
+ReservationExpiryResult = PurchaseExpiryResult
 
 @dataclass(frozen=True)
 class DepositShardView:
@@ -456,8 +483,8 @@ class AdminExpiredDepositIntentView:
 
 
 @dataclass(frozen=True)
-class AdminReviewVerificationResult:
-    assignment_id: int
+class AdminPurchaseReviewVerificationResult:
+    purchase_id: int
     changed: bool
     status: str
     task_uuid: UUID
@@ -466,6 +493,13 @@ class AdminReviewVerificationResult:
     rating: int
     review_text: str
     verification_status: str
+
+    @property
+    def assignment_id(self) -> int:
+        return self.purchase_id
+
+
+AdminReviewVerificationResult = AdminPurchaseReviewVerificationResult
 
 
 @dataclass(frozen=True)
