@@ -1,6 +1,6 @@
 # QPI AGENTS
 
-Last updated: 2026-06-20 UTC
+Last updated: 2026-06-21 UTC
 
 ## 0. Completion Gate
 
@@ -499,6 +499,8 @@ Transitions:
 - DB-backed CI/deploy execution is designed around a dedicated private self-hosted GitHub runner VM; GitHub-hosted runners only handle fast suites and bootstrap/start-stop orchestration.
 - Release-grade marketplace runtime and function deploys now reuse the private runner after DB validation so the network-heavy rollout happens from the same YC region as the targets.
 - Marketplace deploy workflows now run an explicit predeploy gate before rollout and publish immutable runtime/function artifacts before the deploy step consumes them.
+- Marketplace schema sync is a separate post-merge stage: `schema/**`, `libs/db/**`, and schema-runner changes can run DB validation plus production schema apply/assert without selecting runtime or Cloud Function rollout by themselves.
+- Runtime/function rollout selection is service-scoped: bot-runtime paths select the VM runtime, Cloud Function paths select only their function target, and shared domain/integration paths select only the services that consume them.
 - Runtime release archives are built from tracked repository files only; ignored local files such as `.env*`, Terraform state/vars, and `.artifacts` must never enter deploy artifacts.
 - Cloud Function bundles must not contain tokenized GitHub URLs; private Git dependencies are resolved during bundling into a local wheelhouse, and bundled requirements install from those local wheels.
 - Marketplace bot runtime uses Telegram long polling by default through the configured outbound Telegram proxies. Webhook mode remains available only as an explicit fallback with `TELEGRAM_UPDATE_MODE=webhook` and valid webhook settings.
@@ -932,11 +934,14 @@ Workflows:
 - `.github/workflows/post_merge.yml`:
   - single post-merge orchestrator for `main` pushes and manual reruns,
   - runs fast validation once,
-  - starts the private runner only when DB-backed validation is required, and now overlaps that boot with fast validation,
+  - starts the private runner only when DB validation, schema sync, or selected rollout requires private-network execution, and overlaps that boot with fast validation,
   - runs targeted or full DB-backed validation once depending on changed files,
-  - runs a dedicated marketplace predeploy gate on the private runner before any rollout,
+  - runs production schema apply/assert as a separate private-runner stage before marketplace predeploy,
+  - runs a dedicated marketplace predeploy gate on the private runner before any selected rollout,
   - builds immutable runtime/function artifacts once on GitHub-hosted runners,
-  - runs runtime and Cloud Function deploy jobs from the private runner after validation and predeploy succeed,
+  - runs runtime and Cloud Function deploy jobs from the private runner after validation, schema sync, and predeploy succeed,
+  - publishes selected Cloud Functions in parallel from prebuilt bundles,
+  - allows runtime and function rollout jobs to overlap when schema action is `assert-clean`; if schema action is `apply` and runtime is selected, functions wait for runtime rollout,
   - `workflow_dispatch` supports `full_validation=true` to force the old all-up DB validation path.
 - `.github/workflows/deploy_runtime.yml`:
   - manual runtime deploy path with two modes,
@@ -958,6 +963,8 @@ Workflows:
   - also runs repo workflow/shell lint so support-bot workflow/script changes are validated without triggering qpi DB suites.
 - `.github/workflows/support_bot_deploy.yml`:
   - support-bot `main` auto-deploy plus manual dispatch,
+  - classifies changed paths before build/deploy; support-bot docs/tests-only changes do not build or roll out a runtime image,
+  - resolves registry metadata before image build so private-runner startup can overlap support-bot validation/build/push,
   - builds and pushes the image to Yandex Container Registry on GitHub-hosted runners,
   - runs a dedicated preflight gate on the private runner before rollout,
   - reuses the existing private runner only for private-network deployment into the support-bot instance group,
@@ -990,20 +997,21 @@ Private runner / workflow gotchas:
 - Fast validation is centralized in reusable workflow `.github/workflows/_fast_validation.yml`; keep PR, post-merge, and manual deploy validation behavior aligned there instead of editing each caller separately.
 - When sourcing a shared shell helper from `scripts/**`, keep the `# shellcheck source=...` hint repo-relative (for example `scripts/dev/test_db_template_lib.sh`), not workstation-absolute; CI shellcheck runs against the checked-out repo tree and will fail on local absolute paths even when the script itself works.
 - `.github/actionlint.yaml` must keep the custom `qpi-private` self-hosted runner label declared or `actionlint` will fail the validation path even when the workflows are otherwise correct.
-- Runner-touching concurrency is scoped to runner jobs, not whole workflows. Whole-workflow concurrency caused unrelated workflows to cancel each other during rollout.
+- Runner-touching concurrency is scoped to DB/schema/preflight runner jobs, not whole workflows. Final marketplace runtime/function rollout jobs are intentionally not mutually serialized when schema is already clean.
 - `.github/workflows/post_merge.yml` now uses workflow-level concurrency on `main` with stale-run cancellation; `private_runner.sh ensure-ready` sets a max-session shutdown failsafe so canceled runs do not strand the runner VM indefinitely.
 - When debugging CI/deploy behavior, prefer `workflow_dispatch` runs one at a time on `main` instead of relying on overlapping push-triggered workflows.
 - The private runner self-updates its GitHub runner binary automatically; the first bring-up after a version change can briefly restart the runner before it comes back online.
 - Runner cloud-init now preinstalls `yc`, `uv`, and `psqldef`; workflows still keep defensive fallback installs until the runner VM is reprovisioned with the updated image bootstrap.
-- `private_runner.sh ensure-ready` now installs and refreshes the runner-local `qpi-private-runner-autoshutdown.timer` controller on the VM, then heartbeats it after the runner reports online.
+- `private_runner.sh ensure-ready` installs and refreshes the runner-local `qpi-private-runner-autoshutdown.timer`, heartbeats it, and schedules a max-session shutdown before checking the warm-runner fast path.
+- If the VM is already running, SSH works, the GitHub runner record exists, the runner is online, and the local runner service is active, `ensure-ready` skips runner reinstall/reconfiguration while keeping the refreshed heartbeat and shutdown schedule.
 - The private runner now powers itself off locally after 60 minutes without active `Runner.Worker` processes or interactive SSH sessions; workflows no longer SSH back in just to schedule idle shutdown.
 - `private_runner.sh` still sets a 120-minute `shutdown -h +...` max-session failsafe on each `ensure-ready` call so canceled or wedged workflows cannot strand the VM indefinitely.
-- The post-merge orchestrator still skips docs-only (`AGENTS.md`, `docs/**`) and pure test-only changes on `main`, but validation-orchestration changes (`detect_ci_changes`, targeted-validation manifest/scripts, workflow selectors) now trigger post-merge validation without forcing runtime/function deploys.
+- The post-merge orchestrator still skips docs-only (`AGENTS.md`, `docs/**`) and pure fast-test-only changes on `main`, but validation-orchestration changes (`detect_ci_changes`, targeted-validation manifest/scripts, workflow selectors) now trigger post-merge validation without forcing runtime/function deploys.
 - `detect_ci_changes` and `scripts/dev/test.sh affected` share the same checked-in validation manifest; keep local targeted validation and CI/post-merge selection aligned there instead of duplicating trigger logic.
 - Runtime-only Telegram copy/render work belongs in `services/bot_api/telegram_notifications.py`; changing that file should stay in the runtime validation/deploy surface. Shared enqueue/outbox changes in `libs/domain/notifications.py` still affect `order_tracker` and therefore still pull the shared DB validation / function-target selection path.
 - Validation-orchestration changes can still boot the private runner and run DB-backed validation on `main`; that is intentional because selector changes must be verified end to end against the private-runner path.
 - `gh run watch <run-id> --exit-status` is the preferred operator check after a push, but `start-private-runner` can sit in progress for a while during VM boot and runner registration; do not treat that alone as a failure unless the job times out or subsequent status turns red.
-- A code push to `main` can still take several extra minutes after local work is finished because `post_merge` still waits for private DB validation and the selective deploy jobs, but private-runner boot now overlaps with fast validation instead of serializing behind it.
+- A code push to `main` can still take several extra minutes after local work is finished because `post_merge` still waits for private DB validation, schema sync, and selective deploy jobs, but warm-runner detection avoids most fixed bootstrap cost when the private runner is already online.
 - A push that changes workflow or deploy-orchestration files can trigger extra workflows beyond `post_merge`. In particular, `.github/workflows/deploy_terraform.yml` is itself a watched path for the `Deploy Terraform` push workflow, so workflow edits may require checking two green runs on `main`, not one.
 - Support-bot auto-deploy no longer watches `infra/support_bot*.tf`. Apply Terraform first when changing support-bot registry/VM infra, then rerun `support_bot_deploy` manually or wait for the next support-bot app/runtime push.
 - If the support-bot container registry has not been created yet, push-triggered `support_bot_deploy` now exits cleanly after the build-image job explains the skip in `${GITHUB_STEP_SUMMARY}`; manual `workflow_dispatch` runs still fail loudly until Terraform creates the registry.
@@ -1011,8 +1019,8 @@ Private runner / workflow gotchas:
 - `gh run view <run-id> --job <job-id> --log` does not stream in-progress job output; for live inspection use `gh run watch` or `gh run view <run-id> --json jobs,status,conclusion,url` and look at step states instead.
 - `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs` currently returns plain text from the blob backend, not a zip archive; if `gh run view --job --log` is sparse, fetch that endpoint directly and grep the text instead of trying to unzip it.
 - `gh variable` has no `get` subcommand. Use `gh variable list`, `gh variable set`, or `gh api` when verifying repo-level workflow vars such as `SUPPORT_BOT_USERNAME`.
-- In `post_merge`, a job line like `deploy-functions in 0s` means the job was intentionally skipped because no function targets changed; it is not an error condition.
-- In the current optimized path, a successful `post_merge` run will often spend most of its time in the predeploy/runtime/function rollout phases; fast validation and private-runner boot overlap, so the deploy-specific timing summary is the source of truth when checking for regressions.
+- In `post_merge`, a job line like `deploy-functions in 0s` or `deploy-functions-after-runtime in 0s` means that path was intentionally skipped by service/schema classification; it is not an error condition.
+- In the current optimized path, a successful `post_merge` run will often spend most of its time in DB validation, schema sync, predeploy, and selected rollouts; fast validation, warm-runner startup, runtime artifact build, and function bundle build overlap where the workflow graph allows.
 - Release-grade marketplace deploy scripts now print phase timing key-values and write a Markdown timing table to `${GITHUB_STEP_SUMMARY}` when available; use those timings before guessing whether runner boot, packaging, upload, schema, or rollout got slower.
 - In manual `post_merge` reruns, `full_validation=true` forces the full DB validation path but does not invent deploy targets; runtime/function deploy jobs still follow the resolved change/deploy target set and may remain skipped.
 - Runtime/function artifact production now happens on GitHub-hosted runners and rollout/publish consumes those exact artifacts later. When debugging a manual deploy rerun, inspect the artifact-producing job first; a missing artifact means the downstream deploy job is not the root cause.

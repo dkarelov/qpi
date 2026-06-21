@@ -17,6 +17,8 @@ class ValidationGroup:
     db_pytest_targets: tuple[str, ...]
     full_db_validation: bool
     requires_migration: bool
+    requires_schema_apply: bool
+    requires_schema_assert: bool
     has_runtime_changes: bool
     function_targets: tuple[str, ...]
 
@@ -29,6 +31,9 @@ class ValidationSelection:
     full_db_validation: bool
     db_validation_mode: str
     requires_migration: bool
+    requires_schema_apply: bool
+    requires_schema_assert: bool
+    schema_action: str
     has_runtime_changes: bool
     function_targets: tuple[str, ...]
     has_function_targets: bool
@@ -36,11 +41,43 @@ class ValidationSelection:
     needs_private_runner: bool
 
 
+@dataclass(frozen=True)
+class SupportBotDeploySelection:
+    needs_validation: bool
+    needs_image_deploy: bool
+
+
 _DB_MANIFEST_FILES = {
     "integration": "tests/db_integration_manifest.txt",
     "schema_compat": "tests/schema_compat_manifest.txt",
     "migration_smoke": "tests/migration_smoke_manifest.txt",
 }
+
+_SUPPORT_BOT_VALIDATION_GLOBS = (
+    "apps/support-bot/Dockerfile",
+    "apps/support-bot/compose*.yml",
+    "apps/support-bot/upstream/app/**",
+    "apps/support-bot/upstream/config/**",
+    "apps/support-bot/upstream/tests/**",
+    "apps/support-bot/upstream/pyproject.toml",
+    "apps/support-bot/upstream/uv.lock",
+    "apps/support-bot/upstream/requirements*.txt",
+    "apps/support-bot/upstream/ruff.toml",
+)
+
+_SUPPORT_BOT_IMAGE_DEPLOY_GLOBS = (
+    "apps/support-bot/Dockerfile",
+    "apps/support-bot/compose.prod.yml",
+    "apps/support-bot/upstream/app/**",
+    "apps/support-bot/upstream/config/**",
+    "apps/support-bot/upstream/pyproject.toml",
+    "apps/support-bot/upstream/uv.lock",
+    "apps/support-bot/upstream/requirements*.txt",
+    "apps/support-bot/upstream/Dockerfile",
+    "apps/support-bot/upstream/docker-compose*.yml",
+    "infra/scripts/remote_rollout_support_bot.sh",
+    "scripts/deploy/support_bot.sh",
+)
 
 
 def _repo_root(value: str | Path | None) -> Path:
@@ -78,6 +115,8 @@ def load_validation_groups(*, repo_root: str | Path | None = None) -> tuple[Vali
                 ),
                 full_db_validation=bool(item.get("full_db_validation", False)),
                 requires_migration=bool(item.get("requires_migration", False)),
+                requires_schema_apply=bool(item.get("requires_schema_apply", False)),
+                requires_schema_assert=bool(item.get("requires_schema_assert", False)),
                 has_runtime_changes=bool(item.get("has_runtime_changes", False)),
                 function_targets=tuple(item.get("function_targets", [])),
             )
@@ -122,6 +161,8 @@ def resolve_validation_selection(
     function_targets: set[str] = set()
     full_db_validation = False
     requires_migration = False
+    requires_schema_apply = False
+    requires_schema_assert = False
     has_runtime_changes = False
 
     for group in groups:
@@ -137,6 +178,8 @@ def resolve_validation_selection(
         function_targets.update(group.function_targets)
         full_db_validation = full_db_validation or group.full_db_validation
         requires_migration = requires_migration or group.requires_migration
+        requires_schema_apply = requires_schema_apply or group.requires_schema_apply
+        requires_schema_assert = requires_schema_assert or group.requires_schema_assert
         has_runtime_changes = has_runtime_changes or group.has_runtime_changes
 
     migration_tests = membership["migration_smoke"]
@@ -157,7 +200,15 @@ def resolve_validation_selection(
     db_validation_mode = "full" if full_db_validation else ("targeted" if db_targets else "none")
     needs_db_validation = db_validation_mode != "none"
     has_function_targets = bool(function_targets)
-    needs_private_runner = needs_db_validation
+    requires_schema_assert = requires_schema_assert or has_runtime_changes or has_function_targets
+    schema_action = "apply" if requires_schema_apply else ("assert-clean" if requires_schema_assert else "none")
+    needs_private_runner = (
+        needs_db_validation
+        or requires_schema_apply
+        or requires_schema_assert
+        or has_runtime_changes
+        or has_function_targets
+    )
 
     return ValidationSelection(
         selected_groups=tuple(sorted(selected_group_names)),
@@ -166,11 +217,42 @@ def resolve_validation_selection(
         full_db_validation=full_db_validation,
         db_validation_mode=db_validation_mode,
         requires_migration=requires_migration,
+        requires_schema_apply=requires_schema_apply,
+        requires_schema_assert=requires_schema_assert,
+        schema_action=schema_action,
         has_runtime_changes=has_runtime_changes,
         function_targets=tuple(sorted(function_targets)),
         has_function_targets=has_function_targets,
         needs_db_validation=needs_db_validation,
         needs_private_runner=needs_private_runner,
+    )
+
+
+def resolve_support_bot_deploy_selection(
+    changed_paths: list[str] | tuple[str, ...],
+) -> SupportBotDeploySelection:
+    normalized_paths = tuple(
+        sorted(
+            {
+                _normalize_path(path)
+                for path in changed_paths
+                if _normalize_path(path)
+            }
+        )
+    )
+    needs_image_deploy = any(
+        fnmatch.fnmatch(path, pattern)
+        for path in normalized_paths
+        for pattern in _SUPPORT_BOT_IMAGE_DEPLOY_GLOBS
+    )
+    needs_validation = needs_image_deploy or any(
+        fnmatch.fnmatch(path, pattern)
+        for path in normalized_paths
+        for pattern in _SUPPORT_BOT_VALIDATION_GLOBS
+    )
+    return SupportBotDeploySelection(
+        needs_validation=needs_validation,
+        needs_image_deploy=needs_image_deploy,
     )
 
 
@@ -190,11 +272,22 @@ def _selection_to_shell(selection: ValidationSelection) -> str:
         "full_db_validation": _shell_bool(selection.full_db_validation),
         "db_validation_mode": selection.db_validation_mode,
         "requires_migration": _shell_bool(selection.requires_migration),
+        "requires_schema_apply": _shell_bool(selection.requires_schema_apply),
+        "requires_schema_assert": _shell_bool(selection.requires_schema_assert),
+        "schema_action": selection.schema_action,
         "has_runtime_changes": _shell_bool(selection.has_runtime_changes),
         "function_targets": _shell_join(selection.function_targets),
         "has_function_targets": _shell_bool(selection.has_function_targets),
         "needs_db_validation": _shell_bool(selection.needs_db_validation),
         "needs_private_runner": _shell_bool(selection.needs_private_runner),
+    }
+    return "\n".join(f"{key}={shlex.quote(value)}" for key, value in assignments.items())
+
+
+def _support_bot_selection_to_shell(selection: SupportBotDeploySelection) -> str:
+    assignments = {
+        "support_bot_needs_validation": _shell_bool(selection.needs_validation),
+        "support_bot_needs_image_deploy": _shell_bool(selection.needs_image_deploy),
     }
     return "\n".join(f"{key}={shlex.quote(value)}" for key, value in assignments.items())
 
@@ -207,6 +300,9 @@ def _selection_to_json(selection: ValidationSelection) -> str:
         "full_db_validation": selection.full_db_validation,
         "db_validation_mode": selection.db_validation_mode,
         "requires_migration": selection.requires_migration,
+        "requires_schema_apply": selection.requires_schema_apply,
+        "requires_schema_assert": selection.requires_schema_assert,
+        "schema_action": selection.schema_action,
         "has_runtime_changes": selection.has_runtime_changes,
         "function_targets": list(selection.function_targets),
         "has_function_targets": selection.has_function_targets,
@@ -216,12 +312,29 @@ def _selection_to_json(selection: ValidationSelection) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
+def _support_bot_selection_to_json(selection: SupportBotDeploySelection) -> str:
+    payload = {
+        "support_bot_needs_validation": selection.needs_validation,
+        "support_bot_needs_image_deploy": selection.needs_image_deploy,
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Resolve validation targets for changed paths.")
     parser.add_argument("--repo-root", default=os.getcwd(), help="repository root")
     parser.add_argument("--format", choices=("shell", "json"), default="shell")
+    parser.add_argument("--selector", choices=("marketplace", "support-bot"), default="marketplace")
     parser.add_argument("--paths", nargs="+", required=True, help="changed relative paths")
     args = parser.parse_args()
+
+    if args.selector == "support-bot":
+        support_bot_selection = resolve_support_bot_deploy_selection(args.paths)
+        if args.format == "json":
+            print(_support_bot_selection_to_json(support_bot_selection))
+            return
+        print(_support_bot_selection_to_shell(support_bot_selection))
+        return
 
     selection = resolve_validation_selection(args.paths, repo_root=args.repo_root)
     if args.format == "json":

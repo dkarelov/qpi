@@ -46,9 +46,12 @@ The supported execution model is:
 5. `post-merge deploy`
    - single `main`-branch orchestrator,
    - runs fast validation once,
-   - starts the private runner once,
-   - runs DB-backed validation once,
+   - starts the private runner only when DB validation, schema sync, or rollout needs it,
+   - runs DB-backed validation once when selected,
+   - runs production schema apply/assert separately from service rollout,
    - selectively deploys runtime and/or functions,
+   - publishes selected Cloud Functions in parallel from prebuilt bundles,
+   - lets runtime and function rollout overlap when schema is already clean,
    - cancels stale in-progress runs on newer `main` pushes,
    - powers the runner down afterward.
 
@@ -64,6 +67,9 @@ The supported execution model is:
 
 8. `support-bot deploy`
    - dedicated `main`-branch and manual workflow,
+   - classifies support-bot changes before build/deploy,
+   - skips image rollout for docs/tests-only changes,
+   - resolves registry metadata before image build so private runner startup can overlap validation/build/push,
    - builds the image on GitHub-hosted runners,
    - starts the same private runner,
    - deploys the image artifact into the private-only support-bot instance group,
@@ -226,7 +232,9 @@ Implementation notes:
 - runner registration is kept warm by the weekly keepalive workflow,
 - runner cloud-init preinstalls `yc`, `uv`, and `psqldef` for steady-state self-hosted jobs,
 - the post-merge workflow intentionally ignores docs-only (`AGENTS.md`, `docs/**`), workflow-only, test-only, and `scripts/dev/**` changes so those validate in PR CI without causing automatic deployments on `main`,
-- `scripts/deploy/private_runner.sh ensure-ready` schedules a max-session shutdown failsafe before jobs begin; the end-of-workflow stop path then reschedules a shorter idle shutdown,
+- `scripts/deploy/private_runner.sh ensure-ready` refreshes the autoshutdown controller, heartbeats it, and schedules a max-session shutdown failsafe before jobs begin,
+- if the runner VM is already running, SSH works, the GitHub runner is registered/online, and the local service is active, `ensure-ready` skips runner reinstall/reconfigure/start,
+- the end-of-workflow stop path then reschedules a shorter idle shutdown,
 - the cleanup path schedules shutdown rather than treating the runner as always-on infrastructure.
 
 ## Direct Deploy Commands
@@ -296,14 +304,15 @@ BOT_VM_HOST=<bot-vm-host> \
 scripts/deploy/schema_remote.sh apply
 ```
 
-The post-merge `predeploy-marketplace` gate treats schema drift as a hard blocker for runtime/function rollout.
+The post-merge workflow runs schema apply/assert as its own `schema-sync` stage before marketplace predeploy. Schema/tooling-only changes can therefore validate and sync schema without selecting runtime or function rollout.
 
 Support-bot deploys:
 
 - `scripts/deploy/support_bot.sh` is the canonical support-bot rollout wrapper.
 - The wrapper expects to run where the support-bot instance group's private IP is reachable, which in CI means the private runner.
 - For workstation/manual use, set `SUPPORT_BOT_VM_SSH_PROXY_HOST=<qpi-bot-public-ip>` so the wrapper can proxy through the always-on qpi bot VM.
-- The support-bot workflow builds the image in GitHub Actions and loads it onto the VM; the VM does not build the image locally.
+- The support-bot workflow builds and pushes the image in GitHub Actions; the VM pulls the registry image and does not build it locally.
+- The support-bot deploy workflow skips image rollout for docs/tests-only changes and starts the private runner as soon as registry metadata is resolved, in parallel with validation/build/push.
 - The support-bot release path expects `/opt/support-bot/current` to be a symlink owned by the deploy wrapper, not a pre-created directory.
 - Required runtime inputs are `SUPPORT_BOT_TELEGRAM_BOT_TOKEN`, `SUPPORT_BOT_GROUP_ID`, `SUPPORT_BOT_OWNER_ID`, `SUPPORT_BOT_DATABASE_URL` or `DATABASE_URL`, and `TELEGRAM_API_PROXY_URLS`.
 - Optional runtime inputs include `SUPPORT_BOT_DEV_IDS`, `SUPPORT_BOT_DB_SCHEMA`, and `SUPPORT_BOT_REDIS_DB`.

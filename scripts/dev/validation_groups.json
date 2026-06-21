@@ -25,6 +25,8 @@
       "db_pytest_targets": [],
       "full_db_validation": false,
       "requires_migration": false,
+      "requires_schema_apply": false,
+      "requires_schema_assert": false,
       "has_runtime_changes": false,
       "function_targets": []
     },
@@ -50,6 +52,8 @@
       "db_pytest_targets": [],
       "full_db_validation": true,
       "requires_migration": false,
+      "requires_schema_apply": false,
+      "requires_schema_assert": false,
       "has_runtime_changes": false,
       "function_targets": []
     },
@@ -65,12 +69,10 @@
       "db_pytest_targets": [],
       "full_db_validation": true,
       "requires_migration": true,
-      "has_runtime_changes": true,
-      "function_targets": [
-        "daily_report_scrapper",
-        "order_tracker",
-        "blockchain_checker"
-      ]
+      "requires_schema_apply": true,
+      "requires_schema_assert": false,
+      "has_runtime_changes": false,
+      "function_targets": []
     },
     {
       "name": "shared_core_full",
@@ -87,6 +89,8 @@
       "db_pytest_targets": [],
       "full_db_validation": true,
       "requires_migration": false,
+      "requires_schema_apply": false,
+      "requires_schema_assert": true,
       "has_runtime_changes": true,
       "function_targets": [
         "daily_report_scrapper",
@@ -103,6 +107,8 @@
       "db_pytest_targets": [],
       "full_db_validation": true,
       "requires_migration": false,
+      "requires_schema_apply": false,
+      "requires_schema_assert": true,
       "has_runtime_changes": true,
       "function_targets": [
         "daily_report_scrapper",
@@ -121,6 +127,8 @@
       "db_pytest_targets": [],
       "full_db_validation": true,
       "requires_migration": false,
+      "requires_schema_apply": false,
+      "requires_schema_assert": true,
       "has_runtime_changes": true,
       "function_targets": []
     },
@@ -133,6 +141,8 @@
       "db_pytest_targets": [],
       "full_db_validation": true,
       "requires_migration": false,
+      "requires_schema_apply": false,
+      "requires_schema_assert": true,
       "has_runtime_changes": false,
       "function_targets": [
         "daily_report_scrapper",
@@ -182,6 +192,8 @@
       ],
       "full_db_validation": false,
       "requires_migration": false,
+      "requires_schema_apply": false,
+      "requires_schema_assert": true,
       "has_runtime_changes": true,
       "function_targets": []
     },
@@ -200,6 +212,8 @@
       ],
       "full_db_validation": false,
       "requires_migration": false,
+      "requires_schema_apply": false,
+      "requires_schema_assert": true,
       "has_runtime_changes": false,
       "function_targets": [
         "daily_report_scrapper"
@@ -219,6 +233,8 @@
       ],
       "full_db_validation": false,
       "requires_migration": false,
+      "requires_schema_apply": false,
+      "requires_schema_assert": true,
       "has_runtime_changes": false,
       "function_targets": [
         "daily_report_scrapper"
@@ -237,6 +253,8 @@
       ],
       "full_db_validation": false,
       "requires_migration": false,
+      "requires_schema_apply": false,
+      "requires_schema_assert": true,
       "has_runtime_changes": false,
       "function_targets": [
         "order_tracker"
@@ -262,6 +280,8 @@
       ],
       "full_db_validation": false,
       "requires_migration": false,
+      "requires_schema_apply": false,
+      "requires_schema_assert": true,
       "has_runtime_changes": false,
       "function_targets": [
         "order_tracker"
@@ -281,6 +301,8 @@
       ],
       "full_db_validation": false,
       "requires_migration": false,
+      "requires_schema_apply": false,
+      "requires_schema_assert": true,
       "has_runtime_changes": false,
       "function_targets": [
         "blockchain_checker"
@@ -303,6 +325,8 @@
       ],
       "full_db_validation": false,
       "requires_migration": false,
+      "requires_schema_apply": false,
+      "requires_schema_assert": true,
       "has_runtime_changes": false,
       "function_targets": [
         "blockchain_checker"

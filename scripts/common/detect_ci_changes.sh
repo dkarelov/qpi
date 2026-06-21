@@ -55,15 +55,21 @@ require_command() {
 
 emit_output() {
   local needs_db_validation="$1"
-  local requires_migration="$2"
-  local has_runtime_changes="$3"
-  local function_targets="$4"
-  local has_function_targets="$5"
-  local needs_private_runner="$6"
-  local db_validation_mode="$7"
-  local db_validation_targets="$8"
+  local requires_schema_apply="$2"
+  local requires_schema_assert="$3"
+  local schema_action="$4"
+  local requires_migration="$5"
+  local has_runtime_changes="$6"
+  local function_targets="$7"
+  local has_function_targets="$8"
+  local needs_private_runner="$9"
+  local db_validation_mode="${10}"
+  local db_validation_targets="${11}"
 
   printf 'needs_db_validation=%q\n' "${needs_db_validation}"
+  printf 'requires_schema_apply=%q\n' "${requires_schema_apply}"
+  printf 'requires_schema_assert=%q\n' "${requires_schema_assert}"
+  printf 'schema_action=%q\n' "${schema_action}"
   printf 'requires_migration=%q\n' "${requires_migration}"
   printf 'has_runtime_changes=%q\n' "${has_runtime_changes}"
   printf 'function_targets=%q\n' "${function_targets}"
@@ -77,9 +83,12 @@ emit_full_output() {
   emit_output \
     "true" \
     "true" \
+    "false" \
+    "apply" \
     "true" \
-    "daily_report_scrapper order_tracker blockchain_checker" \
-    "true" \
+    "false" \
+    "" \
+    "false" \
     "true" \
     "full" \
     ""
@@ -126,9 +135,9 @@ fi
 mapfile -t changed_files < <(git diff --name-only "${base_sha}" "${head_sha}")
 if [[ "${#changed_files[@]}" -eq 0 ]]; then
   if [[ "${force_full_validation}" -eq 1 ]]; then
-    emit_output "true" "true" "false" "" "false" "true" "full" ""
+    emit_output "true" "false" "false" "none" "true" "false" "" "false" "true" "full" ""
   else
-    emit_output "false" "false" "false" "" "false" "false" "none" ""
+    emit_output "false" "false" "false" "none" "false" "false" "" "false" "false" "none" ""
   fi
   exit 0
 fi
@@ -145,6 +154,9 @@ fi
 
 emit_output \
   "${needs_db_validation}" \
+  "${requires_schema_apply}" \
+  "${requires_schema_assert}" \
+  "${schema_action}" \
   "${requires_migration}" \
   "${has_runtime_changes}" \
   "${function_targets}" \

@@ -5,9 +5,9 @@ on:
     branches: ["main"]
     paths:
       - "apps/support-bot/**"
-      - "infra/cloud-init/support_bot.yaml.tftpl"
       - "infra/scripts/remote_rollout_support_bot.sh"
       - "scripts/deploy/support_bot.sh"
+      - ".github/workflows/support_bot_deploy.yml"
   workflow_dispatch:
     inputs:
       preflight_only:
@@ -20,16 +20,60 @@ permissions:
   contents: read
 
 jobs:
-  build-image:
+  determine-changes:
     runs-on: ubuntu-latest
     outputs:
-      image_ref: ${{ steps.meta.outputs.image_ref }}
-      registry_id: ${{ steps.meta.outputs.registry_id }}
-      registry_present: ${{ steps.meta.outputs.registry_present }}
-    env:
-      YC_TOKEN: ${{ secrets.YC_TOKEN }}
-      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
-      SUPPORT_BOT_CONTAINER_REGISTRY_NAME: ${{ vars.SUPPORT_BOT_CONTAINER_REGISTRY_NAME }}
+      support_bot_needs_validation: ${{ steps.detect.outputs.support_bot_needs_validation }}
+      support_bot_needs_image_deploy: ${{ steps.detect.outputs.support_bot_needs_image_deploy }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Determine support-bot deploy scope
+        id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.before || '' }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            support_bot_needs_validation=true
+            support_bot_needs_image_deploy=true
+          else
+            if [[ -z "${BASE_SHA}" || "${BASE_SHA}" == "0000000000000000000000000000000000000000" ]]; then
+              BASE_SHA="$(git rev-parse "${HEAD_SHA}^" 2>/dev/null || true)"
+            fi
+            if [[ -z "${BASE_SHA}" ]] ||
+              ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null ||
+              ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+              support_bot_needs_validation=true
+              support_bot_needs_image_deploy=true
+            else
+              mapfile -t changed_files < <(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
+              if [[ "${#changed_files[@]}" -eq 0 ]]; then
+                support_bot_needs_validation=false
+                support_bot_needs_image_deploy=false
+              else
+                eval "$(
+                  python3 -m libs.devtools.validation_selection \
+                    --selector support-bot \
+                    --format shell \
+                    --paths "${changed_files[@]}"
+                )"
+              fi
+            fi
+          fi
+          {
+            echo "support_bot_needs_validation=${support_bot_needs_validation}"
+            echo "support_bot_needs_image_deploy=${support_bot_needs_image_deploy}"
+          } >> "${GITHUB_OUTPUT}"
+
+  validate-support-bot:
+    runs-on: ubuntu-latest
+    needs: determine-changes
+    if: ${{ needs.determine-changes.outputs.support_bot_needs_validation == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -39,12 +83,12 @@ jobs:
         with:
           python-version-file: apps/support-bot/upstream/.python-version
 
-      - name: Setup uv and yc CLI
+      - name: Setup uv
         uses: ./.github/actions/setup-qpi-deploy
         with:
           setup-python: "false"
           install-uv: "true"
-          install-yc: "true"
+          install-yc: "false"
 
       - name: Install Python dependencies
         working-directory: apps/support-bot/upstream
@@ -70,6 +114,29 @@ jobs:
       - name: Run support-bot tests
         working-directory: apps/support-bot/upstream
         run: uv run pytest
+
+  resolve-image-metadata:
+    runs-on: ubuntu-latest
+    needs: determine-changes
+    if: ${{ needs.determine-changes.outputs.support_bot_needs_image_deploy == 'true' }}
+    outputs:
+      image_ref: ${{ steps.meta.outputs.image_ref }}
+      registry_id: ${{ steps.meta.outputs.registry_id }}
+      registry_present: ${{ steps.meta.outputs.registry_present }}
+    env:
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      SUPPORT_BOT_CONTAINER_REGISTRY_NAME: ${{ vars.SUPPORT_BOT_CONTAINER_REGISTRY_NAME }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup yc CLI
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          setup-python: "false"
+          install-uv: "false"
+          install-yc: "true"
 
       - name: Resolve image metadata
         id: meta
@@ -103,8 +170,49 @@ jobs:
             echo "image_ref=${image_ref}"
           } >> "${GITHUB_OUTPUT}"
 
+  build-image:
+    runs-on: ubuntu-latest
+    needs:
+      - determine-changes
+      - validate-support-bot
+      - resolve-image-metadata
+    if: >-
+      ${{
+        always() &&
+        needs.determine-changes.outputs.support_bot_needs_image_deploy == 'true' &&
+        needs.validate-support-bot.result == 'success' &&
+        needs.resolve-image-metadata.outputs.registry_present == 'true'
+      }}
+    outputs:
+      image_ref: ${{ steps.image.outputs.image_ref }}
+      registry_id: ${{ steps.image.outputs.registry_id }}
+      registry_present: ${{ steps.image.outputs.registry_present }}
+    env:
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      IMAGE_REF: ${{ needs.resolve-image-metadata.outputs.image_ref }}
+      REGISTRY_ID: ${{ needs.resolve-image-metadata.outputs.registry_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup yc CLI
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          setup-python: "false"
+          install-uv: "false"
+          install-yc: "true"
+
+      - name: Expose image metadata
+        id: image
+        run: |
+          {
+            echo "registry_present=true"
+            echo "registry_id=${REGISTRY_ID}"
+            echo "image_ref=${IMAGE_REF}"
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Authenticate Docker to Yandex Container Registry
-        if: ${{ steps.meta.outputs.registry_present == 'true' }}
         run: |
           yc config set token "${YC_TOKEN}" >/dev/null
           yc config set folder-id "${YC_FOLDER_ID}" >/dev/null
@@ -112,15 +220,20 @@ jobs:
           printf '%s' "${registry_token}" | docker login --username iam --password-stdin cr.yandex
 
       - name: Build and push production image
-        if: ${{ steps.meta.outputs.registry_present == 'true' }}
         run: |
-          docker build -f apps/support-bot/Dockerfile -t "${{ steps.meta.outputs.image_ref }}" apps/support-bot
-          docker push "${{ steps.meta.outputs.image_ref }}"
+          docker build -f apps/support-bot/Dockerfile -t "${IMAGE_REF}" apps/support-bot
+          docker push "${IMAGE_REF}"
 
   start-private-runner:
     runs-on: ubuntu-latest
-    needs: build-image
-    if: ${{ needs.build-image.outputs.registry_present == 'true' }}
+    needs:
+      - determine-changes
+      - resolve-image-metadata
+    if: >-
+      ${{
+        needs.determine-changes.outputs.support_bot_needs_image_deploy == 'true' &&
+        needs.resolve-image-metadata.outputs.registry_present == 'true'
+      }}
     concurrency:
       group: qpi-private-runner
       cancel-in-progress: false

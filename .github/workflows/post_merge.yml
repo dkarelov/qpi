@@ -63,6 +63,9 @@ jobs:
       db_validation_mode: ${{ steps.detect.outputs.db_validation_mode }}
       db_validation_targets: ${{ steps.detect.outputs.db_validation_targets }}
       requires_migration: ${{ steps.detect.outputs.requires_migration }}
+      requires_schema_apply: ${{ steps.detect.outputs.requires_schema_apply }}
+      requires_schema_assert: ${{ steps.detect.outputs.requires_schema_assert }}
+      schema_action: ${{ steps.detect.outputs.schema_action }}
       has_runtime_changes: ${{ steps.detect.outputs.has_runtime_changes }}
       has_function_targets: ${{ steps.detect.outputs.has_function_targets }}
       function_targets: ${{ steps.detect.outputs.function_targets }}
@@ -95,6 +98,9 @@ jobs:
             echo "db_validation_mode=${db_validation_mode}"
             echo "db_validation_targets=${db_validation_targets}"
             echo "requires_migration=${requires_migration}"
+            echo "requires_schema_apply=${requires_schema_apply}"
+            echo "requires_schema_assert=${requires_schema_assert}"
+            echo "schema_action=${schema_action}"
             echo "has_runtime_changes=${has_runtime_changes}"
             echo "has_function_targets=${has_function_targets}"
             echo "function_targets=${function_targets}"
@@ -195,21 +201,83 @@ jobs:
             fi
           fi
 
+  schema-sync:
+    runs-on: [self-hosted, linux, qpi-private]
+    needs:
+      - determine-changes
+      - fast-validation
+      - start-private-runner
+      - private-db-validation
+    if: >-
+      ${{
+        always() &&
+        needs.determine-changes.outputs.schema_action != 'none' &&
+        needs.fast-validation.result == 'success' &&
+        needs.start-private-runner.result == 'success' &&
+        (needs.private-db-validation.result == 'success' || needs.private-db-validation.result == 'skipped')
+      }}
+    concurrency:
+      group: qpi-private-runner
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+      BOT_VM_HOST: ${{ vars.BOT_VM_HOST }}
+      BOT_VM_SSH_USER: ${{ vars.BOT_VM_SSH_USER }}
+      BOT_VM_SSH_PORT: ${{ vars.BOT_VM_SSH_PORT }}
+      BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
+      SCHEMA_ACTION: ${{ needs.determine-changes.outputs.schema_action }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup shared bootstrap
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          install-psqldef: "true"
+          configure-private-git-auth: "true"
+          psqldef-version: ${{ env.PSQLDEF_VERSION }}
+
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Apply or assert production schema
+        run: |
+          case "${SCHEMA_ACTION}" in
+            apply)
+              scripts/deploy/schema_remote.sh apply
+              ;;
+            assert-clean)
+              scripts/deploy/schema_remote.sh assert-clean
+              ;;
+            *)
+              echo "Unsupported schema action: ${SCHEMA_ACTION}" >&2
+              exit 1
+              ;;
+          esac
+
   predeploy-marketplace:
     runs-on: [self-hosted, linux, qpi-private]
     needs:
       - determine-changes
+      - fast-validation
+      - start-private-runner
       - private-db-validation
+      - schema-sync
     if: >-
       ${{
-        needs.determine-changes.outputs.has_runtime_changes == 'true' ||
-        needs.determine-changes.outputs.has_function_targets == 'true'
+        always() &&
+        (needs.determine-changes.outputs.has_runtime_changes == 'true' ||
+          needs.determine-changes.outputs.has_function_targets == 'true') &&
+        needs.fast-validation.result == 'success' &&
+        needs.start-private-runner.result == 'success' &&
+        (needs.private-db-validation.result == 'success' || needs.private-db-validation.result == 'skipped') &&
+        (needs.schema-sync.result == 'success' || needs.schema-sync.result == 'skipped')
       }}
     concurrency:
       group: qpi-private-runner
       cancel-in-progress: false
     outputs:
-      runtime_schema_action: ${{ steps.runtime-preflight.outputs.runtime_schema_action }}
+      runtime_schema_action: ${{ steps.schema-action.outputs.runtime_schema_action }}
     env:
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
@@ -224,6 +292,7 @@ jobs:
       TOKEN_CIPHER_KEY: ${{ secrets.TOKEN_CIPHER_KEY }}
       DEPLOY_BASE_SHA: ${{ github.event.before }}
       DEPLOY_HEAD_SHA: ${{ github.sha }}
+      SCHEMA_ACTION: ${{ needs.determine-changes.outputs.schema_action }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -241,23 +310,20 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
 
+      - name: Record schema action
+        id: schema-action
+        run: echo "runtime_schema_action=${SCHEMA_ACTION}" >> "${GITHUB_OUTPUT}"
+
       - name: Preflight runtime deploy
-        id: runtime-preflight
         if: ${{ needs.determine-changes.outputs.has_runtime_changes == 'true' }}
+        env:
+          QPI_DEPLOY_SCHEMA_MODE: never
         run: |
-          eval "$(scripts/deploy/preflight.sh runtime)"
-          echo "runtime_schema_action=${runtime_schema_action}" >> "${GITHUB_OUTPUT}"
+          eval "$(scripts/deploy/preflight.sh runtime --skip-schema-check)"
 
       - name: Preflight function deploy
         if: ${{ needs.determine-changes.outputs.has_function_targets == 'true' }}
-        env:
-          RUNTIME_SCHEMA_ACTION: ${{ steps.runtime-preflight.outputs.runtime_schema_action }}
-        run: |
-          args=(functions)
-          if [[ "${RUNTIME_SCHEMA_ACTION}" == "apply" ]]; then
-            args+=(--skip-schema-check)
-          fi
-          scripts/deploy/preflight.sh "${args[@]}"
+        run: scripts/deploy/preflight.sh functions --skip-schema-check
 
   build-runtime-artifact:
     runs-on: ubuntu-latest
@@ -344,9 +410,6 @@ jobs:
       - predeploy-marketplace
       - build-runtime-artifact
     if: ${{ needs.determine-changes.outputs.has_runtime_changes == 'true' }}
-    concurrency:
-      group: qpi-private-runner
-      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
@@ -365,6 +428,7 @@ jobs:
       DEPLOY_BASE_SHA: ${{ github.event.before }}
       DEPLOY_HEAD_SHA: ${{ github.sha }}
       QPI_RELEASE_ID: ${{ github.sha }}
+      QPI_DEPLOY_SCHEMA_MODE: never
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -399,15 +463,12 @@ jobs:
       - determine-changes
       - predeploy-marketplace
       - build-function-bundles
-      - deploy-runtime
     if: >-
       ${{
         needs.determine-changes.outputs.has_function_targets == 'true' &&
-        (needs.deploy-runtime.result == 'success' || needs.deploy-runtime.result == 'skipped')
+        (needs.predeploy-marketplace.outputs.runtime_schema_action != 'apply' ||
+          needs.determine-changes.outputs.has_runtime_changes != 'true')
       }}
-    concurrency:
-      group: qpi-private-runner
-      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
@@ -418,6 +479,7 @@ jobs:
       BOT_VM_SSH_PORT: ${{ vars.BOT_VM_SSH_PORT }}
       BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
       TARGETS: ${{ needs.determine-changes.outputs.function_targets }}
+      QPI_SKIP_FUNCTION_SCHEMA_CHECK: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -443,7 +505,84 @@ jobs:
 
       - name: Publish functions from prebuilt bundles
         run: |
+          status=0
+          pids=()
           for target in ${TARGETS}; do
-            QPI_FUNCTION_BUNDLE_PATH="${RUNNER_TEMP}/function-bundles/${target}.zip" \
+            (
+              QPI_FUNCTION_BUNDLE_PATH="${RUNNER_TEMP}/function-bundles/${target}.zip" \
               scripts/deploy/function.sh "${target}"
+            ) &
+            pids+=("$!")
           done
+          for pid in "${pids[@]}"; do
+            if ! wait "${pid}"; then
+              status=1
+            fi
+          done
+          exit "${status}"
+
+  deploy-functions-after-runtime:
+    runs-on: [self-hosted, linux, qpi-private]
+    needs:
+      - determine-changes
+      - predeploy-marketplace
+      - build-function-bundles
+      - deploy-runtime
+    if: >-
+      ${{
+        needs.determine-changes.outputs.has_function_targets == 'true' &&
+        needs.determine-changes.outputs.has_runtime_changes == 'true' &&
+        needs.predeploy-marketplace.outputs.runtime_schema_action == 'apply' &&
+        needs.deploy-runtime.result == 'success'
+      }}
+    env:
+      GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
+      YC_TOKEN: ${{ secrets.YC_TOKEN }}
+      YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+      BOT_VM_INSTANCE_GROUP_NAME: ${{ vars.BOT_VM_INSTANCE_GROUP_NAME }}
+      BOT_VM_HOST: ${{ vars.BOT_VM_HOST }}
+      BOT_VM_SSH_USER: ${{ vars.BOT_VM_SSH_USER }}
+      BOT_VM_SSH_PORT: ${{ vars.BOT_VM_SSH_PORT }}
+      BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
+      TARGETS: ${{ needs.determine-changes.outputs.function_targets }}
+      QPI_SKIP_FUNCTION_SCHEMA_CHECK: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup shared bootstrap
+        uses: ./.github/actions/setup-qpi-deploy
+        with:
+          install-yc: "true"
+          install-psqldef: "true"
+          configure-private-git-auth: "true"
+          psqldef-version: ${{ env.PSQLDEF_VERSION }}
+
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Download function bundles
+        uses: actions/download-artifact@v8
+        with:
+          name: function-bundles-${{ github.sha }}
+          path: ${{ runner.temp }}/function-bundles
+
+      - name: Publish functions from prebuilt bundles
+        run: |
+          status=0
+          pids=()
+          for target in ${TARGETS}; do
+            (
+              QPI_FUNCTION_BUNDLE_PATH="${RUNNER_TEMP}/function-bundles/${target}.zip" \
+              scripts/deploy/function.sh "${target}"
+            ) &
+            pids+=("$!")
+          done
+          for pid in "${pids[@]}"; do
+            if ! wait "${pid}"; then
+              status=1
+            fi
+          done
+          exit "${status}"

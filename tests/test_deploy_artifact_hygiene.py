@@ -79,6 +79,30 @@ def test_runtime_workflows_use_proxy_urls_secret() -> None:
     assert "secrets.TELEGRAM_API_PROXY_URL }}" not in workflow_text
 
 
+def test_post_merge_splits_schema_sync_from_service_rollout_and_parallelizes_functions() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/post_merge.yml").read_text(encoding="utf-8")
+
+    assert "requires_schema_apply" in workflow
+    assert "requires_schema_assert" in workflow
+    assert "schema_action" in workflow
+    assert "schema-sync:" in workflow
+    assert "scripts/deploy/schema_remote.sh apply" in workflow
+    assert "scripts/deploy/schema_remote.sh assert-clean" in workflow
+    assert "scripts/deploy/preflight.sh runtime --skip-schema-check" in workflow
+    assert "scripts/deploy/preflight.sh functions --skip-schema-check" in workflow
+    assert "QPI_DEPLOY_SCHEMA_MODE: never" in workflow
+    assert "QPI_SKIP_FUNCTION_SCHEMA_CHECK" in workflow
+    assert "deploy-functions-after-runtime:" in workflow
+    assert "needs.predeploy-marketplace.outputs.runtime_schema_action == 'apply'" in workflow
+    assert 'pids+=("$!")' in workflow
+
+    deploy_functions_start = workflow.index("  deploy-functions:")
+    deploy_functions_after_runtime_start = workflow.index("  deploy-functions-after-runtime:")
+    deploy_functions_block = workflow[deploy_functions_start:deploy_functions_after_runtime_start]
+
+    assert "- deploy-runtime" not in deploy_functions_block
+
+
 def test_private_git_auth_helper_can_use_scoped_git_config() -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
@@ -106,3 +130,28 @@ def test_private_git_auth_helper_can_use_scoped_git_config() -> None:
         assert 'url "https://x-access-token:test-token@github.com/"' in scoped_git_config.read_text(
             encoding="utf-8"
         )
+
+
+def test_private_runner_has_warm_online_fast_path_after_shutdown_safeguards() -> None:
+    script = (REPO_ROOT / "scripts/deploy/private_runner.sh").read_text(encoding="utf-8")
+
+    assert "runner_service_active()" in script
+    assert "warm_runner_ready()" in script
+    assert "PRIVATE_RUNNER_FORCE_RECONFIGURE" in script
+    assert "runner_exists || return 1" in script
+    assert '[[ "$(runner_online)" == "1" ]] || return 1' in script
+    assert "runner_service_active || return 1" in script
+    assert "skipped runner reconfiguration" in script
+
+    ensure_start = script.index("  ensure-ready)")
+    ensure_end = script.index("    ;;\n  schedule-stop)", ensure_start)
+    ensure_block = script[ensure_start:ensure_end]
+
+    assert ensure_block.index("install_or_refresh_autoshutdown_controller") < ensure_block.index(
+        "warm_runner_ready"
+    )
+    assert ensure_block.index("autoshutdown_heartbeat") < ensure_block.index("warm_runner_ready")
+    assert ensure_block.index('schedule_shutdown "${PRIVATE_RUNNER_MAX_SESSION_MINUTES}"') < ensure_block.index(
+        "warm_runner_ready"
+    )
+    assert ensure_block.index("warm_runner_ready") < ensure_block.index("install_or_reconfigure_runner")

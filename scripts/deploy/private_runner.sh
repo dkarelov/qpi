@@ -244,6 +244,28 @@ print("1" if runner.get("status") == "online" else "0")
 '
 }
 
+runner_service_active() {
+  local remote_command
+  remote_command="$(printf 'RUNNER_DIR=%q bash -s' "${PRIVATE_RUNNER_INSTALL_DIR}")"
+  remote_exec "${remote_command}" <<'REMOTE' >/dev/null
+set -euo pipefail
+
+test -f "${RUNNER_DIR}/.service"
+runner_unit="$(sudo tr -d '\r\n' < "${RUNNER_DIR}/.service")"
+test -n "${runner_unit}"
+sudo systemctl is-active --quiet "${runner_unit}"
+REMOTE
+}
+
+warm_runner_ready() {
+  if [[ "${PRIVATE_RUNNER_FORCE_RECONFIGURE:-0}" == "1" ]]; then
+    return 1
+  fi
+  runner_exists || return 1
+  [[ "$(runner_online)" == "1" ]] || return 1
+  runner_service_active || return 1
+}
+
 start_instance() {
   local status
   status="$(instance_field status)"
@@ -533,6 +555,11 @@ case "${command_name}" in
     install_or_refresh_autoshutdown_controller
     autoshutdown_heartbeat
     schedule_shutdown "${PRIVATE_RUNNER_MAX_SESSION_MINUTES}"
+    if warm_runner_ready; then
+      echo "Private runner '${PRIVATE_RUNNER_NAME}' is already online; skipped runner reconfiguration."
+      print_status
+      exit 0
+    fi
     install_or_reconfigure_runner
     wait_for_runner_online
     print_status

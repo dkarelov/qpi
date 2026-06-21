@@ -27,6 +27,11 @@ def test_support_bot_ci_uses_uv_python_checks_and_no_node_stack() -> None:
 def test_support_bot_deploy_workflow_uses_forum_group_db_redis_and_proxy_env() -> None:
     workflow = _read(".github", "workflows", "support_bot_deploy.yml")
 
+    assert "determine-changes:" in workflow
+    assert "--selector support-bot" in workflow
+    assert "validate-support-bot:" in workflow
+    assert "resolve-image-metadata:" in workflow
+    assert "support_bot_needs_image_deploy" in workflow
     assert "actions/setup-python" in workflow
     assert "uv sync --locked" in workflow
     assert "uv run ruff check ." in workflow
@@ -42,6 +47,20 @@ def test_support_bot_deploy_workflow_uses_forum_group_db_redis_and_proxy_env() -
     assert "actions/setup-node" not in workflow
     assert "npm " not in workflow
     assert "package-lock.json" not in workflow
+
+
+def test_support_bot_deploy_starts_runner_after_metadata_not_after_image_build() -> None:
+    workflow = _read(".github", "workflows", "support_bot_deploy.yml")
+
+    start_runner = workflow[workflow.index("  start-private-runner:") : workflow.index("  predeploy-support-bot:")]
+    assert "- resolve-image-metadata" in start_runner
+    assert "- build-image" not in start_runner
+    assert "needs.resolve-image-metadata.outputs.registry_present == 'true'" in start_runner
+
+    build_image = workflow[workflow.index("  build-image:") : workflow.index("  start-private-runner:")]
+    assert "- validate-support-bot" in build_image
+    assert "- resolve-image-metadata" in build_image
+    assert "docker build -f apps/support-bot/Dockerfile" in build_image
 
 
 def test_support_bot_compose_runs_supportbot_with_ephemeral_redis_only() -> None:

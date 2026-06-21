@@ -10,7 +10,7 @@ source "${script_dir}/common.sh"
 usage() {
   cat <<'EOF' >&2
 usage:
-  preflight.sh runtime
+  preflight.sh runtime [--skip-schema-check]
   preflight.sh functions [--skip-schema-check]
   preflight.sh support-bot
 EOF
@@ -386,7 +386,7 @@ if [[ "${mode}" == "support-bot" ]]; then
   qpi_phase_end
 fi
 
-if [[ "${mode}" == "runtime" ]]; then
+if [[ "${mode}" == "runtime" && "${skip_schema_check}" != "1" ]]; then
   qpi_phase_start "schema"
   if [[ "${runtime_schema_action}" == "assert-clean" ]]; then
     BOT_VM_HOST="${BOT_VM_HOST}" \
@@ -397,6 +397,9 @@ if [[ "${mode}" == "runtime" ]]; then
     "${repo_root}/scripts/deploy/schema_remote.sh" assert-clean >/dev/null
   fi
   qpi_phase_end
+fi
+
+if [[ "${mode}" == "runtime" ]]; then
   printf 'runtime_schema_action=%q\n' "${runtime_schema_action}"
 fi
 
