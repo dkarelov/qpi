@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import random
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from datetime import datetime, timedelta
 
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
@@ -15,6 +13,7 @@ from libs.domain.errors import InvalidStateError, NotFoundError
 from libs.domain.ledger import FinanceService
 from libs.domain.models import ReservationExpiryResult
 from libs.domain.notifications import NotificationService
+from libs.domain.purchase_lifecycle import PurchaseLifecycleService
 from libs.logging.setup import EventLogger, get_logger
 
 _PICKUP_OPERATION = "Продажа"
@@ -28,8 +27,6 @@ _UNLOCK_IDEMPOTENCY_PREFIX = "order-tracker:unlock"
 class _WbEventCandidate:
     assignment_id: int
     assignment_status: str
-    seller_collateral_account_id: int
-    reward_reserved_account_id: int
     sale_at: datetime | None
     return_at: datetime | None
     unlock_at: datetime | None
@@ -38,15 +35,11 @@ class _WbEventCandidate:
 @dataclass(frozen=True)
 class _DeliveryExpiredCandidate:
     assignment_id: int
-    seller_collateral_account_id: int
-    reward_reserved_account_id: int
 
 
 @dataclass(frozen=True)
 class _UnlockCandidate:
     assignment_id: int
-    buyer_user_id: int
-    reward_reserved_account_id: int
 
 
 @dataclass(frozen=True)
@@ -127,6 +120,11 @@ class OrderTrackerService:
         self._buyer_service = buyer_service or BuyerService(pool)
         self._finance_service = finance_service or FinanceService(pool)
         self._notifications = NotificationService(pool)
+        self._purchase_lifecycle = PurchaseLifecycleService(
+            pool,
+            finance_service=self._finance_service,
+            notification_service=self._notifications,
+        )
         self._logger = logger or get_logger(__name__)
         self._lock_connection: AsyncConnection | None = None
 
@@ -256,9 +254,10 @@ class OrderTrackerService:
             current_status = candidate.assignment_status
 
             if candidate.sale_at is not None and current_status == "order_verified":
-                if await self._mark_assignment_picked_up(
-                    assignment_id=candidate.assignment_id,
+                if await self._purchase_lifecycle.mark_picked_up(
+                    purchase_id=candidate.assignment_id,
                     pickup_at=candidate.sale_at,
+                    unlock_days=self._unlock_days,
                 ):
                     pickup_count += 1
                     current_status = "picked_up_wait_unlock"
@@ -283,13 +282,9 @@ class OrderTrackerService:
                 continue
 
             try:
-                result = await self._finance_service.cancel_assignment_reservation(
-                    assignment_id=candidate.assignment_id,
-                    new_status="returned_within_14d",
-                    seller_collateral_account_id=candidate.seller_collateral_account_id,
-                    reward_reserved_account_id=candidate.reward_reserved_account_id,
-                    idempotency_key=f"{_RETURN_IDEMPOTENCY_PREFIX}:{candidate.assignment_id}",
-                    notification_event="assignment_returned",
+                result = await self._purchase_lifecycle.mark_returned_within_unlock_window(
+                    purchase_id=candidate.assignment_id,
+                    idempotency_seed=f"{_RETURN_IDEMPOTENCY_PREFIX}:{candidate.assignment_id}",
                 )
             except (InvalidStateError, NotFoundError):
                 return_skipped_count += 1
@@ -317,18 +312,10 @@ class OrderTrackerService:
                         a.id AS assignment_id,
                         a.status AS assignment_status,
                         a.unlock_at,
-                        sc.id AS seller_collateral_account_id,
-                        rr.id AS reward_reserved_account_id,
                         sale.event_at AS sale_at,
                         ret.event_at AS return_at
                     FROM assignments a
                     JOIN listings l ON l.id = a.listing_id
-                    JOIN accounts sc
-                        ON sc.account_code = (
-                            'user:' || l.seller_user_id::text || ':seller_collateral'
-                        )
-                    JOIN accounts rr
-                        ON rr.account_code = 'system:reward_reserved'
                     LEFT JOIN LATERAL (
                         SELECT
                             COALESCE(wr.sale_dt, wr.order_dt, wr.create_dt) AS event_at,
@@ -378,8 +365,6 @@ class OrderTrackerService:
                     _WbEventCandidate(
                         assignment_id=row["assignment_id"],
                         assignment_status=row["assignment_status"],
-                        seller_collateral_account_id=row["seller_collateral_account_id"],
-                        reward_reserved_account_id=row["reward_reserved_account_id"],
                         sale_at=row["sale_at"],
                         return_at=row["return_at"],
                         unlock_at=row["unlock_at"],
@@ -389,62 +374,6 @@ class OrderTrackerService:
 
         return await run_in_transaction(self._pool, operation, read_only=True)
 
-    async def _mark_assignment_picked_up(self, *, assignment_id: int, pickup_at: datetime) -> bool:
-        pickup_at_utc = (
-            pickup_at.astimezone(UTC) if pickup_at.tzinfo else pickup_at.replace(tzinfo=UTC)
-        )
-        unlock_at = pickup_at_utc + timedelta(days=self._unlock_days)
-
-        async def operation(conn: AsyncConnection) -> bool:
-            async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(
-                    """
-                    SELECT
-                        a.status,
-                        a.review_required,
-                        l.review_phrases
-                    FROM assignments a
-                    JOIN listings l ON l.id = a.listing_id
-                    WHERE a.id = %s
-                    FOR UPDATE OF a, l
-                    """,
-                    (assignment_id,),
-                )
-                assignment = await cur.fetchone()
-                if assignment is None or assignment["status"] != "order_verified":
-                    return False
-                next_status = (
-                    "picked_up_wait_review" if assignment["review_required"] else "picked_up_wait_unlock"
-                )
-                review_phrases = []
-                if assignment["review_required"]:
-                    review_phrases = self._pick_assignment_review_phrases(
-                        list(assignment["review_phrases"] or [])
-                    )
-                await cur.execute(
-                    """
-                    UPDATE assignments
-                    SET status = %s,
-                        pickup_at = COALESCE(pickup_at, %s),
-                        unlock_at = COALESCE(unlock_at, %s),
-                        review_phrases = %s,
-                        cancel_reason = NULL,
-                        updated_at = timezone('utc', now())
-                    WHERE id = %s
-                      AND status = 'order_verified'
-                    """,
-                    (next_status, pickup_at_utc, unlock_at, review_phrases, assignment_id),
-                )
-                changed = cur.rowcount == 1
-                if changed:
-                    await self._notifications.enqueue_assignment_picked_up_locked(
-                        cur,
-                        assignment_id=assignment_id,
-                    )
-                return changed
-
-        return await run_in_transaction(self._pool, operation)
-
     async def _process_delivery_expired(self) -> BatchProcessResult:
         candidates = await self._list_delivery_expired_candidates()
         changed_count = 0
@@ -452,13 +381,9 @@ class OrderTrackerService:
 
         for candidate in candidates:
             try:
-                result = await self._finance_service.cancel_assignment_reservation(
-                    assignment_id=candidate.assignment_id,
-                    new_status="delivery_expired",
-                    seller_collateral_account_id=candidate.seller_collateral_account_id,
-                    reward_reserved_account_id=candidate.reward_reserved_account_id,
-                    idempotency_key=f"{_DELIVERY_EXPIRED_IDEMPOTENCY_PREFIX}:{candidate.assignment_id}",
-                    notification_event="delivery_expired",
+                result = await self._purchase_lifecycle.expire_delivery(
+                    purchase_id=candidate.assignment_id,
+                    idempotency_seed=f"{_DELIVERY_EXPIRED_IDEMPOTENCY_PREFIX}:{candidate.assignment_id}",
                 )
             except (InvalidStateError, NotFoundError):
                 skipped_count += 1
@@ -480,17 +405,9 @@ class OrderTrackerService:
                 await cur.execute(
                     """
                     SELECT
-                        a.id AS assignment_id,
-                        sc.id AS seller_collateral_account_id,
-                        rr.id AS reward_reserved_account_id
+                        a.id AS assignment_id
                     FROM assignments a
                     JOIN listings l ON l.id = a.listing_id
-                    JOIN accounts sc
-                        ON sc.account_code = (
-                            'user:' || l.seller_user_id::text || ':seller_collateral'
-                        )
-                    JOIN accounts rr
-                        ON rr.account_code = 'system:reward_reserved'
                     WHERE a.status = 'order_verified'
                       AND COALESCE(a.order_submitted_at, a.created_at)
                           <= timezone('utc', now()) - (%s * interval '1 day')
@@ -503,11 +420,7 @@ class OrderTrackerService:
                 )
                 rows = await cur.fetchall()
                 return [
-                    _DeliveryExpiredCandidate(
-                        assignment_id=row["assignment_id"],
-                        seller_collateral_account_id=row["seller_collateral_account_id"],
-                        reward_reserved_account_id=row["reward_reserved_account_id"],
-                    )
+                    _DeliveryExpiredCandidate(assignment_id=row["assignment_id"])
                     for row in rows
                 ]
 
@@ -519,15 +432,10 @@ class OrderTrackerService:
         skipped_count = 0
 
         for candidate in candidates:
-            buyer_available_account_id = await self._ensure_buyer_available_account_id(
-                buyer_user_id=candidate.buyer_user_id
-            )
             try:
-                result = await self._finance_service.unlock_assignment_reward(
-                    assignment_id=candidate.assignment_id,
-                    buyer_available_account_id=buyer_available_account_id,
-                    reward_reserved_account_id=candidate.reward_reserved_account_id,
-                    idempotency_key=f"{_UNLOCK_IDEMPOTENCY_PREFIX}:{candidate.assignment_id}",
+                result = await self._purchase_lifecycle.unlock_cashback(
+                    purchase_id=candidate.assignment_id,
+                    idempotency_seed=f"{_UNLOCK_IDEMPOTENCY_PREFIX}:{candidate.assignment_id}",
                 )
             except (InvalidStateError, NotFoundError):
                 skipped_count += 1
@@ -549,12 +457,8 @@ class OrderTrackerService:
                 await cur.execute(
                     """
                     SELECT
-                        a.id AS assignment_id,
-                        a.buyer_user_id,
-                        rr.id AS reward_reserved_account_id
+                        a.id AS assignment_id
                     FROM assignments a
-                    JOIN accounts rr
-                        ON rr.account_code = 'system:reward_reserved'
                     WHERE a.status = 'picked_up_wait_unlock'
                       AND a.unlock_at IS NOT NULL
                       AND a.unlock_at <= timezone('utc', now())
@@ -565,51 +469,8 @@ class OrderTrackerService:
                 )
                 rows = await cur.fetchall()
                 return [
-                    _UnlockCandidate(
-                        assignment_id=row["assignment_id"],
-                        buyer_user_id=row["buyer_user_id"],
-                        reward_reserved_account_id=row["reward_reserved_account_id"],
-                    )
+                    _UnlockCandidate(assignment_id=row["assignment_id"])
                     for row in rows
                 ]
 
         return await run_in_transaction(self._pool, operation, read_only=True)
-
-    @staticmethod
-    def _pick_assignment_review_phrases(review_phrases: list[str]) -> list[str]:
-        normalized: list[str] = []
-        seen: set[str] = set()
-        for phrase in review_phrases:
-            item = str(phrase).strip()
-            if not item or item in seen:
-                continue
-            seen.add(item)
-            normalized.append(item)
-        if len(normalized) <= 2:
-            return normalized
-        return random.sample(normalized, k=2)
-
-    async def _ensure_buyer_available_account_id(self, *, buyer_user_id: int) -> int:
-        async def operation(conn: AsyncConnection) -> int:
-            account_code = f"user:{buyer_user_id}:buyer_available"
-            async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(
-                    """
-                    INSERT INTO accounts (
-                        owner_user_id,
-                        account_code,
-                        account_kind
-                    )
-                    VALUES (%s, %s, 'buyer_available')
-                    ON CONFLICT (account_code)
-                    DO UPDATE SET
-                        owner_user_id = EXCLUDED.owner_user_id,
-                        updated_at = timezone('utc', now())
-                    RETURNING id
-                    """,
-                    (buyer_user_id, account_code),
-                )
-                row: dict[str, Any] = await cur.fetchone()
-                return int(row["id"])
-
-        return await run_in_transaction(self._pool, operation)

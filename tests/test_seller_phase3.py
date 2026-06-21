@@ -9,6 +9,7 @@ from psycopg.rows import dict_row
 from libs.domain.buyer import BuyerService
 from libs.domain.errors import InvalidStateError
 from libs.domain.ledger import FinanceService
+from libs.domain.purchase_lifecycle import PurchaseLifecycleService
 from libs.domain.seller import SellerService
 from libs.domain.seller_workflow import SellerWorkflowService
 from libs.integrations.wb import WbPingResult
@@ -537,6 +538,7 @@ async def test_listing_activation_requires_token_and_is_idempotent(db_pool) -> N
 async def test_listing_delete_warning_and_transfer_split(db_pool) -> None:
     seller_service = SellerService(db_pool)
     finance_service = FinanceService(db_pool)
+    purchase_lifecycle = PurchaseLifecycleService(db_pool, finance_service=finance_service)
 
     seller = await seller_service.bootstrap_seller(telegram_id=7005, username="seller_e")
     shop = await seller_service.create_shop(seller_user_id=seller.user_id, title="Delete Shop")
@@ -575,12 +577,10 @@ async def test_listing_delete_warning_and_transfer_split(db_pool) -> None:
             )
 
     reward_reserved_account_id = await _ensure_reward_reserved_account(db_pool)
-    await finance_service.create_assignment_reservation(
-        listing_id=listing.listing_id,
+    await purchase_lifecycle.reserve_purchase(
+        announcement_id=listing.listing_id,
         buyer_user_id=buyer_user_id,
-        seller_collateral_account_id=seller.seller_collateral_account_id,
-        reward_reserved_account_id=reward_reserved_account_id,
-        idempotency_key="reserve-delete-case",
+        idempotency_seed="reserve-delete-case",
     )
 
     preview = await seller_service.get_listing_delete_preview(
@@ -671,6 +671,7 @@ async def test_listing_delete_warning_and_transfer_split(db_pool) -> None:
 async def test_listing_delete_refunds_only_remaining_collateral_after_completed_reward(db_pool) -> None:
     seller_service = SellerService(db_pool)
     finance_service = FinanceService(db_pool)
+    purchase_lifecycle = PurchaseLifecycleService(db_pool, finance_service=finance_service)
 
     seller = await seller_service.bootstrap_seller(telegram_id=7006, username="seller_f")
     buyer = await BuyerService(db_pool).bootstrap_buyer(telegram_id=7102, username="buyer_completed")
@@ -699,13 +700,11 @@ async def test_listing_delete_refunds_only_remaining_collateral_after_completed_
         idempotency_key="activate-delete-completed-case",
     )
 
-    reward_reserved_account_id = await _ensure_reward_reserved_account(db_pool)
-    reservation = await finance_service.create_assignment_reservation(
-        listing_id=listing.listing_id,
+    await _ensure_reward_reserved_account(db_pool)
+    reservation = await purchase_lifecycle.reserve_purchase(
+        announcement_id=listing.listing_id,
         buyer_user_id=buyer.user_id,
-        seller_collateral_account_id=seller.seller_collateral_account_id,
-        reward_reserved_account_id=reward_reserved_account_id,
-        idempotency_key="reserve-delete-completed-case",
+        idempotency_seed="reserve-delete-completed-case",
     )
     async with db_pool.connection() as conn:
         async with conn.transaction():
@@ -721,11 +720,9 @@ async def test_listing_delete_refunds_only_remaining_collateral_after_completed_
                     (datetime.now(UTC) - timedelta(minutes=1), reservation.assignment_id),
                 )
 
-    await finance_service.unlock_assignment_reward(
-        assignment_id=reservation.assignment_id,
-        buyer_available_account_id=buyer.buyer_available_account_id,
-        reward_reserved_account_id=reward_reserved_account_id,
-        idempotency_key="unlock-delete-completed-case",
+    await purchase_lifecycle.unlock_cashback(
+        purchase_id=reservation.purchase_id,
+        idempotency_seed="unlock-delete-completed-case",
     )
 
     preview = await seller_service.get_listing_delete_preview(

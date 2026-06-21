@@ -7,12 +7,14 @@ from psycopg.rows import dict_row
 
 from libs.domain.errors import InvalidStateError
 from libs.domain.ledger import FinanceService
+from libs.domain.purchase_lifecycle import PurchaseLifecycleService
 from tests.helpers import create_account, create_listing, create_shop, create_user
 
 
 @pytest.mark.asyncio
 async def test_ledger_flows_keep_global_balance_and_double_entry_invariant(db_pool) -> None:
     service = FinanceService(db_pool)
+    purchase_lifecycle = PurchaseLifecycleService(db_pool, finance_service=service)
 
     async with db_pool.connection() as conn:
         async with conn.transaction():
@@ -23,42 +25,42 @@ async def test_ledger_flows_keep_global_balance_and_double_entry_invariant(db_po
             seller_available_account_id = await create_account(
                 conn,
                 owner_user_id=seller_id,
-                account_code="acct2-seller-available",
+                account_code=f"user:{seller_id}:seller_available",
                 account_kind="seller_available",
                 balance=Decimal("100.000000"),
             )
             seller_collateral_account_id = await create_account(
                 conn,
                 owner_user_id=seller_id,
-                account_code="acct2-seller-collateral",
+                account_code=f"user:{seller_id}:seller_collateral",
                 account_kind="seller_collateral",
                 balance=Decimal("0.000000"),
             )
-            reward_reserved_account_id = await create_account(
+            await create_account(
                 conn,
                 owner_user_id=None,
-                account_code="acct2-reward-reserved",
+                account_code="system:reward_reserved",
                 account_kind="reward_reserved",
                 balance=Decimal("0.000000"),
             )
             buyer_available_account_id = await create_account(
                 conn,
                 owner_user_id=buyer_id,
-                account_code="acct2-buyer-available",
+                account_code=f"user:{buyer_id}:buyer_available",
                 account_kind="buyer_available",
                 balance=Decimal("0.000000"),
             )
             buyer_pending_account_id = await create_account(
                 conn,
                 owner_user_id=buyer_id,
-                account_code="acct2-buyer-pending",
+                account_code=f"user:{buyer_id}:buyer_withdraw_pending",
                 account_kind="buyer_withdraw_pending",
                 balance=Decimal("0.000000"),
             )
             system_payout_account_id = await create_account(
                 conn,
                 owner_user_id=None,
-                account_code="acct2-system-payout",
+                account_code="system:payout",
                 account_kind="system_payout",
                 balance=Decimal("0.000000"),
             )
@@ -98,12 +100,10 @@ async def test_ledger_flows_keep_global_balance_and_double_entry_invariant(db_po
     assert first_lock.created is True
     assert second_lock.created is False
 
-    reservation = await service.create_assignment_reservation(
-        listing_id=listing_id,
+    reservation = await purchase_lifecycle.reserve_purchase(
+        announcement_id=listing_id,
         buyer_user_id=buyer_id,
-        seller_collateral_account_id=seller_collateral_account_id,
-        reward_reserved_account_id=reward_reserved_account_id,
-        idempotency_key="reserve-2",
+        idempotency_seed="reserve-2",
     )
 
     async with db_pool.connection() as conn:
@@ -119,11 +119,9 @@ async def test_ledger_flows_keep_global_balance_and_double_entry_invariant(db_po
                     (reservation.assignment_id,),
                 )
 
-    unlock = await service.unlock_assignment_reward(
-        assignment_id=reservation.assignment_id,
-        buyer_available_account_id=buyer_available_account_id,
-        reward_reserved_account_id=reward_reserved_account_id,
-        idempotency_key="unlock-2",
+    unlock = await purchase_lifecycle.unlock_cashback(
+        purchase_id=reservation.purchase_id,
+        idempotency_seed="unlock-2",
     )
     assert unlock.changed is True
 

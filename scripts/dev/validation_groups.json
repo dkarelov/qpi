@@ -152,6 +152,8 @@
         "libs/domain/errors.py",
         "libs/domain/ledger.py",
         "libs/domain/notifications.py",
+        "libs/domain/purchase_lifecycle.py",
+        "libs/domain/purchase_tokens.py",
         "libs/integrations/wb.py",
         "libs/integrations/wb_public.py",
         "libs/integrations/fx_rates.py",
@@ -174,6 +176,7 @@
         "tests/test_buyer_phase4.py",
         "tests/test_ledger_invariants.py",
         "tests/test_notifications.py",
+        "tests/test_purchase_lifecycle.py",
         "tests/test_reservation_concurrency.py",
         "tests/test_seller_phase3.py"
       ],
@@ -245,13 +248,16 @@
         "libs/domain/buyer.py",
         "libs/domain/errors.py",
         "libs/domain/ledger.py",
-        "libs/domain/notifications.py"
+        "libs/domain/notifications.py",
+        "libs/domain/purchase_lifecycle.py",
+        "libs/domain/purchase_tokens.py"
       ],
       "fast_pytest_targets": [],
       "db_pytest_targets": [
         "tests/test_ledger_invariants.py",
         "tests/test_notifications.py",
         "tests/test_order_tracker_phase6.py",
+        "tests/test_purchase_lifecycle.py",
         "tests/test_reservation_concurrency.py"
       ],
       "full_db_validation": false,

@@ -9,7 +9,6 @@ from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
-from libs.domain.buyer import decode_purchase_payload, decode_review_payload
 from libs.domain.errors import (
     DomainError,
     DuplicateOrderError,
@@ -24,6 +23,7 @@ from libs.domain.public_refs import (
     format_listing_ref,
     format_shop_ref,
 )
+from libs.domain.purchase_tokens import decode_purchase_payload, decode_review_payload
 from services.bot_api.buyer_listing_copy import (
     ACTIVE_PURCHASE_LISTING_NOTICE,
     ALREADY_PURCHASED_LISTING_NOTICE,

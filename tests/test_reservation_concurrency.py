@@ -9,12 +9,14 @@ from psycopg.rows import dict_row
 from libs.domain.buyer import BuyerService
 from libs.domain.errors import InvalidStateError, NoSlotsAvailableError
 from libs.domain.ledger import FinanceService
+from libs.domain.purchase_lifecycle import PurchaseLifecycleService
 from tests.helpers import create_account, create_listing, create_shop, create_user
 
 
 @pytest.mark.asyncio
 async def test_single_slot_allows_only_one_concurrent_reservation(db_pool) -> None:
     service = FinanceService(db_pool)
+    purchase_lifecycle = PurchaseLifecycleService(db_pool, finance_service=service)
 
     async with db_pool.connection() as conn:
         async with conn.transaction():
@@ -35,21 +37,21 @@ async def test_single_slot_allows_only_one_concurrent_reservation(db_pool) -> No
             seller_available_account_id = await create_account(
                 conn,
                 owner_user_id=seller_id,
-                account_code="acct-seller-available",
+                account_code=f"user:{seller_id}:seller_available",
                 account_kind="seller_available",
                 balance=Decimal("20.000000"),
             )
             seller_collateral_account_id = await create_account(
                 conn,
                 owner_user_id=seller_id,
-                account_code="acct-seller-collateral",
+                account_code=f"user:{seller_id}:seller_collateral",
                 account_kind="seller_collateral",
                 balance=Decimal("0.000000"),
             )
             reward_reserved_account_id = await create_account(
                 conn,
                 owner_user_id=None,
-                account_code="acct-reward-reserved",
+                account_code="system:reward_reserved",
                 account_kind="reward_reserved",
                 balance=Decimal("0.000000"),
             )
@@ -81,12 +83,10 @@ async def test_single_slot_allows_only_one_concurrent_reservation(db_pool) -> No
 
     async def attempt_reserve(buyer_user_id: int, key: str) -> str:
         try:
-            await service.create_assignment_reservation(
-                listing_id=listing_id,
+            await purchase_lifecycle.reserve_purchase(
+                announcement_id=listing_id,
                 buyer_user_id=buyer_user_id,
-                seller_collateral_account_id=seller_collateral_account_id,
-                reward_reserved_account_id=reward_reserved_account_id,
-                idempotency_key=key,
+                idempotency_seed=key,
             )
             return "success"
         except NoSlotsAvailableError:

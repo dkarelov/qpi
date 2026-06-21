@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from psycopg.rows import dict_row
 
-from libs.domain.buyer import BuyerService, decode_purchase_payload, decode_review_payload
+from libs.domain.buyer import BuyerService
 from libs.domain.errors import (
     DomainError,
     DuplicateOrderError,
@@ -18,6 +18,7 @@ from libs.domain.errors import (
     NotFoundError,
     PayloadValidationError,
 )
+from libs.domain.purchase_tokens import decode_purchase_payload, decode_review_payload
 from services.bot_api.buyer_handlers import BuyerCommandProcessor
 from services.bot_api.buyer_listing_copy import (
     ACTIVE_PURCHASE_LISTING_NOTICE,

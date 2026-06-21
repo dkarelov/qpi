@@ -5,5 +5,6 @@ tests/test_fx_rates.py
 tests/test_ledger_invariants.py
 tests/test_notifications.py
 tests/test_order_tracker_phase6.py
+tests/test_purchase_lifecycle.py
 tests/test_reservation_concurrency.py
 tests/test_seller_phase3.py
