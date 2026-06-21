@@ -304,7 +304,7 @@ BOT_VM_HOST=<bot-vm-host> \
 scripts/deploy/schema_remote.sh apply
 ```
 
-The post-merge workflow runs schema apply/assert as its own `schema-sync` stage before marketplace predeploy. Schema/tooling-only changes can therefore validate and sync schema without selecting runtime or function rollout.
+The post-merge workflow runs schema apply/assert as its own `schema-sync` stage before marketplace predeploy. Schema/tooling-only changes can therefore validate and sync schema without selecting runtime or function rollout, so schema-only changes must be backward-compatible with already-running runtime/function code. If the workflow cannot resolve the base/head diff, `detect_ci_changes` falls back to full marketplace validation plus runtime and all Cloud Function rollouts.
 
 Support-bot deploys:
 

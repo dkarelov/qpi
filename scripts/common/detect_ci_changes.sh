@@ -86,9 +86,9 @@ emit_full_output() {
     "false" \
     "apply" \
     "true" \
-    "false" \
-    "" \
-    "false" \
+    "true" \
+    "daily_report_scrapper order_tracker blockchain_checker" \
+    "true" \
     "true" \
     "full" \
     ""

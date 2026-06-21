@@ -2,12 +2,30 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _detect_ci_changes(*args: str) -> dict[str, str]:
+    result = subprocess.run(
+        ["scripts/common/detect_ci_changes.sh", *args],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    output: dict[str, str] = {}
+    for raw_line in result.stdout.splitlines():
+        fields = shlex.split(raw_line)
+        assert len(fields) == 1
+        key, value = fields[0].split("=", 1)
+        output[key] = value
+    return output
 
 
 def test_runtime_metadata_archive_excludes_ignored_local_secret_files() -> None:
@@ -101,6 +119,65 @@ def test_post_merge_splits_schema_sync_from_service_rollout_and_parallelizes_fun
     deploy_functions_block = workflow[deploy_functions_start:deploy_functions_after_runtime_start]
 
     assert "- deploy-runtime" not in deploy_functions_block
+
+
+def test_detect_ci_changes_indeterminate_diff_falls_back_to_full_marketplace_deploy() -> None:
+    output = _detect_ci_changes(
+        "--event-name",
+        "push",
+        "--base-sha",
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        "--head-sha",
+        "HEAD",
+    )
+
+    assert output["needs_db_validation"] == "true"
+    assert output["requires_schema_apply"] == "true"
+    assert output["requires_schema_assert"] == "false"
+    assert output["schema_action"] == "apply"
+    assert output["requires_migration"] == "true"
+    assert output["has_runtime_changes"] == "true"
+    assert output["function_targets"].split() == [
+        "daily_report_scrapper",
+        "order_tracker",
+        "blockchain_checker",
+    ]
+    assert output["has_function_targets"] == "true"
+    assert output["needs_private_runner"] == "true"
+    assert output["db_validation_mode"] == "full"
+    assert output["db_validation_targets"] == ""
+
+
+def test_detect_ci_changes_force_full_validation_does_not_invent_deploy_targets_on_empty_diff() -> None:
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    output = _detect_ci_changes(
+        "--event-name",
+        "workflow_dispatch",
+        "--base-sha",
+        head_sha,
+        "--head-sha",
+        head_sha,
+        "--force-full-validation",
+    )
+
+    assert output["needs_db_validation"] == "true"
+    assert output["requires_schema_apply"] == "false"
+    assert output["requires_schema_assert"] == "false"
+    assert output["schema_action"] == "none"
+    assert output["requires_migration"] == "true"
+    assert output["has_runtime_changes"] == "false"
+    assert output["function_targets"] == ""
+    assert output["has_function_targets"] == "false"
+    assert output["needs_private_runner"] == "true"
+    assert output["db_validation_mode"] == "full"
+    assert output["db_validation_targets"] == ""
 
 
 def test_private_git_auth_helper_can_use_scoped_git_config() -> None:
