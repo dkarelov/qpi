@@ -252,6 +252,7 @@ set -euo pipefail
 
 test -f "${RUNNER_DIR}/.service"
 runner_unit="$(sudo sh -c 'tr -d "\r\n" < "$1"' sh "${RUNNER_DIR}/.service")"
+runner_unit="${runner_unit##*/}"
 test -n "${runner_unit}"
 sudo systemctl is-active --quiet "${runner_unit}"
 REMOTE
