@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from psycopg.rows import dict_row
 
-from libs.domain.errors import DuplicateOrderError
+from libs.domain.errors import DuplicateOrderError, InvalidStateError
 from libs.domain.purchase_lifecycle import PurchaseLifecycleService
 from tests.helpers import create_account, create_listing, create_shop, create_user
 
@@ -170,6 +170,87 @@ async def test_purchase_lifecycle_reserve_is_idempotent_and_moves_cashback(db_po
                 "status": "active",
                 "amount_usdt": Decimal("5.000000"),
             }
+
+
+@pytest.mark.asyncio
+async def test_purchase_lifecycle_reserve_rejects_already_purchased_before_no_slots(db_pool) -> None:
+    fixture = await _setup_active_announcement(
+        db_pool,
+        seller_telegram_id=620011,
+        buyer_telegram_id=620012,
+        wb_product_id=620013,
+        slot_count=1,
+    )
+    lifecycle = PurchaseLifecycleService(db_pool)
+
+    reservation = await lifecycle.reserve_purchase(
+        buyer_user_id=fixture["buyer_user_id"],
+        announcement_id=fixture["listing_id"],
+        idempotency_seed="purchase-reserve-precedence-purchased-first",
+    )
+    await lifecycle.submit_order_proof(
+        buyer_user_id=fixture["buyer_user_id"],
+        purchase_id=reservation.purchase_id,
+        token_payload=_encode_order_payload(task_uuid=str(reservation.task_uuid), order_id="ORD-PRECEDENCE"),
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            duplicate_listing_id = await create_listing(
+                conn,
+                shop_id=fixture["shop_id"],
+                seller_user_id=fixture["seller_user_id"],
+                wb_product_id=620013,
+                reward_usdt=Decimal("5.000000"),
+                slot_count=1,
+                available_slots=0,
+                status="active",
+            )
+
+    with pytest.raises(InvalidStateError, match="already purchased"):
+        await lifecycle.reserve_purchase(
+            buyer_user_id=fixture["buyer_user_id"],
+            announcement_id=duplicate_listing_id,
+            idempotency_seed="purchase-reserve-precedence-purchased-second",
+        )
+
+
+@pytest.mark.asyncio
+async def test_purchase_lifecycle_reserve_rejects_active_assignment_before_no_slots(db_pool) -> None:
+    fixture = await _setup_active_announcement(
+        db_pool,
+        seller_telegram_id=620021,
+        buyer_telegram_id=620022,
+        wb_product_id=620023,
+        slot_count=1,
+    )
+    lifecycle = PurchaseLifecycleService(db_pool)
+
+    await lifecycle.reserve_purchase(
+        buyer_user_id=fixture["buyer_user_id"],
+        announcement_id=fixture["listing_id"],
+        idempotency_seed="purchase-reserve-precedence-active-first",
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            duplicate_listing_id = await create_listing(
+                conn,
+                shop_id=fixture["shop_id"],
+                seller_user_id=fixture["seller_user_id"],
+                wb_product_id=620023,
+                reward_usdt=Decimal("5.000000"),
+                slot_count=1,
+                available_slots=0,
+                status="active",
+            )
+
+    with pytest.raises(InvalidStateError, match="already has assignment"):
+        await lifecycle.reserve_purchase(
+            buyer_user_id=fixture["buyer_user_id"],
+            announcement_id=duplicate_listing_id,
+            idempotency_seed="purchase-reserve-precedence-active-second",
+        )
 
 
 @pytest.mark.asyncio

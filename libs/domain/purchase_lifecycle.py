@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from psycopg import AsyncConnection
 from psycopg.errors import UniqueViolation
@@ -139,7 +139,8 @@ class PurchaseLifecycleService:
                     FROM listings l
                     JOIN shops s ON s.id = l.shop_id
                     WHERE l.id = %s
-                    FOR UPDATE OF l, s
+                    FOR UPDATE OF l
+                    FOR SHARE OF s
                     """,
                     (announcement_id,),
                 )
@@ -150,14 +151,14 @@ class PurchaseLifecycleService:
                     raise InvalidStateError("listing is deleted")
                 if announcement["status"] != "active":
                     raise InvalidStateError("listing must be active for reservation")
-                if announcement["available_slots"] <= 0:
-                    raise NoSlotsAvailableError("listing has no available slots")
 
                 await self._ensure_buyer_has_not_purchased_item_locked(
                     cur,
                     buyer_user_id=buyer_user_id,
                     wb_product_id=int(announcement["wb_product_id"]),
                 )
+                if announcement["available_slots"] <= 0:
+                    raise NoSlotsAvailableError("listing has no available slots")
 
                 seller_collateral_account_id = await self._ensure_owner_account(
                     cur,
@@ -1194,7 +1195,7 @@ class PurchaseLifecycleService:
         cur,
         *,
         buyer_user_id: int,
-        task_uuid: Any,
+        task_uuid: UUID,
     ) -> dict[str, Any] | None:
         await cur.execute(
             """
@@ -1289,9 +1290,7 @@ class PurchaseLifecycleService:
                 verification_reason=existing_review["verification_reason"],
             )
 
-        if existing_review is not None and purchase["status"] != PurchaseStatus.PICKED_UP_WAIT_REVIEW.value:
-            raise InvalidStateError("assignment review is already completed")
-        if existing_review is None and purchase["status"] != PurchaseStatus.PICKED_UP_WAIT_REVIEW.value:
+        if purchase["status"] != PurchaseStatus.PICKED_UP_WAIT_REVIEW.value:
             raise InvalidStateError("assignment review is already completed")
 
         verified_at = datetime.now(tz=UTC) if target_verification_status != _REVIEW_STATUS_PENDING_MANUAL else None

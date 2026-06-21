@@ -122,6 +122,80 @@ async def test_single_slot_allows_only_one_concurrent_reservation(db_pool) -> No
 
 
 @pytest.mark.asyncio
+async def test_shop_shared_lock_allows_reserving_different_listing(db_pool) -> None:
+    purchase_lifecycle = PurchaseLifecycleService(db_pool)
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            seller_id = await create_user(
+                conn,
+                telegram_id=1201,
+                role="seller",
+                username="seller_shared_shop_lock",
+            )
+            buyer_id = await create_user(
+                conn,
+                telegram_id=2201,
+                role="buyer",
+                username="buyer_shared_shop_lock",
+            )
+            shop_id = await create_shop(
+                conn,
+                seller_user_id=seller_id,
+                slug="shared-shop-lock",
+                title="Shared Shop Lock",
+            )
+            await create_listing(
+                conn,
+                shop_id=shop_id,
+                seller_user_id=seller_id,
+                wb_product_id=990101,
+                reward_usdt=Decimal("5.000000"),
+                slot_count=1,
+                available_slots=1,
+                status="active",
+            )
+            listing_two_id = await create_listing(
+                conn,
+                shop_id=shop_id,
+                seller_user_id=seller_id,
+                wb_product_id=990102,
+                reward_usdt=Decimal("5.000000"),
+                slot_count=1,
+                available_slots=1,
+                status="active",
+            )
+            await create_account(
+                conn,
+                owner_user_id=seller_id,
+                account_code=f"user:{seller_id}:seller_collateral",
+                account_kind="seller_collateral",
+                balance=Decimal("10.000000"),
+            )
+            await create_account(
+                conn,
+                owner_user_id=None,
+                account_code="system:reward_reserved",
+                account_kind="reward_reserved",
+                balance=Decimal("0.000000"),
+            )
+
+    async with db_pool.connection() as lock_conn:
+        async with lock_conn.transaction():
+            await lock_conn.execute("SELECT id FROM shops WHERE id = %s FOR SHARE", (shop_id,))
+            reservation = await asyncio.wait_for(
+                purchase_lifecycle.reserve_purchase(
+                    announcement_id=listing_two_id,
+                    buyer_user_id=buyer_id,
+                    idempotency_seed="reserve:shared-shop-lock",
+                ),
+                timeout=5,
+            )
+
+    assert reservation.created is True
+
+
+@pytest.mark.asyncio
 async def test_same_buyer_cannot_get_two_active_assignments_for_same_product_concurrently(
     db_pool,
 ) -> None:
