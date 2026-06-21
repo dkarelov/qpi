@@ -728,6 +728,7 @@ Rule:
 - Long-lived environments are expected to match `schema/schema.sql` exactly after cleanup; obsolete columns such as `withdrawal_requests.buyer_user_id` and `wb_report_rows.srid` are migration-only artifacts and must not remain in runtime-supported schemas.
 - Operator-driven production schema apply remains the SSH-tunnel path to `127.0.0.1:15432`.
 - `scripts/deploy/schema_remote.sh` is the canonical production path for `cleanup-plan`, `cleanup-apply`, `apply`, and `assert-clean` against the live DB through the bot-VM SSH bastion.
+- Marketplace schema tooling intentionally ignores `support_bot.*` objects because companion support-bot state lives in the same PostgreSQL database under the separate `support_bot` schema; marketplace cleanup must not drop support-bot tables.
 - Do not use `qpi-pg-prod` MCP for schema apply, schema cleanup, or manual production repair writes.
 - CI/runtime/function deploys must assert that production schema cleanup drift is empty before code rollout; if drift remains, deployment stops until cleanup is applied.
 - CI skips production schema apply entirely when no schema-related files changed (`schema/**`, `libs/db/**`, deployment schema runner).

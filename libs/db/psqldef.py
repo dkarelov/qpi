@@ -8,6 +8,7 @@ from typing import Literal
 from urllib.parse import unquote, urlparse
 
 PsqlDefMode = Literal["apply", "dry-run", "export"]
+_MARKETPLACE_SCHEMA_CONFIG = "skip_tables: support_bot.*"
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,8 @@ def build_psqldef_command(
 
     if schema_file is not None:
         command.extend(["--file", str(schema_file)])
+
+    command.extend(["--config-inline", _MARKETPLACE_SCHEMA_CONFIG])
 
     if enable_drop:
         command.append("--enable-drop")

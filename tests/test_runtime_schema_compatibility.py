@@ -890,6 +890,33 @@ async def test_schema_cleanup_apply_drops_obsolete_legacy_columns(
 
 
 @pytest.mark.asyncio
+async def test_marketplace_schema_cleanup_ignores_support_bot_schema(
+    isolated_database: str,
+) -> None:
+    with psycopg.connect(isolated_database, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("CREATE SCHEMA IF NOT EXISTS support_bot")
+            cur.execute(
+                """
+                CREATE TABLE support_bot.schema_cleanup_probe (
+                    id bigint PRIMARY KEY
+                )
+                """
+            )
+
+    cleanup_plan = run_schema_cleanup_plan(isolated_database)
+    assert "support_bot" not in cleanup_plan
+
+    run_schema_cleanup_apply(isolated_database)
+    run_schema_apply(isolated_database)
+
+    with psycopg.connect(isolated_database, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('support_bot.schema_cleanup_probe')")
+            assert cur.fetchone()[0] == "support_bot.schema_cleanup_probe"
+
+
+@pytest.mark.asyncio
 async def test_runtime_schema_compat_scopes_wb_report_rows_by_purging_legacy_cache(
     isolated_database: str,
 ) -> None:
