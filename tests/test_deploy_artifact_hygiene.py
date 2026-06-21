@@ -141,6 +141,7 @@ def test_private_runner_has_warm_online_fast_path_after_shutdown_safeguards() ->
     assert "runner_exists || return 1" in script
     assert '[[ "$(runner_online)" == "1" ]] || return 1' in script
     assert "runner_service_active || return 1" in script
+    assert 'sudo sh -c \'tr -d "\\r\\n" < "$1"\'' in script
     assert "skipped runner reconfiguration" in script
 
     ensure_start = script.index("  ensure-ready)")
