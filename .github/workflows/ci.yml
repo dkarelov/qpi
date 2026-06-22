@@ -51,7 +51,7 @@ jobs:
       needs_private_runner: ${{ steps.detect.outputs.needs_private_runner }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -103,7 +103,7 @@ jobs:
       PRIVATE_RUNNER_VERSION: ${{ vars.PRIVATE_RUNNER_VERSION }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup shared bootstrap
         uses: ./.github/actions/setup-qpi-deploy
@@ -149,7 +149,7 @@ jobs:
       REQUIRES_MIGRATION: ${{ needs.determine-changes.outputs.requires_migration }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup shared bootstrap
         uses: ./.github/actions/setup-qpi-deploy

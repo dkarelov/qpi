@@ -38,7 +38,7 @@ jobs:
       green_post_merge: ${{ steps.resolve.outputs.green_post_merge }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -113,7 +113,7 @@ jobs:
       PRIVATE_RUNNER_VERSION: ${{ vars.PRIVATE_RUNNER_VERSION }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup shared bootstrap
         uses: ./.github/actions/setup-qpi-deploy
@@ -151,7 +151,7 @@ jobs:
       QPI_DB_VM_SSH_PRIVATE_KEY: ${{ secrets.DB_VM_SSH_PRIVATE_KEY }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve-target.outputs.target_sha }}
 
@@ -194,7 +194,7 @@ jobs:
       DEPLOY_HEAD_SHA: ${{ needs.resolve-target.outputs.target_sha }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve-target.outputs.target_sha }}
           fetch-depth: 2
@@ -233,7 +233,7 @@ jobs:
       DEPLOY_HEAD_SHA: ${{ needs.resolve-target.outputs.target_sha }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve-target.outputs.target_sha }}
           fetch-depth: 2
@@ -270,7 +270,7 @@ jobs:
       archive_sha256: ${{ steps.build.outputs.archive_sha256 }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve-target.outputs.target_sha }}
 
@@ -331,7 +331,7 @@ jobs:
       QPI_RELEASE_ID: ${{ needs.resolve-target.outputs.target_sha }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve-target.outputs.target_sha }}
           fetch-depth: 2
@@ -395,7 +395,7 @@ jobs:
       QPI_RELEASE_ID: ${{ needs.resolve-target.outputs.target_sha }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve-target.outputs.target_sha }}
           fetch-depth: 2
