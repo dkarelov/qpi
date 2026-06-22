@@ -27,7 +27,7 @@ jobs:
       support_bot_needs_image_deploy: ${{ steps.detect.outputs.support_bot_needs_image_deploy }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -76,7 +76,7 @@ jobs:
     if: ${{ needs.determine-changes.outputs.support_bot_needs_validation == 'true' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -129,7 +129,7 @@ jobs:
       SUPPORT_BOT_CONTAINER_REGISTRY_NAME: ${{ vars.SUPPORT_BOT_CONTAINER_REGISTRY_NAME }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup yc CLI
         uses: ./.github/actions/setup-qpi-deploy
@@ -194,7 +194,7 @@ jobs:
       REGISTRY_ID: ${{ needs.resolve-image-metadata.outputs.registry_id }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup yc CLI
         uses: ./.github/actions/setup-qpi-deploy
@@ -249,7 +249,7 @@ jobs:
       PRIVATE_RUNNER_VERSION: ${{ vars.PRIVATE_RUNNER_VERSION }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup yc CLI
         uses: ./.github/actions/setup-qpi-deploy
@@ -294,7 +294,7 @@ jobs:
       SUPPORT_BOT_VM_SSH_PRIVATE_KEY: ${{ secrets.BOT_VM_SSH_PRIVATE_KEY }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup yc CLI
         uses: ./.github/actions/setup-qpi-deploy
@@ -336,7 +336,7 @@ jobs:
       SUPPORT_BOT_RELEASE_ID: ${{ github.sha }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup yc CLI
         uses: ./.github/actions/setup-qpi-deploy

@@ -26,7 +26,7 @@ jobs:
       PRIVATE_RUNNER_VERSION: ${{ vars.PRIVATE_RUNNER_VERSION }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install yc CLI
         run: |

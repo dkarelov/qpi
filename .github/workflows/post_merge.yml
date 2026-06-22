@@ -72,7 +72,7 @@ jobs:
       needs_private_runner: ${{ steps.detect.outputs.needs_private_runner }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -132,7 +132,7 @@ jobs:
       PRIVATE_RUNNER_VERSION: ${{ vars.PRIVATE_RUNNER_VERSION }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup shared bootstrap
         uses: ./.github/actions/setup-qpi-deploy
@@ -174,7 +174,7 @@ jobs:
       REQUIRES_MIGRATION: ${{ needs.determine-changes.outputs.requires_migration }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup shared bootstrap
         uses: ./.github/actions/setup-qpi-deploy
@@ -228,7 +228,7 @@ jobs:
       SCHEMA_ACTION: ${{ needs.determine-changes.outputs.schema_action }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup shared bootstrap
         uses: ./.github/actions/setup-qpi-deploy
@@ -295,7 +295,7 @@ jobs:
       SCHEMA_ACTION: ${{ needs.determine-changes.outputs.schema_action }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -337,7 +337,7 @@ jobs:
       archive_sha256: ${{ steps.build.outputs.archive_sha256 }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Build runtime artifact
         id: build
@@ -373,7 +373,7 @@ jobs:
       TARGETS: ${{ needs.determine-changes.outputs.function_targets }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup shared bootstrap
         uses: ./.github/actions/setup-qpi-deploy
@@ -431,7 +431,7 @@ jobs:
       QPI_DEPLOY_SCHEMA_MODE: never
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -482,7 +482,7 @@ jobs:
       QPI_SKIP_FUNCTION_SCHEMA_CHECK: "1"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -548,7 +548,7 @@ jobs:
       QPI_SKIP_FUNCTION_SCHEMA_CHECK: "1"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
