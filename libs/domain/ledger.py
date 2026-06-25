@@ -633,11 +633,14 @@ class FinanceService:
         self,
         *,
         request_id: int,
-        admin_user_id: int,
+        admin_user_id: int | None,
         system_payout_account_id: int,
         tx_hash: str,
         idempotency_key: str,
+        completion_source: str = "admin",
     ) -> StatusChangeResult:
+        normalized_completion_source = completion_source.strip() or "admin"
+
         async def operation(conn: AsyncConnection) -> StatusChangeResult:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -680,7 +683,11 @@ class FinanceService:
                     idempotency_key=_ledger_key(idempotency_key),
                     entity_type="withdrawal_request",
                     entity_id=request_id,
-                    metadata={"request_id": request_id, "tx_hash": tx_hash},
+                    metadata={
+                        "request_id": request_id,
+                        "tx_hash": tx_hash,
+                        "completion_source": normalized_completion_source,
+                    },
                 )
 
                 await cur.execute(
@@ -712,15 +719,20 @@ class FinanceService:
                     (request_id,),
                 )
 
-                await self._insert_admin_audit(
-                    cur,
-                    admin_user_id=admin_user_id,
-                    action="withdraw_sent",
-                    target_type="withdrawal_request",
-                    target_id=str(request_id),
-                    payload={"request_id": request_id, "tx_hash": tx_hash},
-                    idempotency_key=idempotency_key,
-                )
+                if admin_user_id is not None:
+                    await self._insert_admin_audit(
+                        cur,
+                        admin_user_id=admin_user_id,
+                        action="withdraw_sent",
+                        target_type="withdrawal_request",
+                        target_id=str(request_id),
+                        payload={
+                            "request_id": request_id,
+                            "tx_hash": tx_hash,
+                            "completion_source": normalized_completion_source,
+                        },
+                        idempotency_key=idempotency_key,
+                    )
 
                 await self._notifications.enqueue_withdraw_status_for_requester_locked(
                     cur,
@@ -736,10 +748,11 @@ class FinanceService:
         self,
         *,
         request_id: int,
-        admin_user_id: int,
+        admin_user_id: int | None,
         system_payout_account_id: int,
         tx_hash: str,
         idempotency_key: str,
+        completion_source: str = "admin",
     ) -> StatusChangeResult:
         return await self.complete_withdrawal_request(
             request_id=request_id,
@@ -747,6 +760,7 @@ class FinanceService:
             system_payout_account_id=system_payout_account_id,
             tx_hash=tx_hash,
             idempotency_key=idempotency_key,
+            completion_source=completion_source,
         )
 
     async def manual_deposit_credit(

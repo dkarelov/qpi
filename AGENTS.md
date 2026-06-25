@@ -118,7 +118,7 @@ Runtime services:
 - `services/bot_api`: always-on marketplace bot runtime on VM; long polling is the default Telegram update intake mode.
 - `services/daily_report_scrapper`: Cloud Function, hourly WB report sync.
 - `services/order_tracker`: Cloud Function, 5-minute assignment lifecycle orchestrator.
-- `services/blockchain_checker`: Cloud Function, 5-minute seller collateral top-up matcher.
+- `services/blockchain_checker`: Cloud Function, 5-minute seller collateral top-up matcher and withdrawal payout verifier.
 - `services/worker`: placeholder runtime (legacy/no critical ownership).
 - `apps/support-bot/*`: companion private-only long-polling Support Topic stack with vendored Python upstream app, local Docker/compose overlay, and dedicated deploy workflow.
 
@@ -300,11 +300,18 @@ Transitions:
   - open request,
   - reject with reason, or
   - enter tx hash for a completed transfer.
-- Withdrawal completion is single-step:
+- Withdrawal completion can be admin-driven or auto-verified:
   - admin enters tx hash only after sending funds,
   - bot verifies the tx hash on-chain against the configured TON USDT payout wallet, requester address, and exact amount,
   - only a verified tx completes the request,
   - failed/missing tx verification leaves the request pending for retry.
+- The blockchain checker also scans recent outgoing TON USDT transfers from the configured payout wallet and auto-completes a pending withdrawal only when exactly one request matches:
+  - payout wallet source,
+  - requester payout address after TonAPI address parsing,
+  - exact 6-decimal USDT amount,
+  - transfer time not earlier than request creation,
+  - tx hash not already recorded on another payout.
+- Ambiguous, duplicate, missing, or unverifiable withdrawal matches stay pending for manual admin action.
 - Every new buyer or seller withdrawal request sends an admin push notification with requester role, Telegram identity, amount, and request number.
 - Manual deposit is supported for exception handling/bonuses/corrections.
 - Manual deposit input supports role aliases:

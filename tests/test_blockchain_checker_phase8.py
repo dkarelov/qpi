@@ -9,6 +9,7 @@ from psycopg.rows import dict_row
 from libs.domain.blockchain_checker import BlockchainCheckerService
 from libs.domain.deposit_intents import DepositIntentService
 from libs.domain.errors import InvalidStateError
+from libs.domain.ledger import FinanceService
 from libs.integrations.tonapi import (
     TonapiAddressInfo,
     TonapiJettonHistoryPage,
@@ -18,12 +19,19 @@ from tests.helpers import create_account, create_user
 
 
 class StubTonapiClient:
-    def __init__(self, operations: list[TonapiJettonOperation], *, shard_raw: str):
+    def __init__(
+        self,
+        operations: list[TonapiJettonOperation],
+        *,
+        shard_raw: str,
+        parsed_addresses: dict[str, str] | None = None,
+    ):
         self._operations = operations
         self._shard_raw = shard_raw
+        self._parsed_addresses = parsed_addresses or {}
 
     async def parse_address(self, *, account_id: str) -> TonapiAddressInfo:
-        return TonapiAddressInfo(raw_form=self._shard_raw)
+        return TonapiAddressInfo(raw_form=self._parsed_addresses.get(account_id, self._shard_raw))
 
     async def get_jetton_account_history(
         self,
@@ -359,6 +367,302 @@ async def test_blockchain_checker_happy_path_and_idempotency(
             )
             provision_row = await cur.fetchone()
             assert provision_row["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_blockchain_checker_auto_completes_matching_withdrawal_payout(
+    db_pool,
+    isolated_database: str,
+) -> None:
+    finance_service = FinanceService(db_pool)
+    deposit_service = DepositIntentService(db_pool)
+    shard = await deposit_service.ensure_default_shard(
+        shard_key="mvp-1",
+        deposit_address="UQ_PAYOUT_WALLET",
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            buyer_id = await create_user(
+                conn,
+                telegram_id=930020,
+                role="buyer",
+                username="buyer930020",
+            )
+            buyer_available_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_available",
+                account_kind="buyer_available",
+                balance=Decimal("1.342102"),
+            )
+            buyer_pending_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_withdraw_pending",
+                account_kind="buyer_withdraw_pending",
+                balance=Decimal("0.000000"),
+            )
+            await create_account(
+                conn,
+                owner_user_id=None,
+                account_code="system:system_payout",
+                account_kind="system_payout",
+                balance=Decimal("0.000000"),
+            )
+
+    withdrawal = await finance_service.create_withdrawal_request(
+        requester_user_id=buyer_id,
+        requester_role="buyer",
+        from_account_id=buyer_available_account_id,
+        pending_account_id=buyer_pending_account_id,
+        amount_usdt=Decimal("1.342102"),
+        payout_address="UQ_BUYER_WALLET",
+        idempotency_key="withdrawal:auto-complete",
+    )
+
+    now = datetime.now(UTC)
+    old_matching_op = _op(
+        tx_hash="tx-withdrawal-old",
+        lt=900,
+        query_id="q-withdrawal-old",
+        trace_id="t-withdrawal-old",
+        amount_raw="1342102",
+        utime=now - timedelta(days=1),
+        src="0:payout-wallet",
+        dst="0:buyer-wallet",
+    )
+    matching_op = _op(
+        tx_hash="tx-withdrawal-complete",
+        lt=901,
+        query_id="q-withdrawal-complete",
+        trace_id="t-withdrawal-complete",
+        amount_raw="1342102",
+        utime=now + timedelta(seconds=1),
+        src="0:payout-wallet",
+        dst="0:buyer-wallet",
+    )
+
+    checker = BlockchainCheckerService(
+        db_pool,
+        advisory_lock_conninfo=isolated_database,
+        advisory_lock_id=7008020,
+        shard_key="mvp-1",
+        shard_address=shard.deposit_address,
+        shard_chain="ton_mainnet",
+        shard_asset="USDT",
+        usdt_jetton_master="EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+        page_limit=100,
+        max_pages_per_shard=5,
+        match_batch_size=50,
+        confirmations_required=1,
+        tonapi_client=StubTonapiClient(
+            [matching_op, old_matching_op],
+            shard_raw="0:payout-wallet",
+            parsed_addresses={
+                shard.deposit_address: "0:payout-wallet",
+                "UQ_BUYER_WALLET": "0:buyer-wallet",
+            },
+        ),
+        deposit_service=deposit_service,
+        finance_service=finance_service,
+    )
+
+    first = await checker.run_once()
+    second = await checker.run_once()
+
+    assert first.withdrawals_completed_count == 1
+    assert first.withdrawals_ambiguous_count == 0
+    assert second.withdrawals_completed_count == 0
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT status, admin_user_id, processed_at, sent_at
+                FROM withdrawal_requests
+                WHERE id = %s
+                """,
+                (withdrawal.withdrawal_request_id,),
+            )
+            request_row = await cur.fetchone()
+            assert request_row["status"] == "withdraw_sent"
+            assert request_row["admin_user_id"] is None
+            assert request_row["processed_at"] is not None
+            assert request_row["sent_at"] is not None
+
+            await cur.execute(
+                """
+                SELECT tx_hash, status
+                FROM payouts
+                WHERE withdrawal_request_id = %s
+                """,
+                (withdrawal.withdrawal_request_id,),
+            )
+            payout_row = await cur.fetchone()
+            assert payout_row["tx_hash"] == "tx-withdrawal-complete"
+            assert payout_row["status"] == "sent"
+
+            await cur.execute(
+                """
+                SELECT account_kind, current_balance_usdt
+                FROM accounts
+                WHERE id IN (%s, %s)
+                   OR account_code = 'system:system_payout'
+                """,
+                (buyer_available_account_id, buyer_pending_account_id),
+            )
+            balances = {row["account_kind"]: row["current_balance_usdt"] for row in await cur.fetchall()}
+            assert balances["buyer_available"] == Decimal("0.000000")
+            assert balances["buyer_withdraw_pending"] == Decimal("0.000000")
+            assert balances["system_payout"] == Decimal("1.342102")
+
+            await cur.execute(
+                """
+                SELECT status
+                FROM balance_holds
+                WHERE withdrawal_request_id = %s
+                """,
+                (withdrawal.withdrawal_request_id,),
+            )
+            hold_row = await cur.fetchone()
+            assert hold_row["status"] == "consumed"
+
+            await cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM admin_audit_actions
+                WHERE target_type = 'withdrawal_request'
+                  AND target_id = %s
+                """,
+                (str(withdrawal.withdrawal_request_id),),
+            )
+            audit_count = await cur.fetchone()
+            assert audit_count["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_blockchain_checker_keeps_ambiguous_withdrawal_payout_pending(
+    db_pool,
+    isolated_database: str,
+) -> None:
+    finance_service = FinanceService(db_pool)
+    deposit_service = DepositIntentService(db_pool)
+    shard = await deposit_service.ensure_default_shard(
+        shard_key="mvp-1",
+        deposit_address="UQ_PAYOUT_WALLET",
+    )
+
+    withdrawals = []
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            for index in range(2):
+                buyer_id = await create_user(
+                    conn,
+                    telegram_id=930030 + index,
+                    role="buyer",
+                    username=f"buyer93003{index}",
+                )
+                buyer_available_account_id = await create_account(
+                    conn,
+                    owner_user_id=buyer_id,
+                    account_code=f"user:{buyer_id}:buyer_available",
+                    account_kind="buyer_available",
+                    balance=Decimal("2.000000"),
+                )
+                buyer_pending_account_id = await create_account(
+                    conn,
+                    owner_user_id=buyer_id,
+                    account_code=f"user:{buyer_id}:buyer_withdraw_pending",
+                    account_kind="buyer_withdraw_pending",
+                    balance=Decimal("0.000000"),
+                )
+                withdrawals.append(
+                    (
+                        buyer_id,
+                        buyer_available_account_id,
+                        buyer_pending_account_id,
+                    )
+                )
+            await create_account(
+                conn,
+                owner_user_id=None,
+                account_code="system:system_payout",
+                account_kind="system_payout",
+                balance=Decimal("0.000000"),
+            )
+
+    withdrawal_ids = []
+    for index, (buyer_id, buyer_available_account_id, buyer_pending_account_id) in enumerate(withdrawals):
+        request = await finance_service.create_withdrawal_request(
+            requester_user_id=buyer_id,
+            requester_role="buyer",
+            from_account_id=buyer_available_account_id,
+            pending_account_id=buyer_pending_account_id,
+            amount_usdt=Decimal("2.000000"),
+            payout_address="UQ_SHARED_BUYER_WALLET",
+            idempotency_key=f"withdrawal:ambiguous:{index}",
+        )
+        withdrawal_ids.append(request.withdrawal_request_id)
+
+    ambiguous_op = _op(
+        tx_hash="tx-withdrawal-ambiguous",
+        lt=910,
+        query_id="q-withdrawal-ambiguous",
+        trace_id="t-withdrawal-ambiguous",
+        amount_raw="2000000",
+        utime=datetime.now(UTC) + timedelta(seconds=1),
+        src="0:payout-wallet",
+        dst="0:shared-buyer-wallet",
+    )
+
+    checker = BlockchainCheckerService(
+        db_pool,
+        advisory_lock_conninfo=isolated_database,
+        advisory_lock_id=7008021,
+        shard_key="mvp-1",
+        shard_address=shard.deposit_address,
+        shard_chain="ton_mainnet",
+        shard_asset="USDT",
+        usdt_jetton_master="EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+        page_limit=100,
+        max_pages_per_shard=5,
+        match_batch_size=50,
+        confirmations_required=1,
+        tonapi_client=StubTonapiClient(
+            [ambiguous_op],
+            shard_raw="0:payout-wallet",
+            parsed_addresses={
+                shard.deposit_address: "0:payout-wallet",
+                "UQ_SHARED_BUYER_WALLET": "0:shared-buyer-wallet",
+            },
+        ),
+        deposit_service=deposit_service,
+        finance_service=finance_service,
+    )
+
+    result = await checker.run_once()
+
+    assert result.withdrawals_completed_count == 0
+    assert result.withdrawals_ambiguous_count == 2
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM withdrawal_requests
+                WHERE id = ANY(%s)
+                  AND status = 'withdraw_pending_admin'
+                """,
+                (withdrawal_ids,),
+            )
+            pending_count = await cur.fetchone()
+            assert pending_count["count"] == 2
+
+            await cur.execute("SELECT COUNT(*) AS count FROM payouts")
+            payout_count = await cur.fetchone()
+            assert payout_count["count"] == 0
 
 
 @pytest.mark.asyncio
