@@ -305,13 +305,13 @@ Transitions:
   - bot verifies the tx hash on-chain against the configured TON USDT payout wallet, requester address, and exact amount,
   - only a verified tx completes the request,
   - failed/missing tx verification leaves the request pending for retry.
-- The blockchain checker also scans recent outgoing TON USDT transfers from the configured payout wallet and auto-completes a pending withdrawal only when exactly one request matches:
+- The blockchain checker also scans recent outgoing TON USDT transfers from the configured payout wallet and auto-completes a pending withdrawal only when exactly one visible, deduped history operation heuristically matches exactly one request:
   - payout wallet source,
   - requester payout address after TonAPI address parsing,
   - exact 6-decimal USDT amount,
   - transfer time not earlier than request creation,
   - tx hash not already recorded on another payout.
-- Ambiguous, duplicate, missing, or unverifiable withdrawal matches stay pending for manual admin action.
+- Duplicate TonAPI page-overlap entries by the same tx hash are treated as one operation; conflicting duplicate tx hashes, ambiguous matches, missing matches, unverifiable matches, and payout scans that hit the configured page cap stay pending for manual admin action and emit warnings where operational follow-up is needed.
 - Every new buyer or seller withdrawal request sends an admin push notification with requester role, Telegram identity, amount, and request number.
 - Manual deposit is supported for exception handling/bonuses/corrections.
 - Manual deposit input supports role aliases:

@@ -14,7 +14,7 @@ from libs.domain.deposit_intents import DepositIntentService
 from libs.domain.errors import InvalidStateError, NotFoundError
 from libs.domain.ledger import FinanceService
 from libs.domain.models import PendingWithdrawalView
-from libs.integrations.tonapi import TonapiClient, TonapiJettonOperation
+from libs.integrations.tonapi import TonapiClient, TonapiJettonHistoryPage, TonapiJettonOperation
 from libs.logging.setup import EventLogger, get_logger
 
 _USDT_EXACT_QUANT = Decimal("0.000001")
@@ -41,6 +41,9 @@ class _IngestResult:
     duplicate_count: int
     skipped_not_incoming_count: int
     cursor_updated: bool
+    shard_raw: str
+    history_started_before_lt: int | None
+    history_pages: tuple[TonapiJettonHistoryPage, ...]
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,13 @@ class _WithdrawalScanResult:
     ambiguous_count: int
     pending_count: int
     outgoing_tx_count: int
+
+
+@dataclass(frozen=True)
+class _PayoutOperationScanResult:
+    operations: tuple[TonapiJettonOperation, ...]
+    duplicate_tx_count: int
+    conflicting_tx_count: int
 
 
 @dataclass(frozen=True)
@@ -147,6 +157,8 @@ class BlockchainCheckerService:
             tx_duplicate_count = 0
             tx_skipped_not_incoming_count = 0
             cursor_updated_count = 0
+            payout_wallet_raw: str | None = None
+            payout_history_pages: tuple[TonapiJettonHistoryPage, ...] = ()
 
             for shard in shards:
                 ingest = await self._ingest_shard(
@@ -158,9 +170,16 @@ class BlockchainCheckerService:
                 tx_skipped_not_incoming_count += ingest.skipped_not_incoming_count
                 if ingest.cursor_updated:
                     cursor_updated_count += 1
+                if shard.deposit_address.strip() == self._shard_address.strip():
+                    payout_wallet_raw = _normalize_address(ingest.shard_raw)
+                    if ingest.history_started_before_lt is None:
+                        payout_history_pages = ingest.history_pages
 
             tx_credited_count, tx_manual_review_count = await self._process_ingested_txs()
-            withdrawal_scan = await self._process_withdrawal_payouts()
+            withdrawal_scan = await self._process_withdrawal_payouts(
+                payout_wallet_raw=payout_wallet_raw,
+                cached_history_pages=payout_history_pages,
+            )
 
             return BlockchainCheckerRunResult(
                 lock_acquired=True,
@@ -189,7 +208,9 @@ class BlockchainCheckerService:
         skipped_not_incoming_count = 0
         max_lt_seen = last_lt
         before_lt = cursor.resume_before_lt
+        history_started_before_lt = before_lt
         scan_complete = False
+        history_pages: list[TonapiJettonHistoryPage] = []
 
         for _ in range(self._max_pages_per_shard):
             page = await self._tonapi_client.get_jetton_account_history(
@@ -198,6 +219,7 @@ class BlockchainCheckerService:
                 limit=self._page_limit,
                 before_lt=before_lt,
             )
+            history_pages.append(page)
             if not page.operations:
                 scan_complete = True
                 break
@@ -288,6 +310,9 @@ class BlockchainCheckerService:
             duplicate_count=duplicate_count,
             skipped_not_incoming_count=skipped_not_incoming_count,
             cursor_updated=cursor_updated,
+            shard_raw=shard_raw,
+            history_started_before_lt=history_started_before_lt,
+            history_pages=tuple(history_pages),
         )
 
     async def _process_ingested_txs(self) -> tuple[int, int]:
@@ -379,7 +404,12 @@ class BlockchainCheckerService:
         )
         return credited_count, manual_review_count
 
-    async def _process_withdrawal_payouts(self) -> _WithdrawalScanResult:
+    async def _process_withdrawal_payouts(
+        self,
+        *,
+        payout_wallet_raw: str | None,
+        cached_history_pages: tuple[TonapiJettonHistoryPage, ...],
+    ) -> _WithdrawalScanResult:
         pending = await self._finance_service.list_pending_withdrawals(limit=self._match_batch_size)
         if not pending:
             self._logger.info(
@@ -396,9 +426,10 @@ class BlockchainCheckerService:
                 outgoing_tx_count=0,
             )
 
-        payout_wallet_raw = _normalize_address(
-            (await self._tonapi_client.parse_address(account_id=self._shard_address)).raw_form
-        )
+        if payout_wallet_raw is None:
+            payout_wallet_raw = _normalize_address(
+                (await self._tonapi_client.parse_address(account_id=self._shard_address)).raw_form
+            )
         candidates = await self._build_pending_withdrawal_candidates(pending)
         if not candidates:
             self._logger.info(
@@ -416,10 +447,12 @@ class BlockchainCheckerService:
             )
 
         oldest_requested_at = min(candidate.requested_at for candidate in candidates)
-        outgoing_ops = await self._list_recent_payout_operations(
+        payout_scan = await self._list_recent_payout_operations(
             payout_wallet_raw=payout_wallet_raw,
             oldest_requested_at=oldest_requested_at,
+            cached_history_pages=cached_history_pages,
         )
+        outgoing_ops = payout_scan.operations
         known_tx_hashes = await self._list_existing_payout_tx_hashes(
             tx_hashes={operation.transaction_hash for operation in outgoing_ops}
         )
@@ -500,6 +533,8 @@ class BlockchainCheckerService:
             candidate_count=len(candidates),
             outgoing_tx_count=len(outgoing_ops),
             eligible_tx_count=len(eligible_ops),
+            duplicate_tx_count=payout_scan.duplicate_tx_count,
+            conflicting_tx_count=payout_scan.conflicting_tx_count,
             completed_count=completed_count,
             ambiguous_count=ambiguous_count,
         )
@@ -548,37 +583,89 @@ class BlockchainCheckerService:
         *,
         payout_wallet_raw: str,
         oldest_requested_at: datetime,
-    ) -> list[TonapiJettonOperation]:
-        operations: list[TonapiJettonOperation] = []
+        cached_history_pages: tuple[TonapiJettonHistoryPage, ...],
+    ) -> _PayoutOperationScanResult:
+        operations_by_hash: dict[str, TonapiJettonOperation] = {}
+        duplicate_tx_hashes: set[str] = set()
+        conflicting_tx_hashes: set[str] = set()
         before_lt: int | None = None
+        pages_scanned = 0
+        scan_complete = False
+        reached_oldest_request = False
 
-        for _ in range(self._max_pages_per_shard):
-            page = await self._tonapi_client.get_jetton_account_history(
-                account_id=self._shard_address,
-                jetton_id=self._usdt_jetton_master,
-                limit=self._page_limit,
-                before_lt=before_lt,
-            )
+        def handle_page(page: TonapiJettonHistoryPage) -> None:
+            nonlocal before_lt, reached_oldest_request
+
             if not page.operations:
-                break
+                before_lt = None
+                reached_oldest_request = True
+                return
 
             for operation in page.operations:
-                if operation.operation != "transfer":
-                    continue
                 if operation.utime < oldest_requested_at:
+                    reached_oldest_request = True
+                    break
+                if operation.operation != "transfer":
                     continue
                 if not _is_outgoing_from_payout(
                     operation=operation,
                     payout_wallet_raw=payout_wallet_raw,
                 ):
                     continue
-                operations.append(operation)
+                if operation.transaction_hash in conflicting_tx_hashes:
+                    continue
 
-            if page.next_from is None:
-                break
+                existing = operations_by_hash.get(operation.transaction_hash)
+                if existing is None:
+                    operations_by_hash[operation.transaction_hash] = operation
+                    continue
+                if _payout_operation_signature(existing) == _payout_operation_signature(operation):
+                    duplicate_tx_hashes.add(operation.transaction_hash)
+                    continue
+                conflicting_tx_hashes.add(operation.transaction_hash)
+                operations_by_hash.pop(operation.transaction_hash, None)
+
             before_lt = page.next_from
 
-        return operations
+        for page in cached_history_pages[: self._max_pages_per_shard]:
+            pages_scanned += 1
+            handle_page(page)
+            if reached_oldest_request or before_lt is None:
+                scan_complete = True
+                break
+
+        while not scan_complete and pages_scanned < self._max_pages_per_shard:
+            page = await self._tonapi_client.get_jetton_account_history(
+                account_id=self._shard_address,
+                jetton_id=self._usdt_jetton_master,
+                limit=self._page_limit,
+                before_lt=before_lt,
+            )
+            pages_scanned += 1
+            handle_page(page)
+            if reached_oldest_request or before_lt is None:
+                scan_complete = True
+                break
+
+        if conflicting_tx_hashes:
+            self._logger.warning(
+                "blockchain_checker_withdrawal_duplicate_tx_conflict",
+                tx_hash_count=len(conflicting_tx_hashes),
+                tx_hashes=sorted(conflicting_tx_hashes)[:10],
+            )
+        if not scan_complete and before_lt is not None:
+            self._logger.warning(
+                "blockchain_checker_withdrawal_scan_incomplete_page_cap",
+                max_pages_per_shard=self._max_pages_per_shard,
+                resume_before_lt=before_lt,
+                oldest_requested_at=oldest_requested_at,
+            )
+
+        return _PayoutOperationScanResult(
+            operations=tuple(operations_by_hash.values()),
+            duplicate_tx_count=len(duplicate_tx_hashes),
+            conflicting_tx_count=len(conflicting_tx_hashes),
+        )
 
     async def _list_existing_payout_tx_hashes(self, *, tx_hashes: set[str]) -> set[str]:
         if not tx_hashes:
@@ -645,3 +732,12 @@ def _normalize_address(address: str | None) -> str:
 
 def _normalize_usdt(amount_usdt: Decimal) -> Decimal:
     return amount_usdt.quantize(_USDT_EXACT_QUANT, rounding=ROUND_HALF_UP)
+
+
+def _payout_operation_signature(operation: TonapiJettonOperation) -> tuple[str, str, Decimal, datetime]:
+    return (
+        _normalize_address(operation.source_address),
+        _normalize_address(operation.destination_address),
+        _normalize_usdt(operation.amount_usdt),
+        operation.utime,
+    )

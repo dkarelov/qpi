@@ -29,8 +29,11 @@ class StubTonapiClient:
         self._operations = operations
         self._shard_raw = shard_raw
         self._parsed_addresses = parsed_addresses or {}
+        self.parse_calls: list[str] = []
+        self.history_calls: list[int | None] = []
 
     async def parse_address(self, *, account_id: str) -> TonapiAddressInfo:
+        self.parse_calls.append(account_id)
         return TonapiAddressInfo(raw_form=self._parsed_addresses.get(account_id, self._shard_raw))
 
     async def get_jetton_account_history(
@@ -41,6 +44,7 @@ class StubTonapiClient:
         limit: int,
         before_lt: int | None = None,
     ) -> TonapiJettonHistoryPage:
+        self.history_calls.append(before_lt)
         return TonapiJettonHistoryPage(operations=list(self._operations), next_from=None)
 
 
@@ -50,12 +54,17 @@ class StubTonapiPagedClient:
         pages_by_before_lt: dict[int | None, TonapiJettonHistoryPage],
         *,
         shard_raw: str,
+        parsed_addresses: dict[str, str] | None = None,
     ):
         self._pages_by_before_lt = pages_by_before_lt
         self._shard_raw = shard_raw
+        self._parsed_addresses = parsed_addresses or {}
+        self.parse_calls: list[str] = []
+        self.history_calls: list[int | None] = []
 
     async def parse_address(self, *, account_id: str) -> TonapiAddressInfo:
-        return TonapiAddressInfo(raw_form=self._shard_raw)
+        self.parse_calls.append(account_id)
+        return TonapiAddressInfo(raw_form=self._parsed_addresses.get(account_id, self._shard_raw))
 
     async def get_jetton_account_history(
         self,
@@ -65,10 +74,23 @@ class StubTonapiPagedClient:
         limit: int,
         before_lt: int | None = None,
     ) -> TonapiJettonHistoryPage:
+        self.history_calls.append(before_lt)
         return self._pages_by_before_lt.get(
             before_lt,
             TonapiJettonHistoryPage(operations=[], next_from=None),
         )
+
+
+class RecordingLogger:
+    def __init__(self) -> None:
+        self.info_events: list[tuple[object, dict[str, object]]] = []
+        self.warning_events: list[tuple[object, dict[str, object]]] = []
+
+    def info(self, event: object, **fields: object) -> None:
+        self.info_events.append((event, fields))
+
+    def warning(self, event: object, **fields: object) -> None:
+        self.warning_events.append((event, fields))
 
 
 def _op(
@@ -539,6 +561,359 @@ async def test_blockchain_checker_auto_completes_matching_withdrawal_payout(
             )
             audit_count = await cur.fetchone()
             assert audit_count["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_blockchain_checker_dedupes_overlapping_withdrawal_payout_pages(
+    db_pool,
+    isolated_database: str,
+) -> None:
+    finance_service = FinanceService(db_pool)
+    deposit_service = DepositIntentService(db_pool)
+    shard = await deposit_service.ensure_default_shard(
+        shard_key="mvp-1",
+        deposit_address="UQ_PAYOUT_WALLET",
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            buyer_id = await create_user(
+                conn,
+                telegram_id=930040,
+                role="buyer",
+                username="buyer930040",
+            )
+            buyer_available_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_available",
+                account_kind="buyer_available",
+                balance=Decimal("1.342102"),
+            )
+            buyer_pending_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_withdraw_pending",
+                account_kind="buyer_withdraw_pending",
+                balance=Decimal("0.000000"),
+            )
+
+    withdrawal = await finance_service.create_withdrawal_request(
+        requester_user_id=buyer_id,
+        requester_role="buyer",
+        from_account_id=buyer_available_account_id,
+        pending_account_id=buyer_pending_account_id,
+        amount_usdt=Decimal("1.342102"),
+        payout_address="UQ_DUP_BUYER_WALLET",
+        idempotency_key="withdrawal:overlapping-pages",
+    )
+
+    matching_op = _op(
+        tx_hash="tx-withdrawal-overlap",
+        lt=920,
+        query_id="q-withdrawal-overlap",
+        trace_id="t-withdrawal-overlap",
+        amount_raw="1342102",
+        utime=datetime.now(UTC) + timedelta(seconds=1),
+        src="0:payout-wallet",
+        dst="0:buyer-wallet",
+    )
+    paged_client = StubTonapiPagedClient(
+        {
+            None: TonapiJettonHistoryPage(operations=[matching_op], next_from=910),
+            910: TonapiJettonHistoryPage(operations=[matching_op], next_from=None),
+        },
+        shard_raw="0:payout-wallet",
+        parsed_addresses={
+            shard.deposit_address: "0:payout-wallet",
+            "UQ_DUP_BUYER_WALLET": "0:buyer-wallet",
+        },
+    )
+
+    checker = BlockchainCheckerService(
+        db_pool,
+        advisory_lock_conninfo=isolated_database,
+        advisory_lock_id=7008022,
+        shard_key="mvp-1",
+        shard_address=shard.deposit_address,
+        shard_chain="ton_mainnet",
+        shard_asset="USDT",
+        usdt_jetton_master="EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+        page_limit=100,
+        max_pages_per_shard=5,
+        match_batch_size=50,
+        confirmations_required=1,
+        tonapi_client=paged_client,
+        deposit_service=deposit_service,
+        finance_service=finance_service,
+    )
+
+    result = await checker.run_once()
+
+    assert result.withdrawals_completed_count == 1
+    assert result.withdrawals_ambiguous_count == 0
+    assert paged_client.history_calls == [None, 910]
+    assert paged_client.parse_calls.count(shard.deposit_address) == 1
+    assert paged_client.parse_calls.count("UQ_DUP_BUYER_WALLET") == 1
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT status
+                FROM withdrawal_requests
+                WHERE id = %s
+                """,
+                (withdrawal.withdrawal_request_id,),
+            )
+            request_row = await cur.fetchone()
+            assert request_row["status"] == "withdraw_sent"
+
+            await cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM payouts
+                WHERE withdrawal_request_id = %s
+                  AND tx_hash = 'tx-withdrawal-overlap'
+                """,
+                (withdrawal.withdrawal_request_id,),
+            )
+            payout_count = await cur.fetchone()
+            assert payout_count["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_blockchain_checker_fetches_payout_history_from_head_when_ingest_resumes_cursor(
+    db_pool,
+    isolated_database: str,
+) -> None:
+    finance_service = FinanceService(db_pool)
+    deposit_service = DepositIntentService(db_pool)
+    shard = await deposit_service.ensure_default_shard(
+        shard_key="mvp-1",
+        deposit_address="UQ_PAYOUT_WALLET",
+    )
+    usdt_master = "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"
+    await deposit_service.set_scan_cursor(
+        source_key=f"tonapi:{shard.shard_id}:{usdt_master}",
+        last_lt=1000,
+        resume_before_lt=500,
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            buyer_id = await create_user(
+                conn,
+                telegram_id=930042,
+                role="buyer",
+                username="buyer930042",
+            )
+            buyer_available_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_available",
+                account_kind="buyer_available",
+                balance=Decimal("1.500000"),
+            )
+            buyer_pending_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_withdraw_pending",
+                account_kind="buyer_withdraw_pending",
+                balance=Decimal("0.000000"),
+            )
+
+    withdrawal = await finance_service.create_withdrawal_request(
+        requester_user_id=buyer_id,
+        requester_role="buyer",
+        from_account_id=buyer_available_account_id,
+        pending_account_id=buyer_pending_account_id,
+        amount_usdt=Decimal("1.500000"),
+        payout_address="UQ_RESUME_BUYER_WALLET",
+        idempotency_key="withdrawal:resume-cursor",
+    )
+
+    old_resume_op = _op(
+        tx_hash="tx-withdrawal-resume-old",
+        lt=490,
+        query_id="q-withdrawal-resume-old",
+        trace_id="t-withdrawal-resume-old",
+        amount_raw="1000000",
+        utime=datetime.now(UTC) - timedelta(hours=1),
+        src="0:payout-wallet",
+        dst="0:other-wallet",
+    )
+    matching_op = _op(
+        tx_hash="tx-withdrawal-resume-complete",
+        lt=1100,
+        query_id="q-withdrawal-resume-complete",
+        trace_id="t-withdrawal-resume-complete",
+        amount_raw="1500000",
+        utime=datetime.now(UTC) + timedelta(seconds=1),
+        src="0:payout-wallet",
+        dst="0:resume-buyer-wallet",
+    )
+    paged_client = StubTonapiPagedClient(
+        {
+            500: TonapiJettonHistoryPage(operations=[old_resume_op], next_from=None),
+            None: TonapiJettonHistoryPage(operations=[matching_op], next_from=None),
+        },
+        shard_raw="0:payout-wallet",
+        parsed_addresses={
+            shard.deposit_address: "0:payout-wallet",
+            "UQ_RESUME_BUYER_WALLET": "0:resume-buyer-wallet",
+        },
+    )
+
+    checker = BlockchainCheckerService(
+        db_pool,
+        advisory_lock_conninfo=isolated_database,
+        advisory_lock_id=7008024,
+        shard_key="mvp-1",
+        shard_address=shard.deposit_address,
+        shard_chain="ton_mainnet",
+        shard_asset="USDT",
+        usdt_jetton_master=usdt_master,
+        page_limit=100,
+        max_pages_per_shard=5,
+        match_batch_size=50,
+        confirmations_required=1,
+        tonapi_client=paged_client,
+        deposit_service=deposit_service,
+        finance_service=finance_service,
+    )
+
+    result = await checker.run_once()
+
+    assert result.withdrawals_completed_count == 1
+    assert paged_client.history_calls == [500, None]
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT status
+                FROM withdrawal_requests
+                WHERE id = %s
+                """,
+                (withdrawal.withdrawal_request_id,),
+            )
+            request_row = await cur.fetchone()
+            assert request_row["status"] == "withdraw_sent"
+
+
+@pytest.mark.asyncio
+async def test_blockchain_checker_warns_when_withdrawal_payout_scan_hits_page_cap(
+    db_pool,
+    isolated_database: str,
+) -> None:
+    finance_service = FinanceService(db_pool)
+    deposit_service = DepositIntentService(db_pool)
+    shard = await deposit_service.ensure_default_shard(
+        shard_key="mvp-1",
+        deposit_address="UQ_PAYOUT_WALLET",
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            buyer_id = await create_user(
+                conn,
+                telegram_id=930041,
+                role="buyer",
+                username="buyer930041",
+            )
+            buyer_available_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_available",
+                account_kind="buyer_available",
+                balance=Decimal("3.000000"),
+            )
+            buyer_pending_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_withdraw_pending",
+                account_kind="buyer_withdraw_pending",
+                balance=Decimal("0.000000"),
+            )
+
+    withdrawal = await finance_service.create_withdrawal_request(
+        requester_user_id=buyer_id,
+        requester_role="buyer",
+        from_account_id=buyer_available_account_id,
+        pending_account_id=buyer_pending_account_id,
+        amount_usdt=Decimal("3.000000"),
+        payout_address="UQ_CAPPED_BUYER_WALLET",
+        idempotency_key="withdrawal:payout-page-cap",
+    )
+
+    page_cap_op = _op(
+        tx_hash="tx-withdrawal-page-cap-unrelated",
+        lt=930,
+        query_id="q-withdrawal-page-cap",
+        trace_id="t-withdrawal-page-cap",
+        amount_raw="1000000",
+        utime=datetime.now(UTC) + timedelta(seconds=1),
+        src="0:payout-wallet",
+        dst="0:other-wallet",
+    )
+    paged_client = StubTonapiPagedClient(
+        {
+            None: TonapiJettonHistoryPage(operations=[page_cap_op], next_from=920),
+        },
+        shard_raw="0:payout-wallet",
+        parsed_addresses={
+            shard.deposit_address: "0:payout-wallet",
+            "UQ_CAPPED_BUYER_WALLET": "0:capped-buyer-wallet",
+        },
+    )
+    logger = RecordingLogger()
+
+    checker = BlockchainCheckerService(
+        db_pool,
+        advisory_lock_conninfo=isolated_database,
+        advisory_lock_id=7008023,
+        shard_key="mvp-1",
+        shard_address=shard.deposit_address,
+        shard_chain="ton_mainnet",
+        shard_asset="USDT",
+        usdt_jetton_master="EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+        page_limit=100,
+        max_pages_per_shard=1,
+        match_batch_size=50,
+        confirmations_required=1,
+        tonapi_client=paged_client,
+        deposit_service=deposit_service,
+        finance_service=finance_service,
+        logger=logger,
+    )
+
+    result = await checker.run_once()
+
+    assert result.withdrawals_completed_count == 0
+    assert result.withdrawals_ambiguous_count == 0
+    assert paged_client.history_calls == [None]
+    assert any(
+        event == "blockchain_checker_withdrawal_scan_incomplete_page_cap"
+        for event, _fields in logger.warning_events
+    )
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT status
+                FROM withdrawal_requests
+                WHERE id = %s
+                """,
+                (withdrawal.withdrawal_request_id,),
+            )
+            request_row = await cur.fetchone()
+            assert request_row["status"] == "withdraw_pending_admin"
+
+            await cur.execute("SELECT COUNT(*) AS count FROM payouts")
+            payout_count = await cur.fetchone()
+            assert payout_count["count"] == 0
 
 
 @pytest.mark.asyncio
