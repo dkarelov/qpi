@@ -86,9 +86,39 @@ def _assignment(
     )
 
 
+def _withdrawal_request(
+    request_id: int,
+    *,
+    status: str = "withdraw_pending_admin",
+    requested_at: datetime | None = None,
+    processed_at: datetime | None = None,
+    sent_at: datetime | None = None,
+    note: str | None = None,
+    tx_hash: str | None = None,
+) -> SimpleNamespace:
+    return _ns(
+        withdrawal_request_id=request_id,
+        amount_usdt=Decimal(f"{request_id}.250000"),
+        status=status,
+        payout_address=f"UQ{request_id:04d}",
+        requested_at=requested_at or datetime(2026, 3, 2, 12, 0, tzinfo=UTC),
+        processed_at=processed_at,
+        sent_at=sent_at,
+        note=note,
+        tx_hash=tx_hash,
+    )
+
+
 @dataclass
 class FakeBuyerMarketplaceAdapter:
-    balance: Any = field(default_factory=lambda: _ns(buyer_available_usdt=Decimal("1.250000")))
+    balance: Any = field(
+        default_factory=lambda: _ns(
+            buyer_available_usdt=Decimal("1.250000"),
+            buyer_withdraw_pending_usdt=Decimal("0.000000"),
+        )
+    )
+    active_withdrawal_request: Any | None = None
+    withdrawal_history: list[Any] = field(default_factory=list)
     assignments: list[Any] = field(default_factory=list)
     saved_shops: list[Any] = field(default_factory=list)
     shop: Any = field(default_factory=lambda: _ns(shop_id=11, slug="shop_tushenka", title="Тушенка"))
@@ -131,6 +161,15 @@ class FakeBuyerMarketplaceAdapter:
 
     async def get_buyer_balance_snapshot(self, *, buyer_user_id: int) -> Any:
         return self.balance
+
+    async def get_active_buyer_withdrawal_request(self, *, buyer_user_id: int) -> Any | None:
+        return self.active_withdrawal_request
+
+    async def count_buyer_withdrawal_history(self, *, buyer_user_id: int) -> int:
+        return len(self.withdrawal_history)
+
+    async def list_buyer_withdrawal_history(self, *, buyer_user_id: int, limit: int, offset: int) -> list[Any]:
+        return self.withdrawal_history[offset : offset + limit]
 
     async def list_buyer_assignments(self, *, buyer_user_id: int) -> list[Any]:
         return self.assignments
@@ -331,6 +370,123 @@ async def test_buyer_marketplace_flow_renders_dashboard_counts_and_balance() -> 
     assert "🏪 Магазины · 2" in labels
     assert "📋 Покупки · 3" in labels
     assert "🆘 Поддержка" not in labels
+
+
+@pytest.mark.asyncio
+async def test_buyer_marketplace_flow_balance_shows_active_withdrawal_and_cancel_only() -> None:
+    active_request = _withdrawal_request(41)
+    flow, _ = _flow(
+        FakeBuyerMarketplaceAdapter(
+            balance=_ns(
+                buyer_available_usdt=Decimal("10.000000"),
+                buyer_withdraw_pending_usdt=Decimal("2.500000"),
+            ),
+            active_withdrawal_request=active_request,
+        )
+    )
+
+    result = await flow.render_balance(buyer_user_id=202)
+
+    screen = result.effects[0]
+    assert isinstance(screen, ReplaceText)
+    assert screen.parse_mode == "HTML"
+    assert "<b>💳 Баланс покупателя</b>" in screen.text
+    assert "<b>Доступно для вывода:</b> ~1000 ₽" in screen.text
+    assert "<b>В процессе вывода:</b> ~250 ₽" in screen.text
+    assert "<b>Активная заявка</b> · <code>W41</code>" in screen.text
+    assert "<b>Сумма:</b> 41.25 USDT" in screen.text
+    labels = [button.text for row in screen.buttons for button in row]
+    assert "🚫 Отменить заявку" in labels
+    assert "💸 Вывести все доступное" not in labels
+    assert "✍️ Указать сумму вручную" not in labels
+    cancel_button = next(button for row in screen.buttons for button in row if button.text == "🚫 Отменить заявку")
+    assert cancel_button.action == "withdraw_cancel_prompt"
+    assert cancel_button.entity_id == "41"
+
+
+@pytest.mark.asyncio
+async def test_buyer_marketplace_flow_balance_without_active_request_shows_withdraw_buttons_when_positive() -> None:
+    flow, _ = _flow(
+        FakeBuyerMarketplaceAdapter(
+            balance=_ns(
+                buyer_available_usdt=Decimal("1.250000"),
+                buyer_withdraw_pending_usdt=Decimal("0.000000"),
+            )
+        )
+    )
+
+    result = await flow.render_balance(buyer_user_id=202)
+
+    screen = result.effects[0]
+    assert isinstance(screen, ReplaceText)
+    labels = [button.text for row in screen.buttons for button in row]
+    actions = [button.action for row in screen.buttons for button in row]
+    assert "<b>Доступно для вывода:</b> ~125 ₽" in screen.text
+    assert "💸 Вывести все доступное" in labels
+    assert "✍️ Указать сумму вручную" in labels
+    assert "🧾 Транзакции" in labels
+    assert "withdraw_full" in actions
+    assert "withdraw_prompt_amount" in actions
+    assert "withdraw_history" in actions
+
+
+@pytest.mark.asyncio
+async def test_buyer_marketplace_flow_balance_hides_withdraw_buttons_when_zero() -> None:
+    flow, _ = _flow(
+        FakeBuyerMarketplaceAdapter(
+            balance=_ns(
+                buyer_available_usdt=Decimal("0.000000"),
+                buyer_withdraw_pending_usdt=Decimal("0.000000"),
+            )
+        )
+    )
+
+    result = await flow.render_balance(buyer_user_id=202)
+
+    screen = result.effects[0]
+    assert isinstance(screen, ReplaceText)
+    labels = [button.text for row in screen.buttons for button in row]
+    assert "💸 Вывести все доступное" not in labels
+    assert "✍️ Указать сумму вручную" not in labels
+    assert "🧾 Транзакции" in labels
+
+
+@pytest.mark.asyncio
+async def test_buyer_marketplace_flow_empty_withdrawal_history_links_back_to_balance() -> None:
+    flow, _ = _flow(FakeBuyerMarketplaceAdapter(withdrawal_history=[]))
+
+    result = await flow.render_withdrawal_history(buyer_user_id=202)
+
+    screen = result.effects[0]
+    assert isinstance(screen, ReplaceText)
+    assert screen.parse_mode == "HTML"
+    assert "Транзакций пока нет." in screen.text
+    assert "Когда появятся заявки на вывод" in screen.text
+    labels = [button.text for row in screen.buttons for button in row]
+    actions = [button.action for row in screen.buttons for button in row]
+    assert labels == ["↩️ Назад к балансу", "📘 Про баланс и вывод"]
+    assert actions == ["balance", "kb_balance"]
+
+
+@pytest.mark.asyncio
+async def test_buyer_marketplace_flow_withdrawal_history_uses_pagination_port() -> None:
+    history = [_withdrawal_request(index) for index in range(1, 11)]
+    flow, _ = _flow(FakeBuyerMarketplaceAdapter(withdrawal_history=history))
+
+    result = await flow.render_withdrawal_history(buyer_user_id=202, page=2)
+
+    screen = result.effects[0]
+    assert isinstance(screen, ReplaceText)
+    assert "<b>💳 Транзакции покупателя · стр. 2/2</b>" in screen.text
+    assert "<b>Вывод</b> · <code>W9</code>" in screen.text
+    assert "<b>Вывод</b> · <code>W10</code>" in screen.text
+    assert "<code>W8</code>" not in screen.text
+    labels = [button.text for row in screen.buttons for button in row]
+    prev_button = next(button for row in screen.buttons for button in row if button.text == "<")
+    assert ">" not in labels
+    assert prev_button.action == "withdraw_history"
+    assert prev_button.entity_id == "1"
+    assert labels[-2:] == ["↩️ Назад к балансу", "📘 Про баланс и вывод"]
 
 
 def test_buyer_marketplace_flow_keeps_support_inside_guide_only() -> None:

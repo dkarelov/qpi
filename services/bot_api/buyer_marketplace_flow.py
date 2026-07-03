@@ -35,6 +35,7 @@ from services.bot_api.presentation import (
     format_buyer_balance_amount,
     format_buyer_cashback_with_percent,
     numbered_page_buttons,
+    withdrawal_request_block_html,
 )
 from services.bot_api.presentation import (
     entity_block_heading_with_ref as _entity_block_heading_with_ref,
@@ -80,6 +81,12 @@ _BUYER_TASK_COMPANION_PRODUCTS = 1
 
 class BuyerMarketplaceAdapter(Protocol):
     async def get_buyer_balance_snapshot(self, *, buyer_user_id: int) -> Any: ...
+
+    async def get_active_buyer_withdrawal_request(self, *, buyer_user_id: int) -> Any | None: ...
+
+    async def count_buyer_withdrawal_history(self, *, buyer_user_id: int) -> int: ...
+
+    async def list_buyer_withdrawal_history(self, *, buyer_user_id: int, limit: int, offset: int) -> list[Any]: ...
 
     async def list_buyer_assignments(self, *, buyer_user_id: int) -> list[Any]: ...
 
@@ -210,6 +217,145 @@ class BuyerMarketplaceFlow:
                     buttons=_buyer_menu_buttons(
                         shops_count=len(saved_shops),
                         purchases_count=len(assignments),
+                    ),
+                    parse_mode="HTML",
+                ),
+            )
+        )
+
+    async def render_balance(self, *, buyer_user_id: int) -> FlowResult:
+        snapshot = await self._adapter.get_buyer_balance_snapshot(buyer_user_id=buyer_user_id)
+        active_request = await self._adapter.get_active_buyer_withdrawal_request(buyer_user_id=buyer_user_id)
+        available_text = format_buyer_balance_amount(
+            snapshot.buyer_available_usdt,
+            display_rub_per_usdt=self._config.display_rub_per_usdt,
+        )
+        pending_text = format_buyer_balance_amount(
+            snapshot.buyer_withdraw_pending_usdt,
+            display_rub_per_usdt=self._config.display_rub_per_usdt,
+        )
+        lines = [
+            f"<b>Доступно для вывода:</b> {available_text}",
+            f"<b>В процессе вывода:</b> {pending_text}",
+        ]
+        if active_request is not None:
+            lines.append(withdrawal_request_block_html(active_request))
+
+        keyboard_rows: list[list[ButtonSpec]] = []
+        if active_request is not None:
+            keyboard_rows.append(
+                [
+                    _button(
+                        "🚫 Отменить заявку",
+                        action="withdraw_cancel_prompt",
+                        entity_id=active_request.withdrawal_request_id,
+                    )
+                ]
+            )
+        elif snapshot.buyer_available_usdt > Decimal("0.000000"):
+            keyboard_rows.extend(
+                [
+                    [_button("💸 Вывести все доступное", action="withdraw_full")],
+                    [_button("✍️ Указать сумму вручную", action="withdraw_prompt_amount")],
+                ]
+            )
+        keyboard_rows.extend(
+            [
+                [_button("🧾 Транзакции", action="withdraw_history")],
+                [_button("↩️ Назад", action="menu")],
+                [_knowledge_button(topic="balance")],
+            ]
+        )
+        return FlowResult(
+            effects=(
+                ReplaceText(
+                    text=_screen_text(
+                        title="Баланс покупателя",
+                        lines=lines,
+                        separate_blocks=True,
+                    ),
+                    buttons=_rows(keyboard_rows),
+                    parse_mode="HTML",
+                ),
+            )
+        )
+
+    async def render_withdrawal_history(self, *, buyer_user_id: int, page: int = 1) -> FlowResult:
+        total_items = await self._adapter.count_buyer_withdrawal_history(buyer_user_id=buyer_user_id)
+        if total_items < 1:
+            return FlowResult(
+                effects=(
+                    ReplaceText(
+                        text=_screen_text(
+                            title="Транзакции покупателя",
+                            lines=["Транзакций пока нет."],
+                            note="Когда появятся заявки на вывод, они будут видны здесь.",
+                        ),
+                        buttons=_rows(
+                            [
+                                [_button("↩️ Назад к балансу", action="balance")],
+                                [_knowledge_button(topic="balance")],
+                            ]
+                        ),
+                        parse_mode="HTML",
+                    ),
+                )
+            )
+
+        resolved_page, total_pages, start_index, end_index = _resolve_numbered_page(
+            total_items=total_items,
+            requested_page=page,
+            page_size=8,
+        )
+        history = await self._adapter.list_buyer_withdrawal_history(
+            buyer_user_id=buyer_user_id,
+            limit=end_index - start_index,
+            offset=start_index,
+        )
+        lines: list[str] = []
+        for item in history:
+            block_lines = [withdrawal_request_block_html(item, label="Вывод")]
+            if item.processed_at is not None:
+                block_lines.append(f"<b>Обработана:</b> {_format_datetime_msk(item.processed_at)}")
+            if item.sent_at is not None:
+                block_lines.append(f"<b>Отправлена:</b> {_format_datetime_msk(item.sent_at)}")
+            if item.note:
+                block_lines.append(f"<b>Комментарий:</b> {html.escape(item.note)}")
+            if item.tx_hash:
+                block_lines.append(f"<b>Хэш перевода:</b> {html.escape(item.tx_hash)}")
+            lines.append("\n".join(block_lines))
+
+        extra_rows = [
+            [_button("↩️ Назад к балансу", action="balance")],
+            [_knowledge_button(topic="balance")],
+        ]
+        return FlowResult(
+            effects=(
+                ReplaceText(
+                    text=_screen_text(
+                        title=(
+                            f"Транзакции покупателя · стр. {resolved_page}/{total_pages}"
+                            if total_pages > 1
+                            else "Транзакции покупателя"
+                        ),
+                        lines=lines,
+                        note=(
+                            "Если вывод отклонен или задержан, проверьте статус "
+                            "и при необходимости оформите новую заявку."
+                        ),
+                        separate_blocks=True,
+                    ),
+                    buttons=numbered_page_buttons(
+                        flow=_ROLE_BUYER,
+                        open_action="withdraw_history",
+                        page_action="withdraw_history",
+                        item_ids=[],
+                        start_number=start_index + 1,
+                        page=resolved_page,
+                        total_pages=total_pages,
+                        extra_rows=extra_rows,
+                        previous_label="<",
+                        next_label=">",
                     ),
                     parse_mode="HTML",
                 ),

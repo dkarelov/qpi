@@ -82,7 +82,6 @@ from services.bot_api.deep_links import (
 from services.bot_api.presentation import (
     button_label_with_count,
     entity_block_heading_with_ref,
-    format_buyer_balance_amount,
     format_cashback_with_percent,
     format_characteristics_block_html,
     format_copyable_code,
@@ -463,6 +462,19 @@ class _RuntimeBuyerMarketplaceAdapter(BuyerMarketplaceAdapter):
 
     async def get_buyer_balance_snapshot(self, *, buyer_user_id: int) -> Any:
         return await self._runtime._finance_service.get_buyer_balance_snapshot(buyer_user_id=buyer_user_id)
+
+    async def get_active_buyer_withdrawal_request(self, *, buyer_user_id: int) -> Any | None:
+        return await self._runtime._finance_service.get_active_buyer_withdrawal_request(buyer_user_id=buyer_user_id)
+
+    async def count_buyer_withdrawal_history(self, *, buyer_user_id: int) -> int:
+        return await self._runtime._finance_service.count_buyer_withdrawal_history(buyer_user_id=buyer_user_id)
+
+    async def list_buyer_withdrawal_history(self, *, buyer_user_id: int, limit: int, offset: int) -> list[Any]:
+        return await self._runtime._finance_service.list_buyer_withdrawal_history(
+            buyer_user_id=buyer_user_id,
+            limit=limit,
+            offset=offset,
+        )
 
     async def list_buyer_assignments(self, *, buyer_user_id: int) -> list[Any]:
         return await self._runtime._buyer_service.list_buyer_assignments(buyer_user_id=buyer_user_id)
@@ -4194,6 +4206,7 @@ class TelegramWebhookRuntime:
             return
         if action == "balance":
             await self._render_buyer_balance(
+                context=context,
                 query_message=query_message,
                 buyer_user_id=buyer.user_id,
             )
@@ -4242,6 +4255,7 @@ class TelegramWebhookRuntime:
             return
         if action == "withdraw_history":
             await self._render_buyer_withdraw_history(
+                context=context,
                 query_message=query_message,
                 buyer_user_id=buyer.user_id,
                 page=self._coerce_page_number(payload.entity_id),
@@ -4368,96 +4382,17 @@ class TelegramWebhookRuntime:
     async def _render_buyer_balance(
         self,
         *,
+        context: ContextTypes.DEFAULT_TYPE,
         query_message: Message | None,
         buyer_user_id: int,
     ) -> None:
         await self._refresh_display_rub_per_usdt()
-        snapshot = await self._finance_service.get_buyer_balance_snapshot(buyer_user_id=buyer_user_id)
-        active_request = await self._finance_service.get_active_buyer_withdrawal_request(buyer_user_id=buyer_user_id)
-        lines = [
-            (f"<b>Доступно для вывода:</b> {self._format_buyer_balance_amount(snapshot.buyer_available_usdt)}"),
-            (f"<b>В процессе вывода:</b> {self._format_buyer_balance_amount(snapshot.buyer_withdraw_pending_usdt)}"),
-        ]
-        if active_request is not None:
-            withdraw_ref = self._withdrawal_ref(active_request.withdrawal_request_id)
-            lines.append(
-                "\n".join(
-                    [
-                        entity_block_heading_with_ref(label="Активная заявка", ref=withdraw_ref),
-                        (f"<b>Сумма:</b> {format_usdt_value(active_request.amount_usdt, precise=True)} USDT"),
-                        f"<b>Статус:</b> {withdraw_status_badge(active_request.status)}",
-                        f"<b>Адрес:</b> {html.escape(active_request.payout_address)}",
-                        f"<b>Создана:</b> {format_datetime_msk(active_request.requested_at)}",
-                    ]
-                )
-            )
-        text = screen_text(
-            title="Баланс покупателя",
-            lines=lines,
-            separate_blocks=True,
-        )
-        keyboard_rows: list[list[InlineKeyboardButton]] = []
-        if active_request is not None:
-            keyboard_rows.append(
-                [
-                    InlineKeyboardButton(
-                        text="🚫 Отменить заявку",
-                        callback_data=build_callback(
-                            flow=_ROLE_BUYER,
-                            action="withdraw_cancel_prompt",
-                            entity_id=str(active_request.withdrawal_request_id),
-                        ),
-                    )
-                ]
-            )
-        elif snapshot.buyer_available_usdt > Decimal("0.000000"):
-            keyboard_rows.extend(
-                [
-                    [
-                        InlineKeyboardButton(
-                            text="💸 Вывести все доступное",
-                            callback_data=build_callback(
-                                flow=_ROLE_BUYER,
-                                action="withdraw_full",
-                            ),
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text="✍️ Указать сумму вручную",
-                            callback_data=build_callback(
-                                flow=_ROLE_BUYER,
-                                action="withdraw_prompt_amount",
-                            ),
-                        )
-                    ],
-                ]
-            )
-        keyboard_rows.extend(
-            [
-                [
-                    InlineKeyboardButton(
-                        text="🧾 Транзакции",
-                        callback_data=build_callback(
-                            flow=_ROLE_BUYER,
-                            action="withdraw_history",
-                        ),
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="↩️ Назад",
-                        callback_data=build_callback(flow=_ROLE_BUYER, action="menu"),
-                    )
-                ],
-                [self._knowledge_button(role=_ROLE_BUYER, topic="balance")],
-            ]
-        )
-        await self._replace_message(
-            query_message,
-            text,
-            InlineKeyboardMarkup(keyboard_rows),
-            parse_mode="HTML",
+        await self._apply_transport_effects(
+            context=context,
+            query_message=query_message,
+            message=None,
+            default_role=_ROLE_BUYER,
+            result=await self._buyer_marketplace_flow().render_balance(buyer_user_id=buyer_user_id),
         )
 
     async def _start_withdraw_full_amount(
@@ -4480,116 +4415,20 @@ class TelegramWebhookRuntime:
     async def _render_buyer_withdraw_history(
         self,
         *,
+        context: ContextTypes.DEFAULT_TYPE,
         query_message: Message | None,
         buyer_user_id: int,
         page: int = 1,
     ) -> None:
-        total_items = await self._finance_service.count_buyer_withdrawal_history(buyer_user_id=buyer_user_id)
-        if total_items < 1:
-            await self._replace_message(
-                query_message,
-                screen_text(
-                    title="Транзакции покупателя",
-                    lines=["Транзакций пока нет."],
-                    note="Когда появятся заявки на вывод, они будут видны здесь.",
-                ),
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад к балансу",
-                                callback_data=build_callback(
-                                    flow=_ROLE_BUYER,
-                                    action="balance",
-                                ),
-                            )
-                        ],
-                        [self._knowledge_button(role=_ROLE_BUYER, topic="balance")],
-                    ]
-                ),
-                parse_mode="HTML",
-            )
-            return
-
-        resolved_page, total_pages, start_index, end_index = self._resolve_numbered_page(
-            total_items=total_items,
-            requested_page=page,
-            page_size=8,
-        )
-        history = await self._finance_service.list_buyer_withdrawal_history(
-            buyer_user_id=buyer_user_id,
-            limit=end_index - start_index,
-            offset=start_index,
-        )
-        lines: list[str] = []
-        for item in history:
-            withdraw_ref = self._withdrawal_ref(item.withdrawal_request_id)
-            block_lines = [
-                entity_block_heading_with_ref(label="Вывод", ref=withdraw_ref),
-                f"<b>Сумма:</b> {format_usdt_value(item.amount_usdt, precise=True)} USDT",
-                f"<b>Статус:</b> {withdraw_status_badge(item.status)}",
-                f"<b>Адрес:</b> {html.escape(item.payout_address)}",
-                f"<b>Создана:</b> {format_datetime_msk(item.requested_at)}",
-            ]
-            if item.processed_at is not None:
-                block_lines.append(f"<b>Обработана:</b> {format_datetime_msk(item.processed_at)}")
-            if item.sent_at is not None:
-                block_lines.append(f"<b>Отправлена:</b> {format_datetime_msk(item.sent_at)}")
-            if item.note:
-                block_lines.append(f"<b>Комментарий:</b> {html.escape(item.note)}")
-            if item.tx_hash:
-                block_lines.append(f"<b>Хэш перевода:</b> {html.escape(item.tx_hash)}")
-            lines.append("\n".join(block_lines))
-        keyboard_rows: list[list[InlineKeyboardButton]] = []
-        if total_pages > 1:
-            nav_row: list[InlineKeyboardButton] = []
-            if resolved_page > 1:
-                nav_row.append(
-                    InlineKeyboardButton(
-                        text="<",
-                        callback_data=build_callback(
-                            flow=_ROLE_BUYER,
-                            action="withdraw_history",
-                            entity_id=str(resolved_page - 1),
-                        ),
-                    )
-                )
-            if resolved_page < total_pages:
-                nav_row.append(
-                    InlineKeyboardButton(
-                        text=">",
-                        callback_data=build_callback(
-                            flow=_ROLE_BUYER,
-                            action="withdraw_history",
-                            entity_id=str(resolved_page + 1),
-                        ),
-                    )
-                )
-            if nav_row:
-                keyboard_rows.append(nav_row)
-        keyboard_rows.append(
-            [
-                InlineKeyboardButton(
-                    text="↩️ Назад к балансу",
-                    callback_data=build_callback(flow=_ROLE_BUYER, action="balance"),
-                )
-            ]
-        )
-        keyboard_rows.append([self._knowledge_button(role=_ROLE_BUYER, topic="balance")])
-        await self._replace_message(
-            query_message,
-            screen_text(
-                title=(
-                    f"Транзакции покупателя · стр. {resolved_page}/{total_pages}"
-                    if total_pages > 1
-                    else "Транзакции покупателя"
-                ),
-                lines=lines,
-                note=("Если вывод отклонен или задержан, проверьте статус и при необходимости оформите новую заявку."),
-                separate_blocks=True,
+        await self._apply_transport_effects(
+            context=context,
+            query_message=query_message,
+            message=None,
+            default_role=_ROLE_BUYER,
+            result=await self._buyer_marketplace_flow().render_withdrawal_history(
+                buyer_user_id=buyer_user_id,
+                page=page,
             ),
-            InlineKeyboardMarkup(keyboard_rows),
-            parse_mode="HTML",
         )
 
     async def _ensure_admin_user(self, *, telegram_id: int, username: str | None) -> int:
@@ -6603,9 +6442,6 @@ class TelegramWebhookRuntime:
             display_rub_per_usdt=self._display_rub_per_usdt,
             precise=precise,
         )
-
-    def _format_buyer_balance_amount(self, amount: Decimal) -> str:
-        return format_buyer_balance_amount(amount, display_rub_per_usdt=self._display_rub_per_usdt)
 
     def _sanitize_buyer_display_title(
         self,
