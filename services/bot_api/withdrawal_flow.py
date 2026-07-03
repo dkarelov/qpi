@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import html
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
 from libs.domain.errors import InsufficientFundsError, InvalidStateError, NotFoundError
 from libs.domain.public_refs import format_withdrawal_ref
+from services.bot_api.presentation import format_usdt_value, screen_text
 from services.bot_api.transport_effects import (
     ButtonSpec,
     ClearPrompt,
@@ -18,7 +19,6 @@ from services.bot_api.transport_effects import (
     SetPrompt,
 )
 
-_USDT_EXACT_QUANT = Decimal("0.000001")
 _ZERO_USDT = Decimal("0.000000")
 
 
@@ -241,7 +241,7 @@ class WithdrawalRequestCreationFlow:
                     ReplyText(
                         text=(
                             "Сумма превышает доступный баланс.\n"
-                            f"Сейчас доступно: {_format_usdt_value(available, precise=True)} USDT."
+                            f"Сейчас доступно: {format_usdt_value(available, precise=True)} USDT."
                         ),
                         parse_mode=None,
                     ),
@@ -390,10 +390,10 @@ class WithdrawalRequestCreationFlow:
         return FlowResult(
             effects=(
                 ReplaceText(
-                    text=_screen_text(
+                    text=screen_text(
                         title="Отмена вывода",
                         lines=[
-                            f"<b>Сумма:</b> {_format_usdt_value(detail.amount_usdt, precise=True)} USDT",
+                            f"<b>Сумма:</b> {format_usdt_value(detail.amount_usdt, precise=True)} USDT",
                             f"<b>Адрес:</b> {html.escape(detail.payout_address)}",
                             self._config.cancel_return_line,
                         ],
@@ -444,7 +444,7 @@ class WithdrawalRequestCreationFlow:
         )
 
     def _address_prompt_result(self, *, requester_user_id: int, amount: Decimal, replace: bool) -> FlowResult:
-        text = f"Введите адрес кошелька в сети TON для вывода {_format_usdt_value(amount, precise=True)} USDT."
+        text = f"Введите адрес кошелька в сети TON для вывода {format_usdt_value(amount, precise=True)} USDT."
         prompt = SetPrompt(
             role=self._config.role,
             prompt_type=self._config.address_prompt_type,
@@ -492,28 +492,3 @@ class WithdrawalRequestCreationFlow:
 def _back_to_balance_buttons(*, role: str) -> tuple[tuple[ButtonSpec, ...], ...]:
     return ((ButtonSpec(text="↩️ Назад к балансу", flow=role, action="balance"),),)
 
-
-def _format_usdt_value(amount: Decimal, *, precise: bool = False) -> str:
-    quant = _USDT_EXACT_QUANT if precise else Decimal("0.1")
-    normalized = amount.quantize(quant, rounding=ROUND_HALF_UP)
-    text = format(normalized, "f")
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    return text
-
-
-def _screen_text(
-    *,
-    title: str,
-    lines: list[str] | None = None,
-    cta: str | None = None,
-) -> str:
-    decorated_title = f"💳 {title}" if title.startswith("Отмена вывода") else title
-    parts: list[str] = [f"<b>{decorated_title}</b>"]
-    if cta:
-        parts.append(f"<i>{cta}</i>")
-    if lines:
-        filtered = [line for line in lines if line]
-        if filtered:
-            parts.append("\n".join(filtered))
-    return "\n\n".join(parts)

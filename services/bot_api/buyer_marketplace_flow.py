@@ -4,10 +4,8 @@ import base64
 import html
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Any, Protocol
-from zoneinfo import ZoneInfo
 
 from libs.domain.errors import (
     DomainError,
@@ -29,6 +27,39 @@ from services.bot_api.buyer_listing_copy import (
     ALREADY_PURCHASED_LISTING_NOTICE,
     repeat_purchase_listing_notice,
 )
+from services.bot_api.presentation import (
+    button_label_with_count as _button_label_with_count,
+)
+from services.bot_api.presentation import (
+    buyer_listing_detail_html,
+    format_buyer_balance_amount,
+    format_buyer_cashback_with_percent,
+    numbered_page_buttons,
+)
+from services.bot_api.presentation import (
+    entity_block_heading_with_ref as _entity_block_heading_with_ref,
+)
+from services.bot_api.presentation import (
+    format_datetime_msk as _format_datetime_msk,
+)
+from services.bot_api.presentation import (
+    format_price_optional_rub as _format_price_optional_rub,
+)
+from services.bot_api.presentation import (
+    listing_display_title as _listing_display_title,
+)
+from services.bot_api.presentation import (
+    resolve_numbered_page as _resolve_numbered_page,
+)
+from services.bot_api.presentation import (
+    screen_text as _screen_text,
+)
+from services.bot_api.presentation import (
+    status_badge as _status_badge,
+)
+from services.bot_api.presentation import (
+    title_ref_suffix as _title_ref_suffix,
+)
 from services.bot_api.transport_effects import (
     ButtonSpec,
     ClearPrompt,
@@ -44,11 +75,7 @@ from services.bot_api.transport_effects import (
 
 _ROLE_BUYER = "buyer"
 _QPILKA_EXTENSION_URL = "https://chromewebstore.google.com/detail/qpilka/joefinmgneknnaejambgbaclobeedaga"
-_NUMBERED_PAGE_SIZE = 10
 _BUYER_TASK_COMPANION_PRODUCTS = 1
-_USDT_EXACT_QUANT = Decimal("0.000001")
-_RUB_QUANT = Decimal("1")
-_MSK_TZ = ZoneInfo("Europe/Moscow")
 
 
 class BuyerMarketplaceAdapter(Protocol):
@@ -159,6 +186,10 @@ class BuyerMarketplaceFlow:
             bucket = buyer_dashboard_status_bucket(item.status)
             if bucket is not None:
                 bucket_counts[bucket] += 1
+        buyer_balance_text = format_buyer_balance_amount(
+            snapshot.buyer_available_usdt,
+            display_rub_per_usdt=self._config.display_rub_per_usdt,
+        )
         text = _screen_text(
             title="Кабинет покупателя",
             lines=[
@@ -168,7 +199,7 @@ class BuyerMarketplaceFlow:
                     f"заказаны: {bucket_counts['ordered']} · "
                     f"выкуплены: {bucket_counts['picked_up']}"
                 ),
-                f"<b>Баланс:</b> {self._format_buyer_balance_amount(snapshot.buyer_available_usdt)}",
+                f"<b>Баланс:</b> {buyer_balance_text}",
             ],
             separate_blocks=True,
         )
@@ -373,7 +404,8 @@ class BuyerMarketplaceFlow:
             effects=(
                 ReplaceText(
                     text=text,
-                    buttons=_numbered_page_buttons(
+                    buttons=numbered_page_buttons(
+                        flow=_ROLE_BUYER,
                         open_action="open_saved_shop",
                         page_action="shops",
                         item_ids=[shop.shop_id for shop in shops_page],
@@ -706,9 +738,10 @@ class BuyerMarketplaceFlow:
                 fallback=item.search_phrase,
             )
             shop_title = html.escape(_buyer_shop_title(item))
-            cashback_text = self._format_buyer_cashback_with_percent(
+            cashback_text = format_buyer_cashback_with_percent(
                 reward_usdt=item.reward_usdt,
                 reference_price_rub=item.reference_price_rub,
+                display_rub_per_usdt=self._config.display_rub_per_usdt,
             )
             block_lines = [
                 _entity_block_heading_with_ref(
@@ -1340,9 +1373,10 @@ class BuyerMarketplaceFlow:
                 display_title=listing.display_title,
                 fallback=listing.search_phrase,
             )
-            cashback_text = self._format_buyer_cashback_with_percent(
+            cashback_text = format_buyer_cashback_with_percent(
                 reward_usdt=listing.reward_usdt,
                 reference_price_rub=listing.reference_price_rub,
+                display_rub_per_usdt=self._config.display_rub_per_usdt,
             )
             lines.append(
                 f"<b>{idx}. {html.escape(display_title)}</b>\n"
@@ -1367,7 +1401,8 @@ class BuyerMarketplaceFlow:
         effects.append(
             _text_effect(
                 text=text,
-                buttons=_numbered_page_buttons(
+                buttons=numbered_page_buttons(
+                    flow=_ROLE_BUYER,
                     open_action="listing_open",
                     page_action="shop_page",
                     item_ids=[listing.listing_id for listing in listings_page],
@@ -1493,75 +1528,6 @@ class BuyerMarketplaceFlow:
             )
         keyboard_rows.extend([list(row) for row in _buyer_menu_buttons()])
         return _rows(keyboard_rows)
-
-    def _format_rub_approx(self, amount: Decimal) -> str:
-        rub = amount * self._config.display_rub_per_usdt
-        return f"~{_format_decimal(rub, quant=_RUB_QUANT)} ₽"
-
-    def _format_buyer_cashback_with_percent(
-        self,
-        *,
-        reward_usdt: Decimal,
-        reference_price_rub: int | None,
-    ) -> str:
-        primary = self._format_rub_approx(reward_usdt)
-        if reward_usdt.quantize(_USDT_EXACT_QUANT, rounding=ROUND_HALF_UP) == Decimal("0.000000"):
-            return primary
-        if reference_price_rub is None or reference_price_rub < 1:
-            return primary
-        cashback_rub = Decimal(_format_decimal(reward_usdt * self._config.display_rub_per_usdt, quant=_RUB_QUANT))
-        percent = (cashback_rub / Decimal(reference_price_rub) * Decimal("100")).quantize(
-            Decimal("1"),
-            rounding=ROUND_HALF_UP,
-        )
-        return f"{primary} (~{percent}%)"
-
-    def _format_buyer_balance_amount(self, amount: Decimal) -> str:
-        return self._format_rub_approx(amount)
-
-
-def buyer_listing_detail_html(
-    *,
-    listing: Any,
-    display_rub_per_usdt: Decimal,
-    notice: str | None = None,
-) -> str:
-    display_title = _listing_display_title(
-        display_title=listing.display_title,
-        fallback=listing.search_phrase,
-    )
-    lines: list[str] = []
-    if notice:
-        lines.append(html.escape(notice))
-    cashback_text = _format_buyer_cashback_with_percent(
-        reward_usdt=listing.reward_usdt,
-        reference_price_rub=listing.reference_price_rub,
-        display_rub_per_usdt=display_rub_per_usdt,
-    )
-    lines.extend(
-        [
-            f"<b>Предмет:</b> {html.escape(listing.wb_subject_name or '—')}",
-            _format_listing_price_line(label="Цена", price_rub=listing.reference_price_rub, source=None),
-            f"<b>Кэшбэк:</b> {html.escape(cashback_text)}",
-            f"<b>Поисковая фраза:</b> &quot;{html.escape(listing.search_phrase)}&quot;",
-        ]
-    )
-    if _should_show_buyer_sizes(listing.wb_tech_sizes):
-        lines.append(f"<b>Размеры:</b> {html.escape(_format_sizes_text(listing.wb_tech_sizes))}")
-    description_block = _format_expandable_block_html(title="Описание", body=listing.wb_description)
-    if description_block:
-        lines.append(f"\n{description_block}")
-    characteristics_block = _format_characteristics_block_html(listing.wb_characteristics)
-    if characteristics_block:
-        lines.append(f"\n{characteristics_block}")
-    return _screen_text(
-        title=f"📦 {display_title}",
-        title_suffix_html=_title_ref_suffix(format_listing_ref(listing.listing_id)),
-        cta="Проверьте товар перед покупкой.",
-        lines=lines,
-        separate_blocks=True,
-    )
-
 
 def buyer_task_instruction_text(assignment: Any, *, include_title: bool = True) -> str:
     listing_token = _build_buyer_listing_token(
@@ -1711,24 +1677,6 @@ def _humanize_assignment_status(status: str) -> str:
         "delivery_expired": "Срок выкупа истек",
     }
     return mapping.get(status, status)
-
-
-def _status_badge(label: str, *, color: str) -> str:
-    marker = {
-        "green": "🟢",
-        "red": "🔴",
-        "yellow": "🟡",
-        "blue": "🔵",
-    }.get(color, "⚪")
-    return f"{marker} {html.escape(label)}"
-
-
-def _format_datetime_msk(value: datetime | None) -> str:
-    if value is None:
-        return "—"
-    normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-    localized = normalized.astimezone(_MSK_TZ)
-    return localized.strftime("%d.%m.%Y %H:%M МСК")
 
 
 def _normalize_review_phrases(review_phrases: list[str] | None) -> list[str]:
@@ -1952,227 +1900,3 @@ def _listing_deep_link_unavailable_result(*, replace: bool) -> FlowResult:
         parse_mode=None,
     )
     return FlowResult(effects=(effect,))
-
-
-def _numbered_page_buttons(
-    *,
-    open_action: str,
-    page_action: str,
-    item_ids: list[int],
-    start_number: int,
-    page: int,
-    total_pages: int,
-    extra_rows: list[list[ButtonSpec]] | None = None,
-) -> tuple[tuple[ButtonSpec, ...], ...]:
-    rows: list[list[ButtonSpec]] = []
-    current_row: list[ButtonSpec] = []
-    for offset, item_id in enumerate(item_ids):
-        current_row.append(_button(str(start_number + offset), action=open_action, entity_id=item_id))
-        if len(current_row) == 5:
-            rows.append(current_row)
-            current_row = []
-    if current_row:
-        rows.append(current_row)
-
-    if total_pages > 1:
-        nav_row: list[ButtonSpec] = []
-        if page > 1:
-            nav_row.append(_button("⬅️", action=page_action, entity_id=page - 1))
-        if page < total_pages:
-            nav_row.append(_button("➡️", action=page_action, entity_id=page + 1))
-        if nav_row:
-            rows.append(nav_row)
-
-    if extra_rows:
-        rows.extend(extra_rows)
-    return _rows(rows)
-
-
-def _resolve_numbered_page(
-    *,
-    total_items: int,
-    requested_page: int,
-    page_size: int = _NUMBERED_PAGE_SIZE,
-) -> tuple[int, int, int, int]:
-    if total_items <= 0:
-        return 1, 1, 0, 0
-    total_pages = (total_items + page_size - 1) // page_size
-    page = max(1, min(requested_page, total_pages))
-    start_index = (page - 1) * page_size
-    end_index = min(start_index + page_size, total_items)
-    return page, total_pages, start_index, end_index
-
-
-def _button_label_with_count(label: str, count: int | None) -> str:
-    if count is None:
-        return label
-    normalized_count = max(0, int(count))
-    return f"{label} · {normalized_count}"
-
-
-def _listing_display_title(*, display_title: str | None, fallback: str) -> str:
-    normalized = (display_title or "").strip()
-    return normalized or fallback.strip()
-
-
-def _format_buyer_cashback_with_percent(
-    *,
-    reward_usdt: Decimal,
-    reference_price_rub: int | None,
-    display_rub_per_usdt: Decimal,
-) -> str:
-    primary = f"~{_format_decimal(reward_usdt * display_rub_per_usdt, quant=_RUB_QUANT)} ₽"
-    if reward_usdt.quantize(_USDT_EXACT_QUANT, rounding=ROUND_HALF_UP) == Decimal("0.000000"):
-        return primary
-    if reference_price_rub is None or reference_price_rub < 1:
-        return primary
-    cashback_rub = Decimal(_format_decimal(reward_usdt * display_rub_per_usdt, quant=_RUB_QUANT))
-    percent = (cashback_rub / Decimal(reference_price_rub) * Decimal("100")).quantize(
-        Decimal("1"),
-        rounding=ROUND_HALF_UP,
-    )
-    return f"{primary} (~{percent}%)"
-
-
-def _format_decimal(
-    amount: Decimal,
-    *,
-    quant: Decimal,
-    rounding=ROUND_HALF_UP,
-) -> str:
-    normalized = amount.quantize(quant, rounding=rounding)
-    text = format(normalized, "f")
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    return text
-
-
-def _format_price_rub(amount: int | Decimal | None) -> str:
-    if amount is None:
-        return "0 ₽"
-    rub = Decimal(str(amount)).quantize(_RUB_QUANT, rounding=ROUND_CEILING)
-    return f"{_format_decimal(rub, quant=_RUB_QUANT)} ₽"
-
-
-def _format_price_optional_rub(amount: int | Decimal | None) -> str:
-    if amount is None:
-        return "—"
-    return _format_price_rub(amount)
-
-
-def _format_listing_price_line(*, label: str, price_rub: int | None, source: str | None) -> str:
-    if price_rub is None:
-        return f"<b>{html.escape(label)}:</b> —"
-    suffix = ""
-    if source == "orders":
-        suffix = " (из заказов)"
-    elif source == "manual":
-        suffix = " (вручную)"
-    return f"<b>{html.escape(label)}:</b> {_format_price_rub(price_rub)}{html.escape(suffix)}"
-
-
-def _normalize_sizes(sizes: list[str] | None) -> list[str]:
-    if not sizes:
-        return []
-    normalized: list[str] = []
-    for size in sizes:
-        cleaned = str(size).strip()
-        if cleaned:
-            normalized.append(cleaned)
-    return normalized
-
-
-def _should_show_buyer_sizes(sizes: list[str] | None) -> bool:
-    return _normalize_sizes(sizes) != ["0"]
-
-
-def _format_sizes_text(sizes: list[str] | None) -> str:
-    normalized = _normalize_sizes(sizes)
-    if not normalized:
-        return "—"
-    return ", ".join(normalized)
-
-
-def _format_characteristics_block_html(characteristics: list[dict[str, str]] | None) -> str | None:
-    if not characteristics:
-        return None
-    lines = []
-    for item in characteristics:
-        name = html.escape(str(item.get("name", "")).strip())
-        value = html.escape(str(item.get("value", "")).strip())
-        if not name or not value:
-            continue
-        lines.append(f"{name}: {value}")
-    if not lines:
-        return None
-    return "<b>Характеристики</b>\n<blockquote expandable>" + "\n".join(lines) + "</blockquote>"
-
-
-def _format_expandable_block_html(*, title: str, body: str | None) -> str | None:
-    normalized = (body or "").strip()
-    if not normalized:
-        return None
-    return f"<b>{html.escape(title)}</b>\n<blockquote expandable>{html.escape(normalized)}</blockquote>"
-
-
-def _screen_text(
-    *,
-    title: str,
-    title_suffix_html: str | None = None,
-    cta: str | None = None,
-    lines: list[str] | None = None,
-    note: str | None = None,
-    warning: bool = False,
-    separate_blocks: bool = False,
-) -> str:
-    plain_title = html.unescape(title)
-    if title.startswith(("🧑‍💼 ", "🛍️ ", "🏪 ", "📦 ", "📋 ", "💳 ", "💰 ", "📘 ")):
-        decorated_title = title
-    elif plain_title.startswith(("Инструкция", "Про ")):
-        decorated_title = f"📘 {title}"
-    elif plain_title.startswith("Кабинет покупателя"):
-        decorated_title = f"🛍️ {title}"
-    elif plain_title.startswith(("Магазины", "Магазин")):
-        decorated_title = f"🏪 {title}"
-    elif plain_title.startswith(("Объявления", "Название объявления", "Новое объявление")):
-        decorated_title = f"📦 {title}"
-    elif plain_title.startswith(("Покупки", "Покупка", "Токен-подтверждение", "Токен отзыва", "Отмена покупки")):
-        decorated_title = f"📋 {title}"
-    elif plain_title.startswith(("Баланс", "Транзакции", "Отмена вывода")):
-        decorated_title = f"💳 {title}"
-    else:
-        decorated_title = title
-    title_html = f"{'⚠️ ' if warning else ''}<b>{decorated_title}</b>"
-    if title_suffix_html:
-        title_html += title_suffix_html
-    parts = [title_html]
-    if cta:
-        parts.append(f"<i>{cta}</i>")
-    if lines:
-        filtered = [line for line in lines if line]
-        if filtered:
-            parts.append(("\n\n" if separate_blocks else "\n").join(filtered))
-    if note:
-        parts.append(f"<i>{note}</i>")
-    return "\n\n".join(parts)
-
-
-def _format_copyable_code(value: str) -> str:
-    return f"<code>{html.escape(value.strip())}</code>"
-
-
-def _title_ref_suffix(value: str | None) -> str | None:
-    if not value:
-        return None
-    return f" · {_format_copyable_code(value)}"
-
-
-def _entity_block_heading(label: str) -> str:
-    return f"<b>{html.escape(label)}</b>"
-
-
-def _entity_block_heading_with_ref(*, label: str, ref: str | None = None) -> str:
-    heading = _entity_block_heading(label)
-    if not ref:
-        return heading
-    return f"{heading} · {_format_copyable_code(ref)}"
