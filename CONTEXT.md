@@ -64,6 +64,10 @@ A short public identifier used for support conversations, such as `S4`, `L8`, `P
 The canonical support conversation unit: one Telegram forum topic per **Telegram Account** in the configured support supergroup.
 _Avoid_: ticket, private staff chat
 
+**Screen**:
+One bot message as a person sees it at a step of a flow: a decorated title, content blocks, an optional note, and buttons.
+_Avoid_: page, view, window
+
 ## Relationships
 
 - A **Telegram Account** can hold one or more **Capabilities**.
