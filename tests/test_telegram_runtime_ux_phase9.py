@@ -15,7 +15,22 @@ from libs.domain.public_refs import (
     format_shop_ref,
     format_withdrawal_ref,
 )
+from services.bot_api.buyer_marketplace_flow import (
+    buyer_dashboard_status_bucket,
+    buyer_purchase_status_badge,
+    buyer_review_instruction_text,
+    buyer_task_instruction_text,
+)
 from services.bot_api.callback_data import build_callback
+from services.bot_api.presentation import (
+    buyer_listing_detail_html,
+    format_buyer_cashback_with_percent,
+    format_cashback_with_percent,
+    format_copyable_code,
+    format_usdt,
+    format_usdt_with_rub,
+    screen_text,
+)
 from services.bot_api.telegram_runtime import TelegramWebhookRuntime
 
 _TASK_UUID = "11111111-1111-4111-8111-111111111111"
@@ -181,31 +196,54 @@ def test_seller_balance_menu_uses_transactions_and_kb_labels() -> None:
 
 
 def test_money_formatter_uses_usdt_with_approx_rub() -> None:
-    runtime = _build_runtime()
-
-    assert runtime._format_usdt_with_rub(Decimal("1.24")) == "$1.2 (~124 ₽)"
-    assert runtime._format_usdt_with_rub(Decimal("1.25")) == "$1.3 (~125 ₽)"
-    assert runtime._format_usdt_with_rub(Decimal("0")) == "$0.0"
-    assert runtime._format_usdt(Decimal("1.234567"), precise=True) == "$1.234567"
+    assert format_usdt_with_rub(Decimal("1.24"), display_rub_per_usdt=Decimal("100")) == "$1.2 (~124 ₽)"
+    assert format_usdt_with_rub(Decimal("1.25"), display_rub_per_usdt=Decimal("100")) == "$1.3 (~125 ₽)"
+    assert format_usdt_with_rub(Decimal("0"), display_rub_per_usdt=Decimal("100")) == "$0.0"
+    assert format_usdt(Decimal("1.234567"), precise=True) == "$1.234567"
 
 
 def test_buyer_cashback_formatter_uses_approx_rub() -> None:
-    runtime = _build_runtime()
-
-    assert runtime._format_buyer_listing_cashback(Decimal("1.29")) == "~129 ₽"
-    assert runtime._format_buyer_listing_cashback(Decimal("1.20")) == "~120 ₽"
-    assert runtime._format_buyer_listing_cashback(Decimal("0")) == "~0 ₽"
+    assert (
+        format_buyer_cashback_with_percent(
+            reward_usdt=Decimal("1.29"),
+            reference_price_rub=None,
+            display_rub_per_usdt=Decimal("100"),
+        )
+        == "~129 ₽"
+    )
+    assert (
+        format_buyer_cashback_with_percent(
+            reward_usdt=Decimal("1.20"),
+            reference_price_rub=None,
+            display_rub_per_usdt=Decimal("100"),
+        )
+        == "~120 ₽"
+    )
+    assert (
+        format_buyer_cashback_with_percent(
+            reward_usdt=Decimal("0"),
+            reference_price_rub=None,
+            display_rub_per_usdt=Decimal("100"),
+        )
+        == "~0 ₽"
+    )
 
 
 def test_buyer_listing_token_contains_search_phrase_product_count_and_brand() -> None:
-    runtime = _build_runtime()
-
-    token = runtime._build_buyer_listing_token(
-        task_uuid=_TASK_UUID,
-        search_phrase="бумага а4 для принтера 500 листов белая",
-        wb_product_id=552892532,
-        brand_name="BRAUBERG",
-    )
+    assignment = type(
+        "Assignment",
+        (),
+        {
+            "display_title": "Бумага A4",
+            "search_phrase": "бумага а4 для принтера 500 листов белая",
+            "task_uuid": _TASK_UUID,
+            "wb_product_id": 552892532,
+            "wb_brand_name": "BRAUBERG",
+            "reservation_expires_at": datetime(2026, 4, 4, 3, 31, tzinfo=UTC),
+        },
+    )()
+    text = buyer_task_instruction_text(assignment, include_title=False)
+    token = text.split("<code>", maxsplit=1)[1].split("</code>", maxsplit=1)[0]
     decoded = json.loads(base64.b64decode(token).decode("utf-8"))
 
     assert decoded == [1, _TASK_UUID, "бумага а4 для принтера 500 листов белая", 552892532, 1, "BRAUBERG"]
@@ -240,9 +278,7 @@ def test_listing_create_instruction_contains_new_fields_and_fx_reference() -> No
 
 
 def test_screen_text_places_cta_after_title_and_separates_lines() -> None:
-    runtime = _build_runtime()
-
-    text = runtime._screen_text(
+    text = screen_text(
         title="Экран",
         cta="Сделайте следующий шаг.",
         lines=["Первый блок", "Второй блок"],
@@ -255,9 +291,7 @@ def test_screen_text_places_cta_after_title_and_separates_lines() -> None:
 
 
 def test_screen_text_supports_ref_suffix_outside_bold_title() -> None:
-    runtime = _build_runtime()
-
-    text = runtime._screen_text(
+    text = screen_text(
         title="Магазин",
         title_suffix_html=" · <code>S4</code>",
     )
@@ -295,20 +329,17 @@ def test_listing_created_prompt_activation_explains_activation_effect() -> None:
 
 
 def test_cashback_rub_formatter_includes_percent_when_reference_price_is_known() -> None:
-    runtime = _build_runtime()
-
     assert (
-        runtime._format_cashback_rub_with_percent(
+        format_cashback_with_percent(
             reward_usdt=Decimal("1.000000"),
             reference_price_rub=1200,
+            display_rub_per_usdt=Decimal("100"),
         )
         == "$1.0 (~100 ₽, ~8%)"
     )
 
 
 def test_buyer_task_instruction_contains_title_link_and_deadline() -> None:
-    runtime = _build_runtime()
-
     assignment = type(
         "Assignment",
         (),
@@ -321,7 +352,7 @@ def test_buyer_task_instruction_contains_title_link_and_deadline() -> None:
             "reservation_expires_at": datetime(2026, 4, 4, 3, 31, tzinfo=UTC),
         },
     )()
-    text = runtime._buyer_task_instruction_text(assignment)
+    text = buyer_task_instruction_text(assignment)
     token = text.split("<code>", maxsplit=1)[1].split("</code>", maxsplit=1)[0]
     decoded = json.loads(base64.b64decode(token).decode("utf-8"))
 
@@ -337,7 +368,6 @@ def test_buyer_task_instruction_contains_title_link_and_deadline() -> None:
 
 
 def test_buyer_listing_detail_hides_singleton_zero_size() -> None:
-    runtime = _build_runtime()
     listing = type(
         "Listing",
         (),
@@ -354,15 +384,13 @@ def test_buyer_listing_detail_hides_singleton_zero_size() -> None:
         },
     )()
 
-    text = runtime._buyer_listing_detail_html(listing=listing)
+    text = buyer_listing_detail_html(listing=listing, display_rub_per_usdt=Decimal("100"))
 
     assert "<b>Размеры:</b>" not in text
     assert "Характеристики" in text
 
 
 def test_buyer_review_instruction_contains_token_and_selected_phrases() -> None:
-    runtime = _build_runtime()
-
     assignment = type(
         "Assignment",
         (),
@@ -374,7 +402,7 @@ def test_buyer_review_instruction_contains_token_and_selected_phrases() -> None:
             "review_phrases": ["в размер", "не садятся после стирки"],
         },
     )()
-    text = runtime._buyer_review_instruction_text(assignment)
+    text = buyer_review_instruction_text(assignment)
     token = text.split("<code>", maxsplit=1)[1].split("</code>", maxsplit=1)[0]
     decoded = json.loads(base64.b64decode(token).decode("utf-8"))
 
@@ -388,10 +416,8 @@ def test_buyer_review_instruction_contains_token_and_selected_phrases() -> None:
 
 
 def test_buyer_review_status_stays_in_yellow_bucket() -> None:
-    runtime = _build_runtime()
-
-    assert runtime._buyer_dashboard_status_bucket("picked_up_wait_review") == "ordered"
-    assert "Нужно оставить отзыв" in runtime._buyer_purchase_status_badge("picked_up_wait_review")
+    assert buyer_dashboard_status_bucket("picked_up_wait_review") == "ordered"
+    assert "Нужно оставить отзыв" in buyer_purchase_status_badge("picked_up_wait_review")
 
 
 def test_wallet_link_builder_uses_ton_transfer_with_usdt_jetton_and_micro_units() -> None:
@@ -425,9 +451,7 @@ def test_public_ref_formatters_use_short_prefixed_ids() -> None:
 
 
 def test_copyable_code_helper_wraps_value_in_html_code() -> None:
-    runtime = _build_runtime()
-
-    assert runtime._format_copyable_code("UQ_TEST") == "<code>UQ_TEST</code>"
+    assert format_copyable_code("UQ_TEST") == "<code>UQ_TEST</code>"
 
 
 def test_support_link_builder_uses_support_bot_and_context_fallback() -> None:
