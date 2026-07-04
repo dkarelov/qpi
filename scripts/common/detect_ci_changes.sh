@@ -65,6 +65,7 @@ emit_output() {
   local needs_private_runner="$9"
   local db_validation_mode="${10}"
   local db_validation_targets="${11}"
+  local deploy_lane="${12}"
 
   printf 'needs_db_validation=%q\n' "${needs_db_validation}"
   printf 'requires_schema_apply=%q\n' "${requires_schema_apply}"
@@ -77,6 +78,7 @@ emit_output() {
   printf 'needs_private_runner=%q\n' "${needs_private_runner}"
   printf 'db_validation_mode=%q\n' "${db_validation_mode}"
   printf 'db_validation_targets=%q\n' "${db_validation_targets}"
+  printf 'deploy_lane=%q\n' "${deploy_lane}"
 }
 
 emit_full_output() {
@@ -91,7 +93,8 @@ emit_full_output() {
     "true" \
     "true" \
     "full" \
-    ""
+    "" \
+    "private"
 }
 
 resolve_selection_from_paths() {
@@ -135,9 +138,9 @@ fi
 mapfile -t changed_files < <(git diff --name-only "${base_sha}" "${head_sha}")
 if [[ "${#changed_files[@]}" -eq 0 ]]; then
   if [[ "${force_full_validation}" -eq 1 ]]; then
-    emit_output "true" "false" "false" "none" "true" "false" "" "false" "true" "full" ""
+    emit_output "true" "false" "false" "none" "true" "false" "" "false" "true" "full" "" "private"
   else
-    emit_output "false" "false" "false" "none" "false" "false" "" "false" "false" "none" ""
+    emit_output "false" "false" "false" "none" "false" "false" "" "false" "false" "none" "" "none"
   fi
   exit 0
 fi
@@ -150,6 +153,7 @@ if [[ "${force_full_validation}" -eq 1 ]]; then
   needs_private_runner="true"
   db_validation_mode="full"
   db_pytest_targets=""
+  deploy_lane="private"
 fi
 
 emit_output \
@@ -163,4 +167,5 @@ emit_output \
   "${has_function_targets}" \
   "${needs_private_runner}" \
   "${db_validation_mode}" \
-  "${db_pytest_targets}"
+  "${db_pytest_targets}" \
+  "${deploy_lane}"

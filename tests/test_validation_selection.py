@@ -203,3 +203,67 @@ def test_support_bot_runtime_change_deploys_image() -> None:
 
     assert selection.needs_validation is True
     assert selection.needs_image_deploy is True
+
+
+def test_presentation_only_change_routes_to_hosted_lane() -> None:
+    selection = resolve_validation_selection(
+        [
+            "services/bot_api/presentation.py",
+            "services/bot_api/buyer_listing_copy.py",
+        ]
+    )
+
+    assert selection.selected_groups == ("marketplace_presentation",)
+    assert selection.has_runtime_changes is True
+    assert selection.db_validation_mode == "none"
+    assert selection.db_pytest_targets == ()
+    assert "tests/test_presentation.py" in selection.fast_pytest_targets
+    assert selection.requires_schema_assert is True
+    assert selection.schema_action == "assert-clean"
+    assert selection.needs_private_runner is False
+    assert selection.deploy_lane == "hosted"
+
+
+def test_presentation_change_mixed_with_flow_change_still_selects_runtime_group() -> None:
+    selection = resolve_validation_selection(
+        [
+            "services/bot_api/presentation.py",
+            "services/bot_api/buyer_marketplace_flow.py",
+        ]
+    )
+
+    assert "marketplace_presentation" in selection.selected_groups
+    assert "marketplace_runtime" in selection.selected_groups
+    assert selection.db_validation_mode == "targeted"
+    assert selection.needs_private_runner is True
+    assert selection.deploy_lane == "private"
+
+
+def test_runtime_flow_change_with_db_targets_routes_to_private_lane() -> None:
+    selection = resolve_validation_selection(["services/bot_api/telegram_runtime.py"])
+
+    assert selection.needs_private_runner is True
+    assert selection.deploy_lane == "private"
+
+
+def test_schema_change_routes_to_private_lane() -> None:
+    selection = resolve_validation_selection(["schema/schema.sql"])
+
+    assert selection.needs_private_runner is True
+    assert selection.deploy_lane == "private"
+
+
+def test_docs_only_change_routes_to_no_deploy_lane() -> None:
+    selection = resolve_validation_selection(["AGENTS.md"])
+
+    assert selection.needs_private_runner is False
+    assert selection.deploy_lane == "none"
+
+
+def test_function_change_with_db_targets_routes_to_private_lane() -> None:
+    selection = resolve_validation_selection(["services/order_tracker/main.py"])
+
+    assert selection.has_function_targets is True
+    assert selection.db_validation_mode == "targeted"
+    assert selection.needs_private_runner is True
+    assert selection.deploy_lane == "private"

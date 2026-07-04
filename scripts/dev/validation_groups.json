@@ -170,6 +170,10 @@
         "libs/domain/deposit_intents.py",
         "libs/integrations/tonapi.py"
       ],
+      "exclude_globs": [
+        "services/bot_api/presentation.py",
+        "services/bot_api/buyer_listing_copy.py"
+      ],
       "fast_pytest_targets": [
         "tests/test_bot_callback_contract.py",
         "tests/test_phase10_e2e_harness.py",
@@ -189,6 +193,25 @@
         "tests/test_reservation_concurrency.py",
         "tests/test_seller_phase3.py"
       ],
+      "full_db_validation": false,
+      "requires_migration": false,
+      "requires_schema_apply": false,
+      "requires_schema_assert": true,
+      "has_runtime_changes": true,
+      "function_targets": []
+    },
+    {
+      "name": "marketplace_presentation",
+      "trigger_globs": [
+        "services/bot_api/presentation.py",
+        "services/bot_api/buyer_listing_copy.py"
+      ],
+      "fast_pytest_targets": [
+        "tests/test_presentation.py",
+        "tests/test_buyer_marketplace_flow.py",
+        "tests/test_telegram_runtime_ux_phase9.py"
+      ],
+      "db_pytest_targets": [],
       "full_db_validation": false,
       "requires_migration": false,
       "requires_schema_apply": false,

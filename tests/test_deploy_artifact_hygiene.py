@@ -148,6 +148,7 @@ def test_detect_ci_changes_indeterminate_diff_falls_back_to_full_marketplace_dep
     assert output["needs_private_runner"] == "true"
     assert output["db_validation_mode"] == "full"
     assert output["db_validation_targets"] == ""
+    assert output["deploy_lane"] == "private"
 
 
 def test_detect_ci_changes_force_full_validation_does_not_invent_deploy_targets_on_empty_diff() -> None:
@@ -180,6 +181,7 @@ def test_detect_ci_changes_force_full_validation_does_not_invent_deploy_targets_
     assert output["needs_private_runner"] == "true"
     assert output["db_validation_mode"] == "full"
     assert output["db_validation_targets"] == ""
+    assert output["deploy_lane"] == "private"
 
 
 def test_private_git_auth_helper_can_use_scoped_git_config() -> None:

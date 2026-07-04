@@ -504,9 +504,9 @@ Transitions:
 - Infrastructure mutations are Terraform-only from `infra/`.
 - Code-only deploy entrypoints are `scripts/deploy/runtime.sh`, `scripts/deploy/function.sh`, and `scripts/deploy/support_bot.sh`; broader infra mutations still remain Terraform-only.
 - Cloud Function packaging must be service-scoped to avoid unrelated redeploys.
-- DB-backed CI/deploy execution is designed around a dedicated private self-hosted GitHub runner VM; GitHub-hosted runners only handle fast suites and bootstrap/start-stop orchestration.
-- Release-grade marketplace runtime and function deploys now reuse the private runner after DB validation so the network-heavy rollout happens from the same YC region as the targets.
-- Marketplace deploy workflows now run an explicit predeploy gate before rollout and publish immutable runtime/function artifacts before the deploy step consumes them.
+- The private self-hosted runner VM exists for what genuinely needs in-VPC execution: DB-backed validation (direct test-DB access + DB VM admin SSH) and schema apply/migration paths. Everything else — preflight, schema assert-clean, runtime rollout, function publishing — works from GitHub-hosted runners because all production access goes over SSH to the bot VM public IP (schema operations tunnel through the bot VM).
+- Post-merge deploys are lane-selected by `detect_ci_changes` (`deploy_lane`): `private` when DB validation, schema apply, or migration is needed (runner boots, consolidated `deploy-private` job runs everything); `hosted` when only rollout/assert work is needed (no runner, `deploy-hosted` on `ubuntu-latest`); `none` for docs/fast-only changes. Indeterminate diffs and `full_validation=true` always route private.
+- When a deploy runs on the private runner after DB validation, the network-heavy rollout also happens from the same YC region as the targets; hosted-lane rollouts trade that locality for skipping the runner boot entirely.
 - Marketplace schema sync is a separate post-merge stage: `schema/**`, `libs/db/**`, and schema-runner changes can run DB validation plus production schema apply/assert without selecting runtime or Cloud Function rollout by themselves. Schema-only changes must stay backward-compatible with the currently running runtime and Cloud Functions.
 - Runtime/function rollout selection is service-scoped: bot-runtime paths select the VM runtime, Cloud Function paths select only their function target, and shared domain/integration paths select only the services that consume them.
 - Runtime release archives are built from tracked repository files only; ignored local files such as `.env*`, Terraform state/vars, and `.artifacts` must never enter deploy artifacts.
@@ -942,8 +942,9 @@ Workflows:
 - `.github/workflows/post_merge.yml`:
   - single post-merge orchestrator for `main` pushes and manual reruns,
   - runs fast validation once,
-  - starts the private runner only when DB validation, schema sync, or selected rollout requires private-network execution, and overlaps that boot with fast validation,
-  - runs everything private-network in ONE consolidated `deploy-private` job on the runner: DB-backed validation (targeted or full), schema apply (or a standalone assert when nothing else would assert), runtime rollout, and Cloud Function publishing as sequential steps — one checkout/bootstrap/uv-sync instead of four sequential jobs with queue gaps,
+  - routes each push to a deploy lane via `deploy_lane`: `private` boots the runner (overlapped with fast validation), `hosted` deploys straight from `ubuntu-latest` with no runner, `none` stops after fast validation,
+  - private lane runs everything in ONE consolidated `deploy-private` job on the runner: DB-backed validation (targeted or full), schema apply (or a standalone assert when nothing else would assert), runtime rollout, and Cloud Function publishing as sequential steps — one checkout/bootstrap/uv-sync instead of four sequential jobs with queue gaps,
+  - hosted lane (`deploy-hosted`) mirrors the rollout steps only: runtime deploy (internal preflight + schema assert) and function preflight/publish; presentation-only and other no-DB-impact runtime changes land this way in ~2 minutes,
   - builds the runtime tarball and function bundles inside the deploying step from the checked-out SHA (`runtime.sh deploy` and `function.sh` self-build; no GitHub artifact handoff in this workflow),
   - runtime deploy runs `preflight.sh runtime` internally and always asserts schema (`QPI_DEPLOY_SCHEMA_MODE=never` means never *apply*); function preflight keeps the schema assert when no runtime step ran,
   - step order inherently enforces runtime-before-functions when schema was applied (the old `deploy-functions-after-runtime` special case is gone),

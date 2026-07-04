@@ -13,6 +13,7 @@ from pathlib import Path
 class ValidationGroup:
     name: str
     trigger_globs: tuple[str, ...]
+    exclude_globs: tuple[str, ...]
     fast_pytest_targets: tuple[str, ...]
     db_pytest_targets: tuple[str, ...]
     full_db_validation: bool
@@ -39,6 +40,7 @@ class ValidationSelection:
     has_function_targets: bool
     needs_db_validation: bool
     needs_private_runner: bool
+    deploy_lane: str
 
 
 @dataclass(frozen=True)
@@ -107,6 +109,7 @@ def load_validation_groups(*, repo_root: str | Path | None = None) -> tuple[Vali
             ValidationGroup(
                 name=str(item["name"]),
                 trigger_globs=tuple(_normalize_path(value) for value in item.get("trigger_globs", [])),
+                exclude_globs=tuple(_normalize_path(value) for value in item.get("exclude_globs", [])),
                 fast_pytest_targets=tuple(
                     _normalize_path(value) for value in item.get("fast_pytest_targets", [])
                 ),
@@ -168,6 +171,7 @@ def resolve_validation_selection(
     for group in groups:
         if not any(
             fnmatch.fnmatch(path, pattern)
+            and not any(fnmatch.fnmatch(path, exclude) for exclude in group.exclude_globs)
             for path in normalized_paths
             for pattern in group.trigger_globs
         ):
@@ -202,13 +206,16 @@ def resolve_validation_selection(
     has_function_targets = bool(function_targets)
     requires_schema_assert = requires_schema_assert or has_runtime_changes or has_function_targets
     schema_action = "apply" if requires_schema_apply else ("assert-clean" if requires_schema_assert else "none")
-    needs_private_runner = (
-        needs_db_validation
-        or requires_schema_apply
-        or requires_schema_assert
-        or has_runtime_changes
-        or has_function_targets
-    )
+    # Schema assert-clean and rollouts run fine from GitHub-hosted runners (SSH via
+    # the bot VM); only DB-backed validation and schema apply/migration need the
+    # private in-VPC runner.
+    needs_private_runner = needs_db_validation or requires_schema_apply or requires_migration
+    if needs_private_runner:
+        deploy_lane = "private"
+    elif has_runtime_changes or has_function_targets or schema_action != "none":
+        deploy_lane = "hosted"
+    else:
+        deploy_lane = "none"
 
     return ValidationSelection(
         selected_groups=tuple(sorted(selected_group_names)),
@@ -225,6 +232,7 @@ def resolve_validation_selection(
         has_function_targets=has_function_targets,
         needs_db_validation=needs_db_validation,
         needs_private_runner=needs_private_runner,
+        deploy_lane=deploy_lane,
     )
 
 
@@ -280,6 +288,7 @@ def _selection_to_shell(selection: ValidationSelection) -> str:
         "has_function_targets": _shell_bool(selection.has_function_targets),
         "needs_db_validation": _shell_bool(selection.needs_db_validation),
         "needs_private_runner": _shell_bool(selection.needs_private_runner),
+        "deploy_lane": selection.deploy_lane,
     }
     return "\n".join(f"{key}={shlex.quote(value)}" for key, value in assignments.items())
 
@@ -308,6 +317,7 @@ def _selection_to_json(selection: ValidationSelection) -> str:
         "has_function_targets": selection.has_function_targets,
         "needs_db_validation": selection.needs_db_validation,
         "needs_private_runner": selection.needs_private_runner,
+        "deploy_lane": selection.deploy_lane,
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
