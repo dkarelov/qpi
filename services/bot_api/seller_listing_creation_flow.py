@@ -17,6 +17,7 @@ from libs.domain.fx_rates import FxRateService
 from libs.domain.listing_creation import parse_listing_create_csv, sanitize_buyer_display_title
 from libs.domain.seller import SellerService
 from libs.integrations.wb_public import WbObservedBuyerPrice, WbProductSnapshot
+from services.bot_api.presentation import format_review_phrases_text
 from services.bot_api.transport_effects import (
     ButtonSpec,
     ClearPrompt,
@@ -581,7 +582,7 @@ class SellerListingCreationFlow:
                 "<b>Обеспечение:</b> "
                 f"{_format_usdt_with_rub(collateral_required_usdt, rub_per_usdt=self._display_rub_per_usdt)}"
             ),
-            f"<b>Фразы для отзыва:</b> {html.escape(_format_review_phrases_text(review_phrases))}",
+            f"<b>Фразы для отзыва:</b> {html.escape(format_review_phrases_text(review_phrases, empty_fallback='—'))}",
             f"<b>Название для покупателей:</b> {html.escape(suggested_display_title)}",
         ]
         if observed_buyer_price is not None and reference_price_source == "orders":
@@ -650,7 +651,7 @@ class SellerListingCreationFlow:
                 "<b>Обеспечение:</b> "
                 f"{_format_usdt_with_rub(collateral_required_usdt, rub_per_usdt=self._display_rub_per_usdt)}"
             ),
-            f"<b>Фразы для отзыва:</b> {html.escape(_format_review_phrases_text(review_phrases))}",
+            f"<b>Фразы для отзыва:</b> {html.escape(format_review_phrases_text(review_phrases, empty_fallback='—'))}",
         ]
         if wb_subject_name:
             lines.append(f"<b>Предмет:</b> {html.escape(wb_subject_name)}")
@@ -875,11 +876,6 @@ def _format_listing_cashback_percent(
         rounding=ROUND_HALF_UP,
     )
     return f"~{percent}%"
-
-
-def _format_review_phrases_text(review_phrases: list[str] | None) -> str:
-    phrases = [str(item).strip() for item in (review_phrases or []) if str(item).strip()]
-    return "; ".join(phrases) if phrases else "—"
 
 
 def _format_decimal(value: Decimal, *, quant: Decimal) -> str:

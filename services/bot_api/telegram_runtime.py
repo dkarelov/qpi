@@ -87,17 +87,22 @@ from services.bot_api.presentation import (
     format_copyable_code,
     format_datetime_msk,
     format_expandable_block_html,
+    format_listing_cashback_percent,
     format_listing_price_line,
+    format_review_phrases_text,
     format_sizes_text,
     format_usdt,
     format_usdt_value,
     format_usdt_with_rub,
     humanize_withdraw_status,
     listing_display_title,
+    numbered_page_buttons,
+    resolve_numbered_page,
     screen_text,
     status_badge,
     title_ref_suffix,
     withdraw_status_badge,
+    withdrawal_history_block_html,
     withdrawal_request_block_html,
 )
 from services.bot_api.seller_handlers import SellerCommandProcessor
@@ -165,7 +170,6 @@ _SELLER_LISTINGS_PAGE_KEY = "seller_listings_page"
 _USDT_EXACT_QUANT = Decimal("0.000001")
 _RUB_QUANT = Decimal("1")
 _LISTING_COLLATERAL_FEE_MULTIPLIER = Decimal("1.01")
-_NUMBERED_PAGE_SIZE = 10
 _TON_FRIENDLY_MAINNET_PREFIXES = frozenset({"E", "U"})
 _TON_FRIENDLY_TESTNET_PREFIXES = frozenset({"k", "0"})
 _PHOTO_DOWNLOAD_TIMEOUT_SECONDS = 10
@@ -2534,23 +2538,6 @@ class TelegramWebhookRuntime:
             snapshot=snapshot,
         )
 
-    def _format_listing_cashback_percent(
-        self,
-        *,
-        reference_price_rub: int | Decimal | None,
-        cashback_rub: Decimal,
-    ) -> str:
-        if reference_price_rub is None:
-            return "—"
-        reference = Decimal(str(reference_price_rub))
-        if reference <= Decimal("0"):
-            return "—"
-        percent = (cashback_rub / reference * Decimal("100")).quantize(
-            Decimal("1"),
-            rounding=ROUND_HALF_UP,
-        )
-        return f"~{percent}%"
-
     @staticmethod
     def _coerce_page_number(raw_value: str | None) -> int:
         if not raw_value:
@@ -2560,21 +2547,6 @@ class TelegramWebhookRuntime:
         except (TypeError, ValueError):
             return 1
         return page if page > 0 else 1
-
-    @staticmethod
-    def _resolve_numbered_page(
-        *,
-        total_items: int,
-        requested_page: int,
-        page_size: int = _NUMBERED_PAGE_SIZE,
-    ) -> tuple[int, int, int, int]:
-        if total_items <= 0:
-            return 1, 1, 0, 0
-        total_pages = (total_items + page_size - 1) // page_size
-        page = max(1, min(requested_page, total_pages))
-        start_index = (page - 1) * page_size
-        end_index = min(start_index + page_size, total_items)
-        return page, total_pages, start_index, end_index
 
     def _seller_listings_page_from_context(self, context: ContextTypes.DEFAULT_TYPE) -> int:
         return self._coerce_page_number(str(context.user_data.get(_SELLER_LISTINGS_PAGE_KEY, "1")))
@@ -2588,71 +2560,6 @@ class TelegramWebhookRuntime:
         if context is None:
             return
         context.user_data[_SELLER_LISTINGS_PAGE_KEY] = page
-
-    def _numbered_page_markup(
-        self,
-        *,
-        flow: str,
-        open_action: str,
-        page_action: str,
-        item_ids: list[int],
-        start_number: int,
-        page: int,
-        total_pages: int,
-        extra_rows: list[list[InlineKeyboardButton]] | None = None,
-        back_row: list[InlineKeyboardButton] | None = None,
-    ) -> InlineKeyboardMarkup:
-        rows: list[list[InlineKeyboardButton]] = []
-        current_row: list[InlineKeyboardButton] = []
-        for offset, item_id in enumerate(item_ids):
-            current_row.append(
-                InlineKeyboardButton(
-                    text=str(start_number + offset),
-                    callback_data=build_callback(
-                        flow=flow,
-                        action=open_action,
-                        entity_id=str(item_id),
-                    ),
-                )
-            )
-            if len(current_row) == 5:
-                rows.append(current_row)
-                current_row = []
-        if current_row:
-            rows.append(current_row)
-
-        if total_pages > 1:
-            nav_row: list[InlineKeyboardButton] = []
-            if page > 1:
-                nav_row.append(
-                    InlineKeyboardButton(
-                        text="⬅️",
-                        callback_data=build_callback(
-                            flow=flow,
-                            action=page_action,
-                            entity_id=str(page - 1),
-                        ),
-                    )
-                )
-            if page < total_pages:
-                nav_row.append(
-                    InlineKeyboardButton(
-                        text="➡️",
-                        callback_data=build_callback(
-                            flow=flow,
-                            action=page_action,
-                            entity_id=str(page + 1),
-                        ),
-                    )
-                )
-            if nav_row:
-                rows.append(nav_row)
-
-        if extra_rows:
-            rows.extend(extra_rows)
-        if back_row:
-            rows.append(back_row)
-        return InlineKeyboardMarkup(rows)
 
     def _listing_edit_menu_markup(self, *, listing_id: int) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
@@ -2765,7 +2672,7 @@ class TelegramWebhookRuntime:
             display_title=listing.display_title,
             fallback=listing.search_phrase,
         )
-        cashback_percent = self._format_listing_cashback_percent(
+        cashback_percent = format_listing_cashback_percent(
             reference_price_rub=listing.reference_price_rub,
             cashback_rub=new_cashback_rub,
         )
@@ -2988,7 +2895,7 @@ class TelegramWebhookRuntime:
         balance_snapshot = await self._seller_service.get_seller_balance_snapshot(
             seller_user_id=seller_user_id,
         )
-        resolved_page, total_pages, start_index, end_index = self._resolve_numbered_page(
+        resolved_page, total_pages, start_index, end_index = resolve_numbered_page(
             total_items=len(listings),
             requested_page=page,
         )
@@ -3038,32 +2945,27 @@ class TelegramWebhookRuntime:
                 note="Новое объявление создается кнопкой ниже.",
                 separate_blocks=True,
             ),
-            self._numbered_page_markup(
-                flow=_ROLE_SELLER,
-                open_action="listing_open",
-                page_action="listings",
-                item_ids=[item.listing_id for item in page_items],
-                start_number=start_index + 1,
-                page=resolved_page,
-                total_pages=total_pages,
-                extra_rows=[
-                    [
-                        InlineKeyboardButton(
-                            text="➕ Создать объявление",
-                            callback_data=build_callback(
+            self._flow_buttons_markup(
+                numbered_page_buttons(
+                    flow=_ROLE_SELLER,
+                    open_action="listing_open",
+                    page_action="listings",
+                    item_ids=[item.listing_id for item in page_items],
+                    start_number=start_index + 1,
+                    page=resolved_page,
+                    total_pages=total_pages,
+                    extra_rows=[
+                        [
+                            ButtonSpec(
+                                text="➕ Создать объявление",
                                 flow=_ROLE_SELLER,
                                 action="listing_create_pick_shop",
-                            ),
-                        )
+                            )
+                        ],
+                        [ButtonSpec(text="↩️ Назад", flow=_ROLE_SELLER, action="menu")],
+                        [self._knowledge_button_spec(role=_ROLE_SELLER, topic="listings")],
                     ],
-                    [
-                        InlineKeyboardButton(
-                            text="↩️ Назад",
-                            callback_data=build_callback(flow=_ROLE_SELLER, action="menu"),
-                        )
-                    ],
-                    [self._knowledge_button(role=_ROLE_SELLER, topic="listings")],
-                ],
+                )
             ),
             parse_mode="HTML",
         )
@@ -3759,7 +3661,7 @@ class TelegramWebhookRuntime:
             )
             return
 
-        resolved_page, total_pages, start_index, end_index = self._resolve_numbered_page(
+        resolved_page, total_pages, start_index, end_index = resolve_numbered_page(
             total_items=len(combined_history),
             requested_page=page,
             page_size=8,
@@ -3767,23 +3669,7 @@ class TelegramWebhookRuntime:
         lines: list[str] = []
         for entry_type, _, entry_id, item in combined_history[start_index:end_index]:
             if entry_type == "withdraw":
-                withdraw_ref = self._withdrawal_ref(item.withdrawal_request_id)
-                block_lines = [
-                    entity_block_heading_with_ref(label="Вывод", ref=withdraw_ref),
-                    f"<b>Сумма:</b> {format_usdt_value(item.amount_usdt, precise=True)} USDT",
-                    f"<b>Статус:</b> {withdraw_status_badge(item.status)}",
-                    f"<b>Адрес:</b> {html.escape(item.payout_address)}",
-                    f"<b>Создана:</b> {format_datetime_msk(item.requested_at)}",
-                ]
-                if item.processed_at is not None:
-                    block_lines.append(f"<b>Обработана:</b> {format_datetime_msk(item.processed_at)}")
-                if item.sent_at is not None:
-                    block_lines.append(f"<b>Отправлена:</b> {format_datetime_msk(item.sent_at)}")
-                if item.note:
-                    block_lines.append(f"<b>Комментарий:</b> {html.escape(item.note)}")
-                if item.tx_hash:
-                    block_lines.append(f"<b>Хэш перевода:</b> {html.escape(item.tx_hash)}")
-                lines.append("\n".join(block_lines))
+                lines.append(withdrawal_history_block_html(item))
                 continue
 
             expected_amount = format_usdt_value(item.expected_amount_usdt, precise=True)
@@ -4689,7 +4575,7 @@ class TelegramWebhookRuntime:
             )
             return
 
-        resolved_page, total_pages, start_index, end_index = self._resolve_numbered_page(
+        resolved_page, total_pages, start_index, end_index = resolve_numbered_page(
             total_items=total_items,
             requested_page=page,
             page_size=8,
@@ -6604,6 +6490,13 @@ class TelegramWebhookRuntime:
         return InlineKeyboardButton(text=text, url=support_link)
 
     def _knowledge_button(self, *, role: str, topic: str) -> InlineKeyboardButton:
+        spec = self._knowledge_button_spec(role=role, topic=topic)
+        return InlineKeyboardButton(
+            text=spec.text,
+            callback_data=build_callback(flow=str(spec.flow), action=str(spec.action)),
+        )
+
+    def _knowledge_button_spec(self, *, role: str, topic: str) -> ButtonSpec:
         if role == _ROLE_SELLER:
             mapping = {
                 "guide": ("📘 Инструкция", "kb_guide"),
@@ -6621,10 +6514,7 @@ class TelegramWebhookRuntime:
         else:
             raise ValueError(f"unsupported knowledge button role: {role}")
         label, action = mapping[topic]
-        return InlineKeyboardButton(
-            text=label,
-            callback_data=build_callback(flow=role, action=action),
-        )
+        return ButtonSpec(text=label, flow=role, action=action)
 
     def _build_ton_usdt_wallet_link(
         self,
@@ -7122,7 +7012,7 @@ class TelegramWebhookRuntime:
             .replace("</b>", ""),
             (
                 "Фразы для отзыва: "
-                + html.escape(self._format_review_phrases_text(getattr(listing, "review_phrases", [])))
+                + html.escape(format_review_phrases_text(getattr(listing, "review_phrases", [])))
             ),
             f"Размеры: {html.escape(format_sizes_text(listing.wb_tech_sizes))}",
         ]
@@ -7147,21 +7037,6 @@ class TelegramWebhookRuntime:
                 seller_available_usdt=seller_available_usdt,
             ),
         )
-
-    @staticmethod
-    def _normalize_review_phrases(review_phrases: list[str] | None) -> list[str]:
-        normalized: list[str] = []
-        for phrase in review_phrases or []:
-            cleaned = str(phrase).strip()
-            if cleaned:
-                normalized.append(cleaned)
-        return normalized
-
-    def _format_review_phrases_text(self, review_phrases: list[str] | None) -> str:
-        normalized = self._normalize_review_phrases(review_phrases)
-        if not normalized:
-            return "не заданы"
-        return "; ".join(normalized)
 
     def _root_menu_markup(self, *, identity: TelegramIdentity | None) -> InlineKeyboardMarkup:
         keyboard = [

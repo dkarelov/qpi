@@ -15,7 +15,6 @@ USDT_EXACT_QUANT = Decimal("0.000001")
 RUB_QUANT = Decimal("1")
 MSK_TZ = ZoneInfo("Europe/Moscow")
 
-_ALREADY_DECORATED_TITLE_PREFIXES = ("🧑‍💼 ", "🛍️ ", "🏪 ", "📦 ", "📋 ", "💳 ", "💰 ", "📘 ")
 _TITLE_DECORATION_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("Инструкция", "Про "), "📘"),
     (("Кабинет продавца",), "🧑‍💼"),
@@ -51,6 +50,25 @@ _TITLE_DECORATION_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("Счет на пополнение", "Как перевести USDT"), "💰"),
     (("Баланс", "Транзакции", "Отмена вывода"), "💳"),
 )
+_ALREADY_DECORATED_TITLE_PREFIXES = tuple(f"{emoji} " for _, emoji in _TITLE_DECORATION_RULES)
+_STATUS_MARKERS = {
+    "green": "🟢",
+    "red": "🔴",
+    "yellow": "🟡",
+    "blue": "🔵",
+}
+_WITHDRAW_STATUS_LABELS = {
+    "withdraw_pending_admin": "На проверке",
+    "rejected": "Отклонено",
+    "cancelled": "Отменено",
+    "withdraw_sent": "Отправлено",
+}
+_WITHDRAW_STATUS_COLORS = {
+    "withdraw_sent": "green",
+    "rejected": "red",
+    "withdraw_pending_admin": "yellow",
+    "cancelled": "blue",
+}
 
 
 def screen_text(
@@ -90,32 +108,16 @@ def decorate_screen_title(title: str) -> str:
 
 
 def status_badge(label: str, *, color: str) -> str:
-    marker = {
-        "green": "🟢",
-        "red": "🔴",
-        "yellow": "🟡",
-        "blue": "🔵",
-    }.get(color, "⚪")
+    marker = _STATUS_MARKERS.get(color, "⚪")
     return f"{marker} {html.escape(label)}"
 
 
 def humanize_withdraw_status(status: str) -> str:
-    mapping = {
-        "withdraw_pending_admin": "На проверке",
-        "rejected": "Отклонено",
-        "cancelled": "Отменено",
-        "withdraw_sent": "Отправлено",
-    }
-    return mapping.get(status, status)
+    return _WITHDRAW_STATUS_LABELS.get(status, status)
 
 
 def withdraw_status_badge(status: str) -> str:
-    color = {
-        "withdraw_sent": "green",
-        "rejected": "red",
-        "withdraw_pending_admin": "yellow",
-        "cancelled": "blue",
-    }.get(status, "blue")
+    color = _WITHDRAW_STATUS_COLORS.get(status, "blue")
     return status_badge(humanize_withdraw_status(status), color=color)
 
 
@@ -169,6 +171,27 @@ def format_buyer_balance_amount(amount: Decimal, *, display_rub_per_usdt: Decima
     return format_rub_approx(amount, display_rub_per_usdt=display_rub_per_usdt)
 
 
+def _cashback_percent_value(*, cashback_rub: Decimal, reference_price_rub: Decimal) -> Decimal:
+    return (cashback_rub / reference_price_rub * Decimal("100")).quantize(
+        Decimal("1"),
+        rounding=ROUND_HALF_UP,
+    )
+
+
+def cashback_percent(
+    *,
+    reward_usdt: Decimal,
+    reference_price_rub: int | None,
+    display_rub_per_usdt: Decimal,
+) -> Decimal | None:
+    if reward_usdt.quantize(USDT_EXACT_QUANT, rounding=ROUND_HALF_UP) == Decimal("0.000000"):
+        return None
+    if reference_price_rub is None or reference_price_rub < 1:
+        return None
+    cashback_rub = Decimal(format_cashback_rub_value(reward_usdt, display_rub_per_usdt=display_rub_per_usdt))
+    return _cashback_percent_value(cashback_rub=cashback_rub, reference_price_rub=Decimal(reference_price_rub))
+
+
 def format_buyer_cashback_with_percent(
     *,
     reward_usdt: Decimal,
@@ -176,15 +199,13 @@ def format_buyer_cashback_with_percent(
     display_rub_per_usdt: Decimal,
 ) -> str:
     primary = format_rub_approx(reward_usdt, display_rub_per_usdt=display_rub_per_usdt)
-    if reward_usdt.quantize(USDT_EXACT_QUANT, rounding=ROUND_HALF_UP) == Decimal("0.000000"):
-        return primary
-    if reference_price_rub is None or reference_price_rub < 1:
-        return primary
-    cashback_rub = Decimal(format_cashback_rub_value(reward_usdt, display_rub_per_usdt=display_rub_per_usdt))
-    percent = (cashback_rub / Decimal(reference_price_rub) * Decimal("100")).quantize(
-        Decimal("1"),
-        rounding=ROUND_HALF_UP,
+    percent = cashback_percent(
+        reward_usdt=reward_usdt,
+        reference_price_rub=reference_price_rub,
+        display_rub_per_usdt=display_rub_per_usdt,
     )
+    if percent is None:
+        return primary
     return f"{primary} (~{percent}%)"
 
 
@@ -194,17 +215,28 @@ def format_cashback_with_percent(
     reference_price_rub: int | None,
     display_rub_per_usdt: Decimal,
 ) -> str:
-    primary = format_usdt_with_rub(reward_usdt, display_rub_per_usdt=display_rub_per_usdt)
-    if reward_usdt.quantize(USDT_EXACT_QUANT, rounding=ROUND_HALF_UP) == Decimal("0.000000"):
-        return primary
-    if reference_price_rub is None or reference_price_rub < 1:
-        return primary
-    cashback_rub = Decimal(format_cashback_rub_value(reward_usdt, display_rub_per_usdt=display_rub_per_usdt))
-    percent = (cashback_rub / Decimal(reference_price_rub) * Decimal("100")).quantize(
-        Decimal("1"),
-        rounding=ROUND_HALF_UP,
+    percent = cashback_percent(
+        reward_usdt=reward_usdt,
+        reference_price_rub=reference_price_rub,
+        display_rub_per_usdt=display_rub_per_usdt,
     )
-    return f"{primary[:-1]}, ~{percent}%)" if primary.endswith(")") else primary
+    if percent is None:
+        return format_usdt_with_rub(reward_usdt, display_rub_per_usdt=display_rub_per_usdt)
+    rub_approx = format_rub_approx(reward_usdt, display_rub_per_usdt=display_rub_per_usdt)
+    return f"{format_usdt(reward_usdt)} ({rub_approx}, ~{percent}%)"
+
+
+def format_listing_cashback_percent(
+    *,
+    reference_price_rub: int | Decimal | None,
+    cashback_rub: Decimal,
+) -> str:
+    if reference_price_rub is None:
+        return "—"
+    reference = Decimal(str(reference_price_rub))
+    if reference <= Decimal("0"):
+        return "—"
+    return f"~{_cashback_percent_value(cashback_rub=cashback_rub, reference_price_rub=reference)}%"
 
 
 def format_price_rub(amount: int | Decimal | None) -> str:
@@ -278,20 +310,56 @@ def withdrawal_request_block_html(
     )
 
 
+def withdrawal_history_block_html(
+    request: Any,
+    *,
+    label: str = "Вывод",
+    ref: str | None = None,
+) -> str:
+    lines = [withdrawal_request_block_html(request, label=label, ref=ref)]
+    if request.processed_at is not None:
+        lines.append(f"<b>Обработана:</b> {format_datetime_msk(request.processed_at)}")
+    if request.sent_at is not None:
+        lines.append(f"<b>Отправлена:</b> {format_datetime_msk(request.sent_at)}")
+    if request.note:
+        lines.append(f"<b>Комментарий:</b> {html.escape(request.note)}")
+    if request.tx_hash:
+        lines.append(f"<b>Хэш перевода:</b> {html.escape(request.tx_hash)}")
+    return "\n".join(lines)
+
+
 def listing_display_title(*, display_title: str | None, fallback: str) -> str:
     normalized = (display_title or "").strip()
     return normalized or fallback.strip()
 
 
-def normalize_sizes(sizes: list[str] | None) -> list[str]:
-    if not sizes:
-        return []
+def _normalize_str_items(values: list[str] | None) -> list[str]:
     normalized: list[str] = []
-    for size in sizes:
-        cleaned = str(size).strip()
+    for value in values or []:
+        cleaned = str(value).strip()
         if cleaned:
             normalized.append(cleaned)
     return normalized
+
+
+def normalize_sizes(sizes: list[str] | None) -> list[str]:
+    return _normalize_str_items(sizes)
+
+
+def normalize_review_phrases(review_phrases: list[str] | None) -> list[str]:
+    return _normalize_str_items(review_phrases)
+
+
+def format_review_phrases_text(
+    review_phrases: list[str] | None,
+    *,
+    separator: str = "; ",
+    empty_fallback: str = "не заданы",
+) -> str:
+    normalized = normalize_review_phrases(review_phrases)
+    if not normalized:
+        return empty_fallback
+    return separator.join(normalized)
 
 
 def should_show_buyer_sizes(sizes: list[str] | None) -> bool:
@@ -385,6 +453,25 @@ def resolve_numbered_page(
     return page, total_pages, start_index, end_index
 
 
+def page_nav_row(
+    *,
+    flow: str,
+    page_action: str,
+    page: int,
+    total_pages: int,
+    previous_label: str = "⬅️",
+    next_label: str = "➡️",
+) -> tuple[ButtonSpec, ...]:
+    if total_pages <= 1:
+        return ()
+    nav_row: list[ButtonSpec] = []
+    if page > 1:
+        nav_row.append(ButtonSpec(text=previous_label, flow=flow, action=page_action, entity_id=str(page - 1)))
+    if page < total_pages:
+        nav_row.append(ButtonSpec(text=next_label, flow=flow, action=page_action, entity_id=str(page + 1)))
+    return tuple(nav_row)
+
+
 def numbered_page_buttons(
     *,
     flow: str,
@@ -395,8 +482,6 @@ def numbered_page_buttons(
     page: int,
     total_pages: int,
     extra_rows: list[list[ButtonSpec]] | None = None,
-    previous_label: str = "⬅️",
-    next_label: str = "➡️",
 ) -> tuple[tuple[ButtonSpec, ...], ...]:
     rows: list[list[ButtonSpec]] = []
     current_row: list[ButtonSpec] = []
@@ -410,14 +495,9 @@ def numbered_page_buttons(
     if current_row:
         rows.append(current_row)
 
-    if total_pages > 1:
-        nav_row: list[ButtonSpec] = []
-        if page > 1:
-            nav_row.append(ButtonSpec(text=previous_label, flow=flow, action=page_action, entity_id=str(page - 1)))
-        if page < total_pages:
-            nav_row.append(ButtonSpec(text=next_label, flow=flow, action=page_action, entity_id=str(page + 1)))
-        if nav_row:
-            rows.append(nav_row)
+    nav_row = page_nav_row(flow=flow, page_action=page_action, page=page, total_pages=total_pages)
+    if nav_row:
+        rows.append(list(nav_row))
 
     if extra_rows:
         rows.extend(extra_rows)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import html
 import json
@@ -28,38 +29,24 @@ from services.bot_api.buyer_listing_copy import (
     repeat_purchase_listing_notice,
 )
 from services.bot_api.presentation import (
-    button_label_with_count as _button_label_with_count,
-)
-from services.bot_api.presentation import (
+    button_label_with_count,
     buyer_listing_detail_html,
+    entity_block_heading_with_ref,
     format_buyer_balance_amount,
     format_buyer_cashback_with_percent,
+    format_datetime_msk,
+    format_price_optional_rub,
+    format_review_phrases_text,
+    listing_display_title,
+    normalize_review_phrases,
     numbered_page_buttons,
+    page_nav_row,
+    resolve_numbered_page,
+    screen_text,
+    status_badge,
+    title_ref_suffix,
+    withdrawal_history_block_html,
     withdrawal_request_block_html,
-)
-from services.bot_api.presentation import (
-    entity_block_heading_with_ref as _entity_block_heading_with_ref,
-)
-from services.bot_api.presentation import (
-    format_datetime_msk as _format_datetime_msk,
-)
-from services.bot_api.presentation import (
-    format_price_optional_rub as _format_price_optional_rub,
-)
-from services.bot_api.presentation import (
-    listing_display_title as _listing_display_title,
-)
-from services.bot_api.presentation import (
-    resolve_numbered_page as _resolve_numbered_page,
-)
-from services.bot_api.presentation import (
-    screen_text as _screen_text,
-)
-from services.bot_api.presentation import (
-    status_badge as _status_badge,
-)
-from services.bot_api.presentation import (
-    title_ref_suffix as _title_ref_suffix,
 )
 from services.bot_api.transport_effects import (
     ButtonSpec,
@@ -197,7 +184,7 @@ class BuyerMarketplaceFlow:
             snapshot.buyer_available_usdt,
             display_rub_per_usdt=self._config.display_rub_per_usdt,
         )
-        text = _screen_text(
+        text = screen_text(
             title="Кабинет покупателя",
             lines=[
                 (
@@ -224,8 +211,10 @@ class BuyerMarketplaceFlow:
         )
 
     async def render_balance(self, *, buyer_user_id: int) -> FlowResult:
-        snapshot = await self._adapter.get_buyer_balance_snapshot(buyer_user_id=buyer_user_id)
-        active_request = await self._adapter.get_active_buyer_withdrawal_request(buyer_user_id=buyer_user_id)
+        snapshot, active_request = await asyncio.gather(
+            self._adapter.get_buyer_balance_snapshot(buyer_user_id=buyer_user_id),
+            self._adapter.get_active_buyer_withdrawal_request(buyer_user_id=buyer_user_id),
+        )
         available_text = format_buyer_balance_amount(
             snapshot.buyer_available_usdt,
             display_rub_per_usdt=self._config.display_rub_per_usdt,
@@ -269,7 +258,7 @@ class BuyerMarketplaceFlow:
         return FlowResult(
             effects=(
                 ReplaceText(
-                    text=_screen_text(
+                    text=screen_text(
                         title="Баланс покупателя",
                         lines=lines,
                         separate_blocks=True,
@@ -286,7 +275,7 @@ class BuyerMarketplaceFlow:
             return FlowResult(
                 effects=(
                     ReplaceText(
-                        text=_screen_text(
+                        text=screen_text(
                             title="Транзакции покупателя",
                             lines=["Транзакций пока нет."],
                             note="Когда появятся заявки на вывод, они будут видны здесь.",
@@ -302,7 +291,7 @@ class BuyerMarketplaceFlow:
                 )
             )
 
-        resolved_page, total_pages, start_index, end_index = _resolve_numbered_page(
+        resolved_page, total_pages, start_index, end_index = resolve_numbered_page(
             total_items=total_items,
             requested_page=page,
             page_size=8,
@@ -312,27 +301,29 @@ class BuyerMarketplaceFlow:
             limit=end_index - start_index,
             offset=start_index,
         )
-        lines: list[str] = []
-        for item in history:
-            block_lines = [withdrawal_request_block_html(item, label="Вывод")]
-            if item.processed_at is not None:
-                block_lines.append(f"<b>Обработана:</b> {_format_datetime_msk(item.processed_at)}")
-            if item.sent_at is not None:
-                block_lines.append(f"<b>Отправлена:</b> {_format_datetime_msk(item.sent_at)}")
-            if item.note:
-                block_lines.append(f"<b>Комментарий:</b> {html.escape(item.note)}")
-            if item.tx_hash:
-                block_lines.append(f"<b>Хэш перевода:</b> {html.escape(item.tx_hash)}")
-            lines.append("\n".join(block_lines))
+        lines = [withdrawal_history_block_html(item) for item in history]
 
-        extra_rows = [
-            [_button("↩️ Назад к балансу", action="balance")],
-            [_knowledge_button(topic="balance")],
-        ]
+        keyboard_rows: list[list[ButtonSpec]] = []
+        nav_row = page_nav_row(
+            flow=_ROLE_BUYER,
+            page_action="withdraw_history",
+            page=resolved_page,
+            total_pages=total_pages,
+            previous_label="<",
+            next_label=">",
+        )
+        if nav_row:
+            keyboard_rows.append(list(nav_row))
+        keyboard_rows.extend(
+            [
+                [_button("↩️ Назад к балансу", action="balance")],
+                [_knowledge_button(topic="balance")],
+            ]
+        )
         return FlowResult(
             effects=(
                 ReplaceText(
-                    text=_screen_text(
+                    text=screen_text(
                         title=(
                             f"Транзакции покупателя · стр. {resolved_page}/{total_pages}"
                             if total_pages > 1
@@ -345,18 +336,7 @@ class BuyerMarketplaceFlow:
                         ),
                         separate_blocks=True,
                     ),
-                    buttons=numbered_page_buttons(
-                        flow=_ROLE_BUYER,
-                        open_action="withdraw_history",
-                        page_action="withdraw_history",
-                        item_ids=[],
-                        start_number=start_index + 1,
-                        page=resolved_page,
-                        total_pages=total_pages,
-                        extra_rows=extra_rows,
-                        previous_label="<",
-                        next_label=">",
-                    ),
+                    buttons=_rows(keyboard_rows),
                     parse_mode="HTML",
                 ),
             )
@@ -364,7 +344,7 @@ class BuyerMarketplaceFlow:
 
     def render_knowledge_screen(self, *, topic: str) -> FlowResult:
         if topic == "guide":
-            text = _screen_text(
+            text = screen_text(
                 title="Инструкция покупателя",
                 lines=[
                     (
@@ -419,7 +399,7 @@ class BuyerMarketplaceFlow:
             if support_button is not None:
                 keyboard_rows.append([support_button])
         elif topic == "shops":
-            text = _screen_text(
+            text = screen_text(
                 title="Про магазины",
                 lines=[
                     "Магазин — это подборка доступных объявлений одного продавца.",
@@ -443,7 +423,7 @@ class BuyerMarketplaceFlow:
                 [_button("↩️ К магазинам", action="shops")],
             ]
         elif topic == "purchases":
-            text = _screen_text(
+            text = screen_text(
                 title="Про покупки",
                 lines=[
                     "Покупка появляется после бронирования товара и проходит несколько статусов.",
@@ -470,7 +450,7 @@ class BuyerMarketplaceFlow:
                 [_button("↩️ К покупкам", action="assignments")],
             ]
         else:
-            text = _screen_text(
+            text = screen_text(
                 title="Про баланс и вывод",
                 lines=[
                     (
@@ -511,7 +491,7 @@ class BuyerMarketplaceFlow:
             lines.append(html.escape(notice))
         if not saved_shops:
             lines.append("Сохраненных магазинов пока нет.")
-            text = _screen_text(
+            text = screen_text(
                 title="Магазины",
                 lines=lines,
                 separate_blocks=True,
@@ -531,7 +511,7 @@ class BuyerMarketplaceFlow:
                 )
             )
 
-        resolved_page, total_pages, start_index, end_index = _resolve_numbered_page(
+        resolved_page, total_pages, start_index, end_index = resolve_numbered_page(
             total_items=len(saved_shops),
             requested_page=page,
         )
@@ -541,7 +521,7 @@ class BuyerMarketplaceFlow:
             title = html.escape(shop.title)
             lines.append(f"<b>{idx}. {badge} {title} (объявлений: {shop.active_listings_count})</b>")
 
-        text = _screen_text(
+        text = screen_text(
             title="Магазины",
             lines=lines,
             separate_blocks=True,
@@ -681,7 +661,7 @@ class BuyerMarketplaceFlow:
         try:
             result = await self._adapter.remove_saved_shop(buyer_user_id=buyer_user_id, shop_id=shop_id)
         except InvalidStateError:
-            text = _screen_text(
+            text = screen_text(
                 title=f"Магазин «{html.escape(shop.title)}»",
                 lines=["Удаление недоступно, пока в магазине есть незавершенная покупка."],
             )
@@ -797,17 +777,17 @@ class BuyerMarketplaceFlow:
         )
         assignment = next((item for item in assignments if item.assignment_id == reservation.assignment_id), None)
         if assignment is None:
-            text = _screen_text(
+            text = screen_text(
                 title="Покупка создана",
                 cta="Откройте раздел «📋 Покупки», чтобы продолжить.",
             )
         elif reservation.created:
-            text = _screen_text(
+            text = screen_text(
                 title="Покупка создана",
                 lines=[buyer_task_instruction_text(assignment)],
             )
         else:
-            text = _screen_text(
+            text = screen_text(
                 title="Покупка уже активна",
                 lines=[buyer_task_instruction_text(assignment)],
             )
@@ -843,7 +823,7 @@ class BuyerMarketplaceFlow:
                             ],
                             [
                                 _button(
-                                    _button_label_with_count("📋 Покупки", len(assignments)),
+                                    button_label_with_count("📋 Покупки", len(assignments)),
                                     action="assignments",
                                 )
                             ],
@@ -864,7 +844,7 @@ class BuyerMarketplaceFlow:
             return FlowResult(
                 effects=(
                     ReplaceText(
-                        text=_screen_text(title="Покупки", lines=["У вас пока нет покупок."]),
+                        text=screen_text(title="Покупки", lines=["У вас пока нет покупок."]),
                         buttons=_rows(
                             [
                                 [_button("↩️ Назад", action="menu")],
@@ -879,7 +859,7 @@ class BuyerMarketplaceFlow:
         lines: list[str] = []
         keyboard_rows: list[list[ButtonSpec]] = []
         for item in assignments:
-            display_title = _listing_display_title(
+            display_title = listing_display_title(
                 display_title=item.display_title,
                 fallback=item.search_phrase,
             )
@@ -890,7 +870,7 @@ class BuyerMarketplaceFlow:
                 display_rub_per_usdt=self._config.display_rub_per_usdt,
             )
             block_lines = [
-                _entity_block_heading_with_ref(
+                entity_block_heading_with_ref(
                     label="Покупка",
                     ref=format_assignment_ref(item.assignment_id),
                 ),
@@ -955,7 +935,7 @@ class BuyerMarketplaceFlow:
         return FlowResult(
             effects=(
                 ReplaceText(
-                    text=_screen_text(
+                    text=screen_text(
                         title="Покупки",
                         lines=lines,
                         separate_blocks=True,
@@ -978,7 +958,7 @@ class BuyerMarketplaceFlow:
                     data={"assignment_id": assignment_id},
                 ),
                 ReplaceText(
-                    text=_screen_text(
+                    text=screen_text(
                         title="Токен-подтверждение",
                         cta="Вставьте токен из расширения следующим сообщением ниже.",
                     ),
@@ -1000,12 +980,12 @@ class BuyerMarketplaceFlow:
         if assignment.status != "picked_up_wait_review":
             return _missing_assignment_result(text="Для этой покупки отзыв сейчас не требуется.")
 
-        display_title = _listing_display_title(
+        display_title = listing_display_title(
             display_title=assignment.display_title,
             fallback=assignment.search_phrase,
         )
         lines = [
-            _entity_block_heading_with_ref(
+            entity_block_heading_with_ref(
                 label="Покупка",
                 ref=format_assignment_ref(assignment.assignment_id),
             ),
@@ -1023,7 +1003,7 @@ class BuyerMarketplaceFlow:
         return FlowResult(
             effects=(
                 ReplaceText(
-                    text=_screen_text(
+                    text=screen_text(
                         title="Отзыв",
                         cta="Сначала опубликуйте отзыв на WB через расширение Qpilka.",
                         lines=lines,
@@ -1059,7 +1039,7 @@ class BuyerMarketplaceFlow:
                     data={"assignment_id": assignment_id},
                 ),
                 ReplaceText(
-                    text=_screen_text(
+                    text=screen_text(
                         title="Токен-подтверждение отзыва",
                         cta="Вставьте токен-подтверждение, который выдало расширение после публикации отзыва.",
                     ),
@@ -1088,7 +1068,7 @@ class BuyerMarketplaceFlow:
         return FlowResult(
             effects=(
                 ReplaceText(
-                    text=_screen_text(
+                    text=screen_text(
                         title="Отмена покупки",
                         lines=["Бронь будет снята, а покупка снова станет доступна другим покупателям."],
                     ),
@@ -1475,15 +1455,15 @@ class BuyerMarketplaceFlow:
         shop_ref = format_shop_ref(shop.shop_id)
         if not listings:
             if active_shop_purchase is not None:
-                text = _screen_text(
+                text = screen_text(
                     title=html.escape(header),
-                    title_suffix_html=_title_ref_suffix(shop_ref),
+                    title_suffix_html=title_ref_suffix(shop_ref),
                     lines=["У вас уже есть активная покупка в этом магазине. Других объявлений здесь пока нет."],
                 )
                 keyboard_rows = [
                     [
                         _button(
-                            _button_label_with_count("📋 Покупки", active_shop_purchases_count),
+                            button_label_with_count("📋 Покупки", active_shop_purchases_count),
                             action="assignments",
                         )
                     ],
@@ -1491,9 +1471,9 @@ class BuyerMarketplaceFlow:
                     [_knowledge_button(topic="shops")],
                 ]
             else:
-                text = _screen_text(
+                text = screen_text(
                     title=html.escape(header),
-                    title_suffix_html=_title_ref_suffix(shop_ref),
+                    title_suffix_html=title_ref_suffix(shop_ref),
                     lines=["Активных объявлений пока нет."],
                 )
                 keyboard_rows = []
@@ -1508,14 +1488,14 @@ class BuyerMarketplaceFlow:
             effects.append(_text_effect(text=text, buttons=_rows(keyboard_rows), replace=replace, parse_mode="HTML"))
             return FlowResult(effects=tuple(effects))
 
-        resolved_page, total_pages, start_index, end_index = _resolve_numbered_page(
+        resolved_page, total_pages, start_index, end_index = resolve_numbered_page(
             total_items=len(listings),
             requested_page=page,
         )
         listings_page = listings[start_index:end_index]
         lines: list[str] = []
         for idx, listing in enumerate(listings_page, start=start_index + 1):
-            display_title = _listing_display_title(
+            display_title = listing_display_title(
                 display_title=listing.display_title,
                 fallback=listing.search_phrase,
             )
@@ -1526,7 +1506,7 @@ class BuyerMarketplaceFlow:
             )
             lines.append(
                 f"<b>{idx}. {html.escape(display_title)}</b>\n"
-                f"<b>Цена:</b> {_format_price_optional_rub(listing.reference_price_rub)}\n"
+                f"<b>Цена:</b> {format_price_optional_rub(listing.reference_price_rub)}\n"
                 f"<b>Кэшбэк:</b> {cashback_text}"
             )
         extra_rows = []
@@ -1538,9 +1518,9 @@ class BuyerMarketplaceFlow:
                 [_knowledge_button(topic="shops")],
             ]
         )
-        text = _screen_text(
+        text = screen_text(
             title=html.escape(header),
-            title_suffix_html=_title_ref_suffix(shop_ref),
+            title_suffix_html=title_ref_suffix(shop_ref),
             lines=lines,
             separate_blocks=True,
         )
@@ -1682,8 +1662,8 @@ def buyer_task_instruction_text(assignment: Any, *, include_title: bool = True) 
         wb_product_id=assignment.wb_product_id,
         brand_name=getattr(assignment, "wb_brand_name", None),
     )
-    reservation_deadline = _format_datetime_msk(getattr(assignment, "reservation_expires_at", None))
-    display_title = _listing_display_title(
+    reservation_deadline = format_datetime_msk(getattr(assignment, "reservation_expires_at", None))
+    display_title = listing_display_title(
         display_title=getattr(assignment, "display_title", None),
         fallback=assignment.search_phrase,
     )
@@ -1714,14 +1694,14 @@ def buyer_review_instruction_text(assignment: Any, *, include_title: bool = True
         wb_product_id=assignment.wb_product_id,
         review_phrases=getattr(assignment, "review_phrases", None),
     )
-    display_title = _listing_display_title(
+    display_title = listing_display_title(
         display_title=getattr(assignment, "display_title", None),
         fallback=assignment.search_phrase,
     )
     lines: list[str] = []
     if include_title:
         lines.append(f"<b>Товар:</b> {html.escape(display_title)}")
-    selected_phrases = _normalize_review_phrases(getattr(assignment, "review_phrases", None))
+    selected_phrases = normalize_review_phrases(getattr(assignment, "review_phrases", None))
     lines.extend(
         [
             "Скопируйте токен ниже в расширение Qpilka.",
@@ -1738,7 +1718,7 @@ def buyer_review_instruction_text(assignment: Any, *, include_title: bool = True
         ]
     )
     if selected_phrases:
-        lines.append("<b>Обязательные фразы:</b> " + html.escape(_format_review_phrases_text(selected_phrases)))
+        lines.append("<b>Обязательные фразы:</b> " + html.escape(format_review_phrases_text(selected_phrases)))
     return "\n".join(lines)
 
 
@@ -1806,7 +1786,7 @@ def buyer_purchase_status_badge(status: str) -> str:
         color = "green"
     else:
         color = "blue"
-    return _status_badge(_humanize_assignment_status(status), color=color)
+    return status_badge(_humanize_assignment_status(status), color=color)
 
 
 def _humanize_assignment_status(status: str) -> str:
@@ -1823,22 +1803,6 @@ def _humanize_assignment_status(status: str) -> str:
         "delivery_expired": "Срок выкупа истек",
     }
     return mapping.get(status, status)
-
-
-def _normalize_review_phrases(review_phrases: list[str] | None) -> list[str]:
-    normalized: list[str] = []
-    for phrase in review_phrases or []:
-        cleaned = str(phrase).strip()
-        if cleaned:
-            normalized.append(cleaned)
-    return normalized
-
-
-def _format_review_phrases_text(review_phrases: list[str] | None) -> str:
-    normalized = _normalize_review_phrases(review_phrases)
-    if not normalized:
-        return "не заданы"
-    return "; ".join(normalized)
 
 
 def _build_buyer_listing_token(
@@ -1867,7 +1831,7 @@ def _build_buyer_review_token(
     review_phrases: list[str] | None,
 ) -> str:
     payload: list[Any] = [2, task_uuid, wb_product_id]
-    payload.extend(_normalize_review_phrases(review_phrases)[:2])
+    payload.extend(normalize_review_phrases(review_phrases)[:2])
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return base64.b64encode(raw.encode("utf-8")).decode("ascii")
 
@@ -1982,8 +1946,8 @@ def _buyer_menu_buttons(
     return _rows(
         [
             [
-                _button(_button_label_with_count("🏪 Магазины", shops_count), action="shops"),
-                _button(_button_label_with_count("📋 Покупки", purchases_count), action="assignments"),
+                _button(button_label_with_count("🏪 Магазины", shops_count), action="shops"),
+                _button(button_label_with_count("📋 Покупки", purchases_count), action="assignments"),
             ],
             [_button("💳 Баланс и вывод", action="balance")],
             [_knowledge_button(topic="guide")],

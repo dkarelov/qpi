@@ -16,6 +16,7 @@ from libs.domain.public_refs import (
     parse_chain_tx_ref,
     parse_deposit_ref,
 )
+from services.bot_api.presentation import format_review_phrases_text
 from services.bot_api.transport_effects import (
     ButtonSpec,
     ClearPrompt,
@@ -449,7 +450,9 @@ def _review_exception_lines(pending_reviews: list[Any]) -> list[str]:
     if pending_reviews:
         lines.append("Отзывы, требующие проверки:")
         for item in pending_reviews[:20]:
-            phrases_text = html.escape(_format_review_phrases_text(item.review_phrases))
+            phrases_text = html.escape(
+                format_review_phrases_text(item.review_phrases, separator=", ", empty_fallback="нет")
+            )
             buyer_username = html.escape(item.buyer_username or "-")
             lines.append(
                 f"Покупка {format_assignment_ref(item.assignment_id)}\n"
@@ -562,20 +565,6 @@ def _button_label_with_count(label: str, count: int | None) -> str:
         return label
     normalized_count = max(0, int(count))
     return f"{label} · {normalized_count}"
-
-
-def _format_review_phrases_text(review_phrases: list[str] | None) -> str:
-    normalized = _normalize_review_phrases(review_phrases)
-    return ", ".join(normalized) if normalized else "нет"
-
-
-def _normalize_review_phrases(review_phrases: list[str] | None) -> list[str]:
-    normalized: list[str] = []
-    for phrase in review_phrases or []:
-        text = str(phrase).strip()
-        if text:
-            normalized.append(text)
-    return normalized
 
 
 def _format_usdt_value(amount: Decimal, *, precise: bool = False) -> str:
