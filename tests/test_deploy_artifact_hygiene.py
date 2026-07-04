@@ -97,28 +97,30 @@ def test_runtime_workflows_use_proxy_urls_secret() -> None:
     assert "secrets.TELEGRAM_API_PROXY_URL }}" not in workflow_text
 
 
-def test_post_merge_splits_schema_sync_from_service_rollout_and_parallelizes_functions() -> None:
+def test_post_merge_runs_private_lane_as_one_consolidated_job() -> None:
     workflow = (REPO_ROOT / ".github/workflows/post_merge.yml").read_text(encoding="utf-8")
 
-    assert "requires_schema_apply" in workflow
-    assert "requires_schema_assert" in workflow
+    assert "deploy-private:" in workflow
     assert "schema_action" in workflow
-    assert "schema-sync:" in workflow
     assert "scripts/deploy/schema_remote.sh apply" in workflow
     assert "scripts/deploy/schema_remote.sh assert-clean" in workflow
-    assert "scripts/deploy/preflight.sh runtime --skip-schema-check" in workflow
     assert "scripts/deploy/preflight.sh functions --skip-schema-check" in workflow
+    assert "scripts/deploy/preflight.sh functions\n" in workflow
     assert "QPI_DEPLOY_SCHEMA_MODE: never" in workflow
     assert "QPI_SKIP_FUNCTION_SCHEMA_CHECK" in workflow
-    assert "deploy-functions-after-runtime:" in workflow
-    assert "needs.predeploy-marketplace.outputs.runtime_schema_action == 'apply'" in workflow
     assert 'pids+=("$!")' in workflow
 
-    deploy_functions_start = workflow.index("  deploy-functions:")
-    deploy_functions_after_runtime_start = workflow.index("  deploy-functions-after-runtime:")
-    deploy_functions_block = workflow[deploy_functions_start:deploy_functions_after_runtime_start]
+    # The legacy multi-job private lane must not come back; its work now runs
+    # as sequential steps of deploy-private with in-job artifact builds.
+    assert "schema-sync:" not in workflow
+    assert "predeploy-marketplace:" not in workflow
+    assert "deploy-functions-after-runtime:" not in workflow
+    assert "upload-artifact" not in workflow
+    assert "download-artifact" not in workflow
 
-    assert "- deploy-runtime" not in deploy_functions_block
+    # Runtime rollout must precede function publishing so schema-apply
+    # ordering is inherently satisfied by step order.
+    assert workflow.index("scripts/deploy/runtime.sh deploy") < workflow.index("Publish functions")
 
 
 def test_detect_ci_changes_indeterminate_diff_falls_back_to_full_marketplace_deploy() -> None:
