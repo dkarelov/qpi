@@ -234,8 +234,12 @@ locals {
   })
 
   runner_cloud_init = templatefile("${path.module}/cloud-init/runner.yaml.tftpl", {
-    folder_id    = var.folder_id
-    log_group_id = yandex_logging_group.main.id
+    folder_id               = var.folder_id
+    log_group_id            = yandex_logging_group.main.id
+    runner_version          = var.runner_agent_version
+    runner_tarball_sha256   = var.runner_agent_tarball_sha256
+    psqldef_sha256          = var.runner_psqldef_sha256
+    autoshutdown_script_b64 = base64encode(file("${path.module}/../scripts/deploy/private_runner_autoshutdown.sh"))
   })
 
   operator_ssh_private_key_path = pathexpand(var.operator_ssh_private_key_path)

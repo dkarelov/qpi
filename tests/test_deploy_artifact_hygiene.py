@@ -213,28 +213,32 @@ def test_private_git_auth_helper_can_use_scoped_git_config() -> None:
         )
 
 
-def test_private_runner_has_warm_online_fast_path_after_shutdown_safeguards() -> None:
+def test_private_runner_ensure_ready_polls_online_first_and_reconfigures_with_diagnostics() -> None:
     script = (REPO_ROOT / "scripts/deploy/private_runner.sh").read_text(encoding="utf-8")
 
-    assert "runner_service_active()" in script
-    assert "warm_runner_ready()" in script
+    assert "sync_autoshutdown_controller()" in script
+    assert "dump_diagnostics()" in script
     assert "PRIVATE_RUNNER_FORCE_RECONFIGURE" in script
-    assert "runner_exists || return 1" in script
-    assert '[[ "$(runner_online)" == "1" ]] || return 1' in script
-    assert "runner_service_active || return 1" in script
-    assert 'sudo sh -c \'tr -d "\\r\\n" < "$1"\'' in script
-    assert 'runner_unit="${runner_unit##*/}"' in script
-    assert "skipped runner reconfiguration" in script
+    assert "PRIVATE_RUNNER_ONLINE_TIMEOUT_SECONDS" in script
+    # The recreated-VM case: GitHub record persists but on-disk registration
+    # is gone, so a missing .credentials file must force re-registration.
+    assert "/.credentials" in script
+    # The max-session shutdown failsafe is gone; the VM-baked idle
+    # autoshutdown timer is the only local poweroff mechanism.
+    assert "PRIVATE_RUNNER_MAX_SESSION_MINUTES" not in script
 
     ensure_start = script.index("  ensure-ready)")
     ensure_end = script.index("    ;;\n  schedule-stop)", ensure_start)
     ensure_block = script[ensure_start:ensure_end]
 
-    assert ensure_block.index("install_or_refresh_autoshutdown_controller") < ensure_block.index(
-        "warm_runner_ready"
-    )
-    assert ensure_block.index("autoshutdown_heartbeat") < ensure_block.index("warm_runner_ready")
-    assert ensure_block.index('schedule_shutdown "${PRIVATE_RUNNER_MAX_SESSION_MINUTES}"') < ensure_block.index(
-        "warm_runner_ready"
-    )
-    assert ensure_block.index("warm_runner_ready") < ensure_block.index("install_or_reconfigure_runner")
+    # Happy path is SSH-free: instance start, then the GitHub online poll;
+    # reconfiguration happens only if the poll fails, followed by a bounded
+    # retry, with diagnostics dumped on each failure.
+    assert ensure_block.index("start_instance") < ensure_block.index("wait_for_runner_online")
+    assert ensure_block.index("wait_for_runner_online") < ensure_block.index("install_or_reconfigure_runner")
+    assert "runner_online_retry" in ensure_block
+    assert "dump_diagnostics" in ensure_block
+    # Housekeeping (legacy shutdown cancel + autoshutdown sync) overlaps the
+    # online poll instead of serializing before it.
+    assert "sync_autoshutdown_controller" in ensure_block
+    assert "qpi_emit_timing_summary" in ensure_block

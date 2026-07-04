@@ -156,6 +156,24 @@ variable "runner_disk_gb" {
   default     = 30
 }
 
+variable "runner_agent_version" {
+  description = "GitHub Actions runner agent version baked into the runner VM at first boot."
+  type        = string
+  default     = "2.330.0"
+}
+
+variable "runner_agent_tarball_sha256" {
+  description = "Expected sha256 of the actions-runner linux-x64 tarball; must match runner_agent_version."
+  type        = string
+  default     = "af5c33fa94f3cc33b8e97937939136a6b04197e6dadfcfb3b6e33ae1bf41e79a"
+}
+
+variable "runner_psqldef_sha256" {
+  description = "Expected sha256 of the psqldef linux-amd64 tarball preinstalled on the runner VM."
+  type        = string
+  default     = "809e800c62273554ec4ed9046c882ee172dc0c8860e3a22a6eb4a22bfedb535f"
+}
+
 variable "bot_app_env" {
   description = "APP_ENV passed to bot runtime env file."
   type        = string

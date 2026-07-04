@@ -4,6 +4,9 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 
+# shellcheck source=scripts/deploy/common.sh
+source "${script_dir}/common.sh"
+
 usage() {
   cat <<'EOF' >&2
 usage:
@@ -31,7 +34,7 @@ Optional environment:
   PRIVATE_RUNNER_SYSTEM_USER (default: github-runner)
   PRIVATE_RUNNER_INSTALL_DIR (default: /opt/actions-runner)
   PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES (default: 60)
-  PRIVATE_RUNNER_MAX_SESSION_MINUTES (default: 120)
+  PRIVATE_RUNNER_ONLINE_TIMEOUT_SECONDS (default: 150)
   PRIVATE_RUNNER_VERSION (default: 2.330.0)
   MIN_PRIVATE_RUNNER_VERSION (default: 2.329.0)
   PRIVATE_RUNNER_FORCE_RECONFIGURE (default: 0)
@@ -85,7 +88,7 @@ PRIVATE_RUNNER_LABELS="${PRIVATE_RUNNER_LABELS:-qpi-private,qpi-deploy}"
 PRIVATE_RUNNER_SYSTEM_USER="${PRIVATE_RUNNER_SYSTEM_USER:-github-runner}"
 PRIVATE_RUNNER_INSTALL_DIR="${PRIVATE_RUNNER_INSTALL_DIR:-/opt/actions-runner}"
 PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES="${PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES:-60}"
-PRIVATE_RUNNER_MAX_SESSION_MINUTES="${PRIVATE_RUNNER_MAX_SESSION_MINUTES:-120}"
+PRIVATE_RUNNER_ONLINE_TIMEOUT_SECONDS="${PRIVATE_RUNNER_ONLINE_TIMEOUT_SECONDS:-150}"
 PRIVATE_RUNNER_VERSION="${PRIVATE_RUNNER_VERSION:-2.330.0}"
 MIN_PRIVATE_RUNNER_VERSION="${MIN_PRIVATE_RUNNER_VERSION:-2.329.0}"
 GITHUB_API_URL="${GITHUB_API_URL:-https://api.github.com}"
@@ -244,27 +247,51 @@ print("1" if runner.get("status") == "online" else "0")
 '
 }
 
-runner_service_active() {
-  local remote_command
-  remote_command="$(printf 'RUNNER_DIR=%q bash -s' "${PRIVATE_RUNNER_INSTALL_DIR}")"
-  remote_exec "${remote_command}" <<'REMOTE' >/dev/null
-set -euo pipefail
+sync_autoshutdown_controller() {
+  local local_hash
+  local remote_hash
 
-test -f "${RUNNER_DIR}/.service"
-runner_unit="$(sudo sh -c 'tr -d "\r\n" < "$1"' sh "${RUNNER_DIR}/.service")"
-runner_unit="${runner_unit##*/}"
-test -n "${runner_unit}"
-sudo systemctl is-active --quiet "${runner_unit}"
+  local_hash="$(sha256sum "${repo_root}/scripts/deploy/private_runner_autoshutdown.sh" | cut -d' ' -f1)"
+  remote_hash="$(remote_exec "bash -s" <<'REMOTE'
+set -euo pipefail
+sudo shutdown -c >/dev/null 2>&1 || true
+if [[ -x /usr/local/bin/qpi-private-runner-autoshutdown ]]; then
+  sudo /usr/local/bin/qpi-private-runner-autoshutdown heartbeat >/dev/null 2>&1 || true
+  sha256sum /usr/local/bin/qpi-private-runner-autoshutdown | cut -d" " -f1
+fi
 REMOTE
+)"
+
+  if [[ "${remote_hash}" == "${local_hash}" ]]; then
+    echo "autoshutdown controller up to date."
+    return 0
+  fi
+  echo "autoshutdown controller missing or stale; refreshing."
+  install_or_refresh_autoshutdown_controller
+  autoshutdown_heartbeat
 }
 
-warm_runner_ready() {
-  if [[ "${PRIVATE_RUNNER_FORCE_RECONFIGURE:-0}" == "1" ]]; then
-    return 1
-  fi
-  runner_exists || return 1
-  [[ "$(runner_online)" == "1" ]] || return 1
-  runner_service_active || return 1
+dump_diagnostics() {
+  echo "--- private runner diagnostics ---"
+  echo "instance_status: $(instance_field status 2>/dev/null || echo unavailable)"
+  local record
+  record="$(runner_record_json 2>/dev/null || true)"
+  echo "github_runner_record: ${record:-<absent>}"
+  remote_exec "bash -s" <<'REMOTE' || echo "remote diagnostics unavailable (SSH failed)."
+set -uo pipefail
+runner_unit=""
+if [[ -f /opt/actions-runner/.service ]]; then
+  runner_unit="$(tr -d '\r\n' < /opt/actions-runner/.service)"
+fi
+echo "runner_unit: ${runner_unit:-<none>}"
+ls -l /opt/actions-runner/.runner /opt/actions-runner/.credentials 2>/dev/null || echo "runner agent not configured"
+if [[ -n "${runner_unit}" ]]; then
+  sudo systemctl status --no-pager "${runner_unit}" 2>&1 | head -n 20
+  sudo journalctl -u "${runner_unit}" -n 50 --no-pager 2>&1 | tail -n 50
+fi
+echo "autoshutdown_timer: $(systemctl is-enabled qpi-private-runner-autoshutdown.timer 2>&1)"
+REMOTE
+  echo "--- end private runner diagnostics ---"
 }
 
 start_instance() {
@@ -328,10 +355,6 @@ wait_for_ssh() {
   exit 1
 }
 
-cancel_scheduled_shutdown() {
-  remote_exec "sudo shutdown -c >/dev/null 2>&1 || true"
-}
-
 autoshutdown_env_content() {
   cat <<EOF
 QPI_PRIVATE_RUNNER_IDLE_MINUTES=${PRIVATE_RUNNER_IDLE_SHUTDOWN_MINUTES}
@@ -380,6 +403,10 @@ install_or_reconfigure_runner() {
   if [[ "${PRIVATE_RUNNER_FORCE_RECONFIGURE:-0}" == "1" ]]; then
     should_reconfigure="1"
   elif ! runner_exists; then
+    should_reconfigure="1"
+  elif ! remote_exec "test -f $(printf '%q' "${PRIVATE_RUNNER_INSTALL_DIR}")/.credentials"; then
+    # A recreated VM loses its on-disk registration even though the GitHub
+    # runner record persists; re-register under the same name.
     should_reconfigure="1"
   fi
 
@@ -510,16 +537,16 @@ autoshutdown_heartbeat() {
 }
 
 wait_for_runner_online() {
-  local deadline=$((SECONDS + 600))
+  local timeout_seconds="$1"
+  local interval_seconds="$2"
+  local deadline=$((SECONDS + timeout_seconds))
   while [[ "${SECONDS}" -lt "${deadline}" ]]; do
     if [[ "$(runner_online)" == "1" ]]; then
-      return
+      return 0
     fi
-    sleep 5
+    sleep "${interval_seconds}"
   done
-
-  echo "Timed out waiting for GitHub runner '${PRIVATE_RUNNER_NAME}' to report online." >&2
-  exit 1
+  return 1
 }
 
 schedule_shutdown() {
@@ -550,20 +577,60 @@ EOF
 case "${command_name}" in
   ensure-ready)
     prepare_ssh_key
+    qpi_timing_init
+
+    qpi_phase_start "instance_start"
     start_instance
-    wait_for_ssh
-    cancel_scheduled_shutdown
-    install_or_refresh_autoshutdown_controller
-    autoshutdown_heartbeat
-    schedule_shutdown "${PRIVATE_RUNNER_MAX_SESSION_MINUTES}"
-    if warm_runner_ready; then
-      echo "Private runner '${PRIVATE_RUNNER_NAME}' is already online; skipped runner reconfiguration."
-      print_status
-      exit 0
+    qpi_phase_end
+
+    # Housekeeping (legacy shutdown cancel, autoshutdown heartbeat/refresh) runs
+    # over SSH in parallel with the runner-online poll; the baked systemd units
+    # bring the runner agent up at boot without any SSH on the happy path.
+    housekeeping_log="$(mktemp)"
+    (wait_for_ssh && sync_autoshutdown_controller) >"${housekeeping_log}" 2>&1 &
+    housekeeping_pid="$!"
+
+    runner_is_online=0
+    if [[ "${PRIVATE_RUNNER_FORCE_RECONFIGURE:-0}" != "1" ]] && runner_exists; then
+      qpi_phase_start "runner_online"
+      if wait_for_runner_online "${PRIVATE_RUNNER_ONLINE_TIMEOUT_SECONDS}" 3; then
+        runner_is_online=1
+      fi
+      qpi_phase_end
     fi
-    install_or_reconfigure_runner
-    wait_for_runner_online
+
+    if [[ "${runner_is_online}" != "1" ]]; then
+      echo "Runner is not online after instance start; attempting reconfigure." >&2
+      dump_diagnostics >&2 || true
+      qpi_phase_start "reconfigure"
+      if ! wait "${housekeeping_pid}"; then
+        echo "Housekeeping failed before reconfigure:" >&2
+        cat "${housekeeping_log}" >&2
+      fi
+      housekeeping_pid=""
+      install_or_reconfigure_runner
+      qpi_phase_end
+      qpi_phase_start "runner_online_retry"
+      if ! wait_for_runner_online 300 5; then
+        dump_diagnostics >&2 || true
+        echo "Timed out waiting for GitHub runner '${PRIVATE_RUNNER_NAME}' to report online." >&2
+        exit 1
+      fi
+      qpi_phase_end
+    fi
+
+    if [[ -n "${housekeeping_pid}" ]]; then
+      if ! wait "${housekeeping_pid}"; then
+        cat "${housekeeping_log}" >&2
+        echo "Runner housekeeping (shutdown cancel / autoshutdown sync) failed." >&2
+        exit 1
+      fi
+    fi
+    cat "${housekeeping_log}"
+    rm -f "${housekeeping_log}"
+
     print_status
+    qpi_emit_timing_summary "Private Runner Ensure-Ready"
     ;;
   schedule-stop)
     if [[ "$(instance_field status)" != "RUNNING" ]]; then

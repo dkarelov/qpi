@@ -23,23 +23,74 @@ write_files:
     permissions: "0440"
     content: |
       github-runner ALL=(ALL) NOPASSWD:ALL
+  - path: /usr/local/bin/qpi-private-runner-autoshutdown
+    owner: root:root
+    permissions: "0755"
+    encoding: b64
+    content: ${autoshutdown_script_b64}
+  - path: /etc/qpi/private-runner-autoshutdown.env
+    owner: root:root
+    permissions: "0644"
+    content: |
+      QPI_PRIVATE_RUNNER_IDLE_MINUTES=60
+      QPI_PRIVATE_RUNNER_RUNNER_DIR=/opt/actions-runner
+      QPI_PRIVATE_RUNNER_RUNNER_USER=github-runner
+      QPI_PRIVATE_RUNNER_STATE_DIR=/var/lib/qpi-private-runner
+  - path: /etc/systemd/system/qpi-private-runner-autoshutdown.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=QPI private runner idle shutdown check
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/qpi-private-runner-autoshutdown idle-check
+  - path: /etc/systemd/system/qpi-private-runner-autoshutdown.timer
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Run QPI private runner idle shutdown checks
+
+      [Timer]
+      OnBootSec=1m
+      OnUnitActiveSec=1m
+      Persistent=true
+      Unit=qpi-private-runner-autoshutdown.service
+
+      [Install]
+      WantedBy=timers.target
 runcmd:
   - |
     bash -lc '
       set -euxo pipefail
       export PSQLDEF_VERSION="v3.9.8"
+      export RUNNER_VERSION="${runner_version}"
       install -m 0755 -d /etc/qpi
       if ! id -u github-runner >/dev/null 2>&1; then
         useradd --create-home --shell /bin/bash github-runner
       fi
       install -m 0755 -d /opt/actions-runner
       install -m 0755 -d /srv/qpi-runner
+      install -m 0755 -d /var/lib/qpi-private-runner
       chown -R github-runner:github-runner /opt/actions-runner /srv/qpi-runner
       curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i /opt/yandex-cloud -n
       ln -sf /opt/yandex-cloud/bin/yc /usr/local/bin/yc
       curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL=/usr/local/bin sh
       curl -fsSL -o /tmp/psqldef.tar.gz \
         "https://github.com/sqldef/sqldef/releases/download/v$${PSQLDEF_VERSION#v}/psqldef_linux_amd64.tar.gz"
+      echo "${psqldef_sha256}  /tmp/psqldef.tar.gz" | sha256sum -c -
       tar -xzf /tmp/psqldef.tar.gz -C /tmp
       install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
+      runner_archive="actions-runner-linux-x64-$${RUNNER_VERSION}.tar.gz"
+      curl -fsSL -o "/tmp/$${runner_archive}" \
+        "https://github.com/actions/runner/releases/download/v$${RUNNER_VERSION}/$${runner_archive}"
+      echo "${runner_tarball_sha256}  /tmp/$${runner_archive}" | sha256sum -c -
+      sudo -u github-runner tar -xzf "/tmp/$${runner_archive}" -C /opt/actions-runner
+      /opt/actions-runner/bin/installdependencies.sh
+      systemctl daemon-reload
+      systemctl enable --now qpi-private-runner-autoshutdown.timer
     '
