@@ -1,3 +1,10 @@
+"""Pure presentation formatting for bot screens.
+
+Must stay free of flow, transport, and DB imports: this module is classified
+as presentation-only (`marketplace_presentation` validation group) and deploys
+through the hosted lane without DB-backed validation.
+"""
+
 from __future__ import annotations
 
 import html
