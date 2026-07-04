@@ -202,7 +202,9 @@ PY
 }
 
 run_preflight() {
-  eval "$("${script_dir}/preflight.sh" runtime)"
+  # The deploy's own schema phase applies or asserts right after preflight,
+  # so the preflight-level schema check would only duplicate it.
+  eval "$("${script_dir}/preflight.sh" runtime --skip-schema-check)"
 }
 
 if [[ "${command_name}" == "build" ]]; then
