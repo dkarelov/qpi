@@ -11,6 +11,7 @@ permissions:
 jobs:
   start-private-runner:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     concurrency:
       group: qpi-private-runner
       cancel-in-progress: false
@@ -38,6 +39,7 @@ jobs:
 
   runner-ping:
     runs-on: [self-hosted, linux, qpi-private]
+    timeout-minutes: 10
     needs: start-private-runner
     concurrency:
       group: qpi-private-runner

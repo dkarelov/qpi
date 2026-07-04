@@ -29,6 +29,9 @@ inputs:
   psqldef-version:
     description: psqldef release version to install.
     default: "v3.9.8"
+  psqldef-sha256:
+    description: Expected sha256 of the psqldef release tarball; must match psqldef-version.
+    default: "809e800c62273554ec4ed9046c882ee172dc0c8860e3a22a6eb4a22bfedb535f"
 
 runs:
   using: composite
@@ -75,6 +78,7 @@ runs:
         if ! command -v psqldef >/dev/null 2>&1; then
           curl -fsSL -o /tmp/psqldef.tar.gz \
             "https://github.com/sqldef/sqldef/releases/download/${{ inputs.psqldef-version }}/psqldef_linux_amd64.tar.gz"
+          echo "${{ inputs.psqldef-sha256 }}  /tmp/psqldef.tar.gz" | sha256sum -c -
           tar -xzf /tmp/psqldef.tar.gz -C /tmp
           sudo install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
         fi

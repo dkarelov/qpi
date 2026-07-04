@@ -14,6 +14,7 @@ permissions:
 
 env:
   PSQLDEF_VERSION: v3.9.8
+  PSQLDEF_SHA256: 809e800c62273554ec4ed9046c882ee172dc0c8860e3a22a6eb4a22bfedb535f
 
 jobs:
   lint-and-fast-tests:
@@ -22,6 +23,7 @@ jobs:
 
   determine-targets:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: lint-and-fast-tests
     outputs:
       targets: ${{ steps.targets.outputs.targets }}
@@ -39,6 +41,7 @@ jobs:
 
   start-private-runner:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: determine-targets
     if: ${{ needs.determine-targets.outputs.has_targets == 'true' }}
     concurrency:
@@ -78,6 +81,7 @@ jobs:
 
   private-db-validation:
     runs-on: [self-hosted, linux, qpi-private]
+    timeout-minutes: 30
     needs:
       - determine-targets
       - start-private-runner
@@ -104,6 +108,7 @@ jobs:
           install-psqldef: "true"
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
+          psqldef-sha256: ${{ env.PSQLDEF_SHA256 }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
@@ -118,6 +123,7 @@ jobs:
 
   predeploy-functions:
     runs-on: [self-hosted, linux, qpi-private]
+    timeout-minutes: 10
     needs:
       - determine-targets
       - private-db-validation
@@ -145,6 +151,7 @@ jobs:
           install-psqldef: "true"
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
+          psqldef-sha256: ${{ env.PSQLDEF_SHA256 }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
@@ -154,6 +161,7 @@ jobs:
 
   build-function-bundles:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs:
       - determine-targets
       - predeploy-functions
@@ -195,6 +203,7 @@ jobs:
 
   deploy-functions:
     runs-on: [self-hosted, linux, qpi-private]
+    timeout-minutes: 25
     needs:
       - determine-targets
       - predeploy-functions
@@ -228,6 +237,7 @@ jobs:
           install-psqldef: "true"
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
+          psqldef-sha256: ${{ env.PSQLDEF_SHA256 }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev

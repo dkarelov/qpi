@@ -39,10 +39,12 @@ permissions:
 
 env:
   PSQLDEF_VERSION: v3.9.8
+  PSQLDEF_SHA256: 809e800c62273554ec4ed9046c882ee172dc0c8860e3a22a6eb4a22bfedb535f
 
 jobs:
   determine-changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       needs_db_validation: ${{ steps.detect.outputs.needs_db_validation }}
       db_validation_mode: ${{ steps.detect.outputs.db_validation_mode }}
@@ -81,6 +83,7 @@ jobs:
 
   start-private-runner:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs:
       - determine-changes
     if: >-
@@ -125,6 +128,7 @@ jobs:
 
   private-db-validation:
     runs-on: [self-hosted, linux, qpi-private]
+    timeout-minutes: 30
     needs:
       - determine-changes
       - lint-and-fast-tests
@@ -158,6 +162,7 @@ jobs:
           install-psqldef: "true"
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
+          psqldef-sha256: ${{ env.PSQLDEF_SHA256 }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev

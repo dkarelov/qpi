@@ -27,10 +27,12 @@ permissions:
 
 env:
   PSQLDEF_VERSION: v3.9.8
+  PSQLDEF_SHA256: 809e800c62273554ec4ed9046c882ee172dc0c8860e3a22a6eb4a22bfedb535f
 
 jobs:
   resolve-target:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       target_sha: ${{ steps.resolve.outputs.target_sha }}
       deploy_mode: ${{ steps.resolve.outputs.deploy_mode }}
@@ -94,6 +96,7 @@ jobs:
 
   start-private-runner:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs:
       - resolve-target
       - lint-and-fast-tests
@@ -135,6 +138,7 @@ jobs:
 
   private-db-validation:
     runs-on: [self-hosted, linux, qpi-private]
+    timeout-minutes: 30
     needs:
       - resolve-target
       - start-private-runner
@@ -162,6 +166,7 @@ jobs:
           install-psqldef: "true"
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
+          psqldef-sha256: ${{ env.PSQLDEF_SHA256 }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
@@ -171,6 +176,7 @@ jobs:
 
   predeploy-runtime-release:
     runs-on: [self-hosted, linux, qpi-private]
+    timeout-minutes: 10
     needs:
       - resolve-target
       - private-db-validation
@@ -206,6 +212,7 @@ jobs:
           install-psqldef: "true"
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
+          psqldef-sha256: ${{ env.PSQLDEF_SHA256 }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
@@ -215,6 +222,7 @@ jobs:
 
   predeploy-runtime-hotfix:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: resolve-target
     if: ${{ needs.resolve-target.outputs.deploy_mode == 'hotfix' }}
     env:
@@ -245,6 +253,7 @@ jobs:
           install-psqldef: "true"
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
+          psqldef-sha256: ${{ env.PSQLDEF_SHA256 }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
@@ -254,6 +263,7 @@ jobs:
 
   build-runtime-artifact:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs:
       - resolve-target
       - predeploy-runtime-release
@@ -261,8 +271,8 @@ jobs:
     if: >-
       ${{
         always() &&
-        needs.predeploy-runtime-release.result == 'success' ||
-        needs.predeploy-runtime-hotfix.result == 'success'
+        (needs.predeploy-runtime-release.result == 'success' ||
+          needs.predeploy-runtime-hotfix.result == 'success')
       }}
     outputs:
       artifact_name: ${{ steps.build.outputs.artifact_name }}
@@ -299,6 +309,7 @@ jobs:
 
   deploy-runtime-hotfix:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     needs:
       - resolve-target
       - predeploy-runtime-hotfix
@@ -343,6 +354,7 @@ jobs:
           install-psqldef: "true"
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
+          psqldef-sha256: ${{ env.PSQLDEF_SHA256 }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
@@ -360,6 +372,7 @@ jobs:
 
   deploy-runtime-release:
     runs-on: [self-hosted, linux, qpi-private]
+    timeout-minutes: 25
     needs:
       - resolve-target
       - predeploy-runtime-release
@@ -407,6 +420,7 @@ jobs:
           install-psqldef: "true"
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
+          psqldef-sha256: ${{ env.PSQLDEF_SHA256 }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev

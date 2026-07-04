@@ -311,7 +311,11 @@ remote_exec \
   "sudo python3 /tmp/merge_bot_env.py \
     --base /etc/qpi/bot.env \
     --overrides /tmp/qpi-bot-overrides.env \
-    --delete TELEGRAM_API_PROXY_URL && \
+    --delete TELEGRAM_API_PROXY_URL \
+    --require-nonempty TELEGRAM_BOT_TOKEN \
+    --require-nonempty TOKEN_CIPHER_KEY \
+    --require-nonempty TELEGRAM_API_PROXY_URLS \
+    --require-nonempty YC_FOLDER_ID && \
    sudo chown root:${BOT_VM_SSH_USER} /etc/qpi/bot.env && \
    sudo chmod 0640 /etc/qpi/bot.env"
 

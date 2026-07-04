@@ -21,6 +21,7 @@ permissions:
 jobs:
   terraform-plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       YC_TOKEN: ${{ secrets.YC_TOKEN }}
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}

@@ -54,10 +54,12 @@ permissions:
 
 env:
   PSQLDEF_VERSION: v3.9.8
+  PSQLDEF_SHA256: 809e800c62273554ec4ed9046c882ee172dc0c8860e3a22a6eb4a22bfedb535f
 
 jobs:
   determine-changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       needs_db_validation: ${{ steps.detect.outputs.needs_db_validation }}
       db_validation_mode: ${{ steps.detect.outputs.db_validation_mode }}
@@ -114,6 +116,7 @@ jobs:
 
   start-private-runner:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs:
       - determine-changes
     if: ${{ needs.determine-changes.outputs.needs_private_runner == 'true' }}
@@ -154,6 +157,7 @@ jobs:
 
   private-db-validation:
     runs-on: [self-hosted, linux, qpi-private]
+    timeout-minutes: 30
     needs:
       - determine-changes
       - fast-validation
@@ -183,6 +187,7 @@ jobs:
           install-psqldef: "true"
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
+          psqldef-sha256: ${{ env.PSQLDEF_SHA256 }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
@@ -203,6 +208,7 @@ jobs:
 
   schema-sync:
     runs-on: [self-hosted, linux, qpi-private]
+    timeout-minutes: 10
     needs:
       - determine-changes
       - fast-validation
@@ -236,6 +242,7 @@ jobs:
           install-psqldef: "true"
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
+          psqldef-sha256: ${{ env.PSQLDEF_SHA256 }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
@@ -257,6 +264,7 @@ jobs:
 
   predeploy-marketplace:
     runs-on: [self-hosted, linux, qpi-private]
+    timeout-minutes: 10
     needs:
       - determine-changes
       - fast-validation
@@ -306,6 +314,7 @@ jobs:
           install-psqldef: "true"
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
+          psqldef-sha256: ${{ env.PSQLDEF_SHA256 }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
@@ -327,6 +336,7 @@ jobs:
 
   build-runtime-artifact:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs:
       - determine-changes
       - predeploy-marketplace
@@ -364,6 +374,7 @@ jobs:
 
   build-function-bundles:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs:
       - determine-changes
       - predeploy-marketplace
@@ -405,6 +416,7 @@ jobs:
 
   deploy-runtime:
     runs-on: [self-hosted, linux, qpi-private]
+    timeout-minutes: 25
     needs:
       - determine-changes
       - predeploy-marketplace
@@ -442,6 +454,7 @@ jobs:
           install-psqldef: "true"
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
+          psqldef-sha256: ${{ env.PSQLDEF_SHA256 }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
@@ -459,6 +472,7 @@ jobs:
 
   deploy-functions:
     runs-on: [self-hosted, linux, qpi-private]
+    timeout-minutes: 25
     needs:
       - determine-changes
       - predeploy-marketplace
@@ -493,6 +507,7 @@ jobs:
           install-psqldef: "true"
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
+          psqldef-sha256: ${{ env.PSQLDEF_SHA256 }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
@@ -523,6 +538,7 @@ jobs:
 
   deploy-functions-after-runtime:
     runs-on: [self-hosted, linux, qpi-private]
+    timeout-minutes: 25
     needs:
       - determine-changes
       - predeploy-marketplace
@@ -559,6 +575,7 @@ jobs:
           install-psqldef: "true"
           configure-private-git-auth: "true"
           psqldef-version: ${{ env.PSQLDEF_VERSION }}
+          psqldef-sha256: ${{ env.PSQLDEF_SHA256 }}
 
       - name: Sync dependencies
         run: uv sync --frozen --extra dev

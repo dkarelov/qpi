@@ -14,6 +14,7 @@ permissions:
 jobs:
   fast-validation:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       GH_TOKEN: ${{ secrets.TOKEN_YC_JSON_LOGGER }}
     steps:
