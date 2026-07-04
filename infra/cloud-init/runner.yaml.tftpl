@@ -67,8 +67,10 @@ runcmd:
   - |
     bash -lc '
       set -euxo pipefail
+      export HOME="$${HOME:-/root}"
       export PSQLDEF_VERSION="v3.9.8"
       export RUNNER_VERSION="${runner_version}"
+      fetch() { curl -fsSL --connect-timeout 10 --retry 5 --retry-delay 3 --retry-all-errors "$@"; }
       install -m 0755 -d /etc/qpi
       if ! id -u github-runner >/dev/null 2>&1; then
         useradd --create-home --shell /bin/bash github-runner
@@ -77,20 +79,22 @@ runcmd:
       install -m 0755 -d /srv/qpi-runner
       install -m 0755 -d /var/lib/qpi-private-runner
       chown -R github-runner:github-runner /opt/actions-runner /srv/qpi-runner
-      curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i /opt/yandex-cloud -n
-      ln -sf /opt/yandex-cloud/bin/yc /usr/local/bin/yc
-      curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL=/usr/local/bin sh
-      curl -fsSL -o /tmp/psqldef.tar.gz \
-        "https://github.com/sqldef/sqldef/releases/download/v$${PSQLDEF_VERSION#v}/psqldef_linux_amd64.tar.gz"
-      echo "${psqldef_sha256}  /tmp/psqldef.tar.gz" | sha256sum -c -
-      tar -xzf /tmp/psqldef.tar.gz -C /tmp
-      install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
+      # Runner agent and autoshutdown first: they are the pieces CI cannot
+      # bootstrap for itself; the tools below have workflow fallback installs.
       runner_archive="actions-runner-linux-x64-$${RUNNER_VERSION}.tar.gz"
-      curl -fsSL -o "/tmp/$${runner_archive}" \
+      fetch -o "/tmp/$${runner_archive}" \
         "https://github.com/actions/runner/releases/download/v$${RUNNER_VERSION}/$${runner_archive}"
       echo "${runner_tarball_sha256}  /tmp/$${runner_archive}" | sha256sum -c -
       sudo -u github-runner tar -xzf "/tmp/$${runner_archive}" -C /opt/actions-runner
       /opt/actions-runner/bin/installdependencies.sh
       systemctl daemon-reload
       systemctl enable --now qpi-private-runner-autoshutdown.timer
+      fetch https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i /opt/yandex-cloud -n
+      ln -sf /opt/yandex-cloud/bin/yc /usr/local/bin/yc
+      fetch https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL=/usr/local/bin sh
+      fetch -o /tmp/psqldef.tar.gz \
+        "https://github.com/sqldef/sqldef/releases/download/v$${PSQLDEF_VERSION#v}/psqldef_linux_amd64.tar.gz"
+      echo "${psqldef_sha256}  /tmp/psqldef.tar.gz" | sha256sum -c -
+      tar -xzf /tmp/psqldef.tar.gz -C /tmp
+      install -m 0755 /tmp/psqldef /usr/local/bin/psqldef
     '
