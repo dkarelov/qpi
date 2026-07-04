@@ -8,10 +8,17 @@ mkdir -p "${target_dir}"
 download_url="$(
   python3 - <<'PY'
 import json
+import os
 import urllib.request
 
 url = "https://api.github.com/repos/rhysd/actionlint/releases/latest"
-with urllib.request.urlopen(url) as response:
+request = urllib.request.Request(url)
+token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+if token:
+    # Unauthenticated GitHub API calls hit the shared-IP rate limit on
+    # hosted runners.
+    request.add_header("Authorization", f"Bearer {token}")
+with urllib.request.urlopen(request) as response:
     payload = json.load(response)
 
 for asset in payload["assets"]:
