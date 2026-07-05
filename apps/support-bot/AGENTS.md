@@ -1,7 +1,5 @@
 # Support Bot AGENTS
 
-Last updated: 2026-06-20 UTC
-
 ## Scope
 
 - `apps/support-bot/upstream` is a qpi-owned Python fork/import of `DefaultPerson/telegram-support-bot`.
@@ -67,5 +65,6 @@ Last updated: 2026-06-20 UTC
 
 - Upstream updates are manual, not automatic.
 - Imported upstream source: `https://github.com/DefaultPerson/telegram-support-bot`.
-- Current imported upstream commit: `b74e7b73107ea1f59cc05b878a488470fc84bd6b`.
+- Current imported upstream split: `db5edbeebec4e0ed6c553700c871d8f11c793be5`.
 - Apply future upstream changes selectively inside the qpi fork and keep qpi behavior/tests authoritative.
+- `apps/support-bot/upstream/README.md` is a qpi fork note, not an upstream runbook. Keep qpi runtime instructions in this file and `apps/support-bot/README.local.md`.

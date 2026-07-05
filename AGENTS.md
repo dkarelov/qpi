@@ -34,7 +34,9 @@ explicitly says to stop before that stage.
 | `docs/product/requirements.md` | Product scope, functional rules per area (seller, buyer, lifecycle, admin/finance, WB, Telegram UX, money/FX) | changing behavior in that feature area |
 | `docs/architecture.md` | Component map with decision-bearing annotations | locating ownership of a behavior |
 | `docs/ops/devops.md` | Infra state, CI/CD architecture, deploy/runner/Terraform runbooks, operational gotchas | task touches `.github/**`, `scripts/deploy/**`, `infra/**`, runner/VM/network, production schema, logs, incidents |
+| `docs/ops/qpi-postgres-mcp.md` | qpi-specific read-only production PostgreSQL MCP architecture and setup | production read-only DB inspection from Codex |
 | `docs/dev_workflow.md` | Full test/deploy runbooks: tunnels, DB credentials, reset paths, private runner lifecycle, troubleshooting | running DB-backed validation or manual deploys |
+| `apps/support-bot/README.local.md` | Companion support-bot runtime, local validation, deploy, and live verification | task touches `apps/support-bot/**` |
 | `docs/backlog.md` | Open items and deliberately deferred improvements | planning follow-up work |
 | `docs/adr/` | Recorded architectural decisions | working in an area an ADR touches |
 | `docs/agents/issue-tracker.md` | Issues/PRDs in GitHub Issues for `dkarelov/qpi` | triaging or filing issues |
@@ -102,7 +104,7 @@ Rules:
 - Destructive migration smoke runs only against disposable DB names (`scratch|tmp|disposable`).
 - Do not treat a bot deployment as successful unless schema apply and seller/buyer `/start` smoke checks both pass.
 
-## Security: Accepted MVP Risks and Mandatory Controls
+## Security: Accepted Risks and Mandatory Controls
 
 Accepted risks:
 

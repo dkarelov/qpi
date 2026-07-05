@@ -6,7 +6,7 @@ Status: accepted
 
 The marketplace bot has accumulated buyer, seller, and admin behavior inside the Telegram runtime. That made the runtime responsible for python-telegram-bot adaptation, user-facing Russian copy, prompt progression, button layout, domain calls, and domain error mapping at the same time.
 
-The first extraction, seller listing creation, showed the desired direction: role behavior can be tested through transport-neutral results while the runtime stays responsible for executing Telegram operations. The next planned slices are shared withdrawal handling, buyer marketplace behavior, and admin exceptions.
+The first extraction, seller listing creation, showed the desired direction: role behavior can be tested through transport-neutral results while the runtime stays responsible for executing Telegram operations. The same seam now carries shared withdrawal handling, buyer marketplace behavior, and admin exceptions.
 
 ## Decision
 

@@ -129,7 +129,7 @@ Suite cost and disposable DB model:
 - The supported local bootstrap path is `scripts/dev/write_test_env.sh`, which derives the current app DB credentials from local Terraform outputs and writes a gitignored `.env.test.local`.
 - Use one of these concrete patterns:
   - local tunnel: `postgresql://<app-user>:<password>@127.0.0.1:15432/qpi_test`
-  - private runner / DB VM: `postgresql://<app-user>:<password>@10.131.0.28:5432/qpi_test`
+  - private runner / DB VM: `postgresql://<app-user>:<password>@<db-private-ip>:5432/qpi_test`
 - In `--mode tunnel`, the helper also writes `QPI_DB_VM_HOST` and `QPI_DB_VM_SSH_PROXY_HOST=<bot-public-ip>` so the DB reset helper can SSH to the private DB VM through the bot VM.
 - In GitHub Actions private-runner jobs, the same values come from repo secrets `TEST_DATABASE_URL` and `TEST_SCRATCH_DATABASE_URL`.
 - Do not invent credentials. If you do not have the real app DB user/password in the current environment, run `fast` only or obtain the value from the operator's secure secret source before continuing.
@@ -142,18 +142,22 @@ scripts/dev/write_test_env.sh --mode tunnel
 source .env.test.local
 
 ssh -fNT -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-  -i ~/.ssh/id_rsa -L 127.0.0.1:15432:10.131.0.28:5432 ubuntu@158.160.187.114
+  -i ~/.ssh/id_rsa \
+  -L 127.0.0.1:15432:"${QPI_DB_VM_HOST}":5432 \
+  "ubuntu@${QPI_DB_VM_SSH_PROXY_HOST}"
 ```
 
 If SSH connects to the bot VM but stalls during key exchange, retry with the explicit algorithms below before debugging credentials or security groups:
 
 ```bash
 ssh -o KexAlgorithms=curve25519-sha256 -o HostKeyAlgorithms=ssh-ed25519 \
-  -i ~/.ssh/id_rsa ubuntu@158.160.187.114
+  -i ~/.ssh/id_rsa "ubuntu@${QPI_DB_VM_SSH_PROXY_HOST}"
 
 ssh -fNT -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
   -o KexAlgorithms=curve25519-sha256 -o HostKeyAlgorithms=ssh-ed25519 \
-  -i ~/.ssh/id_rsa -L 127.0.0.1:15432:10.131.0.28:5432 ubuntu@158.160.187.114
+  -i ~/.ssh/id_rsa \
+  -L 127.0.0.1:15432:"${QPI_DB_VM_HOST}":5432 \
+  "ubuntu@${QPI_DB_VM_SSH_PROXY_HOST}"
 ```
 
 Local shared-db path for ad-hoc work:
@@ -198,8 +202,8 @@ scripts/dev/kill-stuck-tests.sh
 The canonical full-suite path runs on the private runner:
 
 ```bash
-TEST_DATABASE_URL=postgresql://<user>:<password>@10.131.0.28:5432/qpi_test \
-QPI_DB_VM_HOST=10.131.0.28 \
+scripts/dev/write_test_env.sh --mode private
+source .env.test.local
 scripts/dev/run_db_tests_on_runner.sh all
 ```
 
@@ -226,7 +230,7 @@ The private runner VM is:
 
 Non-obvious runner details:
 
-- The runner public IP is ephemeral NAT, not a reserved static address. Resolve it through `yc` or `scripts/deploy/private_runner.sh status`; do not hardcode it in scripts/docs.
+- The runner is private-only and should not have a public IP. Resolve the current private address through `yc` or `scripts/deploy/private_runner.sh status`; do not hardcode runner ids or addresses in scripts/docs.
 - GitHub secrets for SSH keys are best stored as base64-encoded private key material. The scripts can decode raw, escaped, or base64 keys, but base64 is the stable GitHub Actions path.
 - The runner can auto-update its own GitHub runner binary on first use after a new upstream release. That can cause one short restart before it reports `online` again.
 
@@ -258,7 +262,7 @@ Implementation notes:
 - reusable workflow `.github/workflows/_fast_validation.yml` is the single source of truth for the GitHub-hosted fast-validation sequence,
 - `.github/actionlint.yaml` must list the custom `qpi-private` runner label or `actionlint` will fail on every self-hosted workflow reference,
 - runner registration is kept warm by the weekly keepalive workflow,
-- runner cloud-init preinstalls `yc`, `uv`, and `psqldef` for steady-state self-hosted jobs,
+- runner cloud-init preinstalls `yc`, `uv`, `psqldef`, and the autoshutdown controller for steady-state self-hosted jobs,
 - the post-merge workflow intentionally ignores docs-only (`AGENTS.md`, `docs/**`), workflow-only, test-only, and `scripts/dev/**` changes so those validate in PR CI without causing automatic deployments on `main`,
 - `scripts/deploy/private_runner.sh ensure-ready` refreshes the autoshutdown controller, heartbeats it, and schedules a max-session shutdown failsafe before jobs begin,
 - if the runner VM is already running, SSH works, the GitHub runner is registered/online, and the local service is active, `ensure-ready` skips runner reinstall/reconfigure/start,
@@ -448,7 +452,7 @@ Deploy wrapper failures:
 
 GitHub Actions warnings:
 
-- `Node 20` deprecation warnings in workflow logs are about GitHub-provided JavaScript actions such as `actions/checkout` and `actions/setup-python`, not about the QPI application stack. They are non-blocking for now but should be cleaned up by moving to action releases that support the newer Node runtime.
+- Runner Node-runtime deprecation warnings are about GitHub-provided JavaScript actions such as `actions/checkout`, `actions/setup-python`, or artifact actions, not about the QPI Python application stack. Check action major versions before changing app/runtime assumptions.
 
 Function deploy vs Terraform deploy:
 

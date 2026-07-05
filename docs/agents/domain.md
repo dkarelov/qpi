@@ -1,39 +1,25 @@
 # Domain Docs
 
-How the engineering skills should consume this repo's domain documentation when exploring the codebase.
+Agent-facing guidance for using qpi's domain documentation.
 
-## Before exploring, read these
+## Read Order
 
-- **`CONTEXT.md`** at the repo root, or
-- **`CONTEXT-MAP.md`** at the repo root if it exists — it points at one `CONTEXT.md` per context. Read each one relevant to the topic.
-- **`docs/adr/`** — read ADRs that touch the area you're about to work in. In multi-context repos, also check `src/<context>/docs/adr/` for context-scoped decisions.
+1. Read root `CONTEXT.md` for the domain vocabulary before naming concepts.
+2. Read `docs/product/requirements.md` for current product behavior in the feature area.
+3. Read ADRs in `docs/adr/` that touch the area being changed.
 
-If any of these files don't exist, proceed silently. The producer skill (`/grill-with-docs`) creates them lazily when terms or decisions actually get resolved.
+## Vocabulary
 
-## File structure
+Use the terms from `CONTEXT.md` in explanations, issues, PRDs, and new docs.
+Do not drift to avoided synonyms such as `task` for Purchase or `ticket` for
+Support Topic unless you are explicitly referring to code identifiers or old
+historical artifacts.
 
-Single-context repo:
+If the concept you need is not in `CONTEXT.md`, add a small follow-up note or
+update the glossary in the same change that introduces the term.
 
-```text
-/
-├── CONTEXT.md
-└── docs/adr/
-```
+## ADR Conflicts
 
-Multi-context repo:
-
-```text
-/
-├── CONTEXT-MAP.md
-└── src/<context>/CONTEXT.md
-```
-
-## Use the glossary's vocabulary
-
-When output names a domain concept, use the term as defined in `CONTEXT.md`. Don't drift to synonyms the glossary explicitly avoids.
-
-If the concept you need isn't in the glossary yet, either reconsider the language or note the gap for `/grill-with-docs`.
-
-## Flag ADR conflicts
-
-If output contradicts an existing ADR, surface it explicitly rather than silently overriding.
+If a proposed change contradicts an existing ADR, surface the conflict and either
+update the ADR or record a new superseding decision. Do not silently override a
+recorded decision in code or product docs.

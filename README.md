@@ -1,15 +1,15 @@
-# QPI Phase 7 Live Telegram Baseline
+# QPI
 
-This repository includes the marketplace bot runtime, Cloud Functions, plain-SQL domain layer, `psqldef` schema management, the dedicated private CI/deploy runner path, the vendored companion support-bot app under [apps/support-bot](/home/darker/dkarelov/qpi/apps/support-bot), and the operational rules described in [AGENTS.md](/home/darker/dkarelov/qpi/AGENTS.md).
+QPI is a Telegram marketplace where WB sellers fund buyer cashback in USDT. The
+repo contains the marketplace bot runtime, scheduled Cloud Functions, plain-SQL
+domain layer, PostgreSQL schema tooling, Terraform, CI/deploy wrappers, and the
+companion support-bot runtime under [apps/support-bot](apps/support-bot).
 
-## Current Marketplace Notes
-
-- Buyer setup tokens keep their typed/product-bearing format; buyer order and review confirmation tokens are compact and use the immutable assignment `task_uuid`.
-- Confirmation tokens that include `token_type` or `wb_product_id` are rejected; those fields belong only to setup tokens.
-- Cashback unlock now requires both WB pickup and buyer review confirmation.
-- Automatic review verification only succeeds when the token matches the assignment, the review score is `5`, and every required review phrase is present in the review text.
-- Failed automatic review verification leaves the purchase in `picked_up_wait_review`; the buyer must either correct the review and resubmit the token or contact support.
-- Admins can manually verify a blocked review token from `⚠️ Исключения`, which moves the assignment to `picked_up_wait_unlock` with audit logging.
+Use [AGENTS.md](AGENTS.md) for repo operating rules, [CONTEXT.md](CONTEXT.md)
+for domain vocabulary, [docs/product/requirements.md](docs/product/requirements.md)
+for product behavior, [docs/architecture.md](docs/architecture.md) for code
+ownership, and [docs/dev_workflow.md](docs/dev_workflow.md) for validation and
+deploy runbooks.
 
 ## Local Setup
 
@@ -20,76 +20,58 @@ uv sync --frozen --extra dev
 cp .env.example .env
 ```
 
-`.venv` remains the runtime environment path, but it is managed by `uv`. `pyproject.toml` + `uv.lock` are authoritative. `requirements.txt` is generated only for Cloud Function/Terraform compatibility.
+`.venv` is managed by `uv`. `pyproject.toml` and `uv.lock` are authoritative;
+`requirements.txt` is generated from the lockfile only for Cloud
+Function/Terraform compatibility.
 
-Companion support-bot local prerequisites:
-
-- use the repo-local uv-managed Python environment,
-- verify `docker compose version` if you need the local Redis sidecar.
-
-## Local Commands
-
-Fast suites:
-
-```bash
-scripts/dev/test.sh fast
-```
-
-Shared local test DB path for ad-hoc work:
-
-```bash
-TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
-scripts/dev/test.sh integration
-
-TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
-scripts/dev/test.sh schema-compat
-
-TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
-scripts/dev/test.sh migration-smoke
-```
-
-If stale local sessions block resets:
-
-```bash
-TEST_DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:15432/qpi_test \
-scripts/dev/kill-stuck-tests.sh
-```
-
-Support-bot validation:
+Companion support-bot work uses the nested uv project:
 
 ```bash
 cd apps/support-bot/upstream
 uv sync --locked
 uv run ruff check .
-uv run pytest -q
+uv run mypy app/config.py app/bot/storage.py app/bot/support_context.py app/bot/support_runtime.py app/bot/support_topics.py app/bot/newsletter.py app/bot/postgres_smoke.py app/bot/telegram_client.py
+uv run pytest
 ```
 
-Local Redis for support-bot:
+See [apps/support-bot/README.local.md](apps/support-bot/README.local.md) for
+local Redis, environment variables, and deploy details.
+
+## Validation
+
+Default local path, no DB required:
 
 ```bash
-docker compose -f apps/support-bot/compose.dev.yml up -d
+scripts/dev/test.sh fast
 ```
 
-## Private Runner DB Validation
-
-The canonical DB-backed path runs on the dedicated private self-hosted GitHub runner, not over the workstation tunnel.
+Targeted validation for changed files:
 
 ```bash
-TEST_DATABASE_URL=postgresql://<user>:<password>@10.131.0.28:5432/qpi_test \
-QPI_DB_VM_HOST=10.131.0.28 \
+scripts/dev/test.sh affected --base HEAD~1 --head HEAD
+scripts/dev/test.sh affected --paths services/bot_api/telegram_runtime.py
+```
+
+DB-backed local runs require a real disposable test database. Bootstrap the
+gitignored env file from current Terraform outputs before using them:
+
+```bash
+scripts/dev/write_test_env.sh --mode tunnel
+scripts/dev/test.sh doctor
+scripts/dev/test.sh integration
+scripts/dev/test.sh schema-compat
+scripts/dev/test.sh migration-smoke
+```
+
+The full DB-backed gate is the private runner path:
+
+```bash
 scripts/dev/run_db_tests_on_runner.sh all
 ```
 
-That script:
+## Deploy Entrypoints
 
-- reads the checked-in DB suite manifests,
-- recreates disposable test DBs through the DB VM admin path,
-- reapplies schema before each file/batch,
-- runs ordinary integration, schema-compat, and migration smoke in isolation.
-
-## Direct Deploys
-
-Code-only runtime deploy to the bot VM:
+Marketplace runtime:
 
 ```bash
 GH_TOKEN="$(gh auth token)" \
@@ -101,9 +83,10 @@ TOKEN_CIPHER_KEY=<cipher-key> \
 scripts/deploy/runtime.sh
 ```
 
-The marketplace runtime defaults to `TELEGRAM_UPDATE_MODE=polling`. Webhook mode is an explicit fallback only.
+The marketplace runtime defaults to `TELEGRAM_UPDATE_MODE=polling`; webhook mode
+is an explicit fallback only.
 
-Code-only Cloud Function deploy:
+Cloud Function:
 
 ```bash
 GH_TOKEN="$(gh auth token)" \
@@ -112,37 +95,36 @@ YC_TOKEN="$(yc config get token)" \
 scripts/deploy/function.sh daily_report_scrapper
 ```
 
-Intentional infra changes still go through Terraform:
+Schema:
+
+```bash
+BOT_VM_HOST="$(terraform -chdir=infra output -raw bot_public_ip)" \
+scripts/deploy/schema_remote.sh apply
+```
+
+Support bot:
+
+```bash
+scripts/deploy/support_bot.sh cr.yandex/<registry-id>/support-bot:<sha>
+```
+
+Intentional infrastructure changes remain Terraform-only:
 
 ```bash
 GH_TOKEN="$(gh auth token)" YC_TOKEN="$(yc config get token)" \
 terraform -chdir=infra plan
 ```
 
-Use Terraform only for intentional infra mutations. If only Python/runtime code changed, use the direct deploy wrappers.
-
-Schema-affecting changes must be applied before runtime/function rollout:
-
-```bash
-BOT_VM_HOST=<host> \
-scripts/deploy/schema_remote.sh apply
-```
-
-Post-merge deploy preflight will fail on runtime/function rollout while production schema still drifts from [schema/schema.sql](/home/darker/dkarelov/qpi/schema/schema.sql).
-
-Support-bot deploys use the dedicated support-bot workflow or `scripts/deploy/support_bot.sh` from a runner/private-network context; they do not go through the marketplace runtime wrapper.
-
 ## CI / Runner Model
 
-The repository now assumes:
-
-- `fast` runs on GitHub-hosted runners,
-- DB-backed validation and code-only deploys run on a dedicated preemptible private runner VM,
-- support-bot CI runs on GitHub-hosted runners with uv/Python checks,
-- support-bot auto-deploys reuse the same private runner but stay isolated from qpi Python workflows,
-- GitHub-hosted bootstrap jobs start that VM on demand,
-- a weekly keepalive workflow starts the runner briefly and then powers it down again.
+CI uses GitHub-hosted runners for fast validation and support-bot Python checks.
+DB-backed marketplace validation, production schema sync, and private-network
+rollouts use the on-demand `qpi-private` self-hosted runner. Post-merge deploy
+classification lives in `scripts/common/detect_ci_changes.sh` and
+`scripts/dev/validation_groups.json`.
 
 ## More Detail
 
-See [docs/dev_workflow.md](/home/darker/dkarelov/qpi/docs/dev_workflow.md) for the private runner lifecycle, DB suite manifests, deploy wrapper behavior, and troubleshooting notes.
+See [docs/dev_workflow.md](docs/dev_workflow.md) for local validation, private
+runner lifecycle, DB suite manifests, deploy wrapper behavior, and
+troubleshooting.

@@ -6,7 +6,7 @@ This directory contains the qpi-owned Python support-bot runtime imported from `
 
 - Repository: `https://github.com/DefaultPerson/telegram-support-bot`
 - Imported source lives in `apps/support-bot/upstream`
-- Current imported upstream commit: `b74e7b73107ea1f59cc05b878a488470fc84bd6b`
+- Current imported upstream split: `db5edbeebec4e0ed6c553700c871d8f11c793be5`
 - Upstream updates are manual. Reconcile future upstream commits selectively into this fork and keep qpi tests authoritative.
 
 ## Runtime model
@@ -102,8 +102,10 @@ Cutover behavior:
 ## Live verification
 
 ```bash
-yc compute instance-group list-instances --name qpi-support-bot-ig --folder-id b1gmeblqlrrvm912n1uq
-ssh -o ProxyCommand="ssh -i ~/.ssh/id_rsa -W %h:%p ubuntu@<qpi-bot-public-ip>" -i ~/.ssh/id_rsa ubuntu@<support-bot-private-ip>
+YC_FOLDER_ID=<folder-id>
+BOT_VM_HOST="$(terraform -chdir=infra output -raw bot_public_ip)"
+yc compute instance-group list-instances --name qpi-support-bot-ig --folder-id "${YC_FOLDER_ID}"
+ssh -o ProxyCommand="ssh -i ~/.ssh/id_rsa -W %h:%p ubuntu@${BOT_VM_HOST}" -i ~/.ssh/id_rsa ubuntu@<support-bot-private-ip>
 readlink -f /opt/support-bot/current
 systemctl is-active support-bot.service
 sudo docker inspect -f '{{.Config.Image}}' current-supportbot-1

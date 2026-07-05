@@ -6,7 +6,11 @@ Accepted.
 
 ## Context
 
-The previous qpi companion support bot depended on an abandoned upstream and modeled support as a private staff queue with Mongo-backed ticket state. The replacement target is `DefaultPerson/telegram-support-bot`, imported into `apps/support-bot/upstream` as a qpi-owned Python fork at upstream commit `b74e7b73107ea1f59cc05b878a488470fc84bd6b`.
+The previous qpi companion support bot depended on an abandoned upstream and
+modeled support as a private staff queue with Mongo-backed ticket state. The
+replacement target is `DefaultPerson/telegram-support-bot`, imported into
+`apps/support-bot/upstream` as a qpi-owned Python fork at subtree split
+`db5edbeebec4e0ed6c553700c871d8f11c793be5`.
 
 Telegram forum topics are now the better operator interface for support because staff can work inside the existing supergroup with native per-user threading.
 
@@ -32,6 +36,6 @@ The bot uses `SUPPORT_BOT_GROUP_ID` for the topic-enabled support supergroup. Th
 
 Runtime handlers use the Support Topic service seam for private-user delivery, staff replies, topic reopen/recreate, and lifecycle controls. Release archives do not retain `.env`; rollout uploads the env file separately and installs it with owner-only permissions.
 
-old Mongo data, `/open`, orphan-ticket recovery, old ticket ids, and old queue behavior are out of scope for the new runtime. If old production artifacts are needed for audit, treat them as historical backups outside the active application path.
+Old Mongo data, `/open`, orphan-ticket recovery, old ticket ids, and old queue behavior are out of scope for the new runtime. If old production artifacts are needed for audit, treat them as historical backups outside the active application path.
 
 End-user communication stays Russian. Staff commands and operational metadata can remain English.

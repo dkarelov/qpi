@@ -10,7 +10,7 @@ ownership of a behavior or understand a module boundary; product rules live in
 - `services/daily_report_scrapper`: Cloud Function, hourly WB report sync.
 - `services/order_tracker`: Cloud Function, 5-minute assignment lifecycle orchestrator.
 - `services/blockchain_checker`: Cloud Function, 5-minute seller collateral top-up matcher and withdrawal payout verifier.
-- `services/worker`: placeholder runtime (legacy/no critical ownership).
+- `services/worker`: minimal placeholder CLI with no critical production ownership.
 - `apps/support-bot/*`: companion private-only long-polling Support Topic stack with vendored Python upstream app, local Docker/compose overlay, and dedicated deploy workflow.
 
 ## Shared layers
@@ -26,7 +26,7 @@ ownership of a behavior or understand a module boundary; product rules live in
 - `libs/db/*`: pool and schema tooling.
 - `services/bot_api/seller_listing_creation_flow.py`: transport-neutral seller listing creation flow shared by button UX and `/listing_create`; the Telegram runtime maps its effects to Telegram.
 - `services/bot_api/presentation.py`: shared transport-neutral presentation helpers for bot Screens — screen text and title decoration, money/date/status formatting, cashback percent math, withdrawal request/history blocks, buyer listing detail HTML, review-phrase text, and numbered pagination button layout; used by the Telegram runtime and all role flows (tests in `tests/test_presentation.py`).
-- `services/bot_api/transport_effects.py`: shared transport-neutral effect vocabulary for role flows; `TelegramWebhookRuntime` remains the named Telegram adapter that executes those effects in polling or explicit webhook mode. `SetPrompt.role`, when set, intentionally overrides executor `default_role` for the stored prompt context.
+- `services/bot_api/transport_effects.py`: shared transport-neutral effect vocabulary for role flows; `TelegramWebhookRuntime` is the existing Telegram adapter class name even though polling is the default runtime mode. `SetPrompt.role`, when set, intentionally overrides executor `default_role` for the stored prompt context.
 - `services/bot_api/withdrawal_flow.py`: shared transport-neutral seller/buyer withdrawal request creation and cancellation flow; the Telegram runtime supplies role-specific account and TON validation adapters.
 - `services/bot_api/buyer_marketplace_flow.py`: transport-neutral buyer marketplace and purchase lifecycle flow for dashboard, knowledge screens, saved shops, shop catalog, announcement detail, buyer balance and withdrawal history screens, reservation, proof/review submission, and purchase cancellation screens.
 - `services/bot_api/admin_exceptions_flow.py`: transport-neutral admin exception flow for blocked buyer review confirmations, seller deposit anomalies, manual review verification, deposit attach, and expired invoice cancellation prompts.

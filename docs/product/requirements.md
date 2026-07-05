@@ -16,7 +16,7 @@ history or superseded evolution notes here.
 
 Domain vocabulary (English terms, avoided synonyms, relationships) lives in root `CONTEXT.md`.
 
-## 1. Product Scope (Current MVP)
+## 1. Product Scope
 
 Goal:
 
@@ -38,7 +38,7 @@ In scope:
 - Scheduled CF automation for WB report sync, order tracking, and collateral deposit matching.
 - Manual admin override paths for exceptions.
 
-Out of scope (MVP):
+Out of scope:
 
 - Disputes.
 - Advanced custody model (multisig/HSM/KMS-backed wallet signing).
@@ -242,7 +242,7 @@ Transitions:
   - full received amount is credited.
 - Partial/late payments:
   - route to `manual_review` for admin action.
-- MVP shard strategy:
+- Current shard strategy:
   - one shard address is enabled by default.
 
 ### 2.6 WB token and report rules
