@@ -65,6 +65,8 @@ Documentation rules:
 - Infrastructure mutations are Terraform-only from `infra/`.
 - Marketplace bot runtime uses Telegram long polling by default through the configured outbound Telegram proxies. Webhook mode remains available only as an explicit fallback with `TELEGRAM_UPDATE_MODE=webhook` and valid webhook settings.
 - Companion support-bot runtime uses long polling and remains private-only.
+- Marketplace Telegram role behavior belongs in transport-neutral role-flow modules. The Telegram runtime normalizes
+  updates, bootstraps users, routes supported commands, persists prompt state, and executes transport effects.
 - Seller and buyer slash-command adapters (`services/bot_api/seller_handlers.py`, `services/bot_api/buyer_handlers.py`, in-chat command dispatch, and `--seller-command` / `--buyer-command`) are supported interfaces, not legacy-only tooling; changes to shared bot flows must update these adapters in the same change whenever the operation remains available by command.
 - `SUPPORT_BOT_USERNAME` is an optional marketplace bot runtime env var; when set, seller/buyer screens can build deep links into the support-bot using the public-ref contract in `docs/product/requirements.md`.
 - Expected load target: ~100 concurrent users.

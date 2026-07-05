@@ -6,11 +6,16 @@ Status: accepted
 
 The marketplace bot has accumulated buyer, seller, and admin behavior inside the Telegram runtime. That made the runtime responsible for python-telegram-bot adaptation, user-facing Russian copy, prompt progression, button layout, domain calls, and domain error mapping at the same time.
 
-The first extraction, seller listing creation, showed the desired direction: role behavior can be tested through transport-neutral results while the runtime stays responsible for executing Telegram operations. The same seam now carries shared withdrawal handling, buyer marketplace behavior, and admin exceptions.
+The first extraction, seller listing creation, showed the desired direction: role behavior can be tested through
+transport-neutral results while the runtime stays responsible for executing Telegram operations. The same seam now
+carries seller marketplace behavior, shared withdrawal handling, buyer marketplace behavior, and admin exceptions.
 
 ## Decision
 
 Marketplace Telegram behavior is split between role-flow modules and the Telegram runtime.
+
+Current role-flow modules include seller listing creation, seller marketplace, buyer marketplace, shared withdrawal
+handling, and admin exceptions.
 
 Role-flow modules own:
 
@@ -43,5 +48,6 @@ This gives each role-flow module a deeper interface: callers submit semantic inp
 - Existing callback names and prompt names stay stable unless a product change explicitly requires otherwise.
 - Role-flow modules should not import python-telegram-bot types.
 - The shared transport-effect vocabulary belongs near the bot runtime, not in domain modules.
-- The effect executor can remain runtime-local until multiple role-flow modules exercise the seam.
+- The effect executor remains runtime-local; role-flow modules return transport-neutral effects and do not execute
+  Telegram operations directly.
 - Tests should prefer the role-flow interface for role behavior and the runtime adapter tests for Telegram effect execution.
