@@ -608,6 +608,11 @@ case "${command_name}" in
         cat "${housekeeping_log}" >&2
       fi
       housekeeping_pid=""
+      # The VM can have died mid-flow (preemption, autoshutdown race);
+      # restart it and re-establish SSH before touching the runner agent.
+      start_instance
+      wait_for_ssh
+      sync_autoshutdown_controller
       install_or_reconfigure_runner
       qpi_phase_end
       qpi_phase_start "runner_online_retry"

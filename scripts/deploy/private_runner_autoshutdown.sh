@@ -146,6 +146,14 @@ idle_check() {
 
   stamp_epoch="$(last_activity_epoch)"
   now="$(date +%s)"
+  boot_epoch="$((now - $(cut -d. -f1 /proc/uptime)))"
+  if [[ "${stamp_epoch}" -lt "${boot_epoch}" ]]; then
+    # The stamp predates this boot (persisted from a previous session);
+    # counting it as idle time would shut a freshly started VM down before
+    # it can pick up work. Every boot gets a full idle window.
+    heartbeat
+    exit 0
+  fi
   idle_seconds="$((IDLE_MINUTES * 60))"
   age_seconds="$((now - stamp_epoch))"
   if [[ "${age_seconds}" -lt "${idle_seconds}" ]]; then
