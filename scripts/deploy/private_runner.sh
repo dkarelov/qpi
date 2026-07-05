@@ -335,6 +335,7 @@ remote_exec() {
   ssh \
     -p "${PRIVATE_RUNNER_SSH_PORT}" \
     -i "${ssh_key_path}" \
+    -o ConnectTimeout=10 \
     -o StrictHostKeyChecking=accept-new \
     -o ServerAliveInterval=30 \
     -o ServerAliveCountMax=3 \
@@ -582,13 +583,8 @@ case "${command_name}" in
     start_instance
     qpi_phase_end
 
-    # Housekeeping (legacy shutdown cancel, autoshutdown heartbeat/refresh) runs
-    # over SSH in parallel with the runner-online poll; the baked systemd units
-    # bring the runner agent up at boot without any SSH on the happy path.
-    housekeeping_log="$(mktemp)"
-    (wait_for_ssh && sync_autoshutdown_controller) >"${housekeeping_log}" 2>&1 &
-    housekeeping_pid="$!"
-
+    # The baked systemd units bring the runner agent up at boot, so the happy
+    # path needs no SSH beyond one housekeeping call after the online poll.
     runner_is_online=0
     if [[ "${PRIVATE_RUNNER_FORCE_RECONFIGURE:-0}" != "1" ]] && runner_exists; then
       qpi_phase_start "runner_online"
@@ -598,15 +594,15 @@ case "${command_name}" in
       qpi_phase_end
     fi
 
-    if [[ "${runner_is_online}" != "1" ]]; then
+    if [[ "${runner_is_online}" == "1" ]]; then
+      qpi_phase_start "housekeeping"
+      wait_for_ssh
+      sync_autoshutdown_controller
+      qpi_phase_end
+    else
       echo "Runner is not online after instance start; attempting reconfigure." >&2
       dump_diagnostics >&2 || true
       qpi_phase_start "reconfigure"
-      if ! wait "${housekeeping_pid}"; then
-        echo "Housekeeping failed before reconfigure:" >&2
-        cat "${housekeeping_log}" >&2
-      fi
-      housekeeping_pid=""
       # The VM can have died mid-flow (preemption, autoshutdown race);
       # restart it and re-establish SSH before touching the runner agent.
       start_instance
@@ -622,16 +618,6 @@ case "${command_name}" in
       fi
       qpi_phase_end
     fi
-
-    if [[ -n "${housekeeping_pid}" ]]; then
-      if ! wait "${housekeeping_pid}"; then
-        cat "${housekeeping_log}" >&2
-        echo "Runner housekeeping (shutdown cancel / autoshutdown sync) failed." >&2
-        exit 1
-      fi
-    fi
-    cat "${housekeeping_log}"
-    rm -f "${housekeeping_log}"
 
     print_status
     qpi_emit_timing_summary "Private Runner Ensure-Ready"

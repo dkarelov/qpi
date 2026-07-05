@@ -238,7 +238,7 @@ def test_private_runner_ensure_ready_polls_online_first_and_reconfigures_with_di
     assert ensure_block.index("wait_for_runner_online") < ensure_block.index("install_or_reconfigure_runner")
     assert "runner_online_retry" in ensure_block
     assert "dump_diagnostics" in ensure_block
-    # Housekeeping (legacy shutdown cancel + autoshutdown sync) overlaps the
-    # online poll instead of serializing before it.
+    # Housekeeping (legacy shutdown cancel + autoshutdown sync) runs serially
+    # after the online poll on both the happy and the reconfigure path.
     assert "sync_autoshutdown_controller" in ensure_block
     assert "qpi_emit_timing_summary" in ensure_block
