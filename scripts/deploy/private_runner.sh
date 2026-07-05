@@ -29,6 +29,9 @@ For ensure-ready:
 Optional environment:
   PRIVATE_RUNNER_SSH_USER (default: ubuntu)
   PRIVATE_RUNNER_SSH_PORT (default: 22)
+  PRIVATE_RUNNER_SSH_PROXY_HOST (jump host for SSH to the runner private IP)
+  PRIVATE_RUNNER_SSH_PROXY_USER (default: ubuntu)
+  PRIVATE_RUNNER_SSH_PROXY_PORT (default: 22)
   PRIVATE_RUNNER_NAME (default: PRIVATE_RUNNER_INSTANCE_NAME)
   PRIVATE_RUNNER_LABELS (default: qpi-private,qpi-deploy)
   PRIVATE_RUNNER_SYSTEM_USER (default: github-runner)
@@ -83,6 +86,8 @@ configure_yc_cli
 
 PRIVATE_RUNNER_SSH_USER="${PRIVATE_RUNNER_SSH_USER:-ubuntu}"
 PRIVATE_RUNNER_SSH_PORT="${PRIVATE_RUNNER_SSH_PORT:-22}"
+PRIVATE_RUNNER_SSH_PROXY_USER="${PRIVATE_RUNNER_SSH_PROXY_USER:-ubuntu}"
+PRIVATE_RUNNER_SSH_PROXY_PORT="${PRIVATE_RUNNER_SSH_PROXY_PORT:-22}"
 PRIVATE_RUNNER_NAME="${PRIVATE_RUNNER_NAME:-${PRIVATE_RUNNER_INSTANCE_NAME}}"
 PRIVATE_RUNNER_LABELS="${PRIVATE_RUNNER_LABELS:-qpi-private,qpi-deploy}"
 PRIVATE_RUNNER_SYSTEM_USER="${PRIVATE_RUNNER_SYSTEM_USER:-github-runner}"
@@ -325,35 +330,50 @@ start_instance() {
 }
 
 remote_exec() {
-  local public_ip
-  public_ip="$(instance_field public_ip)"
-  if [[ -z "${public_ip}" ]]; then
-    echo "Runner public IP is not available." >&2
+  local target_ip
+  local ssh_args
+  local proxy_command
+
+  ssh_args=(
+    -p "${PRIVATE_RUNNER_SSH_PORT}"
+    -i "${ssh_key_path}"
+    -o ConnectTimeout=10
+    -o StrictHostKeyChecking=accept-new
+    -o ServerAliveInterval=30
+    -o ServerAliveCountMax=3
+  )
+
+  if [[ -n "${PRIVATE_RUNNER_SSH_PROXY_HOST:-}" ]]; then
+    # The runner VM has no public IP; reach its private address through the
+    # bot VM jump host (same key material authorizes both hops).
+    target_ip="$(instance_field private_ip)"
+    proxy_command="ssh -i ${ssh_key_path} -p ${PRIVATE_RUNNER_SSH_PROXY_PORT} -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -W %h:%p ${PRIVATE_RUNNER_SSH_PROXY_USER}@${PRIVATE_RUNNER_SSH_PROXY_HOST}"
+    ssh_args+=(-o "ProxyCommand=${proxy_command}")
+  else
+    target_ip="$(instance_field public_ip)"
+  fi
+
+  if [[ -z "${target_ip}" ]]; then
+    echo "Runner IP is not available." >&2
     exit 1
   fi
 
-  ssh \
-    -p "${PRIVATE_RUNNER_SSH_PORT}" \
-    -i "${ssh_key_path}" \
-    -o ConnectTimeout=10 \
-    -o StrictHostKeyChecking=accept-new \
-    -o ServerAliveInterval=30 \
-    -o ServerAliveCountMax=3 \
-    "${PRIVATE_RUNNER_SSH_USER}@${public_ip}" \
-    "$@"
+  # shellcheck disable=SC2029
+  ssh "${ssh_args[@]}" "${PRIVATE_RUNNER_SSH_USER}@${target_ip}" "$@"
 }
 
 wait_for_ssh() {
-  local deadline=$((SECONDS + 600))
+  local timeout_seconds="${1:-600}"
+  local deadline=$((SECONDS + timeout_seconds))
   while [[ "${SECONDS}" -lt "${deadline}" ]]; do
     if remote_exec "true" >/dev/null 2>&1; then
-      return
+      return 0
     fi
     sleep 5
   done
 
   echo "Timed out waiting for SSH on runner instance." >&2
-  exit 1
+  return 1
 }
 
 autoshutdown_env_content() {
@@ -596,8 +616,15 @@ case "${command_name}" in
 
     if [[ "${runner_is_online}" == "1" ]]; then
       qpi_phase_start "housekeeping"
-      wait_for_ssh
-      sync_autoshutdown_controller
+      # Best-effort: the runner's public IP is not reliably reachable from
+      # outside Yandex Cloud, and a registered runner does not need SSH to
+      # serve jobs. The autoshutdown controller is baked into the VM image
+      # and self-heals on the next successful sync or VM recreate.
+      if wait_for_ssh 90 && sync_autoshutdown_controller; then
+        echo "housekeeping completed."
+      else
+        echo "WARNING: housekeeping skipped (runner SSH unreachable from this host); continuing." >&2
+      fi
       qpi_phase_end
     else
       echo "Runner is not online after instance start; attempting reconfigure." >&2
@@ -606,7 +633,7 @@ case "${command_name}" in
       # The VM can have died mid-flow (preemption, autoshutdown race);
       # restart it and re-establish SSH before touching the runner agent.
       start_instance
-      wait_for_ssh
+      wait_for_ssh 600 || exit 1
       sync_autoshutdown_controller
       install_or_reconfigure_runner
       qpi_phase_end

@@ -150,18 +150,6 @@ resource "yandex_vpc_address" "bot_public_ip" {
   }
 }
 
-# Reserved address for the private runner: with ephemeral NAT every VM start
-# is an external-address creation event and counts against the
-# vpc.externalAddressesCreation.rate quota; a reserved address makes starts
-# quota-free attach operations.
-resource "yandex_vpc_address" "runner_public_ip" {
-  folder_id = var.folder_id
-  name      = "${var.project}-runner-ip"
-
-  external_ipv4_address {
-    zone_id = var.zone
-  }
-}
 
 resource "yandex_vpc_gateway" "nat" {
   folder_id = var.folder_id
@@ -405,10 +393,14 @@ resource "yandex_compute_instance" "runner" {
     }
   }
 
+  # No public IP: egress (GitHub API/long-poll, downloads, yc) goes through
+  # the VPC NAT gateway; inbound SSH goes through the bot VM as a jump host.
+  # Ephemeral NAT made every start an external-address creation event (rate
+  # quota), and both a reserved and an ephemeral public IP proved unreliable
+  # toward github.com from some YC ranges.
   network_interface {
-    subnet_id          = data.yandex_vpc_subnet.main.id
-    nat                = true
-    nat_ip_address     = yandex_vpc_address.runner_public_ip.external_ipv4_address[0].address
+    subnet_id          = yandex_vpc_subnet.private.id
+    nat                = false
     security_group_ids = [yandex_vpc_security_group.runner.id]
   }
 

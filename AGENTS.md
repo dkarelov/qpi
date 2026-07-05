@@ -532,7 +532,7 @@ Compute and networking:
 - Support-bot image registry: Terraform-managed Yandex Container Registry (`qpi-support-bot-registry`) with immutable SHA-tagged images under repository `support-bot`.
 - DB VM: private-only (`10.131.0.28`), non-preemptible.
 - Private runner VM: `qpi-private-runner` (`fv47djh2aqv62pq449mq`), preemptible, on-demand, private IP `10.130.0.23`.
-- Private runner public IP is the reserved static address `qpi-runner-ip` (Terraform `yandex_vpc_address.runner_public_ip`); scripts still resolve it dynamically through `yc` rather than hardcoding it.
+- The private runner VM has NO public IP: it lives on the private subnet, egresses through the VPC NAT gateway, and is reached over SSH only via the bot VM jump host (`PRIVATE_RUNNER_SSH_PROXY_HOST`, same key material for both hops).
 - Private subnet: `10.131.0.0/24` with NAT gateway egress.
 
 Serverless functions:
@@ -581,7 +581,7 @@ Code-only deploy rule:
 
 - If only marketplace Python/runtime code changed, use `scripts/deploy/runtime.sh` or `scripts/deploy/function.sh <service>` instead of `terraform apply`.
 - If only support-bot app/runtime code changed, use the support-bot deploy workflow or `scripts/deploy/support_bot.sh` instead of `terraform apply`.
-- The runner VM uses a reserved static external IP. It originally used ephemeral NAT (static-IP quota was exhausted at first rollout), but with ephemeral NAT every VM start is an external-address creation event counted against the undocumented `vpc.externalAddressesCreation.rate` quota; a burst of starts/recreates exhausted it and blocked the runner from booting for hours. Reserved address = quota-free attach on every start.
+- The runner deliberately has no public address. Ephemeral NAT made every VM start an external-address creation event counted against the undocumented `vpc.externalAddressesCreation.rate` quota (a burst of starts/recreates exhausted it and blocked the runner for hours), and both ephemeral and reserved public IPs proved unreliable toward `github.com` from some YC ranges (api.github.com worked while github.com was blackholed, so the agent could neither register nor long-poll). NAT-gateway egress is stable toward GitHub.
 - `ubuntu_2404_lts_image_id` is pinned in Terraform to avoid unrelated bot/DB VM replacements when the Ubuntu family image advances.
 
 ### 7.2 SSH and DB access
