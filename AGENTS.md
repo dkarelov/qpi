@@ -532,7 +532,7 @@ Compute and networking:
 - Support-bot image registry: Terraform-managed Yandex Container Registry (`qpi-support-bot-registry`) with immutable SHA-tagged images under repository `support-bot`.
 - DB VM: private-only (`10.131.0.28`), non-preemptible.
 - Private runner VM: `qpi-private-runner` (`fv47djh2aqv62pq449mq`), preemptible, on-demand, private IP `10.130.0.23`.
-- Private runner public IP is ephemeral NAT and must be resolved dynamically through `yc`, not hardcoded.
+- Private runner public IP is the reserved static address `qpi-runner-ip` (Terraform `yandex_vpc_address.runner_public_ip`); scripts still resolve it dynamically through `yc` rather than hardcoding it.
 - Private subnet: `10.131.0.0/24` with NAT gateway egress.
 
 Serverless functions:
@@ -581,7 +581,7 @@ Code-only deploy rule:
 
 - If only marketplace Python/runtime code changed, use `scripts/deploy/runtime.sh` or `scripts/deploy/function.sh <service>` instead of `terraform apply`.
 - If only support-bot app/runtime code changed, use the support-bot deploy workflow or `scripts/deploy/support_bot.sh` instead of `terraform apply`.
-- The runner VM intentionally uses ephemeral NAT instead of a reserved static external IP because the folder hit the external static IP quota during rollout.
+- The runner VM uses a reserved static external IP. It originally used ephemeral NAT (static-IP quota was exhausted at first rollout), but with ephemeral NAT every VM start is an external-address creation event counted against the undocumented `vpc.externalAddressesCreation.rate` quota; a burst of starts/recreates exhausted it and blocked the runner from booting for hours. Reserved address = quota-free attach on every start.
 - `ubuntu_2404_lts_image_id` is pinned in Terraform to avoid unrelated bot/DB VM replacements when the Ubuntu family image advances.
 
 ### 7.2 SSH and DB access
@@ -1010,6 +1010,7 @@ Private runner / workflow gotchas:
 - Runner cloud-init now preinstalls `yc`, `uv`, `psqldef` (checksum-pinned), the GitHub Actions runner agent tarball, and the autoshutdown script + systemd units at first boot; workflows keep defensive fallback installs, and `install_or_reconfigure_runner` keeps its download-if-missing branch for bare VMs.
 - The psqldef fallback install in `setup-qpi-deploy` is checksum-pinned: `PSQLDEF_VERSION` and `PSQLDEF_SHA256` live together in each workflow `env:` block and must be bumped as a pair. The `uv`/`yc` curl-to-sh installers stay unpinned by choice (vendor-maintained installers, preinstalled on the runner VM) — an accepted supply-chain risk.
 - Every workflow job now carries `timeout-minutes`; hitting the timeout is the intended failure mode for hung SSH/uv/test steps that previously idled toward GitHub's 6-hour default while holding the single-slot runner concurrency group.
+- The autoshutdown idle-check grants a full idle window after every boot (a `last-activity` stamp persisted from a previous session is ignored), and its systemd timer must NOT use `Persistent=true` — a persistent timer fires the idle-check seconds after boot to "catch up", which combined with a stale stamp powered the VM off before SSH could even come up.
 - `private_runner.sh ensure-ready` is SSH-free on the happy path: it starts the instance, polls the GitHub API for the runner to come online (the baked systemd service starts the agent at boot), and runs housekeeping (legacy shutdown cancel, autoshutdown heartbeat, content-hash-guarded controller refresh) over SSH in parallel with that poll. It emits a phase timing table like the deploy scripts.
 - If the runner does not report online within `PRIVATE_RUNNER_ONLINE_TIMEOUT_SECONDS` (default 150), `ensure-ready` dumps diagnostics (instance status, GitHub runner record, runner unit status + journal), re-registers the agent when on-disk `.credentials` are missing (recreated VM with a stale GitHub record), and retries the online wait once before failing.
 - The private runner now powers itself off locally after 60 minutes without active `Runner.Worker` processes or interactive SSH sessions; workflows no longer SSH back in just to schedule idle shutdown.

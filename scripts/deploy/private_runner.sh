@@ -385,7 +385,6 @@ Description=Run QPI private runner idle shutdown checks
 [Timer]
 OnBootSec=1m
 OnUnitActiveSec=1m
-Persistent=true
 Unit=qpi-private-runner-autoshutdown.service
 
 [Install]
