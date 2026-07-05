@@ -79,6 +79,8 @@ class DeleteSourceMessage:
 class LogEvent:
     event_name: str
     fields: dict[str, Any]
+    level: str = "info"
+    exc: BaseException | None = None
 
 
 TransportEffect = (

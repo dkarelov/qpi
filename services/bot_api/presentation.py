@@ -335,6 +335,52 @@ def withdrawal_history_block_html(
     return "\n".join(lines)
 
 
+def humanize_deposit_status(status: str) -> str:
+    mapping = {
+        "pending": "Ожидается оплата",
+        "matched": "Платеж найден, идет проверка",
+        "manual_review": "Нужна проверка администратором",
+        "credited": "Зачислено",
+        "expired": "Срок счета истек",
+        "cancelled": "Отменено",
+    }
+    return mapping.get(status, status)
+
+
+def deposit_status_badge(status: str) -> str:
+    color = {
+        "credited": "green",
+        "expired": "red",
+        "cancelled": "red",
+        "manual_review": "yellow",
+        "matched": "blue",
+        "pending": "yellow",
+    }.get(status, "blue")
+    return status_badge(humanize_deposit_status(status), color=color)
+
+
+def deposit_history_block_html(intent: Any, *, ref: str | None = None) -> str:
+    if ref:
+        lines = [entity_block_heading_with_ref(label="Счет на пополнение", ref=ref)]
+    else:
+        lines = ["<b>Пополнение</b>"]
+    lines.extend(
+        [
+            f"<b>Сумма:</b> {format_usdt_value(intent.expected_amount_usdt, precise=True)} USDT",
+            f"<b>Статус:</b> {deposit_status_badge(intent.status)}",
+            f"<b>Создан:</b> {format_datetime_msk(intent.created_at)}",
+            f"<b>Срок счета:</b> до {format_datetime_msk(intent.expires_at)}",
+        ]
+    )
+    if intent.status == "credited" and intent.credited_amount_usdt is not None:
+        lines.append(f"<b>Зачислено:</b> {format_usdt_value(intent.credited_amount_usdt, precise=True)} USDT")
+    if intent.status == "manual_review":
+        lines.append("<i>Перевод найден, но нужна проверка администратором.</i>")
+    if intent.status == "expired":
+        lines.append("<i>Если вы оплатили после срока, обратитесь к администратору.</i>")
+    return "\n".join(lines)
+
+
 def listing_display_title(*, display_title: str | None, fallback: str) -> str:
     normalized = (display_title or "").strip()
     return normalized or fallback.strip()

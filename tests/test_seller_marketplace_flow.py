@@ -153,6 +153,23 @@ class FakeSellerService:
         return self.delete_result
 
 
+class FakeSellerWorkflow:
+    def __init__(self, seller_service: Any) -> None:
+        self._seller_service = seller_service
+
+    async def activate_listing(self, *, seller_user_id: int, listing_id: int, idempotency_key: str) -> Any:
+        await self._seller_service.get_listing(seller_user_id=seller_user_id, listing_id=listing_id)
+        return await self._seller_service.activate_listing(
+            seller_user_id=seller_user_id,
+            listing_id=listing_id,
+            idempotency_key=idempotency_key,
+        )
+
+    async def unpause_listing(self, *, seller_user_id: int, listing_id: int) -> Any:
+        await self._seller_service.get_listing(seller_user_id=seller_user_id, listing_id=listing_id)
+        return await self._seller_service.unpause_listing(seller_user_id=seller_user_id, listing_id=listing_id)
+
+
 class FakeFinanceService:
     def __init__(self) -> None:
         self.active_request = None
@@ -211,9 +228,10 @@ def _flow(
     deposit: FakeDepositService | None = None,
     ping: FakePingClient | None = None,
 ) -> SellerMarketplaceFlow:
+    seller_service = seller or FakeSellerService()
     return SellerMarketplaceFlow(
-        seller_service=seller or FakeSellerService(),
-        seller_workflow=None,
+        seller_service=seller_service,
+        seller_workflow=FakeSellerWorkflow(seller_service),
         finance_service=finance or FakeFinanceService(),
         deposit_service=deposit or FakeDepositService(),
         wb_ping_client=ping or FakePingClient(),
@@ -426,6 +444,27 @@ async def test_seller_marketplace_flow_listing_error_mapping() -> None:
     )
     assert isinstance(insufficient.effects[0], ReplaceText)
     assert "Недостаточно средств для активации" in insufficient.effects[0].text
+
+
+@pytest.mark.asyncio
+async def test_seller_marketplace_flow_missing_entity_ids_keep_navigation_buttons() -> None:
+    flow = _flow()
+
+    shop = await flow.render_shop_details(seller_user_id=101, shop_id=None)
+    shop_screen = shop.effects[0]
+    assert isinstance(shop_screen, ReplaceText)
+    assert shop_screen.text == "Не удалось открыть магазин. Нажмите кнопку еще раз."
+    assert "➕ Создать магазин" in _labels(shop_screen)
+
+    blocked = await flow.render_listing_activation_blocked(seller_user_id=101, listing_id=None)
+    blocked_screen = blocked.effects[0]
+    assert isinstance(blocked_screen, ReplaceText)
+    assert blocked_screen.text == "Не удалось открыть карточку объявления. Попробуйте еще раз."
+    assert "💰 Баланс" in _labels(blocked_screen)
+
+    opened = await flow.render_listing_activation_blocked(seller_user_id=101, listing_id=21)
+    opened_screen = next(effect for effect in opened.effects if isinstance(effect, ReplaceText))
+    assert "Проверьте объявление и выберите следующее действие ниже." in opened_screen.text
 
 
 @pytest.mark.asyncio

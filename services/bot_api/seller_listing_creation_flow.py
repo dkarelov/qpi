@@ -413,6 +413,17 @@ class SellerListingCreationFlow:
         )
         return self._review_result(session=session)
 
+    def lost_prompt_state(self) -> FlowResult:
+        return FlowResult(
+            effects=(
+                ReplaceText(
+                    text="Не удалось продолжить создание объявления. Откройте раздел заново.",
+                    buttons=((ButtonSpec(text="↩️ К объявлениям", flow=SELLER_FLOW, action="listings"),),),
+                    parse_mode=None,
+                ),
+            )
+        )
+
     def title_review_reminder(self) -> FlowResult:
         return FlowResult(
             effects=(

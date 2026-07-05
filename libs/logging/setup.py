@@ -50,10 +50,11 @@ class EventLogger:
         )
         return f"{message} {rendered_fields}"
 
-    def _log(self, level: int, event: object, **fields: Any) -> None:
+    def _log(self, level: int, event: object, *, exc_info: Any = None, **fields: Any) -> None:
         self._logger.log(
             level,
             self._format_event(event, fields),
+            exc_info=exc_info,
             extra=self._compose_extra(fields),
         )
 
@@ -66,8 +67,8 @@ class EventLogger:
     def warning(self, event: object, **fields: Any) -> None:
         self._log(logging.WARNING, event, **fields)
 
-    def error(self, event: object, **fields: Any) -> None:
-        self._log(logging.ERROR, event, **fields)
+    def error(self, event: object, *, exc_info: Any = None, **fields: Any) -> None:
+        self._log(logging.ERROR, event, exc_info=exc_info, **fields)
 
     def exception(self, event: object, **fields: Any) -> None:
         self._logger.error(

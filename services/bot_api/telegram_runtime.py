@@ -32,14 +32,10 @@ from libs.domain.errors import (
 )
 from libs.domain.fx_rates import FxRateService
 from libs.domain.ledger import FinanceService
-from libs.domain.listing_creation import sanitize_buyer_display_title
 from libs.domain.notifications import NotificationService
 from libs.domain.public_refs import (
     build_support_deep_link,
     format_assignment_ref,
-    format_deposit_ref,
-    format_listing_ref,
-    format_shop_ref,
     format_withdrawal_ref,
     parse_withdrawal_ref,
 )
@@ -81,14 +77,11 @@ from services.bot_api.deep_links import (
 from services.bot_api.presentation import (
     button_label_with_count,
     entity_block_heading_with_ref,
-    format_cashback_with_percent,
     format_datetime_msk,
     format_usdt_value,
-    format_usdt_with_rub,
     humanize_withdraw_status,
     resolve_numbered_page,
     screen_text,
-    status_badge,
     title_ref_suffix,
     withdraw_status_badge,
 )
@@ -157,7 +150,6 @@ _PROMPT_STATE_KEY = "prompt_state"
 _SELLER_LISTINGS_PAGE_KEY = "seller_listings_page"
 _USDT_EXACT_QUANT = Decimal("0.000001")
 _RUB_QUANT = Decimal("1")
-_LISTING_COLLATERAL_FEE_MULTIPLIER = Decimal("1.01")
 _TON_FRIENDLY_MAINNET_PREFIXES = frozenset({"E", "U"})
 _TON_FRIENDLY_TESTNET_PREFIXES = frozenset({"k", "0"})
 _PHOTO_DOWNLOAD_TIMEOUT_SECONDS = 10
@@ -1573,14 +1565,10 @@ class TelegramWebhookRuntime:
             await apply(self._seller_marketplace_flow().render_knowledge_screen(topic="balance"))
             return
         if action == "shop_open":
-            shop_id = entity_id_int()
-            if shop_id is None:
-                await self._replace_message(query_message, "Не удалось открыть магазин. Нажмите кнопку еще раз.")
-                return
             await apply(
                 await self._seller_marketplace_flow().render_shop_details(
                     seller_user_id=seller.user_id,
-                    shop_id=shop_id,
+                    shop_id=entity_id_int(),
                 )
             )
             return
@@ -1651,25 +1639,18 @@ class TelegramWebhookRuntime:
             )
             return
         if action == "listing_activation_blocked":
-            listing_id = entity_id_int()
-            if listing_id is not None:
-                await apply(
-                    await self._seller_marketplace_flow().render_listing_detail(
-                        seller_user_id=seller.user_id,
-                        listing_id=listing_id,
-                        list_page=self._seller_listings_page_from_context(context),
-                    )
+            await apply(
+                await self._seller_marketplace_flow().render_listing_activation_blocked(
+                    seller_user_id=seller.user_id,
+                    listing_id=entity_id_int(),
+                    list_page=self._seller_listings_page_from_context(context),
                 )
-                return
-            await self._replace_message(query_message, "Не удалось открыть карточку объявления. Попробуйте еще раз.")
+            )
             return
         if action == "listing_title_keep":
             prompt_state = context.user_data.get(_PROMPT_STATE_KEY)
             if not isinstance(prompt_state, dict):
-                await self._replace_message(
-                    query_message,
-                    "Не удалось продолжить создание объявления. Откройте раздел заново.",
-                )
+                await apply(self._get_seller_listing_creation_flow().lost_prompt_state())
                 return
             result = await self._get_seller_listing_creation_flow().create_draft_from_prompt(
                 prompt_state=prompt_state,
@@ -1679,10 +1660,7 @@ class TelegramWebhookRuntime:
         if action == "listing_title_edit_prompt":
             prompt_state = context.user_data.get(_PROMPT_STATE_KEY)
             if not isinstance(prompt_state, dict):
-                await self._replace_message(
-                    query_message,
-                    "Не удалось продолжить создание объявления. Откройте раздел заново.",
-                )
+                await apply(self._get_seller_listing_creation_flow().lost_prompt_state())
                 return
             await apply(self._get_seller_listing_creation_flow().title_edit_prompt(prompt_state=prompt_state))
             return
@@ -3518,21 +3496,6 @@ class TelegramWebhookRuntime:
             )
             return
 
-        if prompt_type in {"seller_listing_edit_value", "seller_listing_edit_confirm"}:
-            self._clear_prompt(context)
-            await message.reply_text(
-                screen_text(
-                    title="Редактирование отключено",
-                    lines=[
-                        "Изменение объявления недоступно.",
-                    ],
-                    note="Создайте новое объявление с нужными параметрами и удалите старое.",
-                    warning=True,
-                ),
-                parse_mode="HTML",
-            )
-            return
-
         if prompt_type == "seller_withdraw_amount":
             await self._apply_transport_effects(
                 context=context,
@@ -3812,7 +3775,6 @@ class TelegramWebhookRuntime:
             deposit_service=self._deposit_service,
             wb_ping_client=self._wb_ping_client,
             listing_creation_flow=self._get_seller_listing_creation_flow(),
-            listing_product_validator=self._validate_listing_product_availability,
             config=SellerMarketplaceFlowConfig(
                 display_rub_per_usdt=self._display_rub_per_usdt,
                 telegram_bot_username=self._settings.telegram_bot_username,
@@ -3991,7 +3953,10 @@ class TelegramWebhookRuntime:
                 )
                 continue
             if isinstance(effect, LogEvent):
-                self._logger.info(effect.event_name, **effect.fields)
+                if effect.level == "error":
+                    self._logger.error(effect.event_name, exc_info=effect.exc, **effect.fields)
+                else:
+                    self._logger.info(effect.event_name, **effect.fields)
 
     def _warn_dropped_transport_effect(
         self,
@@ -4126,42 +4091,6 @@ class TelegramWebhookRuntime:
                 error_message=str(exc)[:300],
             )
 
-    @staticmethod
-    def _is_valid_shop_token(status: str | None) -> bool:
-        return (status or "").strip().lower() == "valid"
-
-    def _format_usdt_with_rub(self, amount: Decimal, *, precise: bool = False) -> str:
-        return format_usdt_with_rub(
-            amount,
-            display_rub_per_usdt=self._display_rub_per_usdt,
-            precise=precise,
-        )
-
-    def _sanitize_buyer_display_title(
-        self,
-        *,
-        wb_product_id: int,
-        source_title: str,
-        brand_name: str | None,
-    ) -> str:
-        return sanitize_buyer_display_title(
-            wb_product_id=wb_product_id,
-            source_title=source_title,
-            brand_name=brand_name,
-        )
-
-    def _format_cashback_with_percent(
-        self,
-        *,
-        reward_usdt: Decimal,
-        reference_price_rub: int | None,
-    ) -> str:
-        return format_cashback_with_percent(
-            reward_usdt=reward_usdt,
-            reference_price_rub=reference_price_rub,
-            display_rub_per_usdt=self._display_rub_per_usdt,
-        )
-
     async def _parse_ton_mainnet_address(self, *, address: str) -> str:
         normalized_address = address.strip()
         if not normalized_address:
@@ -4238,24 +4167,12 @@ class TelegramWebhookRuntime:
         return "Транзакция с таким хэшем пока не найдена в истории TON USDT. Повторите попытку позже."
 
     @staticmethod
-    def _shop_ref(shop_id: int) -> str:
-        return format_shop_ref(shop_id)
-
-    @staticmethod
-    def _listing_ref(listing_id: int) -> str:
-        return format_listing_ref(listing_id)
-
-    @staticmethod
     def _assignment_ref(assignment_id: int) -> str:
         return format_assignment_ref(assignment_id)
 
     @staticmethod
     def _withdrawal_ref(withdrawal_request_id: int) -> str:
         return format_withdrawal_ref(withdrawal_request_id)
-
-    @staticmethod
-    def _deposit_ref(deposit_intent_id: int) -> str:
-        return format_deposit_ref(deposit_intent_id)
 
     @staticmethod
     def _parse_withdrawal_reference(value: str) -> int:
@@ -4305,43 +4222,16 @@ class TelegramWebhookRuntime:
         )
 
     def _knowledge_button_spec(self, *, role: str, topic: str) -> ButtonSpec:
-        if role == _ROLE_SELLER:
-            mapping = {
-                "guide": ("📘 Инструкция", "kb_guide"),
-                "shops": ("📘 Про магазины", "kb_shops"),
-                "listings": ("📘 Про объявления", "kb_listings"),
-                "balance": ("📘 Про баланс и вывод", "kb_balance"),
-            }
-        elif role == _ROLE_BUYER:
-            mapping = {
-                "guide": ("📘 Инструкция", "kb_guide"),
-                "shops": ("📘 Про магазины", "kb_shops"),
-                "purchases": ("📘 Про покупки", "kb_purchases"),
-                "balance": ("📘 Про баланс и вывод", "kb_balance"),
-            }
-        else:
+        if role != _ROLE_BUYER:
             raise ValueError(f"unsupported knowledge button role: {role}")
+        mapping = {
+            "guide": ("📘 Инструкция", "kb_guide"),
+            "shops": ("📘 Про магазины", "kb_shops"),
+            "purchases": ("📘 Про покупки", "kb_purchases"),
+            "balance": ("📘 Про баланс и вывод", "kb_balance"),
+        }
         label, action = mapping[topic]
         return ButtonSpec(text=label, flow=role, action=action)
-
-    def _build_ton_usdt_wallet_link(
-        self,
-        *,
-        destination_address: str,
-        expected_amount_usdt: Decimal,
-        text: str | None = None,
-    ) -> str:
-        normalized_address = destination_address.strip()
-        base_units = int(expected_amount_usdt.quantize(_USDT_EXACT_QUANT, rounding=ROUND_HALF_UP) * Decimal("1000000"))
-        params = {
-            "jetton": self._settings.tonapi_usdt_jetton_master,
-            "amount": str(base_units),
-        }
-        if text:
-            params["text"] = text.strip()
-        query = urllib.parse.urlencode(params)
-        encoded_address = urllib.parse.quote(normalized_address, safe="")
-        return f"ton://transfer/{encoded_address}?{query}"
 
     def _build_telegram_wallet_open_link(self) -> str:
         return self._settings.telegram_wallet_open_url
@@ -4352,36 +4242,6 @@ class TelegramWebhookRuntime:
             "draft": "Черновик",
             "active": "Активно",
             "paused": "На паузе",
-        }
-        return mapping.get(status, status)
-
-    def _listing_activity_badge(self, *, is_active: bool) -> str:
-        return status_badge(
-            "активно" if is_active else "не активно",
-            color="green" if is_active else "red",
-        )
-
-    def _deposit_status_badge(self, status: str) -> str:
-        label = self._humanize_deposit_status(status)
-        color = {
-            "credited": "green",
-            "expired": "red",
-            "cancelled": "red",
-            "manual_review": "yellow",
-            "matched": "blue",
-            "pending": "yellow",
-        }.get(status, "blue")
-        return status_badge(label, color=color)
-
-    @staticmethod
-    def _humanize_deposit_status(status: str) -> str:
-        mapping = {
-            "pending": "Ожидается оплата",
-            "matched": "Платеж найден, идет проверка",
-            "manual_review": "Нужна проверка администратором",
-            "credited": "Зачислено",
-            "expired": "Срок счета истек",
-            "cancelled": "Отменено",
         }
         return mapping.get(status, status)
 
@@ -4425,30 +4285,6 @@ class TelegramWebhookRuntime:
         except WbPublicApiError as exc:
             raise ListingValidationError(
                 "Не удалось получить данные о товаре WB. Проверьте артикул и попробуйте еще раз."
-            ) from exc
-
-    async def _validate_listing_product_availability(
-        self,
-        *,
-        seller_user_id: int,
-        shop_id: int,
-        wb_product_id: int,
-    ) -> WbProductSnapshot:
-        client = self._wb_public_client
-        if client is None:
-            raise ListingValidationError("Проверка WB временно недоступна. Попробуйте позже.")
-        token = await self._load_shop_wb_token(
-            seller_user_id=seller_user_id,
-            shop_id=shop_id,
-        )
-        try:
-            return await client.fetch_product_snapshot(
-                token=token,
-                wb_product_id=wb_product_id,
-            )
-        except WbPublicApiError as exc:
-            raise ListingValidationError(
-                "Товар сейчас недоступен на WB или его карточка не читается. Попробуйте позже."
             ) from exc
 
     async def _lookup_listing_buyer_price(

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import html
 import urllib.parse
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -14,11 +13,10 @@ from libs.security.token_cipher import encrypt_token
 from services.bot_api.deep_links import build_listing_deep_link, build_shop_deep_link
 from services.bot_api.presentation import (
     button_label_with_count,
-    entity_block_heading_with_ref,
+    deposit_history_block_html,
     format_cashback_with_percent,
     format_characteristics_block_html,
     format_copyable_code,
-    format_datetime_msk,
     format_expandable_block_html,
     format_listing_price_line,
     format_review_phrases_text,
@@ -51,7 +49,6 @@ from services.bot_api.transport_effects import (
 
 _ROLE_SELLER = "seller"
 _USDT_EXACT_QUANT = Decimal("0.000001")
-_LISTING_COLLATERAL_FEE_MULTIPLIER = Decimal("1.01")
 
 
 @dataclass(frozen=True)
@@ -72,13 +69,12 @@ class SellerMarketplaceFlow:
         self,
         *,
         seller_service: Any,
-        seller_workflow: Any | None,
+        seller_workflow: Any,
         finance_service: Any,
         deposit_service: Any,
         wb_ping_client: Any | None,
         listing_creation_flow: SellerListingCreationFlow,
         config: SellerMarketplaceFlowConfig,
-        listing_product_validator: Callable[..., Awaitable[None]] | None = None,
     ) -> None:
         self._seller_service = seller_service
         self._seller_workflow = seller_workflow
@@ -87,13 +83,12 @@ class SellerMarketplaceFlow:
         self._wb_ping_client = wb_ping_client
         self._listing_creation_flow = listing_creation_flow
         self._config = config
-        self._listing_product_validator = listing_product_validator
 
     async def render_dashboard(self, *, seller_user_id: int) -> FlowResult:
         shops = await self._seller_service.list_shops(seller_user_id=seller_user_id)
         listings = await self._seller_service.list_listing_collateral_views(seller_user_id=seller_user_id)
         balance = await self._seller_service.get_seller_balance_snapshot(seller_user_id=seller_user_id)
-        orders = await self._load_seller_order_counters(seller_user_id=seller_user_id)
+        orders = await self._seller_service.get_seller_order_counters(seller_user_id=seller_user_id)
 
         listings_active = sum(1 for item in listings if item.status == "active")
         listings_total = len(listings)
@@ -287,6 +282,8 @@ class SellerMarketplaceFlow:
                     LogEvent(
                         event_name="seller_shop_create_token_validation_failed",
                         fields={"seller_user_id": seller_user_id, "error_type": type(exc).__name__},
+                        level="error",
+                        exc=exc,
                     ),
                     ClearPrompt(),
                     ReplyText(
@@ -445,10 +442,21 @@ class SellerMarketplaceFlow:
         self,
         *,
         seller_user_id: int,
-        shop_id: int,
+        shop_id: int | None,
         notice: str | None = None,
         reply: bool = False,
     ) -> FlowResult:
+        if shop_id is None:
+            result = FlowResult(
+                effects=(
+                    ReplaceText(
+                        text="Не удалось открыть магазин. Нажмите кнопку еще раз.",
+                        buttons=self._seller_shops_menu_buttons(has_shops=True),
+                        parse_mode=None,
+                    ),
+                )
+            )
+            return _as_reply(result) if reply else result
         try:
             shop = await self._seller_service.get_shop(seller_user_id=seller_user_id, shop_id=shop_id)
         except NotFoundError:
@@ -681,6 +689,8 @@ class SellerMarketplaceFlow:
                     LogEvent(
                         event_name="seller_shop_token_update_failed",
                         fields={"seller_user_id": seller_user_id, "shop_id": shop_id, "error_type": type(exc).__name__},
+                        level="error",
+                        exc=exc,
                     ),
                     ClearPrompt(),
                     *(
@@ -946,6 +956,29 @@ class SellerMarketplaceFlow:
             )
         )
 
+    async def render_listing_activation_blocked(
+        self,
+        *,
+        seller_user_id: int,
+        listing_id: int | None,
+        list_page: int = 1,
+    ) -> FlowResult:
+        if listing_id is None:
+            return FlowResult(
+                effects=(
+                    ReplaceText(
+                        text="Не удалось открыть карточку объявления. Попробуйте еще раз.",
+                        buttons=self._seller_menu_buttons(),
+                        parse_mode=None,
+                    ),
+                )
+            )
+        return await self.render_listing_detail(
+            seller_user_id=seller_user_id,
+            listing_id=listing_id,
+            list_page=list_page,
+        )
+
     def render_listing_edit_disabled(self, *, list_page: int = 1) -> FlowResult:
         return FlowResult(
             effects=(
@@ -1059,26 +1092,11 @@ class SellerMarketplaceFlow:
                 )
             )
         try:
-            workflow = self._seller_workflow
-            if workflow is None:
-                listing = await self._seller_service.get_listing(seller_user_id=seller_user_id, listing_id=listing_id)
-                if self._listing_product_validator is not None:
-                    await self._listing_product_validator(
-                        seller_user_id=seller_user_id,
-                        shop_id=listing.shop_id,
-                        wb_product_id=listing.wb_product_id,
-                    )
-                result = await self._seller_service.activate_listing(
-                    seller_user_id=seller_user_id,
-                    listing_id=listing_id,
-                    idempotency_key=f"tg-listing-activate:{seller_user_id}:{listing_id}",
-                )
-            else:
-                result = await workflow.activate_listing(
-                    seller_user_id=seller_user_id,
-                    listing_id=listing_id,
-                    idempotency_key=f"tg-listing-activate:{seller_user_id}:{listing_id}",
-                )
+            result = await self._seller_workflow.activate_listing(
+                seller_user_id=seller_user_id,
+                listing_id=listing_id,
+                idempotency_key=f"tg-listing-activate:{seller_user_id}:{listing_id}",
+            )
         except NotFoundError:
             return FlowResult(effects=(ReplaceText(text="Объявление не найдено.", parse_mode=None),))
         except ListingValidationError as exc:
@@ -1195,21 +1213,7 @@ class SellerMarketplaceFlow:
                 )
             )
         try:
-            workflow = self._seller_workflow
-            if workflow is None:
-                listing = await self._seller_service.get_listing(seller_user_id=seller_user_id, listing_id=listing_id)
-                if self._listing_product_validator is not None:
-                    await self._listing_product_validator(
-                        seller_user_id=seller_user_id,
-                        shop_id=listing.shop_id,
-                        wb_product_id=listing.wb_product_id,
-                    )
-                result = await self._seller_service.unpause_listing(
-                    seller_user_id=seller_user_id,
-                    listing_id=listing_id,
-                )
-            else:
-                result = await workflow.unpause_listing(seller_user_id=seller_user_id, listing_id=listing_id)
+            result = await self._seller_workflow.unpause_listing(seller_user_id=seller_user_id, listing_id=listing_id)
         except NotFoundError:
             return FlowResult(effects=(ReplaceText(text="Объявление не найдено.", parse_mode=None),))
         except ListingValidationError as exc:
@@ -1477,6 +1481,8 @@ class SellerMarketplaceFlow:
                             "telegram_update_id": update_id,
                             "error_type": type(exc).__name__,
                         },
+                        level="error",
+                        exc=exc,
                     ),
                     ReplyText(
                         text="Техническая ошибка при создании счета. Попробуйте еще раз.",
@@ -1574,30 +1580,9 @@ class SellerMarketplaceFlow:
             if entry_type == "withdraw":
                 lines.append(withdrawal_history_block_html(item))
                 continue
-            expected_amount = format_usdt_value(item.expected_amount_usdt, precise=True)
-            block_lines = []
-            if entry_id > 0:
-                block_lines.append(
-                    entity_block_heading_with_ref(label="Счет на пополнение", ref=format_deposit_ref(entry_id))
-                )
-            else:
-                block_lines.append("<b>Пополнение</b>")
-            block_lines.extend(
-                [
-                    f"<b>Сумма:</b> {expected_amount} USDT",
-                    f"<b>Статус:</b> {self._deposit_status_badge(item.status)}",
-                    f"<b>Создан:</b> {format_datetime_msk(item.created_at)}",
-                    f"<b>Срок счета:</b> до {format_datetime_msk(item.expires_at)}",
-                ]
+            lines.append(
+                deposit_history_block_html(item, ref=format_deposit_ref(entry_id) if entry_id > 0 else None)
             )
-            block = "\n".join(block_lines)
-            if item.status == "credited" and item.credited_amount_usdt is not None:
-                block += f"\n<b>Зачислено:</b> {format_usdt_value(item.credited_amount_usdt, precise=True)} USDT"
-            if item.status == "manual_review":
-                block += "\n<i>Перевод найден, но нужна проверка администратором.</i>"
-            if item.status == "expired":
-                block += "\n<i>Если вы оплатили после срока, обратитесь к администратору.</i>"
-            lines.append(block)
 
         keyboard_rows: list[list[ButtonSpec]] = []
         nav_row = page_nav_row(
@@ -1709,12 +1694,6 @@ class SellerMarketplaceFlow:
             ],
             note=note,
         )
-
-    async def _load_seller_order_counters(self, *, seller_user_id: int) -> dict[str, int]:
-        loader = getattr(self._seller_service, "get_seller_order_counters", None)
-        if loader is None:
-            return {"awaiting_order": 0, "ordered": 0, "picked_up": 0}
-        return await loader(seller_user_id=seller_user_id)
 
     def menu_buttons(
         self,
@@ -1990,17 +1969,6 @@ class SellerMarketplaceFlow:
     def _listing_activity_badge(*, is_active: bool) -> str:
         return status_badge("активно" if is_active else "не активно", color="green" if is_active else "red")
 
-    def _deposit_status_badge(self, status: str) -> str:
-        color = {
-            "credited": "green",
-            "expired": "red",
-            "cancelled": "red",
-            "manual_review": "yellow",
-            "matched": "blue",
-            "pending": "yellow",
-        }.get(status, "blue")
-        return status_badge(_humanize_deposit_status(status), color=color)
-
     def _build_ton_usdt_wallet_link(
         self,
         *,
@@ -2049,15 +2017,3 @@ def _button(text: str, *, action: str, entity_id: int | str = "") -> ButtonSpec:
 
 def _rows(rows: list[list[ButtonSpec]] | tuple[tuple[ButtonSpec, ...], ...]) -> tuple[tuple[ButtonSpec, ...], ...]:
     return tuple(tuple(row) for row in rows)
-
-
-def _humanize_deposit_status(status: str) -> str:
-    mapping = {
-        "pending": "Ожидается оплата",
-        "matched": "Платеж найден, идет проверка",
-        "manual_review": "Нужна проверка администратором",
-        "credited": "Зачислено",
-        "expired": "Срок счета истек",
-        "cancelled": "Отменено",
-    }
-    return mapping.get(status, status)
