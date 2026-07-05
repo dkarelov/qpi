@@ -11,6 +11,7 @@ import pytest
 
 from libs.config.settings import BotApiSettings
 from libs.domain.errors import InvalidStateError
+from libs.domain.seller_workflow import SellerWorkflowService
 from libs.integrations.wb import WbPingResult
 from libs.integrations.wb_public import WbPublicApiError
 from services.bot_api.telegram_runtime import TelegramWebhookRuntime
@@ -49,6 +50,7 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
         ),
         list_shops=AsyncMock(return_value=[]),
         list_listing_collateral_views=AsyncMock(return_value=[]),
+        get_seller_order_counters=AsyncMock(return_value={"awaiting_order": 0, "ordered": 0, "picked_up": 0}),
         get_seller_balance_snapshot=AsyncMock(
             return_value=_ns(
                 seller_available_usdt=Decimal("0.000000"),
@@ -415,8 +417,14 @@ def _build_runtime(*, admin_ids: list[int] | None = None):
         ),
     )
     runtime._load_shop_wb_token = AsyncMock(return_value="wb-valid")
+    seller_workflow = SellerWorkflowService(
+        seller_service=seller_service,
+        wb_public_client=runtime._wb_public_client,
+        token_cipher_key="test-key",
+    )
+    seller_workflow._load_shop_wb_token = AsyncMock(return_value="wb-valid")
+    runtime._seller_workflow_service = seller_workflow
     runtime._fx_rate_service = None
-    runtime._load_seller_order_counters = AsyncMock(return_value={"awaiting_order": 0, "ordered": 0, "picked_up": 0})
     runtime._refresh_display_rub_per_usdt = AsyncMock(return_value=None)
     runtime._ensure_admin_user = AsyncMock(return_value=90011)
     runtime._ensure_system_payout_account_id = AsyncMock(return_value=701)

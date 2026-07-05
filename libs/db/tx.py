@@ -2,16 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
 
 from psycopg import AsyncConnection
 from psycopg.errors import DeadlockDetected, SerializationFailure
 from psycopg_pool import AsyncConnectionPool
 
-T = TypeVar("T")
 
-
-async def run_in_transaction(
+async def run_in_transaction[T](
     pool: AsyncConnectionPool,
     operation: Callable[[AsyncConnection], Awaitable[T]],
     *,

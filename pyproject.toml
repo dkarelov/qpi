@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "qpi"
 version = "0.1.0"
 description = "QPI backend foundation"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
   "psycopg[binary]>=3.2,<4.0",
   "psycopg-pool>=3.2,<4.0",
@@ -46,7 +46,7 @@ markers = [
 
 [tool.ruff]
 line-length = 120
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]

@@ -118,6 +118,14 @@ class _SellerFlowDepositService:
     pass
 
 
+class _SellerFlowWorkflow:
+    async def activate_listing(self, *, seller_user_id: int, listing_id: int, idempotency_key: str) -> Any:
+        raise AssertionError("seller workflow is not exercised in these tests")
+
+    async def unpause_listing(self, *, seller_user_id: int, listing_id: int) -> Any:
+        raise AssertionError("seller workflow is not exercised in these tests")
+
+
 def _seller_marketplace_flow(
     *,
     support_bot_username: str | None = "qpilka_support_bot",
@@ -125,7 +133,7 @@ def _seller_marketplace_flow(
 ) -> SellerMarketplaceFlow:
     return SellerMarketplaceFlow(
         seller_service=seller_service or _SellerFlowSellerService(),
-        seller_workflow=None,
+        seller_workflow=_SellerFlowWorkflow(),
         finance_service=_SellerFlowFinanceService(),
         deposit_service=_SellerFlowDepositService(),
         wb_ping_client=None,
@@ -516,16 +524,16 @@ def test_buyer_review_status_stays_in_yellow_bucket() -> None:
 
 
 def test_wallet_link_builder_uses_ton_transfer_with_usdt_jetton_and_micro_units() -> None:
-    runtime = _build_runtime()
+    flow = _seller_marketplace_flow()
 
-    link = runtime._build_ton_usdt_wallet_link(
+    link = flow._build_ton_usdt_wallet_link(
         destination_address="UQTESTADDRESS",
         expected_amount_usdt=Decimal("1.200100"),
         text="QPI deposit D91",
     )
 
     assert link.startswith("ton://transfer/UQTESTADDRESS?")
-    assert "jetton=EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs" in link
+    assert "jetton=jetton-master" in link
     assert "amount=1200100" in link
     assert "text=QPI+deposit+D91" in link
 
