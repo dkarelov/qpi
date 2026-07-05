@@ -413,6 +413,17 @@ class SellerListingCreationFlow:
         )
         return self._review_result(session=session)
 
+    def title_review_reminder(self) -> FlowResult:
+        return FlowResult(
+            effects=(
+                ReplyText(
+                    text="Используйте кнопки ниже, чтобы сохранить или изменить название.",
+                    buttons=_title_review_buttons(),
+                    parse_mode=None,
+                ),
+            )
+        )
+
     async def create_draft_from_prompt(self, *, prompt_state: dict[str, Any]) -> FlowResult:
         session = SellerListingCreationSession.from_prompt_state(prompt_state)
         try:

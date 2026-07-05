@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
+from typing import Any
 
 from libs.config.settings import BotApiSettings
 from libs.domain.public_refs import (
@@ -21,7 +24,6 @@ from services.bot_api.buyer_marketplace_flow import (
     buyer_review_instruction_text,
     buyer_task_instruction_text,
 )
-from services.bot_api.callback_data import build_callback
 from services.bot_api.presentation import (
     buyer_listing_detail_html,
     format_buyer_cashback_with_percent,
@@ -31,7 +33,10 @@ from services.bot_api.presentation import (
     format_usdt_with_rub,
     screen_text,
 )
+from services.bot_api.seller_listing_creation_flow import SellerListingCreationFlow
+from services.bot_api.seller_marketplace_flow import SellerMarketplaceFlow, SellerMarketplaceFlowConfig
 from services.bot_api.telegram_runtime import TelegramWebhookRuntime
+from services.bot_api.transport_effects import ReplaceText
 
 _TASK_UUID = "11111111-1111-4111-8111-111111111111"
 
@@ -53,6 +58,91 @@ def _flatten_labels(markup) -> list[str]:
     return [button.text for row in markup.inline_keyboard for button in row]
 
 
+def _flatten_button_labels(rows) -> list[str]:
+    return [button.text for row in rows for button in row]
+
+
+def _seller_listing_creation_flow() -> SellerListingCreationFlow:
+    return SellerListingCreationFlow(
+        seller_service=object(),  # type: ignore[arg-type]
+        seller_workflow=object(),  # type: ignore[arg-type]
+        display_rub_per_usdt=Decimal("100"),
+    )
+
+
+def _ns(**kwargs):
+    return SimpleNamespace(**kwargs)
+
+
+class _SellerFlowSellerService:
+    def __init__(
+        self,
+        *,
+        shops: list[Any] | None = None,
+        listings: list[Any] | None = None,
+        balance: Any | None = None,
+    ) -> None:
+        self.shops = shops or []
+        self.listings = listings or []
+        self.balance = balance or _ns(
+            seller_available_usdt=Decimal("10.000000"),
+            seller_collateral_usdt=Decimal("0.000000"),
+            seller_withdraw_pending_usdt=Decimal("0.000000"),
+        )
+
+    async def list_shops(self, *, seller_user_id: int) -> list[Any]:
+        return self.shops
+
+    async def get_shop(self, *, seller_user_id: int, shop_id: int) -> Any:
+        return next(shop for shop in self.shops if shop.shop_id == shop_id)
+
+    async def list_listing_collateral_views(self, *, seller_user_id: int) -> list[Any]:
+        return self.listings
+
+    async def get_listing(self, *, seller_user_id: int, listing_id: int) -> Any:
+        return next(listing for listing in self.listings if listing.listing_id == listing_id)
+
+    async def get_seller_balance_snapshot(self, *, seller_user_id: int) -> Any:
+        return self.balance
+
+    async def get_seller_order_counters(self, *, seller_user_id: int) -> dict[str, int]:
+        return {"awaiting_order": 0, "ordered": 0, "picked_up": 0}
+
+
+class _SellerFlowFinanceService:
+    async def get_active_seller_withdrawal_request(self, *, seller_user_id: int) -> Any | None:
+        return None
+
+
+class _SellerFlowDepositService:
+    pass
+
+
+def _seller_marketplace_flow(
+    *,
+    support_bot_username: str | None = "qpilka_support_bot",
+    seller_service: _SellerFlowSellerService | None = None,
+) -> SellerMarketplaceFlow:
+    return SellerMarketplaceFlow(
+        seller_service=seller_service or _SellerFlowSellerService(),
+        seller_workflow=None,
+        finance_service=_SellerFlowFinanceService(),
+        deposit_service=_SellerFlowDepositService(),
+        wb_ping_client=None,
+        listing_creation_flow=_seller_listing_creation_flow(),
+        config=SellerMarketplaceFlowConfig(
+            display_rub_per_usdt=Decimal("100"),
+            telegram_bot_username="qpilka_bot",
+            token_cipher_key="test-key",
+            seller_collateral_shard_key="mvp-1",
+            seller_collateral_invoice_ttl_hours=24,
+            tonapi_usdt_jetton_master="jetton-master",
+            telegram_wallet_open_url="https://t.me/wallet/start",
+            support_bot_username=support_bot_username,
+        ),
+    )
+
+
 def _starts_with_emoji(label: str) -> bool:
     if not label:
         return False
@@ -60,9 +150,7 @@ def _starts_with_emoji(label: str) -> bool:
 
 
 def test_seller_menu_is_tree_structured() -> None:
-    runtime = _build_runtime()
-
-    labels = _flatten_labels(runtime._seller_menu_markup())
+    labels = _flatten_button_labels(_seller_marketplace_flow().menu_buttons())
     labels_set = set(labels)
 
     assert "🏬 Магазины" in labels_set
@@ -75,9 +163,7 @@ def test_seller_menu_is_tree_structured() -> None:
 
 
 def test_seller_menu_puts_listings_before_shops() -> None:
-    runtime = _build_runtime()
-
-    first_row = runtime._seller_menu_markup().inline_keyboard[0]
+    first_row = _seller_marketplace_flow().menu_buttons()[0]
 
     assert [button.text for button in first_row] == ["📦 Объявления", "🏬 Магазины"]
 
@@ -85,7 +171,7 @@ def test_seller_menu_puts_listings_before_shops() -> None:
 def test_counted_button_labels_use_middot_suffix() -> None:
     runtime = _build_runtime()
 
-    seller_labels = _flatten_labels(runtime._seller_menu_markup(listings_count=3, shops_count=2))
+    seller_labels = _flatten_button_labels(_seller_marketplace_flow().menu_buttons(listings_count=3, shops_count=2))
     admin_labels = _flatten_labels(
         runtime._admin_menu_markup(
             pending_withdrawals_count=4,
@@ -129,7 +215,7 @@ def test_admin_menu_is_dashboard_sections() -> None:
 def test_root_and_role_menus_use_emoji_labels() -> None:
     runtime = _build_runtime()
     root_labels = _flatten_labels(runtime._root_menu_markup(identity=None))
-    seller_labels = _flatten_labels(runtime._seller_menu_markup())
+    seller_labels = _flatten_button_labels(_seller_marketplace_flow().menu_buttons())
     buyer_labels = _flatten_labels(runtime._buyer_menu_markup())
     admin_labels = _flatten_labels(runtime._admin_menu_markup())
 
@@ -140,7 +226,7 @@ def test_root_and_role_menus_use_emoji_labels() -> None:
 def test_role_menus_do_not_have_switch_role_button() -> None:
     runtime = _build_runtime()
 
-    seller_labels = _flatten_labels(runtime._seller_menu_markup())
+    seller_labels = _flatten_button_labels(_seller_marketplace_flow().menu_buttons())
     buyer_labels = _flatten_labels(runtime._buyer_menu_markup())
     admin_labels = _flatten_labels(runtime._admin_menu_markup())
 
@@ -150,9 +236,16 @@ def test_role_menus_do_not_have_switch_role_button() -> None:
 
 
 def test_seller_shop_detail_menu_is_structured() -> None:
-    runtime = _build_runtime()
+    flow = _seller_marketplace_flow(
+        seller_service=_SellerFlowSellerService(
+            shops=[_ns(shop_id=1, title="Магазин", slug="shop", wb_token_status="invalid")]
+        )
+    )
 
-    labels = _flatten_labels(runtime._seller_shop_detail_markup(shop_id=1, token_is_valid=False))
+    result = asyncio.run(flow.render_shop_details(seller_user_id=101, shop_id=1))
+    screen = result.effects[0]
+    assert isinstance(screen, ReplaceText)
+    labels = _flatten_button_labels(screen.buttons)
     labels_set = set(labels)
 
     assert "❌ Токен WB API" in labels_set
@@ -164,29 +257,37 @@ def test_seller_shop_detail_menu_is_structured() -> None:
 
 
 def test_seller_shop_detail_token_button_shows_valid_state() -> None:
-    runtime = _build_runtime()
+    flow = _seller_marketplace_flow(
+        seller_service=_SellerFlowSellerService(
+            shops=[_ns(shop_id=1, title="Магазин", slug="shop", wb_token_status="valid")]
+        )
+    )
 
-    labels = _flatten_labels(runtime._seller_shop_detail_markup(shop_id=1, token_is_valid=True))
+    result = asyncio.run(flow.render_shop_details(seller_user_id=101, shop_id=1))
+    screen = result.effects[0]
+    assert isinstance(screen, ReplaceText)
+    labels = _flatten_button_labels(screen.buttons)
 
     assert "✅ Токен WB API" in labels
 
 
 def test_shop_create_button_starts_with_token_step() -> None:
-    runtime = _build_runtime()
+    result = asyncio.run(_seller_marketplace_flow().render_shops(seller_user_id=101))
+    screen = result.effects[0]
+    assert isinstance(screen, ReplaceText)
 
-    markup = runtime._seller_shops_menu_markup(has_shops=True)
-    create_shop_button = markup.inline_keyboard[0][0]
+    create_shop_button = screen.buttons[0][0]
 
-    assert create_shop_button.callback_data == build_callback(
-        flow="seller",
-        action="shop_create_token_prompt",
-    )
+    assert create_shop_button.flow == "seller"
+    assert create_shop_button.action == "shop_create_token_prompt"
 
 
 def test_seller_balance_menu_uses_transactions_and_kb_labels() -> None:
-    runtime = _build_runtime()
+    result = asyncio.run(_seller_marketplace_flow().render_balance(seller_user_id=101))
+    screen = result.effects[0]
+    assert isinstance(screen, ReplaceText)
 
-    labels = _flatten_labels(runtime._seller_balance_menu_markup())
+    labels = _flatten_button_labels(screen.buttons)
     labels_set = set(labels)
 
     assert "🧾 Транзакции" in labels_set
@@ -250,9 +351,7 @@ def test_buyer_listing_token_contains_search_phrase_product_count_and_brand() ->
 
 
 def test_token_instruction_contains_required_sections() -> None:
-    runtime = _build_runtime()
-
-    text = runtime._shop_token_instruction_text(shop_title="Мой магазин")
+    text = _seller_marketplace_flow().shop_token_instruction_text(shop_title="Мой магазин")
     assert "Токен WB API для магазина" in text
     assert "Отправьте токен WB API следующим сообщением ниже." in text
     assert "Создайте Базовый токен в режиме «Только для чтения»" in text
@@ -262,9 +361,7 @@ def test_token_instruction_contains_required_sections() -> None:
 
 
 def test_listing_create_instruction_contains_new_fields_and_fx_reference() -> None:
-    runtime = _build_runtime()
-
-    text = runtime._listing_create_instruction_text(shop_title="Тушенка")
+    text = _seller_listing_creation_flow().instruction_text(shop_title="Тушенка")
     assert "Создание объявления для магазина «Тушенка»" in text
     assert "<i>Отправьте данные объявления одним сообщением в формате ниже.</i>" in text
     assert ("артикул ВБ, кэшбэк в рублях, макс. заказов, поисковая фраза") in text
@@ -300,9 +397,7 @@ def test_screen_text_supports_ref_suffix_outside_bold_title() -> None:
 
 
 def test_listing_created_prompt_activation_explains_activation_effect() -> None:
-    runtime = _build_runtime()
-
-    text = runtime._listing_created_prompt_activation_text(
+    text = _seller_listing_creation_flow().created_prompt_activation_text(
         display_title="Джинсы женские прямые",
         wb_product_id=12345678,
         wb_subject_name="Джинсы",
@@ -479,27 +574,60 @@ def test_support_link_builder_uses_support_bot_and_context_fallback() -> None:
 def test_support_buttons_are_hidden_when_support_bot_username_is_missing() -> None:
     runtime = _build_runtime(support_bot_username=None)
 
-    assert "🆘 Поддержка" not in set(_flatten_labels(runtime._seller_menu_markup()))
+    assert "🆘 Поддержка" not in set(
+        _flatten_button_labels(_seller_marketplace_flow(support_bot_username=None).menu_buttons())
+    )
     assert "🆘 Поддержка" not in set(_flatten_labels(runtime._buyer_menu_markup()))
 
 
 def test_seller_dashboard_keeps_support_but_buyer_dashboard_hides_it() -> None:
     runtime = _build_runtime()
 
-    assert "🆘 Поддержка" in set(_flatten_labels(runtime._seller_menu_markup()))
+    assert "🆘 Поддержка" in set(_flatten_button_labels(_seller_marketplace_flow().menu_buttons()))
     assert "🆘 Поддержка" not in set(_flatten_labels(runtime._buyer_menu_markup()))
 
 
 def test_seller_listing_detail_markup_hides_edit_button_when_activation_is_blocked() -> None:
-    runtime = _build_runtime()
-
-    markup = runtime._seller_listing_detail_markup(
+    listing = _ns(
         listing_id=21,
+        shop_id=11,
+        display_title="Бумага A4 для принтера",
+        reference_price_rub=400,
+        reference_price_source="orders",
+        wb_photo_url=None,
+        wb_product_id=552892532,
+        search_phrase="бумага а4 для принтера",
         status="draft",
-        list_page=1,
-        can_activate=False,
+        reward_usdt=Decimal("1.000000"),
+        available_slots=5,
+        slot_count=5,
+        in_progress_assignments_count=0,
+        collateral_locked_usdt=Decimal("0.000000"),
+        collateral_required_usdt=Decimal("5.050000"),
+        reserved_slot_usdt=Decimal("0.000000"),
+        wb_subject_name="Бумага офисная",
+        wb_vendor_code="paper-001",
+        wb_brand_name="BRAUBERG",
+        wb_source_title="BRAUBERG Бумага A4 для принтера",
+        wb_description=None,
+        wb_tech_sizes=[],
+        wb_characteristics=[],
+        review_phrases=[],
     )
-    labels = _flatten_labels(markup)
+    flow = _seller_marketplace_flow(
+        seller_service=_SellerFlowSellerService(
+            listings=[listing],
+            balance=_ns(
+                seller_available_usdt=Decimal("0.000000"),
+                seller_collateral_usdt=Decimal("0.000000"),
+                seller_withdraw_pending_usdt=Decimal("0.000000"),
+            ),
+        )
+    )
+
+    result = asyncio.run(flow.render_listing_detail(seller_user_id=101, listing_id=21))
+    screen = next(effect for effect in result.effects if isinstance(effect, ReplaceText))
+    labels = _flatten_button_labels(screen.buttons)
 
     assert "✏️ Редактировать" not in labels
     assert "⛔ Недостаточно средств" in labels

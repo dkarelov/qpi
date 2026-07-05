@@ -32,7 +32,7 @@ from libs.domain.errors import (
 )
 from libs.domain.fx_rates import FxRateService
 from libs.domain.ledger import FinanceService
-from libs.domain.listing_creation import parse_listing_create_csv, sanitize_buyer_display_title
+from libs.domain.listing_creation import sanitize_buyer_display_title
 from libs.domain.notifications import NotificationService
 from libs.domain.public_refs import (
     build_support_deep_link,
@@ -56,7 +56,7 @@ from libs.integrations.wb_public import (
 )
 from libs.integrations.yandex_monitoring import YandexMonitoringMetricClient, YandexMonitoringMetricRecorder
 from libs.logging.setup import EventLogger, get_logger
-from libs.security.token_cipher import decrypt_token, encrypt_token
+from libs.security.token_cipher import decrypt_token
 from services.bot_api.admin_exceptions_flow import (
     AdminExceptionsAdapter,
     AdminExceptionsFlow,
@@ -76,37 +76,25 @@ from services.bot_api.callback_data import (
 )
 from services.bot_api.deep_links import (
     build_listing_deep_link,
-    build_shop_deep_link,
     parse_start_payload,
 )
 from services.bot_api.presentation import (
     button_label_with_count,
     entity_block_heading_with_ref,
     format_cashback_with_percent,
-    format_characteristics_block_html,
-    format_copyable_code,
     format_datetime_msk,
-    format_expandable_block_html,
-    format_listing_cashback_percent,
-    format_listing_price_line,
-    format_review_phrases_text,
-    format_sizes_text,
-    format_usdt,
     format_usdt_value,
     format_usdt_with_rub,
     humanize_withdraw_status,
-    listing_display_title,
-    numbered_page_buttons,
     resolve_numbered_page,
     screen_text,
     status_badge,
     title_ref_suffix,
     withdraw_status_badge,
-    withdrawal_history_block_html,
-    withdrawal_request_block_html,
 )
 from services.bot_api.seller_handlers import SellerCommandProcessor
 from services.bot_api.seller_listing_creation_flow import SellerListingCreationFlow
+from services.bot_api.seller_marketplace_flow import SellerMarketplaceFlow, SellerMarketplaceFlowConfig
 from services.bot_api.telegram_notifications import render_telegram_notification
 from services.bot_api.telegram_proxy_request import build_telegram_proxy_request
 from services.bot_api.transport_effects import (
@@ -856,6 +844,8 @@ class TelegramWebhookRuntime:
         self._buyer_processor: BuyerCommandProcessor | None = None
         self._seller_listing_creation_flow: SellerListingCreationFlow | None = None
         self._seller_listing_creation_flow_rate: Decimal | None = None
+        self._seller_marketplace_flow_cache: SellerMarketplaceFlow | None = None
+        self._seller_marketplace_flow_rate: Decimal | None = None
         self._seller_withdrawal_creation_flow_cache: WithdrawalRequestCreationFlow | None = None
         self._buyer_withdrawal_creation_flow_cache: WithdrawalRequestCreationFlow | None = None
         self._buyer_marketplace_flow_cache: BuyerMarketplaceFlow | None = None
@@ -1296,7 +1286,7 @@ class TelegramWebhookRuntime:
         if active_role == _ROLE_SELLER:
             await update.message.reply_text(
                 "Используйте кнопки меню продавца.",
-                reply_markup=self._seller_menu_markup(),
+                reply_markup=self._flow_buttons_markup(self._seller_marketplace_flow().menu_buttons()),
             )
             return
         if active_role == _ROLE_BUYER:
@@ -1473,9 +1463,13 @@ class TelegramWebhookRuntime:
                     self._root_menu_markup(identity=identity),
                 )
                 return
-            await self._render_seller_dashboard(
+            await self._refresh_display_rub_per_usdt()
+            await self._apply_transport_effects(
+                context=context,
                 query_message=query_message,
-                seller_user_id=seller.user_id,
+                message=None,
+                default_role=_ROLE_SELLER,
+                result=await self._seller_marketplace_flow().render_dashboard(seller_user_id=seller.user_id),
             )
             return
         if role == _ROLE_BUYER:
@@ -1529,12 +1523,28 @@ class TelegramWebhookRuntime:
             username=identity.username,
         )
         action = payload.action
+
+        def entity_id_int() -> int | None:
+            if not payload.entity_id:
+                return None
+            try:
+                return int(payload.entity_id)
+            except ValueError:
+                return None
+
+        async def apply(result: FlowResult) -> None:
+            await self._apply_transport_effects(
+                context=context,
+                query_message=query_message,
+                message=None,
+                default_role=_ROLE_SELLER,
+                result=result,
+            )
+
         if action == "menu":
             self._clear_prompt(context)
-            await self._render_seller_dashboard(
-                query_message=query_message,
-                seller_user_id=seller.user_id,
-            )
+            await self._refresh_display_rub_per_usdt()
+            await apply(await self._seller_marketplace_flow().render_dashboard(seller_user_id=seller.user_id))
             return
         if action == "back":
             self._clear_prompt(context)
@@ -1545,253 +1555,113 @@ class TelegramWebhookRuntime:
             )
             return
         if action in {"shop_create_token_prompt", "prompt_shop_title"}:
-            self._set_prompt(
-                context,
-                role=_ROLE_SELLER,
-                prompt_type="seller_shop_create_token",
-                sensitive=True,
-                extra={"seller_user_id": seller.user_id, "notify_sensitive_delete": False},
-            )
-            await self._replace_message(
-                query_message,
-                self._shop_token_instruction_text(),
-                self._seller_back_markup(action="shops", label="↩️ К магазинам"),
-                parse_mode="HTML",
-            )
+            await apply(self._seller_marketplace_flow().start_shop_create_token_prompt(seller_user_id=seller.user_id))
             return
         if action == "shops":
-            await self._render_seller_shops(
-                query_message=query_message,
-                seller_user_id=seller.user_id,
-            )
+            await apply(await self._seller_marketplace_flow().render_shops(seller_user_id=seller.user_id))
             return
         if action == "kb_guide":
-            await self._render_seller_knowledge_screen(query_message=query_message, topic="guide")
+            await apply(self._seller_marketplace_flow().render_knowledge_screen(topic="guide"))
             return
         if action == "kb_shops":
-            await self._render_seller_knowledge_screen(query_message=query_message, topic="shops")
+            await apply(self._seller_marketplace_flow().render_knowledge_screen(topic="shops"))
             return
         if action == "kb_listings":
-            await self._render_seller_knowledge_screen(
-                query_message=query_message,
-                topic="listings",
-            )
+            await apply(self._seller_marketplace_flow().render_knowledge_screen(topic="listings"))
             return
         if action == "kb_balance":
-            await self._render_seller_knowledge_screen(query_message=query_message, topic="balance")
+            await apply(self._seller_marketplace_flow().render_knowledge_screen(topic="balance"))
             return
         if action == "shop_open":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось открыть магазин. Нажмите кнопку еще раз.",
-                    self._seller_shops_menu_markup(has_shops=True),
-                )
+            shop_id = entity_id_int()
+            if shop_id is None:
+                await self._replace_message(query_message, "Не удалось открыть магазин. Нажмите кнопку еще раз.")
                 return
-            await self._render_seller_shop_details(
-                query_message=query_message,
-                seller_user_id=seller.user_id,
-                shop_id=int(payload.entity_id),
+            await apply(
+                await self._seller_marketplace_flow().render_shop_details(
+                    seller_user_id=seller.user_id,
+                    shop_id=shop_id,
+                )
             )
             return
         if action == "shop_delete_preview":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось выбрать магазин для удаления. Попробуйте еще раз.",
-                    self._seller_shops_menu_markup(has_shops=True),
+            await apply(
+                await self._seller_marketplace_flow().render_shop_delete_preview(
+                    seller_user_id=seller.user_id,
+                    shop_id=entity_id_int(),
                 )
-                return
-            await self._render_shop_delete_preview(
-                query_message=query_message,
-                seller_user_id=seller.user_id,
-                shop_id=int(payload.entity_id),
             )
             return
         if action == "shop_delete_confirm":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось выбрать магазин для удаления. Попробуйте еще раз.",
-                    self._seller_shops_menu_markup(has_shops=True),
+            await apply(
+                await self._seller_marketplace_flow().execute_shop_delete(
+                    seller_user_id=seller.user_id,
+                    shop_id=entity_id_int(),
                 )
-                return
-            await self._execute_shop_delete(
-                query_message=query_message,
-                seller_user_id=seller.user_id,
-                shop_id=int(payload.entity_id),
             )
             return
         if action == "shop_rename_prompt":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось выбрать магазин для переименования. Попробуйте еще раз.",
-                    self._seller_shops_menu_markup(has_shops=True),
-                )
-                return
-            shop_id = int(payload.entity_id)
-            try:
-                shop = await self._seller_service.get_shop(
+            await apply(
+                await self._seller_marketplace_flow().start_shop_rename_prompt(
                     seller_user_id=seller.user_id,
-                    shop_id=shop_id,
+                    shop_id=entity_id_int(),
                 )
-            except NotFoundError:
-                await self._replace_message(
-                    query_message,
-                    "Магазин не найден.",
-                    self._seller_shops_menu_markup(has_shops=True),
-                )
-                return
-            self._set_prompt(
-                context,
-                role=_ROLE_SELLER,
-                prompt_type="seller_shop_rename",
-                sensitive=False,
-                extra={
-                    "shop_id": shop_id,
-                    "seller_user_id": seller.user_id,
-                    "token_is_valid": self._is_valid_shop_token(shop.wb_token_status),
-                },
-            )
-            await self._replace_message(
-                query_message,
-                screen_text(
-                    title=f"Переименование магазина «{html.escape(shop.title)}»",
-                    cta="Введите новое название магазина следующим сообщением ниже.",
-                    lines=[
-                        "При переименовании ссылка магазина изменится, старая перестанет работать.",
-                        "Название видят покупатели, поэтому используйте нейтральное и понятное имя.",
-                    ],
-                    warning=True,
-                ),
-                self._seller_shop_detail_markup(
-                    shop_id=shop_id,
-                    token_is_valid=self._is_valid_shop_token(shop.wb_token_status),
-                ),
-                parse_mode="HTML",
             )
             return
         if action == "shop_token_prompt":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось открыть настройки токена. Попробуйте еще раз.",
-                    self._seller_shops_menu_markup(has_shops=True),
-                )
-                return
-            shop_id = int(payload.entity_id)
-            try:
-                shop = await self._seller_service.get_shop(
+            await apply(
+                await self._seller_marketplace_flow().start_shop_token_prompt(
                     seller_user_id=seller.user_id,
-                    shop_id=shop_id,
+                    shop_id=entity_id_int(),
                 )
-            except NotFoundError:
-                await self._replace_message(
-                    query_message,
-                    "Магазин не найден.",
-                    self._seller_shops_menu_markup(has_shops=True),
-                )
-                return
-            self._set_prompt(
-                context,
-                role=_ROLE_SELLER,
-                prompt_type="seller_shop_token",
-                sensitive=True,
-                extra={
-                    "shop_id": shop_id,
-                    "seller_user_id": seller.user_id,
-                    "notify_sensitive_delete": False,
-                },
-            )
-            await self._replace_message(
-                query_message,
-                self._shop_token_instruction_text(shop_title=shop.title),
-                self._seller_shop_detail_markup(
-                    shop_id=shop_id,
-                    token_is_valid=self._is_valid_shop_token(shop.wb_token_status),
-                ),
-                parse_mode="HTML",
             )
             return
         if action == "listings":
             requested_page = self._coerce_page_number(payload.entity_id)
-            await self._render_seller_listings(
-                context=context,
-                query_message=query_message,
-                seller_user_id=seller.user_id,
-                page=requested_page,
+            await apply(
+                await self._seller_marketplace_flow().render_listings(
+                    seller_user_id=seller.user_id,
+                    page=requested_page,
+                )
             )
             return
         if action == "listing_create_pick_shop":
-            await self._render_listing_create_shop_picker(
-                query_message=query_message,
-                seller_user_id=seller.user_id,
+            await apply(
+                await self._seller_marketplace_flow().render_listing_create_shop_picker(
+                    seller_user_id=seller.user_id,
+                )
             )
             return
         if action == "listing_create_prompt":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось выбрать магазин. Попробуйте еще раз.",
-                    self._seller_shops_menu_markup(has_shops=True),
-                )
-                return
-            shop_id = int(payload.entity_id)
-            try:
-                shop = await self._seller_service.get_shop(
-                    seller_user_id=seller.user_id,
-                    shop_id=shop_id,
-                )
-            except NotFoundError:
-                await self._render_seller_shops(
-                    query_message=query_message,
-                    seller_user_id=seller.user_id,
-                    notice="Магазин не найден или уже удален.",
-                )
-                return
             await self._refresh_display_rub_per_usdt()
-            await self._apply_transport_effects(
-                context=context,
-                query_message=query_message,
-                message=None,
-                default_role=_ROLE_SELLER,
-                result=self._get_seller_listing_creation_flow().start_prompt(
+            await apply(
+                await self._seller_marketplace_flow().start_listing_create_prompt(
                     seller_user_id=seller.user_id,
-                    shop_id=shop_id,
-                    shop_title=shop.title,
-                ),
+                    shop_id=entity_id_int(),
+                )
             )
             return
         if action == "listing_open":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось открыть объявление. Попробуйте еще раз.",
-                    self._seller_menu_markup(),
+            await apply(
+                await self._seller_marketplace_flow().render_listing_detail(
+                    seller_user_id=seller.user_id,
+                    listing_id=entity_id_int(),
+                    list_page=self._seller_listings_page_from_context(context),
                 )
-                return
-            await self._render_seller_listing_detail(
-                query_message=query_message,
-                seller_user_id=seller.user_id,
-                listing_id=int(payload.entity_id),
-                list_page=self._seller_listings_page_from_context(context),
             )
             return
         if action == "listing_activation_blocked":
-            if payload.entity_id:
-                await self._render_seller_listing_detail(
-                    query_message=query_message,
-                    seller_user_id=seller.user_id,
-                    listing_id=int(payload.entity_id),
-                    list_page=self._seller_listings_page_from_context(context),
+            listing_id = entity_id_int()
+            if listing_id is not None:
+                await apply(
+                    await self._seller_marketplace_flow().render_listing_detail(
+                        seller_user_id=seller.user_id,
+                        listing_id=listing_id,
+                        list_page=self._seller_listings_page_from_context(context),
+                    )
                 )
                 return
-            await self._replace_message(
-                query_message,
-                "Не удалось открыть карточку объявления. Попробуйте еще раз.",
-                self._seller_menu_markup(),
-            )
+            await self._replace_message(query_message, "Не удалось открыть карточку объявления. Попробуйте еще раз.")
             return
         if action == "listing_title_keep":
             prompt_state = context.user_data.get(_PROMPT_STATE_KEY)
@@ -1799,19 +1669,12 @@ class TelegramWebhookRuntime:
                 await self._replace_message(
                     query_message,
                     "Не удалось продолжить создание объявления. Откройте раздел заново.",
-                    self._seller_back_markup(action="listings", label="↩️ К объявлениям"),
                 )
                 return
             result = await self._get_seller_listing_creation_flow().create_draft_from_prompt(
                 prompt_state=prompt_state,
             )
-            await self._apply_transport_effects(
-                context=context,
-                query_message=query_message,
-                message=None,
-                default_role=_ROLE_SELLER,
-                result=result,
-            )
+            await apply(result)
             return
         if action == "listing_title_edit_prompt":
             prompt_state = context.user_data.get(_PROMPT_STATE_KEY)
@@ -1819,45 +1682,15 @@ class TelegramWebhookRuntime:
                 await self._replace_message(
                     query_message,
                     "Не удалось продолжить создание объявления. Откройте раздел заново.",
-                    self._seller_back_markup(action="listings", label="↩️ К объявлениям"),
                 )
                 return
-            await self._apply_transport_effects(
-                context=context,
-                query_message=query_message,
-                message=None,
-                default_role=_ROLE_SELLER,
-                result=self._get_seller_listing_creation_flow().title_edit_prompt(
-                    prompt_state=prompt_state,
-                ),
-            )
+            await apply(self._get_seller_listing_creation_flow().title_edit_prompt(prompt_state=prompt_state))
             return
         if action == "listing_edit":
-            await self._replace_message(
-                query_message,
-                screen_text(
-                    title="Редактирование отключено",
-                    lines=[
-                        "Редактирование объявлений недоступно, чтобы не создавать конфликтов с уже начатыми покупками.",
-                    ],
-                    note=("Если нужно изменить параметры, создайте новое объявление и удалите старое."),
-                    warning=True,
-                ),
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ К объявлениям",
-                                callback_data=build_callback(
-                                    flow=_ROLE_SELLER,
-                                    action="listings",
-                                    entity_id=str(self._seller_listings_page_from_context(context)),
-                                ),
-                            )
-                        ]
-                    ]
-                ),
-                parse_mode="HTML",
+            await apply(
+                self._seller_marketplace_flow().render_listing_edit_disabled(
+                    list_page=self._seller_listings_page_from_context(context),
+                )
             )
             return
         if action in {
@@ -1867,100 +1700,55 @@ class TelegramWebhookRuntime:
             "listing_edit_slots",
             "listing_edit_confirm",
         }:
-            self._clear_prompt(context)
-            await self._replace_message(
-                query_message,
-                screen_text(
-                    title="Редактирование отключено",
-                    lines=[
-                        "Изменение объявления недоступно.",
-                    ],
-                    note="Создайте новое объявление с нужными параметрами и удалите старое.",
-                    warning=True,
-                ),
-                parse_mode="HTML",
-            )
+            await apply(self._seller_marketplace_flow().render_listing_edit_field_disabled())
             return
         if action == "listing_activate":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось определить объявление. Нажмите кнопку еще раз.",
-                    self._seller_menu_markup(),
+            await apply(
+                await self._seller_marketplace_flow().execute_listing_activate(
+                    seller_user_id=seller.user_id,
+                    listing_id=entity_id_int(),
+                    list_page=self._seller_listings_page_from_context(context),
                 )
-                return
-            await self._execute_listing_activate(
-                query_message=query_message,
-                seller_user_id=seller.user_id,
-                listing_id=int(payload.entity_id),
-                list_page=self._seller_listings_page_from_context(context),
             )
             return
         if action == "listing_pause":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось определить объявление. Нажмите кнопку еще раз.",
-                    self._seller_menu_markup(),
+            await apply(
+                await self._seller_marketplace_flow().execute_listing_pause(
+                    seller_user_id=seller.user_id,
+                    listing_id=entity_id_int(),
+                    list_page=self._seller_listings_page_from_context(context),
                 )
-                return
-            await self._execute_listing_pause(
-                query_message=query_message,
-                seller_user_id=seller.user_id,
-                listing_id=int(payload.entity_id),
-                list_page=self._seller_listings_page_from_context(context),
             )
             return
         if action == "listing_unpause":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось определить объявление. Нажмите кнопку еще раз.",
-                    self._seller_menu_markup(),
+            await apply(
+                await self._seller_marketplace_flow().execute_listing_unpause(
+                    seller_user_id=seller.user_id,
+                    listing_id=entity_id_int(),
+                    list_page=self._seller_listings_page_from_context(context),
                 )
-                return
-            await self._execute_listing_unpause(
-                query_message=query_message,
-                seller_user_id=seller.user_id,
-                listing_id=int(payload.entity_id),
-                list_page=self._seller_listings_page_from_context(context),
             )
             return
         if action == "listing_delete_preview":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось определить объявление. Нажмите кнопку еще раз.",
-                    self._seller_menu_markup(),
+            await apply(
+                await self._seller_marketplace_flow().render_listing_delete_preview(
+                    seller_user_id=seller.user_id,
+                    listing_id=entity_id_int(),
                 )
-                return
-            await self._render_listing_delete_preview(
-                query_message=query_message,
-                seller_user_id=seller.user_id,
-                listing_id=int(payload.entity_id),
-                list_page=self._seller_listings_page_from_context(context),
             )
             return
         if action == "listing_delete_confirm":
-            if not payload.entity_id:
-                await self._replace_message(
-                    query_message,
-                    "Не удалось определить объявление. Нажмите кнопку еще раз.",
-                    self._seller_menu_markup(),
+            await apply(
+                await self._seller_marketplace_flow().execute_listing_delete(
+                    seller_user_id=seller.user_id,
+                    listing_id=entity_id_int(),
+                    list_page=self._seller_listings_page_from_context(context),
                 )
-                return
-            await self._execute_listing_delete(
-                context=context,
-                query_message=query_message,
-                seller_user_id=seller.user_id,
-                listing_id=int(payload.entity_id),
             )
             return
         if action == "balance":
-            await self._render_seller_balance(
-                query_message=query_message,
-                seller_user_id=seller.user_id,
-            )
+            await self._refresh_display_rub_per_usdt()
+            await apply(await self._seller_marketplace_flow().render_balance(seller_user_id=seller.user_id))
             return
         if action == "withdraw_full":
             await self._start_seller_withdraw_full_amount(
@@ -2005,537 +1793,24 @@ class TelegramWebhookRuntime:
             )
             return
         if action == "topup_prompt":
-            self._set_prompt(
-                context,
-                role=_ROLE_SELLER,
-                prompt_type="seller_topup_amount",
-                sensitive=False,
-                extra={"seller_user_id": seller.user_id},
-            )
-            await self._replace_message(
-                query_message,
-                (
-                    "Введите сумму пополнения в USDT (например, 1.2).\n"
-                    "Бот автоматически рассчитает точную сумму для перевода."
-                ),
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="❓ Как перевести?",
-                                callback_data=build_callback(
-                                    flow=_ROLE_SELLER,
-                                    action="topup_help",
-                                ),
-                            )
-                        ],
-                        *self._seller_balance_menu_markup().inline_keyboard,
-                    ]
-                ),
-            )
+            await apply(self._seller_marketplace_flow().start_topup_prompt(seller_user_id=seller.user_id))
             return
         if action == "topup_history":
-            await self._render_seller_transaction_history(
-                query_message=query_message,
-                seller_user_id=seller.user_id,
-                page=self._coerce_page_number(payload.entity_id),
+            await apply(
+                await self._seller_marketplace_flow().render_transaction_history(
+                    seller_user_id=seller.user_id,
+                    page=self._coerce_page_number(payload.entity_id),
+                )
             )
             return
         if action == "topup_help":
-            await self._render_seller_topup_help(query_message=query_message)
+            await apply(self._seller_marketplace_flow().render_topup_help())
             return
 
         await self._replace_message(
             query_message,
             "Неизвестное действие продавца.",
-            self._seller_menu_markup(),
-        )
-
-    async def _render_seller_dashboard(
-        self,
-        *,
-        query_message: Message | None,
-        seller_user_id: int,
-    ) -> None:
-        await self._refresh_display_rub_per_usdt()
-        shops = await self._seller_service.list_shops(seller_user_id=seller_user_id)
-        listings = await self._seller_service.list_listing_collateral_views(seller_user_id=seller_user_id)
-        balance = await self._seller_service.get_seller_balance_snapshot(seller_user_id=seller_user_id)
-        orders = await self._load_seller_order_counters(seller_user_id=seller_user_id)
-
-        listings_active = sum(1 for item in listings if item.status == "active")
-        listings_total = len(listings)
-        shops_total = len(shops)
-        shops_active = sum(1 for item in shops if self._is_valid_shop_token(item.wb_token_status))
-        balance_free = balance.seller_available_usdt
-        balance_total = (
-            balance.seller_available_usdt + balance.seller_collateral_usdt + balance.seller_withdraw_pending_usdt
-        )
-
-        text = screen_text(
-            title="Кабинет продавца",
-            cta="Выберите раздел ниже.",
-            lines=[
-                f"<b>Магазины:</b> {shops_total} · {shops_active} активно",
-                f"<b>Объявления:</b> {listings_total} · {listings_active} активно",
-                "<b>Покупки:</b> "
-                f"ожидают заказа: {orders['awaiting_order']} · "
-                f"заказаны: {orders['ordered']} · "
-                f"выкуплены: {orders['picked_up']}",
-                f"<b>Баланс:</b> {self._format_usdt_with_rub(balance_total)}",
-                f"<b>Свободно:</b> {self._format_usdt_with_rub(balance_free)}",
-            ],
-            note="Откройте нужный раздел ниже.",
-        )
-        await self._replace_message(
-            query_message,
-            text,
-            self._seller_menu_markup(
-                listings_count=listings_total,
-                shops_count=shops_total,
-            ),
-            parse_mode="HTML",
-        )
-
-    async def _render_seller_knowledge_screen(
-        self,
-        *,
-        query_message: Message | None,
-        topic: str,
-    ) -> None:
-        if topic == "guide":
-            text = screen_text(
-                title="Инструкция продавца",
-                cta=(
-                    "Купилка помогает выдать кэшбэк за покупку и отзыв, "
-                    "а обеспечение держит на балансе до завершения покупки."
-                ),
-                lines=[
-                    (
-                        "<b>Как запустить витрину</b>\n"
-                        "1. Создайте магазин и добавьте WB API токен в режиме чтения.\n"
-                        "2. Создайте объявление: артикул WB, кэшбэк в ₽, число покупок, поисковая фраза "
-                        "и до 10 фраз для отзыва.\n"
-                        "3. Пополните баланс, если не хватает обеспечения.\n"
-                        "4. Активируйте объявление и отправьте покупателям ссылку на товар.\n"
-                        "5. Следите за покупками и выводите свободный остаток."
-                    ),
-                    (
-                        "<b>Полезно знать</b>\n"
-                        "1. Покупатели видят название магазина и название объявления.\n"
-                        "2. Объявление нельзя менять после создания: если условия изменились, создайте новое "
-                        "и удалите старое.\n"
-                        "3. Деньги под активные объявления нельзя вывести, пока они зарезервированы."
-                    ),
-                ],
-                note="Подробности по каждому разделу открываются кнопками ниже.",
-                separate_blocks=True,
-            )
-            markup = InlineKeyboardMarkup(
-                [
-                    [
-                        self._knowledge_button(role=_ROLE_SELLER, topic="shops"),
-                        self._knowledge_button(role=_ROLE_SELLER, topic="listings"),
-                    ],
-                    [self._knowledge_button(role=_ROLE_SELLER, topic="balance")],
-                    [
-                        InlineKeyboardButton(
-                            text="↩️ Назад",
-                            callback_data=build_callback(flow=_ROLE_SELLER, action="menu"),
-                        )
-                    ],
-                ]
-            )
-        elif topic == "shops":
-            text = screen_text(
-                title="Про магазины",
-                cta="Магазин — это ваша публичная витрина, которая объединяет объявления.",
-                lines=[
-                    (
-                        "В магазине находятся объявления. Для покупателя публикуйте ссылку на конкретный товар, "
-                        "чтобы он сразу попал в нужную карточку."
-                    ),
-                    (
-                        "<b>Полезно знать</b>\n"
-                        "1. Название магазина видят покупатели, поэтому используйте нейтральное и понятное имя.\n"
-                        "2. При переименовании ссылка меняется, старая перестает работать.\n"
-                        "3. Без валидного WB API токена объявления нельзя активировать."
-                    ),
-                ],
-                separate_blocks=True,
-            )
-            markup = InlineKeyboardMarkup(
-                [
-                    [
-                        self._knowledge_button(role=_ROLE_SELLER, topic="guide"),
-                        self._knowledge_button(role=_ROLE_SELLER, topic="listings"),
-                    ],
-                    [self._knowledge_button(role=_ROLE_SELLER, topic="balance")],
-                    [
-                        InlineKeyboardButton(
-                            text="↩️ К магазинам",
-                            callback_data=build_callback(flow=_ROLE_SELLER, action="shops"),
-                        )
-                    ],
-                ]
-            )
-        elif topic == "listings":
-            text = screen_text(
-                title="Про объявления",
-                cta="Объявление описывает один товар WB, размер кэшбэка и число доступных покупок.",
-                lines=[
-                    (
-                        "После создания бот фиксирует кэшбэк в USDT, проверяет карточку WB "
-                        "и показывает покупателю только нужные поля. После выкупа покупатель "
-                        "подтверждает отзыв на 5 звезд."
-                    ),
-                    "Каждое объявление получает отдельную ссылку на товар для покупателей.",
-                    (
-                        "<b>Полезно знать</b>\n"
-                        "1. Если параметр нужно изменить, создайте новое объявление.\n"
-                        "2. Активация требует валидный токен WB, достаточное обеспечение и живую карточку товара.\n"
-                        "3. Для отзыва можно указать до 10 фраз; покупатель получит до двух случайных фраз.\n"
-                        "4. Если средств не хватает, сначала пополните баланс продавца."
-                    ),
-                ],
-                separate_blocks=True,
-            )
-            markup = InlineKeyboardMarkup(
-                [
-                    [
-                        self._knowledge_button(role=_ROLE_SELLER, topic="guide"),
-                        self._knowledge_button(role=_ROLE_SELLER, topic="shops"),
-                    ],
-                    [self._knowledge_button(role=_ROLE_SELLER, topic="balance")],
-                    [
-                        InlineKeyboardButton(
-                            text="↩️ К объявлениям",
-                            callback_data=build_callback(flow=_ROLE_SELLER, action="listings"),
-                        )
-                    ],
-                ]
-            )
-        else:
-            text = screen_text(
-                title="Про баланс и вывод",
-                cta="Баланс продавца делится на свободные средства, обеспечение объявлений и вывод.",
-                lines=[
-                    (
-                        "Свободный остаток можно использовать для новых объявлений или вывести. "
-                        "Обеспечение активных объявлений и сумма в заявке на вывод временно недоступны."
-                    ),
-                    (
-                        "<b>Полезно знать</b>\n"
-                        "1. Пополнение и вывод работают в USDT в сети TON.\n"
-                        "2. Если есть активная заявка на вывод, новую создать нельзя.\n"
-                        "3. История показывает и пополнения, и выводы в одном разделе."
-                    ),
-                ],
-                separate_blocks=True,
-            )
-            markup = InlineKeyboardMarkup(
-                [
-                    [
-                        self._knowledge_button(role=_ROLE_SELLER, topic="guide"),
-                        self._knowledge_button(role=_ROLE_SELLER, topic="shops"),
-                    ],
-                    [self._knowledge_button(role=_ROLE_SELLER, topic="listings")],
-                    [
-                        InlineKeyboardButton(
-                            text="↩️ К балансу",
-                            callback_data=build_callback(flow=_ROLE_SELLER, action="balance"),
-                        )
-                    ],
-                ]
-            )
-        await self._replace_message(query_message, text, markup, parse_mode="HTML")
-
-    async def _load_seller_order_counters(self, *, seller_user_id: int) -> dict[str, int]:
-        if self._seller_service is None:
-            return {"awaiting_order": 0, "ordered": 0, "picked_up": 0}
-        return await self._seller_service.get_seller_order_counters(seller_user_id=seller_user_id)
-
-    async def _render_seller_shops(
-        self,
-        *,
-        query_message: Message | None,
-        seller_user_id: int,
-        notice: str | None = None,
-    ) -> None:
-        shops = await self._seller_service.list_shops(seller_user_id=seller_user_id)
-        if not shops:
-            lines = ["Магазинов пока нет."]
-            if notice:
-                lines.insert(0, html.escape(notice))
-            text = screen_text(
-                title="Магазины",
-                lines=lines,
-                note="Нажмите «➕ Создать магазин», чтобы добавить первый магазин.",
-            )
-            await self._replace_message(
-                query_message,
-                text,
-                self._seller_shops_menu_markup(has_shops=False),
-                parse_mode="HTML",
-            )
-            return
-
-        lines = ["Выберите магазин."]
-        if notice:
-            lines.insert(0, html.escape(notice))
-        keyboard_rows: list[list[InlineKeyboardButton]] = [
-            [
-                InlineKeyboardButton(
-                    text=f"🏬 {shop.title} · {self._shop_ref(shop.shop_id)}",
-                    callback_data=build_callback(
-                        flow=_ROLE_SELLER,
-                        action="shop_open",
-                        entity_id=str(shop.shop_id),
-                    ),
-                )
-            ]
-            for shop in shops
-        ]
-        keyboard_rows.extend(self._seller_shops_menu_markup(has_shops=True).inline_keyboard)
-        await self._replace_message(
-            query_message,
-            screen_text(title="Магазины", lines=lines),
-            InlineKeyboardMarkup(keyboard_rows),
-            parse_mode="HTML",
-        )
-
-    async def _render_seller_shop_details(
-        self,
-        *,
-        query_message: Message | None,
-        seller_user_id: int,
-        shop_id: int,
-        notice: str | None = None,
-    ) -> None:
-        try:
-            shop = await self._seller_service.get_shop(
-                seller_user_id=seller_user_id,
-                shop_id=shop_id,
-            )
-        except NotFoundError:
-            await self._render_seller_shops(
-                query_message=query_message,
-                seller_user_id=seller_user_id,
-                notice="Магазин не найден или уже удален.",
-            )
-            return
-
-        deep_link = build_shop_deep_link(bot_username=self._settings.telegram_bot_username, slug=shop.slug)
-        lines = [
-            f"<b>Название:</b> {html.escape(shop.title)}",
-            f"<b>Ссылка для покупателей:</b>\n{html.escape(deep_link)}",
-            (
-                "<b>Токен WB API:</b> активно"
-                if self._is_valid_shop_token(shop.wb_token_status)
-                else "<b>Токен WB API:</b> неактивно"
-            ),
-        ]
-        if notice:
-            lines.insert(0, html.escape(notice))
-        await self._replace_message(
-            query_message,
-            screen_text(
-                title=f"Магазин «{html.escape(shop.title)}»",
-                title_suffix_html=title_ref_suffix(self._shop_ref(shop.shop_id)),
-                lines=lines,
-                note="Название магазина видят покупатели.",
-            ),
-            self._seller_shop_detail_markup(
-                shop_id=shop_id,
-                token_is_valid=self._is_valid_shop_token(shop.wb_token_status),
-            ),
-            parse_mode="HTML",
-        )
-
-    def _seller_shops_menu_markup(self, *, has_shops: bool) -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        text="➕ Создать магазин",
-                        callback_data=build_callback(
-                            flow=_ROLE_SELLER,
-                            action="shop_create_token_prompt",
-                        ),
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="↩️ Назад",
-                        callback_data=build_callback(flow=_ROLE_SELLER, action="menu"),
-                    )
-                ],
-                [self._knowledge_button(role=_ROLE_SELLER, topic="shops")],
-            ]
-        )
-
-    def _seller_back_markup(self, *, action: str, label: str) -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        text=label,
-                        callback_data=build_callback(flow=_ROLE_SELLER, action=action),
-                    )
-                ]
-            ]
-        )
-
-    def _seller_shop_detail_markup(
-        self,
-        *,
-        shop_id: int,
-        token_is_valid: bool = False,
-    ) -> InlineKeyboardMarkup:
-        token_label = "✅ Токен WB API" if token_is_valid else "❌ Токен WB API"
-        keyboard_rows: list[list[InlineKeyboardButton]] = [
-            [
-                InlineKeyboardButton(
-                    text=token_label,
-                    callback_data=build_callback(
-                        flow=_ROLE_SELLER,
-                        action="shop_token_prompt",
-                        entity_id=str(shop_id),
-                    ),
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="✏️ Переименовать",
-                    callback_data=build_callback(
-                        flow=_ROLE_SELLER,
-                        action="shop_rename_prompt",
-                        entity_id=str(shop_id),
-                    ),
-                ),
-                InlineKeyboardButton(
-                    text="🗑 Удалить",
-                    callback_data=build_callback(
-                        flow=_ROLE_SELLER,
-                        action="shop_delete_preview",
-                        entity_id=str(shop_id),
-                    ),
-                ),
-            ],
-        ]
-        keyboard_rows.append(
-            [
-                InlineKeyboardButton(
-                    text="↩️ К списку магазинов",
-                    callback_data=build_callback(flow=_ROLE_SELLER, action="shops"),
-                )
-            ]
-        )
-        keyboard_rows.append([self._knowledge_button(role=_ROLE_SELLER, topic="shops")])
-        return InlineKeyboardMarkup(keyboard_rows)
-
-    def _shop_token_instruction_text(self, *, shop_title: str | None = None) -> str:
-        title = f"Токен WB API для магазина «{html.escape(shop_title)}»" if shop_title else "Создание магазина"
-        lines = [
-            "<b>Шаг 1 из 2.</b>",
-            (
-                "<b>Как создать:</b> Создайте Базовый токен в режиме "
-                "«Только для чтения» с категориями: Контент, Статистика, Вопросы и отзывы."
-            ),
-            ("<b>Где найти:</b> ЛК ВБ -> Интеграции по API -> Создать токен -> Для интеграции вручную."),
-            ("<b>Зачем нужен токен:</b> для получения информации о товаре, проверки статуса заказов и отзывов."),
-            ("<b>Безопасно:</b> токен создается только в режиме чтения, поэтому изменить данные с ним невозможно."),
-        ]
-        note = (
-            "Сначала бот проверит токен, и только потом попросит название магазина."
-            if shop_title is None
-            else "Сообщение с токеном будет удалено автоматически."
-        )
-        return screen_text(
-            title=title,
-            cta="Отправьте токен WB API следующим сообщением ниже.",
-            lines=lines,
-            note=note,
-        )
-
-    def _listing_create_instruction_text(self, *, shop_title: str) -> str:
-        return self._get_seller_listing_creation_flow().instruction_text(shop_title=shop_title)
-
-    def _parse_listing_create_input(
-        self,
-        text: str,
-    ) -> tuple[int, Decimal, int, str, list[str]]:
-        return parse_listing_create_csv(text)
-
-    def _listing_title_review_markup(self) -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        text="✅ Сохранить текущее название",
-                        callback_data=build_callback(
-                            flow=_ROLE_SELLER,
-                            action="listing_title_keep",
-                        ),
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="✏️ Изменить название",
-                        callback_data=build_callback(
-                            flow=_ROLE_SELLER,
-                            action="listing_title_edit_prompt",
-                        ),
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="↩️ К объявлениям",
-                        callback_data=build_callback(flow=_ROLE_SELLER, action="listings"),
-                    )
-                ],
-            ]
-        )
-
-    def _listing_title_edit_prompt_text(self, *, current_title: str) -> str:
-        return self._get_seller_listing_creation_flow().title_edit_prompt_text(current_title=current_title)
-
-    def _listing_title_confirmation_text(
-        self,
-        *,
-        wb_product_id: int,
-        search_phrase: str,
-        review_phrases: list[str] | None,
-        cashback_rub: Decimal,
-        slot_count: int,
-        snapshot: WbProductSnapshot,
-        suggested_display_title: str,
-        buyer_price_rub: int,
-        reference_price_source: str,
-        observed_buyer_price: WbObservedBuyerPrice | None = None,
-    ) -> str:
-        return self._get_seller_listing_creation_flow().title_confirmation_text(
-            wb_product_id=wb_product_id,
-            search_phrase=search_phrase,
-            review_phrases=review_phrases,
-            cashback_rub=cashback_rub,
-            slot_count=slot_count,
-            snapshot=snapshot,
-            suggested_display_title=suggested_display_title,
-            buyer_price_rub=buyer_price_rub,
-            reference_price_source=reference_price_source,
-            observed_buyer_price=observed_buyer_price,
-        )
-
-    def _listing_manual_price_prompt_text(
-        self,
-        *,
-        wb_product_id: int,
-        snapshot: WbProductSnapshot,
-    ) -> str:
-        return self._get_seller_listing_creation_flow().manual_price_prompt_text(
-            wb_product_id=wb_product_id,
-            snapshot=snapshot,
+            self._flow_buttons_markup(self._seller_marketplace_flow().menu_buttons()),
         )
 
     @staticmethod
@@ -2550,1263 +1825,6 @@ class TelegramWebhookRuntime:
 
     def _seller_listings_page_from_context(self, context: ContextTypes.DEFAULT_TYPE) -> int:
         return self._coerce_page_number(str(context.user_data.get(_SELLER_LISTINGS_PAGE_KEY, "1")))
-
-    @staticmethod
-    def _set_seller_listings_page(
-        context: ContextTypes.DEFAULT_TYPE | None,
-        *,
-        page: int,
-    ) -> None:
-        if context is None:
-            return
-        context.user_data[_SELLER_LISTINGS_PAGE_KEY] = page
-
-    def _listing_edit_menu_markup(self, *, listing_id: int) -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        text="✏️ Название",
-                        callback_data=build_callback(
-                            flow=_ROLE_SELLER,
-                            action="listing_edit_title",
-                            entity_id=str(listing_id),
-                        ),
-                    ),
-                    InlineKeyboardButton(
-                        text="🔎 Поиск",
-                        callback_data=build_callback(
-                            flow=_ROLE_SELLER,
-                            action="listing_edit_search",
-                            entity_id=str(listing_id),
-                        ),
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="💸 Кэшбэк",
-                        callback_data=build_callback(
-                            flow=_ROLE_SELLER,
-                            action="listing_edit_cashback",
-                            entity_id=str(listing_id),
-                        ),
-                    ),
-                    InlineKeyboardButton(
-                        text="🔢 Кол-во",
-                        callback_data=build_callback(
-                            flow=_ROLE_SELLER,
-                            action="listing_edit_slots",
-                            entity_id=str(listing_id),
-                        ),
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="↩️ К карточке",
-                        callback_data=build_callback(
-                            flow=_ROLE_SELLER,
-                            action="listing_open",
-                            entity_id=str(listing_id),
-                        ),
-                    )
-                ],
-            ]
-        )
-
-    def _listing_edit_confirm_markup(self, *, listing_id: int) -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        text="✅ Сохранить изменения",
-                        callback_data=build_callback(
-                            flow=_ROLE_SELLER,
-                            action="listing_edit_confirm",
-                            entity_id=str(listing_id),
-                        ),
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="↩️ К редактированию",
-                        callback_data=build_callback(
-                            flow=_ROLE_SELLER,
-                            action="listing_edit",
-                            entity_id=str(listing_id),
-                        ),
-                    )
-                ],
-            ]
-        )
-
-    def _listing_edit_field_prompt_text(
-        self,
-        *,
-        field_label: str,
-        current_value: str,
-        hint: str,
-    ) -> str:
-        return screen_text(
-            title=f"Редактирование: {field_label}",
-            lines=[f"<b>Сейчас:</b> {html.escape(current_value)}"],
-            note=hint,
-        )
-
-    def _listing_edit_confirmation_text(
-        self,
-        *,
-        listing,
-        new_display_title: str,
-        new_search_phrase: str,
-        new_reward_usdt: Decimal,
-        new_slot_count: int,
-    ) -> str:
-        new_cashback_rub = (new_reward_usdt * self._display_rub_per_usdt).quantize(
-            _RUB_QUANT,
-            rounding=ROUND_HALF_UP,
-        )
-        new_collateral = (new_reward_usdt * Decimal(new_slot_count) * _LISTING_COLLATERAL_FEE_MULTIPLIER).quantize(
-            _USDT_EXACT_QUANT, rounding=ROUND_HALF_UP
-        )
-        current_title = listing_display_title(
-            display_title=listing.display_title,
-            fallback=listing.search_phrase,
-        )
-        cashback_percent = format_listing_cashback_percent(
-            reference_price_rub=listing.reference_price_rub,
-            cashback_rub=new_cashback_rub,
-        )
-        return screen_text(
-            title="Подтвердите изменения",
-            lines=[
-                (f"<b>Название:</b> {html.escape(current_title)} -> {html.escape(new_display_title)}"),
-                (
-                    f"<b>Поисковая фраза:</b> &quot;{html.escape(listing.search_phrase)}&quot; "
-                    f"-> &quot;{html.escape(new_search_phrase)}&quot;"
-                ),
-                (
-                    f"<b>Кэшбэк:</b> {self._format_usdt_with_rub(listing.reward_usdt)} "
-                    f"-> {self._format_usdt_with_rub(new_reward_usdt)}"
-                ),
-                (f"<b>Кэшбэк, %:</b> {cashback_percent}"),
-                f"<b>Макс. заказов:</b> {listing.slot_count} -> {new_slot_count}",
-                (
-                    f"<b>Обеспечение:</b> "
-                    f"{self._format_usdt_with_rub(listing.collateral_required_usdt)} "
-                    f"-> {self._format_usdt_with_rub(new_collateral)}"
-                ),
-            ],
-            note="Сохраните изменения, если все выглядит верно.",
-        )
-
-    def _listing_created_prompt_activation_text(
-        self,
-        *,
-        display_title: str,
-        wb_product_id: int,
-        wb_subject_name: str | None,
-        wb_vendor_code: str | None,
-        wb_source_title: str | None,
-        wb_brand_name: str | None,
-        reference_price_rub: int | None,
-        reference_price_source: str | None,
-        search_phrase: str,
-        review_phrases: list[str] | None,
-        cashback_rub: Decimal,
-        reward_usdt: Decimal,
-        slot_count: int,
-        collateral_required_usdt: Decimal,
-    ) -> str:
-        return self._get_seller_listing_creation_flow().created_prompt_activation_text(
-            display_title=display_title,
-            wb_product_id=wb_product_id,
-            wb_subject_name=wb_subject_name,
-            wb_vendor_code=wb_vendor_code,
-            wb_source_title=wb_source_title,
-            wb_brand_name=wb_brand_name,
-            reference_price_rub=reference_price_rub,
-            reference_price_source=reference_price_source,
-            search_phrase=search_phrase,
-            review_phrases=review_phrases,
-            cashback_rub=cashback_rub,
-            reward_usdt=reward_usdt,
-            slot_count=slot_count,
-            collateral_required_usdt=collateral_required_usdt,
-        )
-
-    async def _render_shop_delete_preview(
-        self,
-        *,
-        query_message: Message | None,
-        seller_user_id: int,
-        shop_id: int,
-    ) -> None:
-        try:
-            shop = await self._seller_service.get_shop(
-                seller_user_id=seller_user_id,
-                shop_id=shop_id,
-            )
-            preview = await self._seller_service.get_shop_delete_preview(
-                seller_user_id=seller_user_id,
-                shop_id=shop_id,
-            )
-        except NotFoundError:
-            await self._render_seller_shops(
-                query_message=query_message,
-                seller_user_id=seller_user_id,
-                notice="Магазин не найден или уже удален.",
-            )
-            return
-
-        text = screen_text(
-            title=f"Удаление магазина «{html.escape(shop.title)}» необратимо",
-            lines=[
-                f"Активных объявлений: {preview.active_listings_count}",
-                f"Незавершенных покупок: {preview.open_assignments_count}",
-                (
-                    "Покупателям будет выплачен кэшбэк: "
-                    f"{self._format_usdt_with_rub(preview.assignment_linked_reserved_usdt)}"
-                ),
-                (f"Продавцу вернется: {self._format_usdt_with_rub(preview.unassigned_collateral_usdt)}"),
-            ],
-            note=("При удалении магазина незавершенные покупки закроются с выплатой кэшбэка покупателям."),
-            warning=True,
-        )
-        await self._replace_message(
-            query_message,
-            text,
-            InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            text="✅ Подтвердить удаление",
-                            callback_data=build_callback(
-                                flow=_ROLE_SELLER,
-                                action="shop_delete_confirm",
-                                entity_id=str(shop_id),
-                            ),
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text="↩️ Отмена",
-                            callback_data=build_callback(
-                                flow=_ROLE_SELLER,
-                                action="shop_open",
-                                entity_id=str(shop_id),
-                            ),
-                        )
-                    ],
-                ]
-            ),
-            parse_mode="HTML",
-        )
-
-    async def _execute_shop_delete(
-        self,
-        *,
-        query_message: Message | None,
-        seller_user_id: int,
-        shop_id: int,
-    ) -> None:
-        try:
-            result = await self._seller_service.delete_shop(
-                seller_user_id=seller_user_id,
-                shop_id=shop_id,
-                deleted_by_user_id=seller_user_id,
-                idempotency_key=f"tg-shop-delete:{seller_user_id}:{shop_id}",
-            )
-        except NotFoundError:
-            await self._render_seller_shops(
-                query_message=query_message,
-                seller_user_id=seller_user_id,
-                notice="Магазин не найден или уже удален.",
-            )
-            return
-
-        if not result.changed:
-            message = "Магазин уже удален."
-        else:
-            message = (
-                "Магазин удален.\n"
-                "Покупателям ушло: "
-                f"{self._format_usdt_with_rub(result.assignment_transferred_usdt)}\n"
-                "Продавцу вернулось: "
-                f"{self._format_usdt_with_rub(result.unassigned_collateral_returned_usdt)}"
-            )
-        self._logger.info(
-            "seller_shop_deleted",
-            shop_id=shop_id,
-            shop_ref=self._shop_ref(shop_id),
-            assignment_transferred_usdt=str(result.assignment_transferred_usdt),
-            unassigned_collateral_returned_usdt=str(result.unassigned_collateral_returned_usdt),
-        )
-        await self._render_seller_shops(
-            query_message=query_message,
-            seller_user_id=seller_user_id,
-            notice=message,
-        )
-
-    async def _render_seller_listings(
-        self,
-        *,
-        context: ContextTypes.DEFAULT_TYPE | None,
-        query_message: Message | None,
-        seller_user_id: int,
-        page: int = 1,
-        notice: str | None = None,
-    ) -> None:
-        listings = await self._seller_service.list_listing_collateral_views(seller_user_id=seller_user_id)
-        if not listings:
-            lines = ["Объявлений пока нет."]
-            if notice:
-                lines.insert(0, html.escape(notice))
-            text = screen_text(
-                title="Объявления",
-                lines=lines,
-                note="Нажмите «➕ Создать объявление», чтобы добавить первое объявление.",
-            )
-            await self._replace_message(
-                query_message,
-                text,
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="➕ Создать объявление",
-                                callback_data=build_callback(
-                                    flow=_ROLE_SELLER,
-                                    action="listing_create_pick_shop",
-                                ),
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ Назад",
-                                callback_data=build_callback(flow=_ROLE_SELLER, action="menu"),
-                            )
-                        ],
-                    ]
-                ),
-                parse_mode="HTML",
-            )
-            return
-
-        balance_snapshot = await self._seller_service.get_seller_balance_snapshot(
-            seller_user_id=seller_user_id,
-        )
-        resolved_page, total_pages, start_index, end_index = resolve_numbered_page(
-            total_items=len(listings),
-            requested_page=page,
-        )
-        self._set_seller_listings_page(context, page=resolved_page)
-        page_items = listings[start_index:end_index]
-        lines = []
-        if notice:
-            lines.append(html.escape(notice))
-        for number, listing in enumerate(page_items, start=start_index + 1):
-            display_title = listing_display_title(
-                display_title=listing.display_title,
-                fallback=listing.search_phrase,
-            )
-            cashback_text = self._format_cashback_with_percent(
-                reward_usdt=listing.reward_usdt,
-                reference_price_rub=listing.reference_price_rub,
-            )
-            listing_link = build_listing_deep_link(
-                bot_username=self._settings.telegram_bot_username,
-                listing_id=listing.listing_id,
-            )
-            collateral_line = self._format_listing_collateral_line(
-                collateral_view=listing,
-                seller_available_usdt=balance_snapshot.seller_available_usdt,
-            )
-            lines.append(
-                f"<b>{number}. {html.escape(display_title)}</b>\n"
-                f"<b>Артикул WB:</b> {listing.wb_product_id}\n"
-                f"<b>Кэшбэк:</b> {cashback_text}\n"
-                f"<b>Поисковая фраза:</b> &quot;{html.escape(listing.search_phrase)}&quot;\n"
-                + (f"<b>План покупок / В процессе:</b> {listing.slot_count} / {listing.in_progress_assignments_count}")
-                + "\n"
-                + f"<b>Ссылка на товар:</b> {html.escape(listing_link)}\n"
-                + f"<b>Обеспечение:</b> {collateral_line}"
-                + "\n"
-                + (f"<b>Статус:</b> {self._listing_activity_badge(is_active=listing.status == 'active')}")
-            )
-        title = "Объявления"
-        if total_pages > 1:
-            title = f"Объявления · стр. {resolved_page}/{total_pages}"
-        await self._replace_message(
-            query_message,
-            screen_text(
-                title=title,
-                cta="Нажмите номер ниже, чтобы открыть карточку объявления.",
-                lines=lines,
-                note="Новое объявление создается кнопкой ниже.",
-                separate_blocks=True,
-            ),
-            self._flow_buttons_markup(
-                numbered_page_buttons(
-                    flow=_ROLE_SELLER,
-                    open_action="listing_open",
-                    page_action="listings",
-                    item_ids=[item.listing_id for item in page_items],
-                    start_number=start_index + 1,
-                    page=resolved_page,
-                    total_pages=total_pages,
-                    extra_rows=[
-                        [
-                            ButtonSpec(
-                                text="➕ Создать объявление",
-                                flow=_ROLE_SELLER,
-                                action="listing_create_pick_shop",
-                            )
-                        ],
-                        [ButtonSpec(text="↩️ Назад", flow=_ROLE_SELLER, action="menu")],
-                        [self._knowledge_button_spec(role=_ROLE_SELLER, topic="listings")],
-                    ],
-                )
-            ),
-            parse_mode="HTML",
-        )
-
-    async def _render_seller_listing_detail(
-        self,
-        *,
-        query_message: Message | None,
-        seller_user_id: int,
-        listing_id: int,
-        list_page: int = 1,
-        notice: str | None = None,
-    ) -> None:
-        try:
-            listing = await self._seller_service.get_listing(
-                seller_user_id=seller_user_id,
-                listing_id=listing_id,
-            )
-        except NotFoundError:
-            await self._render_seller_listings(
-                context=None,
-                query_message=query_message,
-                seller_user_id=seller_user_id,
-                page=list_page,
-                notice="Объявление не найдено или уже удалено.",
-            )
-            return
-        views = await self._seller_service.list_listing_collateral_views(
-            seller_user_id=seller_user_id,
-        )
-        balance_snapshot = await self._seller_service.get_seller_balance_snapshot(
-            seller_user_id=seller_user_id,
-        )
-        collateral_view = next((item for item in views if item.listing_id == listing_id), None)
-        await self._reply_with_photo_if_available(
-            query_message,
-            photo_url=listing.wb_photo_url,
-        )
-        await self._replace_message(
-            query_message,
-            self._seller_listing_detail_html(
-                listing=listing,
-                collateral_view=collateral_view,
-                seller_available_usdt=balance_snapshot.seller_available_usdt,
-                listing_link=build_listing_deep_link(
-                    bot_username=self._settings.telegram_bot_username,
-                    listing_id=listing.listing_id,
-                ),
-                notice=notice,
-            ),
-            self._seller_listing_detail_markup(
-                listing_id=listing.listing_id,
-                status=listing.status,
-                list_page=list_page,
-                can_activate=self._listing_has_sufficient_collateral(
-                    collateral_view=collateral_view,
-                    seller_available_usdt=balance_snapshot.seller_available_usdt,
-                    listing_status=listing.status,
-                ),
-            ),
-            parse_mode="HTML",
-        )
-
-    async def _render_pending_listing_title_review(
-        self,
-        *,
-        query_message: Message | None,
-        prompt_state: dict[str, Any],
-    ) -> None:
-        wb_product_id = int(prompt_state.get("wb_product_id", 0))
-        if wb_product_id < 1:
-            await self._replace_message(
-                query_message,
-                "Не удалось продолжить создание объявления. Откройте раздел заново.",
-            )
-            return
-        await self._reply_with_photo_if_available(
-            query_message,
-            photo_url=str(prompt_state.get("wb_photo_url", "")).strip() or None,
-        )
-        await self._replace_message(
-            query_message,
-            self._listing_title_confirmation_text(
-                wb_product_id=wb_product_id,
-                search_phrase=str(prompt_state.get("search_phrase", "")).strip(),
-                review_phrases=list(prompt_state.get("review_phrases") or []),
-                cashback_rub=Decimal(str(prompt_state.get("cashback_rub", "0"))),
-                slot_count=int(prompt_state.get("slot_count", 0)),
-                snapshot=WbProductSnapshot(
-                    wb_product_id=wb_product_id,
-                    subject_name=str(prompt_state.get("wb_subject_name", "")).strip() or None,
-                    vendor_code=str(prompt_state.get("wb_vendor_code", "")).strip() or None,
-                    brand=str(prompt_state.get("wb_brand_name", "")).strip() or None,
-                    name=str(prompt_state.get("wb_source_title", "")).strip(),
-                    description=str(prompt_state.get("wb_description", "")).strip() or None,
-                    photo_url=str(prompt_state.get("wb_photo_url", "")).strip() or None,
-                    tech_sizes=list(prompt_state.get("wb_tech_sizes") or []),
-                    characteristics=list(prompt_state.get("wb_characteristics") or []),
-                ),
-                suggested_display_title=str(prompt_state.get("suggested_display_title", "")).strip(),
-                buyer_price_rub=int(prompt_state.get("reference_price_rub", 0)),
-                reference_price_source=str(prompt_state.get("reference_price_source", "")),
-                observed_buyer_price=(
-                    WbObservedBuyerPrice(
-                        buyer_price_rub=int(prompt_state.get("reference_price_rub", 0)),
-                        seller_price_rub=int(prompt_state.get("seller_price_rub", 0)),
-                        spp_percent=int(prompt_state.get("spp_percent", 0)),
-                        observed_at=(
-                            datetime.fromisoformat(str(prompt_state.get("reference_price_updated_at")))
-                            if prompt_state.get("reference_price_updated_at")
-                            else None
-                        ),
-                    )
-                    if prompt_state.get("reference_price_source") == "orders"
-                    else None
-                ),
-            ),
-            self._listing_title_review_markup(),
-            parse_mode="HTML",
-        )
-
-    async def _create_listing_from_prompt(
-        self,
-        *,
-        context: ContextTypes.DEFAULT_TYPE,
-        query_message: Message | None,
-        seller_user_id: int,
-    ) -> None:
-        prompt_state = context.user_data.get(_PROMPT_STATE_KEY)
-        if not isinstance(prompt_state, dict):
-            await self._replace_message(
-                query_message,
-                "Не удалось продолжить создание объявления. Откройте раздел заново.",
-            )
-            return
-        try:
-            listing = await self._seller_service.create_listing_draft(
-                seller_user_id=seller_user_id,
-                shop_id=int(prompt_state.get("shop_id", 0)),
-                wb_product_id=int(prompt_state.get("wb_product_id", 0)),
-                display_title=str(prompt_state.get("suggested_display_title", "")).strip(),
-                wb_source_title=str(prompt_state.get("wb_source_title", "")).strip(),
-                wb_subject_name=str(prompt_state.get("wb_subject_name", "")).strip() or None,
-                wb_brand_name=str(prompt_state.get("wb_brand_name", "")).strip() or None,
-                wb_vendor_code=str(prompt_state.get("wb_vendor_code", "")).strip() or None,
-                wb_description=str(prompt_state.get("wb_description", "")).strip() or None,
-                wb_photo_url=str(prompt_state.get("wb_photo_url", "")).strip() or None,
-                wb_tech_sizes=list(prompt_state.get("wb_tech_sizes") or []),
-                wb_characteristics=list(prompt_state.get("wb_characteristics") or []),
-                review_phrases=list(prompt_state.get("review_phrases") or []),
-                reference_price_rub=(
-                    int(prompt_state["reference_price_rub"])
-                    if prompt_state.get("reference_price_rub") is not None
-                    else None
-                ),
-                reference_price_source=(str(prompt_state.get("reference_price_source", "")).strip() or None),
-                reference_price_updated_at=(
-                    datetime.fromisoformat(str(prompt_state.get("reference_price_updated_at")))
-                    if prompt_state.get("reference_price_updated_at")
-                    else None
-                ),
-                search_phrase=str(prompt_state.get("search_phrase", "")).strip(),
-                reward_usdt=Decimal(str(prompt_state.get("reward_usdt", "0"))),
-                slot_count=int(prompt_state.get("slot_count", 0)),
-            )
-        except (ValueError, NotFoundError, InvalidStateError, InsufficientFundsError):
-            await self._replace_message(
-                query_message,
-                "Не удалось создать объявление. Проверьте данные и попробуйте снова.",
-                self._seller_back_markup(action="listings", label="↩️ К объявлениям"),
-            )
-            return
-        self._clear_prompt(context)
-        await self._replace_message(
-            query_message,
-            self._listing_created_prompt_activation_text(
-                display_title=listing.display_title or listing.search_phrase,
-                wb_product_id=listing.wb_product_id,
-                wb_subject_name=listing.wb_subject_name,
-                wb_vendor_code=listing.wb_vendor_code,
-                wb_source_title=listing.wb_source_title,
-                wb_brand_name=listing.wb_brand_name,
-                reference_price_rub=listing.reference_price_rub,
-                reference_price_source=listing.reference_price_source,
-                search_phrase=listing.search_phrase,
-                review_phrases=getattr(listing, "review_phrases", []),
-                cashback_rub=(listing.reward_usdt * self._display_rub_per_usdt).quantize(
-                    _RUB_QUANT, rounding=ROUND_HALF_UP
-                ),
-                reward_usdt=listing.reward_usdt,
-                slot_count=listing.slot_count,
-                collateral_required_usdt=listing.collateral_required_usdt,
-            ),
-            InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            text="✅ Активировать",
-                            callback_data=build_callback(
-                                flow=_ROLE_SELLER,
-                                action="listing_activate",
-                                entity_id=str(listing.listing_id),
-                            ),
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text="📦 К объявлениям",
-                            callback_data=build_callback(flow=_ROLE_SELLER, action="listings"),
-                        )
-                    ],
-                ]
-            ),
-            parse_mode="HTML",
-        )
-
-    async def _render_seller_listing_edit_menu(
-        self,
-        *,
-        query_message: Message | None,
-        seller_user_id: int,
-        listing_id: int,
-        list_page: int = 1,
-    ) -> None:
-        try:
-            listing = await self._seller_service.get_listing(
-                seller_user_id=seller_user_id,
-                listing_id=listing_id,
-            )
-        except NotFoundError:
-            await self._replace_message(query_message, "Объявление не найдено.")
-            return
-        display_title = listing_display_title(
-            display_title=listing.display_title,
-            fallback=listing.search_phrase,
-        )
-        await self._replace_message(
-            query_message,
-            screen_text(
-                title="Редактирование объявления",
-                lines=[
-                    f"<b>Товар:</b> {html.escape(display_title)}",
-                    "Выберите, что хотите изменить.",
-                ],
-                note="Артикул WB и данные карточки товара в этом шаге не меняются.",
-            ),
-            self._listing_edit_menu_markup(listing_id=listing_id),
-            parse_mode="HTML",
-        )
-
-    async def _render_listing_create_shop_picker(
-        self,
-        *,
-        query_message: Message | None,
-        seller_user_id: int,
-    ) -> None:
-        shops = await self._seller_service.list_shops(seller_user_id=seller_user_id)
-        if not shops:
-            await self._replace_message(
-                query_message,
-                "Нет доступных магазинов. Сначала создайте магазин.",
-                self._seller_shops_menu_markup(has_shops=False),
-            )
-            return
-
-        listings = await self._seller_service.list_listing_collateral_views(seller_user_id=seller_user_id)
-        listing_counts_by_shop: dict[int, int] = {}
-        for listing in listings:
-            listing_counts_by_shop[listing.shop_id] = listing_counts_by_shop.get(listing.shop_id, 0) + 1
-        keyboard_rows = [
-            [
-                InlineKeyboardButton(
-                    text=button_label_with_count(
-                        f"🏬 {shop.title}",
-                        listing_counts_by_shop.get(shop.shop_id, 0),
-                    ),
-                    callback_data=build_callback(
-                        flow=_ROLE_SELLER,
-                        action="listing_create_prompt",
-                        entity_id=str(shop.shop_id),
-                    ),
-                )
-            ]
-            for shop in shops
-        ]
-        keyboard_rows.append(
-            [
-                InlineKeyboardButton(
-                    text="↩️ Назад к объявлениям",
-                    callback_data=build_callback(flow=_ROLE_SELLER, action="listings"),
-                )
-            ]
-        )
-        await self._replace_message(
-            query_message,
-            screen_text(
-                title="Новое объявление",
-                cta="Выберите магазин для нового объявления.",
-            ),
-            InlineKeyboardMarkup(keyboard_rows),
-            parse_mode="HTML",
-        )
-
-    async def _execute_listing_activate(
-        self,
-        *,
-        query_message: Message | None,
-        seller_user_id: int,
-        listing_id: int,
-        list_page: int = 1,
-    ) -> None:
-        try:
-            workflow = self._seller_workflow_service
-            if workflow is None:
-                listing = await self._seller_service.get_listing(
-                    seller_user_id=seller_user_id,
-                    listing_id=listing_id,
-                )
-                await self._validate_listing_product_availability(
-                    seller_user_id=seller_user_id,
-                    shop_id=listing.shop_id,
-                    wb_product_id=listing.wb_product_id,
-                )
-                result = await self._seller_service.activate_listing(
-                    seller_user_id=seller_user_id,
-                    listing_id=listing_id,
-                    idempotency_key=f"tg-listing-activate:{seller_user_id}:{listing_id}",
-                )
-            else:
-                result = await workflow.activate_listing(
-                    seller_user_id=seller_user_id,
-                    listing_id=listing_id,
-                    idempotency_key=f"tg-listing-activate:{seller_user_id}:{listing_id}",
-                )
-        except NotFoundError:
-            await self._replace_message(query_message, "Объявление не найдено.")
-            return
-        except ListingValidationError as exc:
-            await self._replace_message(query_message, str(exc))
-            return
-        except InvalidStateError:
-            await self._replace_message(
-                query_message,
-                "Не удалось активировать объявление. Проверьте токен магазина и обеспечение.",
-            )
-            return
-        except InsufficientFundsError:
-            await self._replace_message(
-                query_message,
-                screen_text(
-                    title="Недостаточно средств для активации",
-                    lines=[
-                        "На балансе не хватает средств, чтобы зарезервировать обеспечение.",
-                    ],
-                    note="Пополните баланс и попробуйте снова.",
-                    warning=True,
-                ),
-                InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="➕ Пополнить",
-                                callback_data=build_callback(
-                                    flow=_ROLE_SELLER,
-                                    action="topup_prompt",
-                                ),
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text="↩️ К карточке",
-                                callback_data=build_callback(
-                                    flow=_ROLE_SELLER,
-                                    action="listing_open",
-                                    entity_id=str(listing_id),
-                                ),
-                            )
-                        ],
-                    ]
-                ),
-                parse_mode="HTML",
-            )
-            return
-
-        if result.changed:
-            message = "Объявление активно."
-        else:
-            message = "Объявление уже активно."
-        self._logger.info(
-            "seller_listing_activated",
-            listing_id=listing_id,
-            listing_ref=self._listing_ref(listing_id),
-            changed=result.changed,
-        )
-        await self._render_seller_listing_detail(
-            query_message=query_message,
-            seller_user_id=seller_user_id,
-            listing_id=listing_id,
-            list_page=list_page,
-            notice=message,
-        )
-
-    async def _execute_listing_pause(
-        self,
-        *,
-        query_message: Message | None,
-        seller_user_id: int,
-        listing_id: int,
-        list_page: int = 1,
-    ) -> None:
-        try:
-            result = await self._seller_service.pause_listing(
-                seller_user_id=seller_user_id,
-                listing_id=listing_id,
-                reason="manual_pause",
-            )
-        except (NotFoundError, InvalidStateError):
-            await self._replace_message(query_message, "Не удалось поставить объявление на паузу.")
-            return
-
-        if result.changed:
-            message = "Объявление поставлено на паузу."
-        else:
-            message = "Объявление уже на паузе."
-        self._logger.info(
-            "seller_listing_paused",
-            listing_id=listing_id,
-            listing_ref=self._listing_ref(listing_id),
-            changed=result.changed,
-        )
-        await self._render_seller_listing_detail(
-            query_message=query_message,
-            seller_user_id=seller_user_id,
-            listing_id=listing_id,
-            list_page=list_page,
-            notice=message,
-        )
-
-    async def _execute_listing_unpause(
-        self,
-        *,
-        query_message: Message | None,
-        seller_user_id: int,
-        listing_id: int,
-        list_page: int = 1,
-    ) -> None:
-        try:
-            workflow = self._seller_workflow_service
-            if workflow is None:
-                listing = await self._seller_service.get_listing(
-                    seller_user_id=seller_user_id,
-                    listing_id=listing_id,
-                )
-                await self._validate_listing_product_availability(
-                    seller_user_id=seller_user_id,
-                    shop_id=listing.shop_id,
-                    wb_product_id=listing.wb_product_id,
-                )
-                result = await self._seller_service.unpause_listing(
-                    seller_user_id=seller_user_id,
-                    listing_id=listing_id,
-                )
-            else:
-                result = await workflow.unpause_listing(
-                    seller_user_id=seller_user_id,
-                    listing_id=listing_id,
-                )
-        except NotFoundError:
-            await self._replace_message(query_message, "Объявление не найдено.")
-            return
-        except ListingValidationError as exc:
-            await self._replace_message(query_message, str(exc))
-            return
-        except InvalidStateError:
-            await self._replace_message(query_message, "Не удалось снять паузу с объявления.")
-            return
-
-        if result.changed:
-            message = "Объявление снова активно."
-        else:
-            message = "Объявление уже активно."
-        self._logger.info(
-            "seller_listing_unpaused",
-            listing_id=listing_id,
-            listing_ref=self._listing_ref(listing_id),
-            changed=result.changed,
-        )
-        await self._render_seller_listing_detail(
-            query_message=query_message,
-            seller_user_id=seller_user_id,
-            listing_id=listing_id,
-            list_page=list_page,
-            notice=message,
-        )
-
-    async def _render_listing_delete_preview(
-        self,
-        *,
-        query_message: Message | None,
-        seller_user_id: int,
-        listing_id: int,
-        list_page: int = 1,
-    ) -> None:
-        try:
-            preview = await self._seller_service.get_listing_delete_preview(
-                seller_user_id=seller_user_id,
-                listing_id=listing_id,
-            )
-        except NotFoundError:
-            await self._replace_message(query_message, "Объявление не найдено.")
-            return
-
-        text = screen_text(
-            title="Удаление объявления необратимо",
-            lines=[
-                f"Незавершенных покупок: {preview.open_assignments_count}",
-                (
-                    "Покупателям будет выплачен кэшбэк: "
-                    f"{self._format_usdt_with_rub(preview.assignment_linked_reserved_usdt)}"
-                ),
-                (f"Продавцу вернется: {self._format_usdt_with_rub(preview.unassigned_collateral_usdt)}"),
-            ],
-            note=("При удалении объявления незавершенные покупки закроются с выплатой кэшбэка покупателям."),
-            warning=True,
-        )
-        await self._replace_message(
-            query_message,
-            text,
-            InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            text="✅ Подтвердить удаление",
-                            callback_data=build_callback(
-                                flow=_ROLE_SELLER,
-                                action="listing_delete_confirm",
-                                entity_id=str(listing_id),
-                            ),
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text="↩️ Отмена",
-                            callback_data=build_callback(
-                                flow=_ROLE_SELLER,
-                                action="listing_open",
-                                entity_id=str(listing_id),
-                            ),
-                        )
-                    ],
-                ]
-            ),
-            parse_mode="HTML",
-        )
-
-    async def _execute_listing_delete(
-        self,
-        *,
-        context: ContextTypes.DEFAULT_TYPE | None,
-        query_message: Message | None,
-        seller_user_id: int,
-        listing_id: int,
-    ) -> None:
-        try:
-            result = await self._seller_service.delete_listing(
-                seller_user_id=seller_user_id,
-                listing_id=listing_id,
-                deleted_by_user_id=seller_user_id,
-                idempotency_key=f"tg-listing-delete:{seller_user_id}:{listing_id}",
-            )
-        except NotFoundError:
-            await self._replace_message(query_message, "Объявление не найдено.")
-            return
-
-        if not result.changed:
-            message = "Объявление уже удалено."
-        else:
-            message = (
-                "Объявление удалено.\n"
-                "Покупателям ушло: "
-                f"{self._format_usdt_with_rub(result.assignment_transferred_usdt)}\n"
-                "Продавцу вернулось: "
-                f"{self._format_usdt_with_rub(result.unassigned_collateral_returned_usdt)}"
-            )
-        self._logger.info(
-            "seller_listing_deleted",
-            listing_id=listing_id,
-            listing_ref=self._listing_ref(listing_id),
-            assignment_transferred_usdt=str(result.assignment_transferred_usdt),
-            unassigned_collateral_returned_usdt=str(result.unassigned_collateral_returned_usdt),
-        )
-        await self._render_seller_listings(
-            context=context,
-            query_message=query_message,
-            seller_user_id=seller_user_id,
-            page=self._seller_listings_page_from_context(context) if context is not None else 1,
-            notice=message,
-        )
-
-    async def _render_seller_balance(
-        self,
-        *,
-        query_message: Message | None,
-        seller_user_id: int,
-    ) -> None:
-        await self._refresh_display_rub_per_usdt()
-        snapshot = await self._seller_service.get_seller_balance_snapshot(seller_user_id=seller_user_id)
-        active_request = await self._finance_service.get_active_seller_withdrawal_request(seller_user_id=seller_user_id)
-        listings = await self._seller_service.list_listing_collateral_views(seller_user_id=seller_user_id)
-        allocated_total = snapshot.seller_collateral_usdt
-        required_total = sum((item.collateral_required_usdt for item in listings), Decimal("0"))
-        activation_capacity = snapshot.seller_available_usdt + snapshot.seller_collateral_usdt
-        shortfall = required_total - activation_capacity
-        lines = [
-            (f"<b>Свободно для новых объявлений:</b> {self._format_usdt_with_rub(snapshot.seller_available_usdt)}"),
-            f"<b>Уже выделено под объявления:</b> {self._format_usdt_with_rub(allocated_total)}",
-            (f"<b>В процессе вывода:</b> {self._format_usdt_with_rub(snapshot.seller_withdraw_pending_usdt)}"),
-        ]
-        if active_request is not None:
-            lines.append(withdrawal_request_block_html(active_request))
-        if shortfall > Decimal("0.000000"):
-            lines.append(f"<b>Не хватает для активации:</b> {self._format_usdt_with_rub(shortfall)}")
-        text = screen_text(
-            title="Баланс продавца",
-            cta="Выберите следующее действие ниже.",
-            lines=lines,
-            note=(
-                "Пополните баланс продавца, если средств не хватает для активации объявлений."
-                if shortfall > Decimal("0.000000")
-                else None
-            ),
-            separate_blocks=True,
-        )
-        await self._replace_message(
-            query_message,
-            text,
-            self._seller_balance_menu_markup(
-                can_withdraw_available=(
-                    active_request is None and snapshot.seller_available_usdt > Decimal("0.000000")
-                ),
-                active_request_id=(active_request.withdrawal_request_id if active_request is not None else None),
-            ),
-            parse_mode="HTML",
-        )
-
-    async def _render_seller_transaction_history(
-        self,
-        *,
-        query_message: Message | None,
-        seller_user_id: int,
-        page: int = 1,
-    ) -> None:
-        intents = await self._deposit_service.list_seller_deposit_intents(
-            seller_user_id=seller_user_id,
-            limit=1000,
-        )
-        withdrawals = await self._finance_service.list_seller_withdrawal_history(
-            seller_user_id=seller_user_id,
-            limit=1000,
-        )
-        combined_history: list[tuple[str, datetime, int, Any]] = []
-        for item in intents:
-            combined_history.append(
-                (
-                    "topup",
-                    item.created_at,
-                    int(getattr(item, "deposit_intent_id", 0) or 0),
-                    item,
-                )
-            )
-        for item in withdrawals:
-            combined_history.append(
-                (
-                    "withdraw",
-                    item.requested_at,
-                    int(getattr(item, "withdrawal_request_id", 0) or 0),
-                    item,
-                )
-            )
-        combined_history.sort(key=lambda entry: (entry[1], entry[2]), reverse=True)
-
-        if not combined_history:
-            await self._replace_message(
-                query_message,
-                screen_text(
-                    title="Транзакции продавца",
-                    cta="Здесь отображаются пополнения и выводы продавца.",
-                    lines=["Транзакций пока нет."],
-                    note="Нажмите «➕ Пополнить» или создайте заявку на вывод с экрана баланса.",
-                ),
-                self._seller_balance_menu_markup(),
-                parse_mode="HTML",
-            )
-            return
-
-        resolved_page, total_pages, start_index, end_index = resolve_numbered_page(
-            total_items=len(combined_history),
-            requested_page=page,
-            page_size=8,
-        )
-        lines: list[str] = []
-        for entry_type, _, entry_id, item in combined_history[start_index:end_index]:
-            if entry_type == "withdraw":
-                lines.append(withdrawal_history_block_html(item))
-                continue
-
-            expected_amount = format_usdt_value(item.expected_amount_usdt, precise=True)
-            block_lines = []
-            if entry_id > 0:
-                deposit_ref = self._deposit_ref(entry_id)
-                block_lines.append(entity_block_heading_with_ref(label="Счет на пополнение", ref=deposit_ref))
-            else:
-                block_lines.append("<b>Пополнение</b>")
-            block_lines.extend(
-                [
-                    f"<b>Сумма:</b> {expected_amount} USDT",
-                    f"<b>Статус:</b> {self._deposit_status_badge(item.status)}",
-                    f"<b>Создан:</b> {format_datetime_msk(item.created_at)}",
-                    f"<b>Срок счета:</b> до {format_datetime_msk(item.expires_at)}",
-                ]
-            )
-            block = "\n".join(block_lines)
-            if item.status == "credited" and item.credited_amount_usdt is not None:
-                block += f"\n<b>Зачислено:</b> {format_usdt_value(item.credited_amount_usdt, precise=True)} USDT"
-            if item.status == "manual_review":
-                block += "\n<i>Перевод найден, но нужна проверка администратором.</i>"
-            if item.status == "expired":
-                block += "\n<i>Если вы оплатили после срока, обратитесь к администратору.</i>"
-            lines.append(block)
-
-        keyboard_rows: list[list[InlineKeyboardButton]] = []
-        if total_pages > 1:
-            nav_row: list[InlineKeyboardButton] = []
-            if resolved_page > 1:
-                nav_row.append(
-                    InlineKeyboardButton(
-                        text="⬅️",
-                        callback_data=build_callback(
-                            flow=_ROLE_SELLER,
-                            action="topup_history",
-                            entity_id=str(resolved_page - 1),
-                        ),
-                    )
-                )
-            if resolved_page < total_pages:
-                nav_row.append(
-                    InlineKeyboardButton(
-                        text="➡️",
-                        callback_data=build_callback(
-                            flow=_ROLE_SELLER,
-                            action="topup_history",
-                            entity_id=str(resolved_page + 1),
-                        ),
-                    )
-                )
-            if nav_row:
-                keyboard_rows.append(nav_row)
-        keyboard_rows.extend(self._seller_balance_menu_markup().inline_keyboard)
-
-        await self._replace_message(
-            query_message,
-            screen_text(
-                title=(
-                    f"Транзакции продавца · стр. {resolved_page}/{total_pages}"
-                    if total_pages > 1
-                    else "Транзакции продавца"
-                ),
-                cta="Проверьте статус пополнений и выводов ниже.",
-                lines=lines,
-                note=(
-                    "Если пополнение или вывод зависли, проверьте статус "
-                    "и при необходимости обратитесь к администратору."
-                ),
-                separate_blocks=True,
-            ),
-            InlineKeyboardMarkup(keyboard_rows),
-            parse_mode="HTML",
-        )
-
-    async def _render_seller_topup_help(self, *, query_message: Message | None) -> None:
-        await self._replace_message(
-            query_message,
-            screen_text(
-                title="Как перевести USDT",
-                cta=(
-                    "Следуйте шагам ниже, затем вернитесь к сообщению со счетом "
-                    "и отправьте точную сумму в сети TON.\n"
-                    "Рекомендуем делать перевод на несколько объявлений сразу, "
-                    "так как комиссия за перевод в сети TON составляет "
-                    "фиксированный 1 USDT."
-                ),
-                lines=[
-                    (
-                        '1. Зайдите в <a href="https://help.ru.wallet.tg/article/60-znakomstvo-s-wallet">'
-                        "официальный кошелек Wallet</a> в Telegram: "
-                        '<a href="https://t.me/wallet">@wallet</a>.\n'
-                        "Также можно использовать любой другой TON-совместимый кошелек "
-                        "или перевести USDT напрямую с криптобиржи."
-                    ),
-                    (
-                        "2. Пополните Крипто Кошелек, купив необходимый объем USDT, "
-                        'например на <a href="https://help.ru.wallet.tg/article/'
-                        '80-kak-kupit-kriptovalutu-na-p2p-markete">'
-                        "P2P Маркете</a>.\n"
-                        "Самый простой и быстрый способ: "
-                        "Крипто Кошелек > Пополнить > P2P Экспресс."
-                    ),
-                    (
-                        "3. Выведите USDT на предоставленный в боте адрес:\n"
-                        "Крипто Кошелек > Вывести > Внешний кошелек или биржа > "
-                        "Доллары > Сеть TON."
-                    ),
-                ],
-                note=(
-                    "Важно точно указать сумму перевода, так как по ней "
-                    "идентифицируется ваш платеж. Адрес и сумма остаются "
-                    "в предыдущем сообщении со счетом."
-                ),
-                separate_blocks=True,
-            ),
-            InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            text="↩️ К балансу",
-                            callback_data=build_callback(flow=_ROLE_SELLER, action="balance"),
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text="🧾 Транзакции",
-                            callback_data=build_callback(
-                                flow=_ROLE_SELLER,
-                                action="topup_history",
-                            ),
-                        )
-                    ],
-                ]
-            ),
-            parse_mode="HTML",
-        )
 
     async def _start_seller_withdraw_full_amount(
         self,
@@ -5351,210 +3369,67 @@ class TelegramWebhookRuntime:
             )
 
         if prompt_type == "seller_shop_create_token":
-            seller_user_id = int(prompt_state.get("seller_user_id", 0))
-            wb_token = text.strip()
-            if seller_user_id < 1:
-                self._clear_prompt(context)
-                await message.reply_text(
-                    "Не удалось продолжить создание магазина. Откройте раздел «🏪 Магазины» заново."
-                )
-                return
-            if not wb_token:
-                await message.reply_text(
-                    "Токен не может быть пустым. Повторите ввод.",
-                    reply_markup=self._seller_back_markup(action="shops", label="↩️ К магазинам"),
-                )
-                return
-            if self._wb_ping_client is None:
-                self._clear_prompt(context)
-                await message.reply_text("Проверка токена временно недоступна. Попробуйте позже.")
-                return
-
-            try:
-                ping_result = await self._wb_ping_client.validate_token(wb_token)
-            except Exception:
-                self._logger.exception(
-                    "seller_shop_create_token_validation_failed",
-                    seller_user_id=seller_user_id,
-                )
-                self._clear_prompt(context)
-                await message.reply_text(
-                    "Не удалось проверить токен. Попробуйте снова через раздел «🏪 Магазины».",
-                    reply_markup=self._seller_back_markup(action="shops", label="↩️ К магазинам"),
-                )
-                return
-            if not ping_result.valid:
-                details = ping_result.message or "неизвестная ошибка"
-                await message.reply_text(
-                    (
-                        "Токен не прошел проверку и не сохранен.\n"
-                        f"Причина: {details}\n"
-                        "Проверьте, что токен «Базовый», работает в режиме "
-                        "«Только для чтения» и у него есть категории "
-                        "«Контент», «Статистика», «Вопросы и отзывы», "
-                        "затем отправьте его снова."
-                    ),
-                    reply_markup=self._seller_back_markup(action="shops", label="↩️ К магазинам"),
-                )
-                return
-
-            token_ciphertext = encrypt_token(wb_token, self._settings.token_cipher_key)
-            self._set_prompt(
-                context,
-                role=_ROLE_SELLER,
-                prompt_type="seller_shop_title_after_token",
-                sensitive=False,
-                extra={
-                    "seller_user_id": seller_user_id,
-                    "validated_token_ciphertext": token_ciphertext,
-                },
-            )
-            await message.reply_text(
-                (
-                    "Токен валиден. Сообщение с токеном удалено в целях безопасности.\n\n"
-                    "Шаг 2/2: введите название магазина следующим сообщением.\n"
-                    "Название увидят покупатели, поэтому используйте нейтральное и понятное имя "
-                    "без брендов и внутренних пометок."
+            await self._apply_transport_effects(
+                context=context,
+                query_message=None,
+                message=message,
+                default_role=_ROLE_SELLER,
+                result=await self._seller_marketplace_flow().submit_shop_create_token(
+                    prompt_state=prompt_state,
+                    text=text,
                 ),
-                reply_markup=self._seller_back_markup(action="shops", label="↩️ К магазинам"),
             )
             return
 
         if prompt_type == "seller_shop_title_after_token":
-            seller_user_id = int(prompt_state.get("seller_user_id", 0))
-            token_ciphertext = str(prompt_state.get("validated_token_ciphertext", "")).strip()
-            if seller_user_id < 1 or not token_ciphertext:
-                self._clear_prompt(context)
-                await message.reply_text(
-                    ("Не удалось продолжить создание магазина. Начните заново из раздела «🏪 Магазины»."),
-                    reply_markup=self._seller_back_markup(action="shops", label="↩️ К магазинам"),
-                )
-                return
-            try:
-                shop = await self._seller_service.create_shop(
-                    seller_user_id=seller_user_id,
-                    title=text,
-                )
-                await self._seller_service.save_validated_shop_token(
-                    seller_user_id=seller_user_id,
-                    shop_id=shop.shop_id,
-                    token_ciphertext=token_ciphertext,
-                )
-            except ValueError:
-                await message.reply_text(
-                    "Название магазина не может быть пустым. Повторите ввод.",
-                    reply_markup=self._seller_back_markup(action="shops", label="↩️ К магазинам"),
-                )
-                return
-            except InvalidStateError as exc:
-                details = str(exc).strip().lower()
-                if "title" in details and ("exists" in details or "unique" in details):
-                    error_text = "Магазин с таким названием уже есть.\nВведите другое название."
-                else:
-                    error_text = "Не удалось создать магазин.\nПроверьте название и попробуйте еще раз."
-                await message.reply_text(
-                    error_text,
-                    reply_markup=self._seller_back_markup(action="shops", label="↩️ К магазинам"),
-                )
-                return
-
-            deep_link = build_shop_deep_link(bot_username=self._settings.telegram_bot_username, slug=shop.slug)
-            self._clear_prompt(context)
-            await message.reply_text(
-                (f"Магазин «{shop.title}» создан.\nСсылка для покупателей:\n{deep_link}"),
-                reply_markup=self._seller_shop_detail_markup(
-                    shop_id=shop.shop_id,
-                    token_is_valid=True,
+            await self._apply_transport_effects(
+                context=context,
+                query_message=None,
+                message=message,
+                default_role=_ROLE_SELLER,
+                result=await self._seller_marketplace_flow().submit_shop_title_after_token(
+                    prompt_state=prompt_state,
+                    text=text,
                 ),
             )
             return
 
         if prompt_type == "seller_shop_token":
-            shop_id = int(prompt_state.get("shop_id", 0))
-            seller_user_id = int(prompt_state.get("seller_user_id", 0))
-            if shop_id < 1:
-                self._clear_prompt(context)
-                await message.reply_text("Не удалось продолжить ввод токена. Откройте карточку магазина заново.")
-                return
-            try:
-                response = await self._seller_processor.handle(
-                    telegram_id=identity.telegram_id,
-                    username=identity.username,
-                    text=f"/token_set {shop_id} {text}",
-                )
-            except Exception:
-                self._logger.exception(
-                    "seller_shop_token_update_failed",
-                    seller_user_id=seller_user_id,
-                    shop_id=shop_id,
-                )
-                self._clear_prompt(context)
-                await self._render_seller_shop_details(
-                    query_message=message,
-                    seller_user_id=seller_user_id,
-                    shop_id=shop_id,
-                    notice=("Не удалось проверить или сохранить токен. Попробуйте снова через карточку магазина."),
-                )
-                return
-            self._clear_prompt(context)
-            if seller_user_id > 0:
-                await self._render_seller_shop_details(
-                    query_message=message,
-                    seller_user_id=seller_user_id,
-                    shop_id=shop_id,
-                    notice=response.text,
-                )
-            else:
-                await message.reply_text(response.text)
+            await self._apply_transport_effects(
+                context=context,
+                query_message=None,
+                message=message,
+                default_role=_ROLE_SELLER,
+                result=await self._seller_marketplace_flow().submit_shop_token(
+                    prompt_state=prompt_state,
+                    text=text,
+                ),
+            )
             return
 
         if prompt_type == "seller_shop_rename":
-            seller_user_id = int(prompt_state.get("seller_user_id", 0))
-            shop_id = int(prompt_state.get("shop_id", 0))
-            token_is_valid = bool(prompt_state.get("token_is_valid", False))
-            if seller_user_id < 1 or shop_id < 1:
-                self._clear_prompt(context)
-                await message.reply_text(
-                    "Не удалось продолжить переименование. Откройте магазины заново.",
-                    reply_markup=self._seller_shops_menu_markup(has_shops=True),
-                )
-                return
-            try:
-                shop = await self._seller_service.rename_shop(
-                    seller_user_id=seller_user_id,
-                    shop_id=shop_id,
-                    title=text,
-                )
-            except ValueError:
-                await message.reply_text(
-                    "Название магазина не может быть пустым. Повторите ввод.",
-                    reply_markup=self._seller_shop_detail_markup(
-                        shop_id=shop_id,
-                        token_is_valid=token_is_valid,
-                    ),
-                )
-                return
-            except (NotFoundError, InvalidStateError) as exc:
-                details = str(exc).strip().lower()
-                if "title" in details and ("exists" in details or "unique" in details):
-                    error_text = "Магазин с таким названием уже существует.\nВведите другое название."
-                else:
-                    error_text = "Не удалось переименовать магазин.\nПроверьте название и попробуйте еще раз."
-                await message.reply_text(
-                    error_text,
-                    reply_markup=self._seller_shop_detail_markup(
-                        shop_id=shop_id,
-                        token_is_valid=token_is_valid,
-                    ),
-                )
-                return
-            self._clear_prompt(context)
-            deep_link = build_shop_deep_link(bot_username=self._settings.telegram_bot_username, slug=shop.slug)
-            await message.reply_text(
-                (f"Магазин переименован: «{shop.title}».\nНовая ссылка для покупателей:\n{deep_link}"),
-                reply_markup=self._seller_shop_detail_markup(
-                    shop_id=shop_id,
-                    token_is_valid=self._is_valid_shop_token(shop.wb_token_status),
+            await self._apply_transport_effects(
+                context=context,
+                query_message=None,
+                message=message,
+                default_role=_ROLE_SELLER,
+                result=await self._seller_marketplace_flow().submit_shop_rename(
+                    prompt_state=prompt_state,
+                    text=text,
+                ),
+            )
+            return
+
+        if prompt_type == "seller_topup_amount":
+            await self._apply_transport_effects(
+                context=context,
+                query_message=None,
+                message=message,
+                default_role=_ROLE_SELLER,
+                result=await self._seller_marketplace_flow().submit_topup_amount(
+                    prompt_state=prompt_state,
+                    text=text,
+                    update_id=update.update_id,
                 ),
             )
             return
@@ -5564,10 +3439,32 @@ class TelegramWebhookRuntime:
             shop_id = int(prompt_state.get("shop_id", 0))
             shop_title = str(prompt_state.get("shop_title", "магазин"))
             if seller_user_id < 1 or shop_id < 1:
-                self._clear_prompt(context)
-                await message.reply_text(
-                    ("Не удалось продолжить создание объявления. Откройте раздел «📦 Объявления» заново."),
-                    reply_markup=self._seller_back_markup(action="listings", label="↩️ К объявлениям"),
+                await self._apply_transport_effects(
+                    context=context,
+                    query_message=None,
+                    message=message,
+                    default_role=_ROLE_SELLER,
+                    result=FlowResult(
+                        effects=(
+                            ClearPrompt(),
+                            ReplyText(
+                                text=(
+                                    "Не удалось продолжить создание объявления. "
+                                    "Откройте раздел «📦 Объявления» заново."
+                                ),
+                                buttons=(
+                                    (
+                                        ButtonSpec(
+                                            text="↩️ К объявлениям",
+                                            flow=_ROLE_SELLER,
+                                            action="listings",
+                                        ),
+                                    ),
+                                ),
+                                parse_mode=None,
+                            ),
+                        )
+                    ),
                 )
                 return
             result = await self._get_seller_listing_creation_flow().submit_listing_input(
@@ -5612,9 +3509,12 @@ class TelegramWebhookRuntime:
             return
 
         if prompt_type == "seller_listing_create_review":
-            await message.reply_text(
-                "Используйте кнопки ниже, чтобы сохранить или изменить название.",
-                reply_markup=self._listing_title_review_markup(),
+            await self._apply_transport_effects(
+                context=context,
+                query_message=None,
+                message=message,
+                default_role=_ROLE_SELLER,
+                result=self._get_seller_listing_creation_flow().title_review_reminder(),
             )
             return
 
@@ -5659,130 +3559,6 @@ class TelegramWebhookRuntime:
                     username=identity.username,
                     update_id=update.update_id,
                 ),
-            )
-            return
-
-        if prompt_type == "seller_topup_amount":
-            seller_user_id = int(prompt_state.get("seller_user_id", 0))
-            if seller_user_id < 1:
-                self._clear_prompt(context)
-                await message.reply_text(
-                    "Не удалось продолжить пополнение. Откройте раздел «💰 Баланс» заново.",
-                    reply_markup=self._seller_balance_menu_markup(),
-                )
-                return
-            try:
-                amount = Decimal(text)
-            except InvalidOperation:
-                await message.reply_text(
-                    "Неверный формат суммы. Введите число, например 1.2.",
-                    reply_markup=self._seller_balance_menu_markup(),
-                )
-                return
-            if amount <= Decimal("0.000000"):
-                await message.reply_text(
-                    "Сумма должна быть больше 0.",
-                    reply_markup=self._seller_balance_menu_markup(),
-                )
-                return
-
-            shards = await self._deposit_service.list_active_shards()
-            if not shards:
-                await message.reply_text(
-                    "Адрес для оплаты временно недоступен. Попробуйте позже.",
-                    reply_markup=self._seller_balance_menu_markup(),
-                )
-                return
-            target_shard = next(
-                (shard for shard in shards if shard.shard_key == self._settings.seller_collateral_shard_key),
-                shards[0],
-            )
-            try:
-                intent = await self._deposit_service.create_seller_deposit_intent(
-                    seller_user_id=seller_user_id,
-                    request_amount_usdt=amount,
-                    shard_id=target_shard.shard_id,
-                    idempotency_key=f"tg-seller-topup:{seller_user_id}:{update.update_id}",
-                )
-            except (NotFoundError, InvalidStateError, ValueError) as exc:
-                details = str(exc).strip()
-                if "all 999 suffixes" in details:
-                    await message.reply_text(
-                        ("Сейчас нельзя создать новый счет: достигнут лимит активных счетов.\nПопробуйте позже."),
-                        reply_markup=self._seller_balance_menu_markup(),
-                    )
-                    return
-                await message.reply_text(
-                    "Не удалось создать счет на пополнение. Попробуйте еще раз.",
-                    reply_markup=self._seller_balance_menu_markup(),
-                )
-                return
-            except Exception:
-                self._logger.exception(
-                    "seller_topup_intent_create_failed",
-                    seller_user_id=seller_user_id,
-                    telegram_update_id=update.update_id,
-                )
-                await message.reply_text(
-                    "Техническая ошибка при создании счета. Попробуйте еще раз.",
-                    reply_markup=self._seller_balance_menu_markup(),
-                )
-                return
-            self._clear_prompt(context)
-            expected_amount_text = format_copyable_code(
-                f"{format_usdt_value(intent.expected_amount_usdt, precise=True)} USDT"
-            )
-            await message.reply_text(
-                screen_text(
-                    title="Счет на пополнение создан",
-                    title_suffix_html=title_ref_suffix(self._deposit_ref(intent.deposit_intent_id)),
-                    cta=(
-                        "Откройте Телеграм Кошелек или используйте ссылку для других "
-                        "кошельков, либо скопируйте адрес и сумму вручную."
-                    ),
-                    lines=[
-                        (f"<b>Срок действия:</b> {self._settings.seller_collateral_invoice_ttl_hours} ч"),
-                        "<b>Сеть:</b> USDT в сети TON (не ERC-20)",
-                        f"<b>Адрес:</b> {format_copyable_code(intent.deposit_address)}",
-                        (f"<b>Сумма (должна полностью совпадать):</b> {expected_amount_text}"),
-                    ],
-                    note=(
-                        "Телеграм Кошелек откроется без автоматически подставленного перевода. "
-                        "Ссылка для других кошельков может открыть уже подготовленный перевод. "
-                        "В любом случае адрес и сумму можно скопировать вручную."
-                    ),
-                ),
-                reply_markup=InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                text="👛 Открыть Телеграм Кошелек",
-                                url=self._build_telegram_wallet_open_link(),
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text="🔗 Ссылка (другие кошельки)",
-                                url=self._build_ton_usdt_wallet_link(
-                                    destination_address=intent.deposit_address,
-                                    expected_amount_usdt=intent.expected_amount_usdt,
-                                    text=f"QPI deposit {self._deposit_ref(intent.deposit_intent_id)}",
-                                ),
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text="❓ Как перевести?",
-                                callback_data=build_callback(
-                                    flow=_ROLE_SELLER,
-                                    action="topup_help",
-                                ),
-                            )
-                        ],
-                        *self._seller_balance_menu_markup().inline_keyboard,
-                    ]
-                ),
-                parse_mode="HTML",
             )
             return
 
@@ -6023,6 +3799,35 @@ class TelegramWebhookRuntime:
         self._seller_listing_creation_flow_rate = self._display_rub_per_usdt
         return self._seller_listing_creation_flow
 
+    def _seller_marketplace_flow(self) -> SellerMarketplaceFlow:
+        if (
+            self._seller_marketplace_flow_cache is not None
+            and self._seller_marketplace_flow_rate == self._display_rub_per_usdt
+        ):
+            return self._seller_marketplace_flow_cache
+        self._seller_marketplace_flow_cache = SellerMarketplaceFlow(
+            seller_service=self._seller_service,
+            seller_workflow=self._seller_workflow_service,
+            finance_service=self._finance_service,
+            deposit_service=self._deposit_service,
+            wb_ping_client=self._wb_ping_client,
+            listing_creation_flow=self._get_seller_listing_creation_flow(),
+            listing_product_validator=self._validate_listing_product_availability,
+            config=SellerMarketplaceFlowConfig(
+                display_rub_per_usdt=self._display_rub_per_usdt,
+                telegram_bot_username=self._settings.telegram_bot_username,
+                token_cipher_key=self._settings.token_cipher_key,
+                seller_collateral_shard_key=self._settings.seller_collateral_shard_key,
+                seller_collateral_invoice_ttl_hours=self._settings.seller_collateral_invoice_ttl_hours,
+                tonapi_usdt_jetton_master=self._settings.tonapi_usdt_jetton_master,
+                telegram_wallet_open_url=self._settings.telegram_wallet_open_url,
+                support_bot_username=self._settings.support_bot_username,
+                seller_listings_page_key=_SELLER_LISTINGS_PAGE_KEY,
+            ),
+        )
+        self._seller_marketplace_flow_rate = self._display_rub_per_usdt
+        return self._seller_marketplace_flow_cache
+
     def _seller_withdrawal_creation_flow(self) -> WithdrawalRequestCreationFlow:
         if self._seller_withdrawal_creation_flow_cache is not None:
             return self._seller_withdrawal_creation_flow_cache
@@ -6204,7 +4009,10 @@ class TelegramWebhookRuntime:
 
     def _role_menu_markup(self, role: str) -> InlineKeyboardMarkup:
         if role == _ROLE_SELLER:
-            return self._seller_menu_markup()
+            markup = self._flow_buttons_markup(self._seller_marketplace_flow().menu_buttons())
+            if markup is None:
+                raise ValueError("seller menu has no buttons")
+            return markup
         if role == _ROLE_BUYER:
             return self._buyer_menu_markup()
         if role == _ROLE_ADMIN:
@@ -6832,212 +4640,6 @@ class TelegramWebhookRuntime:
             )
             return False
 
-    def _seller_listing_detail_markup(
-        self,
-        *,
-        listing_id: int,
-        status: str,
-        list_page: int,
-        can_activate: bool,
-    ) -> InlineKeyboardMarkup:
-        if status == "draft" and can_activate:
-            action_button = InlineKeyboardButton(
-                text="✅ Активировать",
-                callback_data=build_callback(
-                    flow=_ROLE_SELLER,
-                    action="listing_activate",
-                    entity_id=str(listing_id),
-                ),
-            )
-        elif status == "draft":
-            action_button = InlineKeyboardButton(
-                text="⛔ Недостаточно средств",
-                callback_data=build_callback(
-                    flow=_ROLE_SELLER,
-                    action="listing_activation_blocked",
-                    entity_id=str(listing_id),
-                ),
-            )
-        elif status == "active":
-            action_button = InlineKeyboardButton(
-                text="⏸ Пауза",
-                callback_data=build_callback(
-                    flow=_ROLE_SELLER,
-                    action="listing_pause",
-                    entity_id=str(listing_id),
-                ),
-            )
-        else:
-            action_button = InlineKeyboardButton(
-                text="▶️ Снять паузу",
-                callback_data=build_callback(
-                    flow=_ROLE_SELLER,
-                    action="listing_unpause",
-                    entity_id=str(listing_id),
-                ),
-            )
-        keyboard_rows: list[list[InlineKeyboardButton]] = [
-            [
-                action_button,
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🗑 Удалить",
-                    callback_data=build_callback(
-                        flow=_ROLE_SELLER,
-                        action="listing_delete_preview",
-                        entity_id=str(listing_id),
-                    ),
-                )
-            ],
-        ]
-        keyboard_rows.append(
-            [
-                InlineKeyboardButton(
-                    text="↩️ Назад к объявлениям",
-                    callback_data=build_callback(
-                        flow=_ROLE_SELLER,
-                        action="listings",
-                        entity_id=str(list_page),
-                    ),
-                )
-            ]
-        )
-        keyboard_rows.append([self._knowledge_button(role=_ROLE_SELLER, topic="listings")])
-        return InlineKeyboardMarkup(keyboard_rows)
-
-    @staticmethod
-    def _listing_has_sufficient_collateral(
-        *,
-        collateral_view,
-        seller_available_usdt: Decimal = Decimal("0.000000"),
-        listing_status: str | None = None,
-    ) -> bool:
-        if collateral_view is None:
-            return True
-        status = listing_status or getattr(collateral_view, "status", None)
-        effective_collateral = collateral_view.collateral_locked_usdt
-        if status == "draft":
-            effective_collateral += seller_available_usdt
-        return effective_collateral >= collateral_view.collateral_required_usdt
-
-    def _format_listing_collateral_line(
-        self,
-        *,
-        collateral_view,
-        seller_available_usdt: Decimal = Decimal("0.000000"),
-    ) -> str:
-        if collateral_view is None:
-            return "—"
-        required_text = self._format_usdt_with_rub(collateral_view.collateral_required_usdt)
-        if self._listing_has_sufficient_collateral(
-            collateral_view=collateral_view,
-            seller_available_usdt=seller_available_usdt,
-        ):
-            return f"🟢 {required_text}"
-        return f"🔴 {format_usdt(collateral_view.collateral_required_usdt)} (недостаточно средств)"
-
-    def _listing_detail_note(
-        self,
-        *,
-        listing,
-        collateral_view,
-        seller_available_usdt: Decimal = Decimal("0.000000"),
-    ) -> str:
-        if listing.status == "active":
-            return "Объявление активно. При необходимости поставьте его на паузу или поделитесь ссылкой на товар."
-        if not self._listing_has_sufficient_collateral(
-            collateral_view=collateral_view,
-            seller_available_usdt=seller_available_usdt,
-            listing_status=listing.status,
-        ):
-            return "Для активации пополните баланс продавца, затем вернитесь к карточке объявления."
-        return "Проверьте параметры и активируйте объявление, когда будете готовы."
-
-    def _seller_listing_detail_html(
-        self,
-        *,
-        listing,
-        collateral_view,
-        seller_available_usdt: Decimal = Decimal("0.000000"),
-        listing_link: str | None = None,
-        notice: str | None = None,
-    ) -> str:
-        display_title = listing_display_title(
-            display_title=listing.display_title,
-            fallback=listing.search_phrase,
-        )
-        planned = collateral_view.slot_count if collateral_view is not None else listing.slot_count
-        in_progress = collateral_view.in_progress_assignments_count if collateral_view is not None else 0
-        cashback_text = self._format_cashback_with_percent(
-            reward_usdt=listing.reward_usdt,
-            reference_price_rub=listing.reference_price_rub,
-        )
-        is_active = listing.status == "active"
-        title = f"{'🟢' if is_active else '🔴'} {html.escape(display_title)}"
-        lines: list[str] = []
-        if notice:
-            lines.append(html.escape(notice))
-        lines.extend(
-            [
-                f"<b>Артикул WB:</b> {listing.wb_product_id}",
-                f"<b>Кэшбэк:</b> {html.escape(cashback_text)}",
-                f"<b>Поисковая фраза:</b> &quot;{html.escape(listing.search_phrase)}&quot;",
-                f"<b>План покупок / В процессе:</b> {planned} / {in_progress}",
-            ]
-        )
-        if listing_link:
-            lines.append(f"<b>Ссылка на товар:</b>\n{html.escape(listing_link)}")
-        collateral_line = self._format_listing_collateral_line(
-            collateral_view=collateral_view,
-            seller_available_usdt=seller_available_usdt,
-        )
-        lines.extend(
-            [
-                f"<b>Обеспечение:</b> {collateral_line}",
-                (f"<b>Статус:</b> {self._listing_activity_badge(is_active=is_active)}"),
-            ]
-        )
-        parameters_lines = [
-            f"Предмет: {html.escape(listing.wb_subject_name or '—')}",
-            f"Артикул продавца: {html.escape(listing.wb_vendor_code or '—')}",
-            f"Бренд: {html.escape(listing.wb_brand_name or '—')}",
-            f"Название WB: {html.escape(listing.wb_source_title or display_title)}",
-            format_listing_price_line(
-                label="Цена покупателя",
-                price_rub=listing.reference_price_rub,
-                source=listing.reference_price_source,
-            )
-            .replace("<b>", "")
-            .replace("</b>", ""),
-            (
-                "Фразы для отзыва: "
-                + html.escape(format_review_phrases_text(getattr(listing, "review_phrases", [])))
-            ),
-            f"Размеры: {html.escape(format_sizes_text(listing.wb_tech_sizes))}",
-        ]
-        lines.append("\n<b>Параметры</b>\n<blockquote expandable>" + "\n".join(parameters_lines) + "</blockquote>")
-        description_block = format_expandable_block_html(
-            title="Описание",
-            body=listing.wb_description,
-        )
-        if description_block:
-            lines.append(f"\n{description_block}")
-        characteristics_block = format_characteristics_block_html(listing.wb_characteristics)
-        if characteristics_block:
-            lines.append(f"\n{characteristics_block}")
-        return screen_text(
-            title=title,
-            title_suffix_html=title_ref_suffix(self._listing_ref(listing.listing_id)),
-            cta="Проверьте объявление и выберите следующее действие ниже.",
-            lines=lines,
-            note=self._listing_detail_note(
-                listing=listing,
-                collateral_view=collateral_view,
-                seller_available_usdt=seller_available_usdt,
-            ),
-        )
-
     def _root_menu_markup(self, *, identity: TelegramIdentity | None) -> InlineKeyboardMarkup:
         keyboard = [
             [
@@ -7073,107 +4675,6 @@ class TelegramWebhookRuntime:
                     )
                 ]
             )
-        return InlineKeyboardMarkup(keyboard)
-
-    def _seller_menu_markup(
-        self,
-        *,
-        listings_count: int | None = None,
-        shops_count: int | None = None,
-    ) -> InlineKeyboardMarkup:
-        keyboard = [
-            [
-                InlineKeyboardButton(
-                    text=button_label_with_count("📦 Объявления", listings_count),
-                    callback_data=build_callback(flow=_ROLE_SELLER, action="listings"),
-                ),
-                InlineKeyboardButton(
-                    text=button_label_with_count("🏬 Магазины", shops_count),
-                    callback_data=build_callback(flow=_ROLE_SELLER, action="shops"),
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="💰 Баланс",
-                    callback_data=build_callback(flow=_ROLE_SELLER, action="balance"),
-                ),
-            ],
-            [self._knowledge_button(role=_ROLE_SELLER, topic="guide")],
-        ]
-        support_button = self._build_support_button(role=_ROLE_SELLER)
-        if support_button is not None:
-            keyboard.append([support_button])
-        return InlineKeyboardMarkup(keyboard)
-
-    def _seller_balance_menu_markup(
-        self,
-        *,
-        can_withdraw_available: bool = False,
-        active_request_id: int | None = None,
-    ) -> InlineKeyboardMarkup:
-        keyboard: list[list[InlineKeyboardButton]] = [
-            [
-                InlineKeyboardButton(
-                    text="➕ Пополнить",
-                    callback_data=build_callback(flow=_ROLE_SELLER, action="topup_prompt"),
-                )
-            ]
-        ]
-        if active_request_id is not None:
-            keyboard.append(
-                [
-                    InlineKeyboardButton(
-                        text="🚫 Отменить заявку",
-                        callback_data=build_callback(
-                            flow=_ROLE_SELLER,
-                            action="withdraw_cancel_prompt",
-                            entity_id=str(active_request_id),
-                        ),
-                    )
-                ]
-            )
-        elif can_withdraw_available:
-            keyboard.extend(
-                [
-                    [
-                        InlineKeyboardButton(
-                            text="💸 Вывести все доступное",
-                            callback_data=build_callback(
-                                flow=_ROLE_SELLER,
-                                action="withdraw_full",
-                            ),
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text="✍️ Указать сумму вручную",
-                            callback_data=build_callback(
-                                flow=_ROLE_SELLER,
-                                action="withdraw_prompt_amount",
-                            ),
-                        )
-                    ],
-                ]
-            )
-        keyboard.extend(
-            [
-                [
-                    InlineKeyboardButton(
-                        text="🧾 Транзакции",
-                        callback_data=build_callback(flow=_ROLE_SELLER, action="topup_history"),
-                    )
-                ],
-            ]
-        )
-        keyboard.append(
-            [
-                InlineKeyboardButton(
-                    text="↩️ Назад",
-                    callback_data=build_callback(flow=_ROLE_SELLER, action="menu"),
-                )
-            ]
-        )
-        keyboard.append([self._knowledge_button(role=_ROLE_SELLER, topic="balance")])
         return InlineKeyboardMarkup(keyboard)
 
     def _buyer_menu_markup(
