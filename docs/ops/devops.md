@@ -10,7 +10,7 @@ issue, production schema operations, smoke checks, logs, or incidents.
 Regular feature/test development does not need it.
 
 Maintenance: this file is source of truth for the areas above and follows the
-Documentation Policy in `AGENTS.md` — keep it aligned with actual code and
+documentation rules in `AGENTS.md` — keep it aligned with actual code and
 Terraform state in the same change that alters behavior.
 
 ## 1. Infrastructure State (Current)

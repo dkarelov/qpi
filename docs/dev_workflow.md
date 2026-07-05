@@ -93,6 +93,34 @@ Fast tests:
 scripts/dev/test.sh fast
 ```
 
+Preflight and targeted validation:
+
+```bash
+# Preflight local DB-backed prerequisites (env file, tunnel, psql reachability):
+scripts/dev/test.sh doctor
+
+# Targeted local validation from changed files:
+scripts/dev/test.sh affected --base HEAD~1 --head HEAD
+
+# Targeted local validation from explicit paths:
+scripts/dev/test.sh affected --paths services/bot_api/telegram_runtime.py services/bot_api/telegram_notifications.py
+```
+
+- `doctor` is the mandatory preflight before local DB-backed validation; it checks `.env.test.local`, the `127.0.0.1:15432` tunnel when relevant, and `psql` reachability.
+- `affected` is the default local path for narrow runtime / UX changes: it resolves the minimum validation set from `scripts/dev/validation_groups.json`, which is the source of truth for local targeted validation. Update that manifest when service ownership or test coverage boundaries change.
+- `affected` can escalate from a small runtime-only path to full DB validation when the changed set includes validation-orchestration files (`scripts/dev/test.sh`, workflow selectors, deploy/test wrappers, validation manifest). When checking a product/runtime behavior change inside a larger infra refactor, also run a narrowed affected path for the actual code surface so the result is easier to interpret.
+- `doctor`, `affected`, and the local DB-backed suite wrappers auto-load the default `.env.test.local` when `TEST_DATABASE_URL` is still unset; `affected` and the local DB-backed suite wrappers also auto-start the default SSH tunnel when the env file is in tunnel mode and includes `QPI_DB_VM_HOST` plus `QPI_DB_VM_SSH_PROXY_HOST`.
+- Tunnel auto-start is best-effort only: it works only for tunnel-mode `.env.test.local` files that include that bastion metadata, and it uses `BatchMode=yes` with the default SSH key path. Missing bastion metadata, a non-default key path, or a key that still needs interactive passphrase entry will fail fast and require a manual tunnel.
+- `affected` still reprovisions the disposable DBs before DB-backed pytest targets; the speedup comes from a smaller selected test set, not from skipping DB recreation.
+
+Suite cost and disposable DB model:
+
+- `scripts/dev/test.sh all` is an expensive reprovision path: it recreates disposable DBs, reapplies schema, and runs unrelated DB manifests. For small UI / copy / formatting changes, start with `fast` plus the narrow affected pytest files before using `integration` or `all`.
+- `integration` and `schema-compat` reset the disposable DB once per manifest run, not once per file; local and private-runner DB runs rely on per-test truncation for isolation after that reset.
+- `qpi_test_template` is the reusable clean template DB for disposable test runs; `qpi_test` and `qpi_test_scratch` are disposable clones of it. The reset helpers rebuild the template only when schema / DB-tooling inputs change.
+- `TEST_DATABASE_URL` must include the app DB user because the reset scripts recreate disposable DBs with that user as the database owner; otherwise schema apply fails with `permission denied for schema public`.
+- Destructive migration smoke must run only against disposable DB names (`scratch|tmp|disposable`).
+
 `TEST_DATABASE_URL` source of truth:
 
 - `scripts/dev/test.sh fast` is the only default local path that does not need a database URL.

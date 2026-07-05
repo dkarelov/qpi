@@ -1,7 +1,7 @@
 # QPI Context
 
 QPI is a Telegram marketplace where WB sellers fund buyer cashback in USDT for completing a target purchase flow.
-`AGENTS.md` remains the source of truth for requirements, operating rules, and deployed state.
+`AGENTS.md` holds the per-session operating rules; product requirements live in `docs/product/requirements.md`.
 
 ## Language
 
@@ -26,12 +26,15 @@ A **Capability** that decides withdrawal requests and finance exceptions.
 A seller-owned buyer-facing storefront that groups announcements and has a deep link.
 
 **Announcement**:
-A seller-created buyer-facing offer for one WB product.
+A seller-created buyer-facing offer for one WB product. Telegram UX: `Объявление`.
 _Avoid_: listing, task, ad
 
 **Purchase**:
-A buyer reservation or work item tied to one **Announcement**.
+A buyer reservation or work item tied to one **Announcement**. Telegram UX: `Покупка`.
 _Avoid_: task, assignment, order
+
+**Активно**:
+User-facing Telegram wording for active/open availability or status.
 
 **WB Order**:
 The Wildberries order identifier and event stream used to verify a **Purchase**.
