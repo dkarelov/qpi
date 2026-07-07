@@ -363,6 +363,7 @@ Transitions:
   - buyer balance screen shows only `Доступно для вывода` and `В процессе вывода`,
   - if the buyer already has an active withdrawal request, new withdrawal actions are hidden and the screen shows that request plus a cancel action,
   - buyer withdrawal history is full paginated history with `<` / `>` navigation, timestamps, comments, and tx hash when available,
+  - buyer `Про баланс и вывод` manual explains Telegram Wallet setup, TON USDT address selection, withdrawal request creation, cancellation, and history/status behavior,
   - irrelevant actions must be hidden when they cannot be used in the current state (for example withdrawal buttons when withdrawable balance is zero),
   - purchase flow contains explicit order-token submit, review-token submit, and cancel-purchase actions when relevant.
 - Seller notifications:

@@ -499,11 +499,35 @@ def test_buyer_marketplace_flow_keeps_support_inside_guide_only() -> None:
     assert "Инструкция покупателя" in guide.text
     assert "Откройте ссылку на товар" in guide.text
     assert "Ссылки на конкретные товары" in guide.text
+    assert "Как подготовить кошелек для вывода" in guide.text
     guide_buttons = [button for row in guide.buttons for button in row]
     assert any(button.text == "🆘 Поддержка" and button.url for button in guide_buttons)
     assert isinstance(shops, ReplaceText)
     assert "Ссылка на товар откроет нужное объявление сразу" in shops.text
     assert "🆘 Поддержка" not in [button.text for row in shops.buttons for button in row]
+
+
+def test_buyer_marketplace_flow_renders_detailed_withdrawal_manual() -> None:
+    flow, _ = _flow()
+
+    balance = flow.render_knowledge_screen(topic="balance").effects[0]
+    purchases = flow.render_knowledge_screen(topic="purchases").effects[0]
+
+    assert isinstance(balance, ReplaceText)
+    assert "Про баланс и вывод" in balance.text
+    assert "Как подготовить кошелек в Telegram" in balance.text
+    assert 'href="https://t.me/wallet"' in balance.text
+    assert "Выберите «Доллары» / USDT и сеть TON" in balance.text
+    assert "заявка на вывод должна быть только на USDT в сети TON mainnet" in balance.text
+    assert "Бот проверит адрес через TonAPI и создаст заявку" in balance.text
+    assert "номер заявки вида W123" in balance.text
+    labels = [button.text for row in balance.buttons for button in row]
+    assert labels == ["📘 Инструкция", "📘 Про магазины", "📘 Про покупки", "↩️ К балансу"]
+
+    assert isinstance(purchases, ReplaceText)
+    assert "1. Забронировать товар в боте." in purchases.text
+    assert "7. Оформить вывод в разделе «Баланс и вывод»." in purchases.text
+    assert "2. Один и тот же товар нельзя брать повторно" in purchases.text
 
 
 @pytest.mark.asyncio
