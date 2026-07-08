@@ -739,6 +739,10 @@ class FinanceService:
                     request_id=request_id,
                     event_type=EVENT_WITHDRAW_SENT_REQUESTER,
                 )
+                await self._notifications.enqueue_withdraw_sent_for_admins_locked(
+                    cur,
+                    request_id=request_id,
+                )
 
                 return StatusChangeResult(changed=True)
 

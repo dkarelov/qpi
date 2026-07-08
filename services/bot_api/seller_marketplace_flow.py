@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import html
-import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from libs.domain.errors import InsufficientFundsError, InvalidStateError, ListingValidationError, NotFoundError
@@ -35,6 +34,7 @@ from services.bot_api.presentation import (
     withdrawal_request_block_html,
 )
 from services.bot_api.seller_listing_creation_flow import SellerListingCreationFlow
+from services.bot_api.ton_links import USDT_EXACT_QUANT, build_ton_usdt_transfer_link
 from services.bot_api.transport_effects import (
     ButtonSpec,
     ClearPrompt,
@@ -48,7 +48,7 @@ from services.bot_api.transport_effects import (
 )
 
 _ROLE_SELLER = "seller"
-_USDT_EXACT_QUANT = Decimal("0.000001")
+_USDT_EXACT_QUANT = USDT_EXACT_QUANT
 
 
 @dataclass(frozen=True)
@@ -1976,14 +1976,12 @@ class SellerMarketplaceFlow:
         expected_amount_usdt: Decimal,
         text: str | None = None,
     ) -> str:
-        normalized_address = destination_address.strip()
-        base_units = int(expected_amount_usdt.quantize(_USDT_EXACT_QUANT, rounding=ROUND_HALF_UP) * Decimal("1000000"))
-        params = {"jetton": self._config.tonapi_usdt_jetton_master, "amount": str(base_units)}
-        if text:
-            params["text"] = text.strip()
-        query = urllib.parse.urlencode(params)
-        encoded_address = urllib.parse.quote(normalized_address, safe="")
-        return f"ton://transfer/{encoded_address}?{query}"
+        return build_ton_usdt_transfer_link(
+            destination_address=destination_address,
+            amount_usdt=expected_amount_usdt,
+            jetton_master=self._config.tonapi_usdt_jetton_master,
+            text=text,
+        )
 
 
 def _as_reply(result: FlowResult) -> FlowResult:

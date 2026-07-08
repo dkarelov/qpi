@@ -30,6 +30,7 @@ from libs.domain.notifications import (
     EVENT_WITHDRAW_CANCELLED_ADMIN,
     EVENT_WITHDRAW_CREATED_ADMIN,
     EVENT_WITHDRAW_REJECTED_REQUESTER,
+    EVENT_WITHDRAW_SENT_ADMIN,
     EVENT_WITHDRAW_SENT_REQUESTER,
 )
 from libs.domain.public_refs import (
@@ -37,6 +38,7 @@ from libs.domain.public_refs import (
     format_deposit_ref,
     format_withdrawal_ref,
 )
+from services.bot_api.ton_links import DEFAULT_TON_USDT_JETTON_MASTER, build_ton_usdt_transfer_link
 
 MSK = ZoneInfo("Europe/Moscow")
 
@@ -45,6 +47,7 @@ def render_telegram_notification(
     item: NotificationOutboxItem,
     *,
     display_rub_per_usdt: Decimal | None = None,
+    tonapi_usdt_jetton_master: str = DEFAULT_TON_USDT_JETTON_MASTER,
 ) -> RenderedTelegramNotification:
     payload = item.payload_json
     event_type = item.event_type
@@ -310,6 +313,13 @@ def render_telegram_notification(
         )
     if event_type == EVENT_WITHDRAW_CREATED_ADMIN:
         withdraw_ref = format_withdrawal_ref(int(payload["withdrawal_request_id"]))
+        amount_text = f"{_format_usdt_value(payload['amount_usdt'])} USDT"
+        transfer_url = build_ton_usdt_transfer_link(
+            destination_address=str(payload["payout_address"]),
+            amount_usdt=payload["amount_usdt"],
+            jetton_master=tonapi_usdt_jetton_master,
+            text=f"QPI withdrawal {withdraw_ref}",
+        )
         return RenderedTelegramNotification(
             text=(
                 "<b>Новая заявка на вывод</b> "
@@ -318,18 +328,20 @@ def render_telegram_notification(
                 f"{html.escape(_withdraw_requester_label(payload['requester_role']))}\n"
                 f"<b>Telegram:</b> {int(payload['requester_telegram_id'])} "
                 f"(@{html.escape(payload['requester_username'] or '-')})\n"
-                f"<b>Сумма:</b> {_format_usdt_value(payload['amount_usdt'])} USDT\n"
+                f"<b>Сумма:</b> {_format_public_ref(amount_text)}\n"
                 f"<b>Статус:</b> {_withdraw_status_badge(str(payload['status']))}\n"
-                f"<b>Кошелек:</b> {html.escape(str(payload['payout_address']))}\n"
+                f"<b>Кошелек:</b> {_format_public_ref(str(payload['payout_address']))}\n"
                 f"<b>Создана:</b> {_format_datetime_msk(payload.get('requested_at'))}\n"
                 f"<b>Обработана:</b> {_format_datetime_msk(payload.get('processed_at'))}\n"
                 f"<b>Отправлена:</b> {_format_datetime_msk(payload.get('sent_at'))}"
             ),
             parse_mode="HTML",
-            cta_text="💸 Выводы",
+            cta_text=f"🔎 Открыть {withdraw_ref}",
             cta_flow="admin",
-            cta_action="withdrawals_section",
-            cta_entity_id=None,
+            cta_action="withdrawal_detail",
+            cta_entity_id=str(payload["withdrawal_request_id"]),
+            cta_url_text="🔗 Подготовить USDT TON",
+            cta_url=transfer_url,
         )
     if event_type == EVENT_WITHDRAW_CANCELLED_ADMIN:
         withdraw_ref = format_withdrawal_ref(int(payload["withdrawal_request_id"]))
@@ -349,6 +361,31 @@ def render_telegram_notification(
             cta_flow="admin",
             cta_action="withdrawals_section",
             cta_entity_id=None,
+        )
+    if event_type == EVENT_WITHDRAW_SENT_ADMIN:
+        withdraw_ref = format_withdrawal_ref(int(payload["withdrawal_request_id"]))
+        amount_text = f"{_format_usdt_value(payload['amount_usdt'])} USDT"
+        lines = [
+            f"<b>Вывод отправлен</b> · {_format_public_ref(withdraw_ref)}",
+            "",
+            f"<b>Роль:</b> {html.escape(_withdraw_requester_label(payload['requester_role']))}",
+            (
+                f"<b>Telegram:</b> {int(payload['requester_telegram_id'])} "
+                f"(@{html.escape(payload['requester_username'] or '-')})"
+            ),
+            f"<b>Сумма:</b> {_format_public_ref(amount_text)}",
+            f"<b>Кошелек:</b> {_format_public_ref(str(payload['payout_address']))}",
+            f"<b>Отправлена:</b> {_format_datetime_msk(payload.get('sent_at'))}",
+        ]
+        if payload.get("tx_hash"):
+            lines.append(f"<b>Хэш перевода:</b> {_format_public_ref(str(payload['tx_hash']))}")
+        return RenderedTelegramNotification(
+            text="\n".join(lines),
+            parse_mode="HTML",
+            cta_text=f"🔎 Открыть {withdraw_ref}",
+            cta_flow="admin",
+            cta_action="withdrawal_detail",
+            cta_entity_id=str(payload["withdrawal_request_id"]),
         )
     if event_type in {EVENT_WITHDRAW_REJECTED_REQUESTER, EVENT_WITHDRAW_SENT_REQUESTER}:
         subject = (

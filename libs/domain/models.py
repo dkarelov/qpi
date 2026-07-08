@@ -527,3 +527,5 @@ class RenderedTelegramNotification:
     cta_flow: str | None
     cta_action: str | None
     cta_entity_id: str | None
+    cta_url_text: str | None = None
+    cta_url: str | None = None

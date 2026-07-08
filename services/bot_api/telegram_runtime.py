@@ -77,6 +77,7 @@ from services.bot_api.deep_links import (
 from services.bot_api.presentation import (
     button_label_with_count,
     entity_block_heading_with_ref,
+    format_copyable_code,
     format_datetime_msk,
     format_usdt_value,
     humanize_withdraw_status,
@@ -90,6 +91,7 @@ from services.bot_api.seller_listing_creation_flow import SellerListingCreationF
 from services.bot_api.seller_marketplace_flow import SellerMarketplaceFlow, SellerMarketplaceFlowConfig
 from services.bot_api.telegram_notifications import render_telegram_notification
 from services.bot_api.telegram_proxy_request import build_telegram_proxy_request
+from services.bot_api.ton_links import build_ton_usdt_transfer_link
 from services.bot_api.transport_effects import (
     AnswerCallback,
     ButtonSpec,
@@ -2500,7 +2502,7 @@ class TelegramWebhookRuntime:
                 f"Telegram: {item.requester_telegram_id} "
                 f"(@{html.escape(item.requester_username or '-')})\n"
                 f"Сумма: {format_usdt_value(item.amount_usdt, precise=True)} USDT\n"
-                f"Кошелек: {html.escape(item.payout_address)}"
+                f"Кошелек: {format_copyable_code(item.payout_address)}"
             )
             keyboard_rows.append(
                 [
@@ -2589,7 +2591,7 @@ class TelegramWebhookRuntime:
                 (f"Telegram: {item.requester_telegram_id} (@{html.escape(item.requester_username or '-')})"),
                 f"Сумма: {format_usdt_value(item.amount_usdt, precise=True)} USDT",
                 f"Статус: {withdraw_status_badge(item.status)}",
-                f"Кошелек: {html.escape(item.payout_address)}",
+                f"Кошелек: {format_copyable_code(item.payout_address)}",
                 f"Создана: {format_datetime_msk(item.requested_at)}",
             ]
             if item.processed_at:
@@ -2671,7 +2673,7 @@ class TelegramWebhookRuntime:
             f"<b>Telegram:</b> {detail.requester_telegram_id} (@{html.escape(detail.requester_username or '-')})",
             f"<b>Сумма:</b> {format_usdt_value(detail.amount_usdt, precise=True)} USDT",
             f"<b>Статус:</b> {withdraw_status_badge(detail.status)}",
-            f"<b>Кошелек:</b> {html.escape(detail.payout_address)}",
+            f"<b>Кошелек:</b> {format_copyable_code(detail.payout_address)}",
             f"<b>Создана:</b> {format_datetime_msk(detail.requested_at)}",
             (
                 f"<b>Обработана:</b> {format_datetime_msk(detail.processed_at)}"
@@ -2690,6 +2692,18 @@ class TelegramWebhookRuntime:
             lines.append(f"<b>Комментарий:</b> {html.escape(detail.note)}")
         keyboard_rows: list[list[InlineKeyboardButton]] = []
         if detail.status == "withdraw_pending_admin":
+            keyboard_rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="🔗 Подготовить USDT TON",
+                        url=self._build_ton_usdt_transfer_link(
+                            destination_address=detail.payout_address,
+                            amount_usdt=detail.amount_usdt,
+                            text=f"QPI withdrawal {self._withdrawal_ref(detail.withdrawal_request_id)}",
+                        ),
+                    )
+                ]
+            )
             keyboard_rows.append(
                 [
                     InlineKeyboardButton(
@@ -2973,6 +2987,7 @@ class TelegramWebhookRuntime:
                 rendered = render_telegram_notification(
                     item,
                     display_rub_per_usdt=self._display_rub_per_usdt,
+                    tonapi_usdt_jetton_master=self._settings.tonapi_usdt_jetton_master,
                 )
                 await bot.send_message(
                     chat_id=item.recipient_telegram_id,
@@ -3033,10 +3048,9 @@ class TelegramWebhookRuntime:
             )
 
     def _notification_markup(self, rendered) -> InlineKeyboardMarkup | None:
-        if not rendered.cta_flow or not rendered.cta_action or not rendered.cta_text:
-            return None
-        return InlineKeyboardMarkup(
-            [
+        rows: list[list[InlineKeyboardButton]] = []
+        if rendered.cta_flow and rendered.cta_action and rendered.cta_text:
+            rows.append(
                 [
                     InlineKeyboardButton(
                         text=rendered.cta_text,
@@ -3047,8 +3061,12 @@ class TelegramWebhookRuntime:
                         ),
                     )
                 ]
-            ]
-        )
+            )
+        if rendered.cta_url_text and rendered.cta_url:
+            rows.append([InlineKeyboardButton(text=rendered.cta_url_text, url=rendered.cta_url)])
+        if not rows:
+            return None
+        return InlineKeyboardMarkup(rows)
 
     @staticmethod
     def _notification_retry_delay(attempt_number: int) -> int:
@@ -4235,6 +4253,20 @@ class TelegramWebhookRuntime:
 
     def _build_telegram_wallet_open_link(self) -> str:
         return self._settings.telegram_wallet_open_url
+
+    def _build_ton_usdt_transfer_link(
+        self,
+        *,
+        destination_address: str,
+        amount_usdt: Decimal | str,
+        text: str | None = None,
+    ) -> str:
+        return build_ton_usdt_transfer_link(
+            destination_address=destination_address,
+            amount_usdt=amount_usdt,
+            jetton_master=self._settings.tonapi_usdt_jetton_master,
+            text=text,
+        )
 
     @staticmethod
     def _humanize_listing_status(status: str) -> str:

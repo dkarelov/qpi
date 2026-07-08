@@ -25,6 +25,7 @@ from libs.domain.notifications import (
     EVENT_WITHDRAW_CANCELLED_ADMIN,
     EVENT_WITHDRAW_CREATED_ADMIN,
     EVENT_WITHDRAW_REJECTED_REQUESTER,
+    EVENT_WITHDRAW_SENT_ADMIN,
     EVENT_WITHDRAW_SENT_REQUESTER,
     OUTBOX_STATUS_SENT,
     NotificationService,
@@ -52,10 +53,12 @@ def _render_notification(
     item: NotificationOutboxItem,
     *,
     display_rub_per_usdt: Decimal | None = None,
+    tonapi_usdt_jetton_master: str = "jetton-master",
 ):
     return render_telegram_notification(
         item,
         display_rub_per_usdt=display_rub_per_usdt,
+        tonapi_usdt_jetton_master=tonapi_usdt_jetton_master,
     )
 
 
@@ -327,13 +330,103 @@ def test_render_withdraw_created_admin_notification_uses_full_detail_body() -> N
     assert "<b>Новая заявка на вывод</b> · <code>W3</code>" in rendered.text
     assert "<b>Роль:</b> Покупатель" in rendered.text
     assert "<b>Telegram:</b> 2120394 (@tech_banker)" in rendered.text
-    assert "<b>Сумма:</b> 2.538393 USDT" in rendered.text
+    assert "<b>Сумма:</b> <code>2.538393 USDT</code>" in rendered.text
     assert "<b>Статус:</b> 🟡 На проверке" in rendered.text
-    assert "<b>Кошелек:</b> UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH" in rendered.text
+    assert "<b>Кошелек:</b> <code>UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH</code>" in rendered.text
     assert "<b>Создана:</b> 04.04.2026 01:17 МСК" in rendered.text
     assert "<b>Обработана:</b> -" in rendered.text
     assert "<b>Отправлена:</b> -" in rendered.text
+    assert rendered.cta_text == "🔎 Открыть W3"
+    assert rendered.cta_flow == "admin"
+    assert rendered.cta_action == "withdrawal_detail"
+    assert rendered.cta_entity_id == "3"
+    assert rendered.cta_url_text == "🔗 Подготовить USDT TON"
+    assert rendered.cta_url is not None
+    assert rendered.cta_url.startswith("ton://transfer/UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH?")
+    assert "jetton=jetton-master" in rendered.cta_url
+    assert "amount=2538393" in rendered.cta_url
+    assert "text=QPI+withdrawal+W3" in rendered.cta_url
     assert "#" not in rendered.text
+
+
+def test_render_withdraw_sent_admin_notification_uses_copyable_details() -> None:
+    rendered = _render_notification(
+        NotificationOutboxItem(
+            notification_id=6,
+            recipient_telegram_id=9003,
+            recipient_scope="admin",
+            event_type=EVENT_WITHDRAW_SENT_ADMIN,
+            dedupe_key="withdrawal:3:sent:admin:9003",
+            payload_json={
+                "withdrawal_request_id": 3,
+                "requester_role": "seller",
+                "requester_telegram_id": 2120394,
+                "requester_username": "seller",
+                "amount_usdt": "2.538393",
+                "status": "withdraw_sent",
+                "payout_address": "UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH",
+                "requested_at": "2026-04-03T22:17:00+00:00",
+                "processed_at": "2026-04-03T22:20:00+00:00",
+                "sent_at": "2026-04-03T22:20:00+00:00",
+                "tx_hash": "0xabc",
+            },
+            status="pending",
+            attempt_count=0,
+            next_attempt_at=datetime.now(tz=UTC),
+            last_error=None,
+            sent_at=None,
+            created_at=datetime.now(tz=UTC),
+            updated_at=datetime.now(tz=UTC),
+        )
+    )
+
+    assert "<b>Вывод отправлен</b> · <code>W3</code>" in rendered.text
+    assert "<b>Роль:</b> Продавец" in rendered.text
+    assert "<b>Сумма:</b> <code>2.538393 USDT</code>" in rendered.text
+    assert "<b>Кошелек:</b> <code>UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH</code>" in rendered.text
+    assert "<b>Хэш перевода:</b> <code>0xabc</code>" in rendered.text
+    assert rendered.cta_text == "🔎 Открыть W3"
+    assert rendered.cta_flow == "admin"
+    assert rendered.cta_action == "withdrawal_detail"
+    assert rendered.cta_entity_id == "3"
+
+
+def test_runtime_notification_markup_supports_callback_and_url_buttons() -> None:
+    runtime = _build_runtime("postgresql://user:pass@127.0.0.1:5432/qpi_test")
+    rendered = _render_notification(
+        NotificationOutboxItem(
+            notification_id=7,
+            recipient_telegram_id=9003,
+            recipient_scope="admin",
+            event_type=EVENT_WITHDRAW_CREATED_ADMIN,
+            dedupe_key="withdrawal:4:created:admin:9003",
+            payload_json={
+                "withdrawal_request_id": 4,
+                "requester_role": "buyer",
+                "requester_telegram_id": 2120394,
+                "requester_username": "buyer",
+                "amount_usdt": "1.200100",
+                "status": "withdraw_pending_admin",
+                "payout_address": "UQTEST",
+                "requested_at": "2026-04-03T22:17:00+00:00",
+                "processed_at": None,
+                "sent_at": None,
+            },
+            status="pending",
+            attempt_count=0,
+            next_attempt_at=datetime.now(tz=UTC),
+            last_error=None,
+            sent_at=None,
+            created_at=datetime.now(tz=UTC),
+            updated_at=datetime.now(tz=UTC),
+        )
+    )
+
+    markup = runtime._notification_markup(rendered)
+
+    assert markup is not None
+    assert markup.inline_keyboard[0][0].callback_data == "v1:admin:withdrawal_detail:4"
+    assert markup.inline_keyboard[1][0].url == rendered.cta_url
 
 
 @pytest.mark.parametrize(
@@ -373,6 +466,20 @@ def test_render_withdraw_created_admin_notification_uses_full_detail_body() -> N
                 "requester_telegram_id": 2120394,
                 "requester_username": "tech_banker",
                 "amount_usdt": "2.538393",
+            },
+            ["<code>W3</code>"],
+        ),
+        (
+            EVENT_WITHDRAW_SENT_ADMIN,
+            {
+                "withdrawal_request_id": 3,
+                "requester_role": "buyer",
+                "requester_telegram_id": 2120394,
+                "requester_username": "tech_banker",
+                "amount_usdt": "2.538393",
+                "payout_address": "UQ_TEST_ADDRESS",
+                "sent_at": "2026-04-03T22:17:00+00:00",
+                "tx_hash": "0xabc",
             },
             ["<code>W3</code>"],
         ),
@@ -556,6 +663,81 @@ async def test_create_withdrawal_request_enqueues_admin_notification(db_pool) ->
             "recipient_telegram_id": 9003,
             "event_type": EVENT_WITHDRAW_CREATED_ADMIN,
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_complete_withdrawal_request_enqueues_requester_and_admin_notifications(db_pool) -> None:
+    service = FinanceService(db_pool)
+
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            buyer_id = await create_user(conn, telegram_id=9101, role="buyer", username="buyer")
+            admin_id = await create_user(conn, telegram_id=9103, role="admin", username="admin")
+            buyer_available_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_available",
+                account_kind="buyer_available",
+                balance=Decimal("5.000000"),
+            )
+            buyer_pending_account_id = await create_account(
+                conn,
+                owner_user_id=buyer_id,
+                account_code=f"user:{buyer_id}:buyer_withdraw_pending",
+                account_kind="buyer_withdraw_pending",
+                balance=Decimal("0.000000"),
+            )
+            system_payout_account_id = await create_account(
+                conn,
+                owner_user_id=None,
+                account_code="system:payout",
+                account_kind="system_payout",
+                balance=Decimal("0.000000"),
+            )
+
+    request = await service.create_withdrawal_request(
+        requester_user_id=buyer_id,
+        requester_role="buyer",
+        from_account_id=buyer_available_account_id,
+        pending_account_id=buyer_pending_account_id,
+        amount_usdt=Decimal("5.000000"),
+        payout_address="UQ_TEST_ADDRESS",
+        idempotency_key="withdraw-complete-notify-create",
+    )
+    completed = await service.complete_withdrawal_request(
+        request_id=request.withdrawal_request_id,
+        admin_user_id=admin_id,
+        system_payout_account_id=system_payout_account_id,
+        tx_hash="0xabc",
+        idempotency_key="withdraw-complete-notify",
+    )
+    duplicate = await service.complete_withdrawal_request(
+        request_id=request.withdrawal_request_id,
+        admin_user_id=admin_id,
+        system_payout_account_id=system_payout_account_id,
+        tx_hash="0xabc",
+        idempotency_key="withdraw-complete-notify-duplicate",
+    )
+
+    assert completed.changed is True
+    assert duplicate.changed is False
+
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT recipient_telegram_id, event_type
+                FROM notification_outbox
+                ORDER BY id ASC
+                """
+            )
+            rows = await cur.fetchall()
+
+    assert rows == [
+        {"recipient_telegram_id": 9103, "event_type": EVENT_WITHDRAW_CREATED_ADMIN},
+        {"recipient_telegram_id": 9101, "event_type": EVENT_WITHDRAW_SENT_REQUESTER},
+        {"recipient_telegram_id": 9103, "event_type": EVENT_WITHDRAW_SENT_ADMIN},
     ]
 
 

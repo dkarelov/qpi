@@ -38,6 +38,7 @@ EVENT_DEPOSIT_EXPIRED_SELLER = "deposit_expired_seller"
 EVENT_DEPOSIT_CANCELLED_SELLER = "deposit_cancelled_seller"
 EVENT_WITHDRAW_CREATED_ADMIN = "withdraw_created_admin"
 EVENT_WITHDRAW_CANCELLED_ADMIN = "withdraw_cancelled_admin"
+EVENT_WITHDRAW_SENT_ADMIN = "withdraw_sent_admin"
 EVENT_WITHDRAW_REJECTED_REQUESTER = "withdraw_rejected_requester"
 EVENT_WITHDRAW_SENT_REQUESTER = "withdraw_sent_requester"
 EVENT_MANUAL_BALANCE_CREDIT_TARGET = "manual_balance_credit_target"
@@ -492,6 +493,17 @@ class NotificationService:
             cur,
             event_type=EVENT_WITHDRAW_CANCELLED_ADMIN,
             dedupe_key_prefix=f"withdrawal_request:{request_id}:cancelled",
+            payload_json=payload,
+        )
+
+    async def enqueue_withdraw_sent_for_admins_locked(self, cur, *, request_id: int) -> None:
+        payload = await self._load_withdraw_request_context_locked(cur, request_id=request_id)
+        if payload is None:
+            return
+        await self.enqueue_admins_locked(
+            cur,
+            event_type=EVENT_WITHDRAW_SENT_ADMIN,
+            dedupe_key_prefix=f"withdrawal_request:{request_id}:sent",
             payload_json=payload,
         )
 

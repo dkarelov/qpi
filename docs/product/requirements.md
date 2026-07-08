@@ -215,7 +215,8 @@ Transitions:
   - transfer time not earlier than request creation,
   - tx hash not already recorded on another payout.
 - Duplicate TonAPI page-overlap entries by the same tx hash are treated as one operation; conflicting duplicate tx hashes, ambiguous matches, missing matches, unverifiable matches, and payout scans that hit the configured page cap stay pending for manual admin action and emit warnings where operational follow-up is needed.
-- Every new buyer or seller withdrawal request sends an admin push notification with requester role, Telegram identity, amount, and request number.
+- Every new buyer or seller withdrawal request sends an admin push notification with requester role, Telegram identity, amount, request number, copyable TON USDT payout address, and a best-effort TON USDT transfer link for compatible wallets.
+- When a withdrawal is completed manually or by the blockchain checker, admins receive a completion notification with request number, requester, amount, copyable payout address, sent time, and tx hash when available.
 - Manual deposit is supported for exception handling/bonuses/corrections.
 - Manual deposit input supports role aliases:
   - `seller` maps to `seller_available`,
@@ -374,6 +375,7 @@ Transitions:
 - Admin UX:
   - `Выводы`, `Депозиты`, `Исключения` sections.
 - Admin withdrawals section contains pending/actionable requests and processed-history access for both buyers and sellers, with requester role shown in queue and detail views.
+- Admin withdrawal views render payout addresses in copyable monospace and expose a best-effort TON USDT transfer link for pending requests.
 - Sensitive inputs (tokens, payloads) are deleted when possible.
 
 ### 2.8 Money, precision, and FX rules

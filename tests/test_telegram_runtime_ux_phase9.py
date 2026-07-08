@@ -36,6 +36,7 @@ from services.bot_api.presentation import (
 from services.bot_api.seller_listing_creation_flow import SellerListingCreationFlow
 from services.bot_api.seller_marketplace_flow import SellerMarketplaceFlow, SellerMarketplaceFlowConfig
 from services.bot_api.telegram_runtime import TelegramWebhookRuntime
+from services.bot_api.ton_links import build_ton_usdt_transfer_link
 from services.bot_api.transport_effects import ReplaceText
 
 _TASK_UUID = "11111111-1111-4111-8111-111111111111"
@@ -536,6 +537,20 @@ def test_wallet_link_builder_uses_ton_transfer_with_usdt_jetton_and_micro_units(
     assert "jetton=jetton-master" in link
     assert "amount=1200100" in link
     assert "text=QPI+deposit+D91" in link
+
+
+def test_ton_usdt_transfer_link_helper_uses_micro_units_and_encoded_memo() -> None:
+    link = build_ton_usdt_transfer_link(
+        destination_address=" UQTESTADDRESS ",
+        amount_usdt=Decimal("5.000000"),
+        jetton_master="jetton-master",
+        text="QPI withdrawal W77",
+    )
+
+    assert link.startswith("ton://transfer/UQTESTADDRESS?")
+    assert "jetton=jetton-master" in link
+    assert "amount=5000000" in link
+    assert "text=QPI+withdrawal+W77" in link
 
 
 def test_telegram_wallet_link_builder_uses_wallet_start_url() -> None:

@@ -1778,6 +1778,14 @@ async def test_phase10_e2e_admin_withdrawal_flow() -> None:
     assert any("<b>Заявка</b> · <code>W77</code>" in text for text in _event_texts(detail_events))
     assert all("<b>Код:</b>" not in text for text in _event_texts(detail_events))
     assert any("<b>Роль:</b> Покупатель" in text for text in _event_texts(detail_events))
+    assert any("<b>Кошелек:</b> <code>UQ-test-wallet</code>" in text for text in _event_texts(detail_events))
+    detail_urls = [url for event in detail_events for url in _markup_urls(event)]
+    assert any(
+        url.startswith("ton://transfer/UQ-test-wallet?")
+        and "amount=5000000" in url
+        and "text=QPI+withdrawal+W77" in url
+        for url in detail_urls
+    )
 
     prompt_sent_events = await harness.callback(
         flow="admin",
@@ -1819,7 +1827,7 @@ async def test_phase10_e2e_admin_pending_withdrawals_labels_seller_requests() ->
     assert "Код: W88" not in text
     assert "Роль: Продавец" in text
     assert "Telegram: 10001 (@seller)" in text
-    assert "UQ-seller-wallet" in text
+    assert "Кошелек: <code>UQ-seller-wallet</code>" in text
 
 
 @pytest.mark.asyncio
@@ -1851,6 +1859,7 @@ async def test_phase10_e2e_admin_processed_withdrawals_use_header_ref_without_co
 
     assert "<b>Заявка</b> · <code>W77</code>" in text
     assert "Код: W77" not in text
+    assert "Кошелек: <code>UQ-test-wallet</code>" in text
     assert "Комментарий: Неверный адрес" in text
 
 
