@@ -83,6 +83,16 @@ class WithdrawalFlowConfig:
     cancel_return_line: str
     cancel_success_text: str
     balance_button_text: str
+    amount_prompt_text: str = "Введите сумму вывода в USDT (например, 4.5)."
+    address_prompt_intro_text: str | None = None
+
+
+_BUYER_WALLET_ADDRESS_HELP_TEXT = (
+    "Как найти адрес USDT TON в Wallet:\n"
+    "1. Откройте @wallet.\n"
+    "2. Перейдите: Крипто → Пополнить → Стейблкоины → USDT → TON.\n"
+    "3. Скопируйте адрес TON. Не используйте TRC-20, ERC-20, Solana или testnet."
+)
 
 
 SELLER_WITHDRAWAL_CONFIG = WithdrawalFlowConfig(
@@ -129,6 +139,8 @@ BUYER_WITHDRAWAL_CONFIG = WithdrawalFlowConfig(
     cancel_return_line="Средства вернутся в доступный баланс покупателя.",
     cancel_success_text="Заявка на вывод отменена. Средства вернулись в доступный баланс.",
     balance_button_text="💳 Баланс и вывод",
+    amount_prompt_text=f"Введите сумму вывода в USDT (например, 4.5).\n\n{_BUYER_WALLET_ADDRESS_HELP_TEXT}",
+    address_prompt_intro_text=_BUYER_WALLET_ADDRESS_HELP_TEXT,
 )
 
 
@@ -166,7 +178,7 @@ class WithdrawalRequestCreationFlow:
                     data={self._config.requester_id_key: requester_user_id},
                 ),
                 ReplaceText(
-                    text="Введите сумму вывода в USDT (например, 4.5).",
+                    text=self._config.amount_prompt_text,
                     buttons=_back_to_balance_buttons(role=self._config.role),
                     parse_mode=None,
                 ),
@@ -445,6 +457,8 @@ class WithdrawalRequestCreationFlow:
 
     def _address_prompt_result(self, *, requester_user_id: int, amount: Decimal, replace: bool) -> FlowResult:
         text = f"Введите адрес кошелька в сети TON для вывода {format_usdt_value(amount, precise=True)} USDT."
+        if self._config.address_prompt_intro_text is not None:
+            text = f"{self._config.address_prompt_intro_text}\n\n{text}"
         prompt = SetPrompt(
             role=self._config.role,
             prompt_type=self._config.address_prompt_type,
@@ -491,4 +505,3 @@ class WithdrawalRequestCreationFlow:
 
 def _back_to_balance_buttons(*, role: str) -> tuple[tuple[ButtonSpec, ...], ...]:
     return ((ButtonSpec(text="↩️ Назад к балансу", flow=role, action="balance"),),)
-

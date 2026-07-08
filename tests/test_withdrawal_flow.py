@@ -140,8 +140,12 @@ async def test_withdrawal_flow_prompts_manual_amount_for_role(config: Withdrawal
     assert prompt.prompt_type == config.amount_prompt_type
     assert prompt.data == {config.requester_id_key: 101}
     assert isinstance(screen, ReplaceText)
-    assert screen.text == "Введите сумму вывода в USDT (например, 4.5)."
+    assert screen.text == config.amount_prompt_text
     assert screen.buttons[0][0].action == "balance"
+    if config.role == "buyer":
+        assert "Крипто → Пополнить → Стейблкоины → USDT → TON" in screen.text
+    else:
+        assert "Стейблкоины" not in screen.text
 
 
 @pytest.mark.parametrize("config", [SELLER_WITHDRAWAL_CONFIG, BUYER_WITHDRAWAL_CONFIG])
@@ -157,6 +161,11 @@ async def test_withdrawal_flow_full_amount_uses_exact_available_balance(config: 
     assert prompt.data == {config.requester_id_key: 101, "amount_usdt": "1.234567"}
     assert isinstance(screen, ReplaceText)
     assert "1.234567 USDT" in screen.text
+    if config.role == "buyer":
+        assert "Как найти адрес USDT TON в Wallet" in screen.text
+        assert "Крипто → Пополнить → Стейблкоины → USDT → TON" in screen.text
+    else:
+        assert "Как найти адрес USDT TON в Wallet" not in screen.text
 
 
 @pytest.mark.parametrize("config", [SELLER_WITHDRAWAL_CONFIG, BUYER_WITHDRAWAL_CONFIG])
@@ -192,6 +201,27 @@ async def test_withdrawal_flow_rejects_invalid_and_insufficient_manual_amounts(c
     assert isinstance(insufficient.effects[0], ReplyText)
     assert "Сумма превышает доступный баланс." in insufficient.effects[0].text
     assert adapter.create_calls == []
+
+
+@pytest.mark.parametrize("config", [SELLER_WITHDRAWAL_CONFIG, BUYER_WITHDRAWAL_CONFIG])
+@pytest.mark.asyncio
+async def test_withdrawal_flow_manual_amount_prompts_for_address(config: WithdrawalFlowConfig) -> None:
+    adapter = FakeWithdrawalAdapter(role=config.role, available_balance=Decimal("1.000000"))
+    flow, _, _ = _flow(config, adapter=adapter)
+
+    result = await flow.submit_manual_amount(prompt_state={config.requester_id_key: 101}, text="0.5")
+
+    prompt, screen = result.effects
+    assert isinstance(prompt, SetPrompt)
+    assert prompt.prompt_type == config.address_prompt_type
+    assert prompt.data == {config.requester_id_key: 101, "amount_usdt": "0.5"}
+    assert isinstance(screen, ReplyText)
+    assert "0.5 USDT" in screen.text
+    if config.role == "buyer":
+        assert "Как найти адрес USDT TON в Wallet" in screen.text
+        assert "Крипто → Пополнить → Стейблкоины → USDT → TON" in screen.text
+    else:
+        assert "Как найти адрес USDT TON в Wallet" not in screen.text
 
 
 @pytest.mark.parametrize("config", [SELLER_WITHDRAWAL_CONFIG, BUYER_WITHDRAWAL_CONFIG])

@@ -517,9 +517,12 @@ def test_buyer_marketplace_flow_renders_detailed_withdrawal_manual() -> None:
     assert "Про баланс и вывод" in balance.text
     assert "Как подготовить кошелек в Telegram" in balance.text
     assert 'href="https://t.me/wallet"' in balance.text
-    assert "Выберите «Доллары» / USDT и сеть TON" in balance.text
+    assert "«Крипто» → «Пополнить» → «Стейблкоины» → «USDT» → «TON»" in balance.text
     assert "заявка на вывод должна быть только на USDT в сети TON mainnet" in balance.text
     assert "Бот проверит адрес через TonAPI и создаст заявку" in balance.text
+    assert "Что делать после зачисления USDT в Wallet" in balance.text
+    assert "Крипто → Вывести" in balance.text
+    assert 'href="https://help.ru.wallet.tg/article/68-vyvesti"' in balance.text
     assert "номер заявки вида W123" in balance.text
     labels = [button.text for row in balance.buttons for button in row]
     assert labels == ["📘 Инструкция", "📘 Про магазины", "📘 Про покупки", "↩️ К балансу"]

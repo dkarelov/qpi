@@ -1548,6 +1548,25 @@ async def test_phase10_e2e_buyer_balance_shows_active_request_and_cancel() -> No
 
 
 @pytest.mark.asyncio
+async def test_phase10_e2e_buyer_withdraw_full_shows_wallet_address_guidance() -> None:
+    runtime, deps = _build_runtime()
+    deps.finance.get_buyer_balance_snapshot = AsyncMock(
+        return_value=_ns(
+            buyer_available_usdt=Decimal("1.500000"),
+            buyer_withdraw_pending_usdt=Decimal("0.000000"),
+        )
+    )
+    harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
+
+    events = await harness.callback(flow="buyer", action="withdraw_full")
+    text = "\n".join(_event_texts(events))
+
+    assert "Как найти адрес USDT TON в Wallet" in text
+    assert "Крипто → Пополнить → Стейблкоины → USDT → TON" in text
+    assert "Введите адрес кошелька в сети TON для вывода 1.5 USDT" in text
+
+
+@pytest.mark.asyncio
 async def test_phase10_e2e_buyer_can_cancel_pending_withdrawal() -> None:
     runtime, deps = _build_runtime()
     deps.finance.get_active_buyer_withdrawal_request = AsyncMock(
@@ -1614,10 +1633,12 @@ async def test_phase10_e2e_buyer_withdraw_request_submits_request() -> None:
     runtime._tonapi_client.parse_address = AsyncMock(return_value=_ns(raw_form="0:buyer-wallet"))
     harness = TelegramRuntimeHarness(runtime, telegram_id=20001, username="buyer")
 
-    await harness.callback(flow="buyer", action="withdraw_prompt_amount")
-    await harness.text("1.5")
+    amount_events = await harness.callback(flow="buyer", action="withdraw_prompt_amount")
+    address_events = await harness.text("1.5")
     events = await harness.text("UQ-buyer-wallet")
 
+    assert any("Крипто → Пополнить → Стейблкоины → USDT → TON" in text for text in _event_texts(amount_events))
+    assert any("Крипто → Пополнить → Стейблкоины → USDT → TON" in text for text in _event_texts(address_events))
     assert any("Заявка на вывод создана." in text for text in _event_texts(events))
     create_call = deps.finance.create_withdrawal_request.await_args.kwargs
     assert create_call["requester_role"] == "buyer"
