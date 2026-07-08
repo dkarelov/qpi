@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from zoneinfo import ZoneInfo
 
-from libs.domain.models import NotificationOutboxItem, RenderedTelegramNotification
+from libs.domain.models import NotificationButton, NotificationOutboxItem, RenderedTelegramNotification
 from libs.domain.notifications import (
     EVENT_ASSIGNMENT_DELIVERY_EXPIRED_BUYER,
     EVENT_ASSIGNMENT_DELIVERY_EXPIRED_SELLER,
@@ -38,7 +38,8 @@ from libs.domain.public_refs import (
     format_deposit_ref,
     format_withdrawal_ref,
 )
-from services.bot_api.ton_links import DEFAULT_TON_USDT_JETTON_MASTER, build_ton_usdt_transfer_link
+from services.bot_api.presentation import format_copyable_code
+from services.bot_api.ton_links import build_ton_usdt_transfer_link
 
 MSK = ZoneInfo("Europe/Moscow")
 
@@ -46,8 +47,8 @@ MSK = ZoneInfo("Europe/Moscow")
 def render_telegram_notification(
     item: NotificationOutboxItem,
     *,
+    tonapi_usdt_jetton_master: str,
     display_rub_per_usdt: Decimal | None = None,
-    tonapi_usdt_jetton_master: str = DEFAULT_TON_USDT_JETTON_MASTER,
 ) -> RenderedTelegramNotification:
     payload = item.payload_json
     event_type = item.event_type
@@ -60,10 +61,7 @@ def render_telegram_notification(
                 "Покупка закрыта, потому что токен-подтверждение не был отправлен вовремя."
             ),
             parse_mode="HTML",
-            cta_text="📋 Покупки",
-            cta_flow="buyer",
-            cta_action="assignments",
-            cta_entity_id=None,
+            buttons=(_callback_button(text="📋 Покупки", flow="buyer", action="assignments"),),
         )
     if event_type == EVENT_ASSIGNMENT_ORDER_VERIFIED_SELLER:
         return RenderedTelegramNotification(
@@ -74,10 +72,14 @@ def render_telegram_notification(
                 f"<b>Номер заказа:</b> {html.escape(str(payload['order_id']))}"
             ),
             parse_mode="HTML",
-            cta_text="📦 Объявления",
-            cta_flow="seller",
-            cta_action="listing_open",
-            cta_entity_id=str(payload["listing_id"]),
+            buttons=(
+                _callback_button(
+                    text="📦 Объявления",
+                    flow="seller",
+                    action="listing_open",
+                    entity_id=str(payload["listing_id"]),
+                ),
+            ),
         )
     if event_type in {EVENT_ASSIGNMENT_PICKED_UP_BUYER, EVENT_ASSIGNMENT_PICKED_UP_SELLER}:
         title = "Выкуп подтвержден" if item.recipient_scope == "buyer" else "Покупка выкуплена"
@@ -91,17 +93,17 @@ def render_telegram_notification(
         else:
             next_step = f"Кэшбэк разблокируется: {_format_datetime_msk(payload.get('unlock_at'))}"
         if item.recipient_scope == "buyer" and payload.get("review_required"):
-            cta_text = "✍️ Оставить отзыв"
-            cta_action = "submit_review_payload_prompt"
-            cta_entity_id = str(payload["assignment_id"])
+            button_text = "✍️ Оставить отзыв"
+            button_action = "submit_review_payload_prompt"
+            button_entity_id = str(payload["assignment_id"])
         elif item.recipient_scope == "buyer":
-            cta_text = "📋 Покупки"
-            cta_action = "assignments"
-            cta_entity_id = None
+            button_text = "📋 Покупки"
+            button_action = "assignments"
+            button_entity_id = None
         else:
-            cta_text = "📦 Объявления"
-            cta_action = "listing_open"
-            cta_entity_id = str(payload["listing_id"])
+            button_text = "📦 Объявления"
+            button_action = "listing_open"
+            button_entity_id = str(payload["listing_id"])
         return RenderedTelegramNotification(
             text=(
                 f"<b>{title}</b>\n\n"
@@ -110,10 +112,14 @@ def render_telegram_notification(
                 f"<b>Следующий шаг:</b> {html.escape(next_step)}"
             ),
             parse_mode="HTML",
-            cta_text=cta_text,
-            cta_flow="buyer" if item.recipient_scope == "buyer" else "seller",
-            cta_action=cta_action,
-            cta_entity_id=cta_entity_id,
+            buttons=(
+                _callback_button(
+                    text=button_text,
+                    flow="buyer" if item.recipient_scope == "buyer" else "seller",
+                    action=button_action,
+                    entity_id=button_entity_id,
+                ),
+            ),
         )
     if event_type == EVENT_ASSIGNMENT_REVIEW_CONFIRMED_SELLER:
         return RenderedTelegramNotification(
@@ -126,10 +132,14 @@ def render_telegram_notification(
                 f"<b>Подтвержден:</b> {_format_datetime_msk(payload.get('reviewed_at'))}"
             ),
             parse_mode="HTML",
-            cta_text="📦 Объявления",
-            cta_flow="seller",
-            cta_action="listing_open",
-            cta_entity_id=str(payload["listing_id"]),
+            buttons=(
+                _callback_button(
+                    text="📦 Объявления",
+                    flow="seller",
+                    action="listing_open",
+                    entity_id=str(payload["listing_id"]),
+                ),
+            ),
         )
     if event_type in {EVENT_ASSIGNMENT_RETURNED_BUYER, EVENT_ASSIGNMENT_RETURNED_SELLER}:
         return RenderedTelegramNotification(
@@ -140,10 +150,14 @@ def render_telegram_notification(
                 "Кэшбэк по этой покупке отменен."
             ),
             parse_mode="HTML",
-            cta_text="📋 Покупки" if item.recipient_scope == "buyer" else "📦 Объявления",
-            cta_flow="buyer" if item.recipient_scope == "buyer" else "seller",
-            cta_action="assignments" if item.recipient_scope == "buyer" else "listing_open",
-            cta_entity_id=None if item.recipient_scope == "buyer" else str(payload["listing_id"]),
+            buttons=(
+                _callback_button(
+                    text="📋 Покупки" if item.recipient_scope == "buyer" else "📦 Объявления",
+                    flow="buyer" if item.recipient_scope == "buyer" else "seller",
+                    action="assignments" if item.recipient_scope == "buyer" else "listing_open",
+                    entity_id=None if item.recipient_scope == "buyer" else str(payload["listing_id"]),
+                ),
+            ),
         )
     if event_type in {
         EVENT_ASSIGNMENT_DELIVERY_EXPIRED_BUYER,
@@ -157,10 +171,14 @@ def render_telegram_notification(
                 "Покупка закрыта без начисления кэшбэка."
             ),
             parse_mode="HTML",
-            cta_text="📋 Покупки" if item.recipient_scope == "buyer" else "📦 Объявления",
-            cta_flow="buyer" if item.recipient_scope == "buyer" else "seller",
-            cta_action="assignments" if item.recipient_scope == "buyer" else "listing_open",
-            cta_entity_id=None if item.recipient_scope == "buyer" else str(payload["listing_id"]),
+            buttons=(
+                _callback_button(
+                    text="📋 Покупки" if item.recipient_scope == "buyer" else "📦 Объявления",
+                    flow="buyer" if item.recipient_scope == "buyer" else "seller",
+                    action="assignments" if item.recipient_scope == "buyer" else "listing_open",
+                    entity_id=None if item.recipient_scope == "buyer" else str(payload["listing_id"]),
+                ),
+            ),
         )
     if event_type in {
         EVENT_ASSIGNMENT_REWARD_UNLOCKED_BUYER,
@@ -180,10 +198,14 @@ def render_telegram_notification(
                 f"<b>Сумма:</b> {amount_text}"
             ),
             parse_mode="HTML",
-            cta_text="💰 Баланс" if item.recipient_scope == "buyer" else "📦 Объявления",
-            cta_flow="buyer" if item.recipient_scope == "buyer" else "seller",
-            cta_action="balance" if item.recipient_scope == "buyer" else "listing_open",
-            cta_entity_id=None if item.recipient_scope == "buyer" else str(payload["listing_id"]),
+            buttons=(
+                _callback_button(
+                    text="💰 Баланс" if item.recipient_scope == "buyer" else "📦 Объявления",
+                    flow="buyer" if item.recipient_scope == "buyer" else "seller",
+                    action="balance" if item.recipient_scope == "buyer" else "listing_open",
+                    entity_id=None if item.recipient_scope == "buyer" else str(payload["listing_id"]),
+                ),
+            ),
         )
     if event_type in {
         EVENT_ASSIGNMENT_EARLY_PAYOUT_LISTING_DELETE_BUYER,
@@ -204,10 +226,7 @@ def render_telegram_notification(
                 f"{_format_rub_approx(payload['total_reward_usdt'], rub_per_usdt=display_rub_per_usdt)}"
             ),
             parse_mode="HTML",
-            cta_text="💰 Баланс",
-            cta_flow="buyer",
-            cta_action="balance",
-            cta_entity_id=None,
+            buttons=(_callback_button(text="💰 Баланс", flow="buyer", action="balance"),),
         )
     if event_type == EVENT_SELLER_TOKEN_INVALIDATED:
         return RenderedTelegramNotification(
@@ -220,10 +239,14 @@ def render_telegram_notification(
                 f"{int(payload['paused_listings_count'])}"
             ),
             parse_mode="HTML",
-            cta_text="🏪 Магазины",
-            cta_flow="seller",
-            cta_action="shop_open",
-            cta_entity_id=str(payload["shop_id"]),
+            buttons=(
+                _callback_button(
+                    text="🏪 Магазины",
+                    flow="seller",
+                    action="shop_open",
+                    entity_id=str(payload["shop_id"]),
+                ),
+            ),
         )
     if event_type == EVENT_DEPOSIT_CREDITED_SELLER:
         lines = [
@@ -236,10 +259,7 @@ def render_telegram_notification(
         return RenderedTelegramNotification(
             text="\n".join(lines),
             parse_mode="HTML",
-            cta_text="💰 Баланс",
-            cta_flow="seller",
-            cta_action="balance",
-            cta_entity_id=None,
+            buttons=(_callback_button(text="💰 Баланс", flow="seller", action="balance"),),
         )
     if event_type == EVENT_DEPOSIT_MANUAL_REVIEW_SELLER:
         return RenderedTelegramNotification(
@@ -249,10 +269,7 @@ def render_telegram_notification(
                 f"<b>Причина:</b> {html.escape(str(payload['reason']))}"
             ),
             parse_mode="HTML",
-            cta_text="💰 Баланс",
-            cta_flow="seller",
-            cta_action="balance",
-            cta_entity_id=None,
+            buttons=(_callback_button(text="💰 Баланс", flow="seller", action="balance"),),
         )
     if event_type == EVENT_DEPOSIT_MANUAL_REVIEW_ADMIN:
         lines = [
@@ -260,7 +277,7 @@ def render_telegram_notification(
             "",
             (
                 "<b>Транзакция:</b> "
-                f"{_format_public_ref(format_chain_tx_ref(int(payload['chain_tx_id'])))}"
+                f"{format_copyable_code(format_chain_tx_ref(int(payload['chain_tx_id'])))}"
             ),
             f"<b>Сумма:</b> {_format_usdt_value(payload['amount_usdt'])} USDT",
             f"<b>Причина:</b> {html.escape(str(payload['reason']))}",
@@ -268,52 +285,42 @@ def render_telegram_notification(
         if payload.get("deposit_intent_id") is not None:
             lines.append(
                 "<b>Счет:</b> "
-                f"{_format_public_ref(format_deposit_ref(int(payload['deposit_intent_id'])))}"
+                f"{format_copyable_code(format_deposit_ref(int(payload['deposit_intent_id'])))}"
             )
         if payload.get("tx_hash"):
             lines.append(f"<b>Хэш:</b> {html.escape(str(payload['tx_hash']))}")
         return RenderedTelegramNotification(
             text="\n".join(lines),
             parse_mode="HTML",
-            cta_text="⚠️ Исключения",
-            cta_flow="admin",
-            cta_action="exceptions_section",
-            cta_entity_id=None,
+            buttons=(_callback_button(text="⚠️ Исключения", flow="admin", action="exceptions_section"),),
         )
     if event_type == EVENT_DEPOSIT_EXPIRED_SELLER:
         deposit_ref = format_deposit_ref(int(payload["deposit_intent_id"]))
         return RenderedTelegramNotification(
             text=(
                 "<b>Счет на пополнение истек</b>\n\n"
-                f"<b>Счет:</b> {_format_public_ref(deposit_ref)}\n"
+                f"<b>Счет:</b> {format_copyable_code(deposit_ref)}\n"
                 f"<b>Ожидалось:</b> {_format_usdt_value(payload['expected_amount_usdt'])} USDT"
             ),
             parse_mode="HTML",
-            cta_text="💰 Баланс",
-            cta_flow="seller",
-            cta_action="balance",
-            cta_entity_id=None,
+            buttons=(_callback_button(text="💰 Баланс", flow="seller", action="balance"),),
         )
     if event_type == EVENT_DEPOSIT_CANCELLED_SELLER:
         deposit_ref = format_deposit_ref(int(payload["deposit_intent_id"]))
         lines = [
             "<b>Счет на пополнение отменен</b>",
             "",
-            f"<b>Счет:</b> {_format_public_ref(deposit_ref)}",
+            f"<b>Счет:</b> {format_copyable_code(deposit_ref)}",
         ]
         if payload.get("reason"):
             lines.append(f"<b>Причина:</b> {html.escape(str(payload['reason']))}")
         return RenderedTelegramNotification(
             text="\n".join(lines),
             parse_mode="HTML",
-            cta_text="💰 Баланс",
-            cta_flow="seller",
-            cta_action="balance",
-            cta_entity_id=None,
+            buttons=(_callback_button(text="💰 Баланс", flow="seller", action="balance"),),
         )
     if event_type == EVENT_WITHDRAW_CREATED_ADMIN:
         withdraw_ref = format_withdrawal_ref(int(payload["withdrawal_request_id"]))
-        amount_text = f"{_format_usdt_value(payload['amount_usdt'])} USDT"
         transfer_url = build_ton_usdt_transfer_link(
             destination_address=str(payload["payout_address"]),
             amount_usdt=payload["amount_usdt"],
@@ -321,71 +328,65 @@ def render_telegram_notification(
             text=f"QPI withdrawal {withdraw_ref}",
         )
         return RenderedTelegramNotification(
-            text=(
-                "<b>Новая заявка на вывод</b> "
-                f"· {_format_public_ref(withdraw_ref)}\n\n"
-                "<b>Роль:</b> "
-                f"{html.escape(_withdraw_requester_label(payload['requester_role']))}\n"
-                f"<b>Telegram:</b> {int(payload['requester_telegram_id'])} "
-                f"(@{html.escape(payload['requester_username'] or '-')})\n"
-                f"<b>Сумма:</b> {_format_public_ref(amount_text)}\n"
-                f"<b>Статус:</b> {_withdraw_status_badge(str(payload['status']))}\n"
-                f"<b>Кошелек:</b> {_format_public_ref(str(payload['payout_address']))}\n"
-                f"<b>Создана:</b> {_format_datetime_msk(payload.get('requested_at'))}\n"
-                f"<b>Обработана:</b> {_format_datetime_msk(payload.get('processed_at'))}\n"
-                f"<b>Отправлена:</b> {_format_datetime_msk(payload.get('sent_at'))}"
+            text="\n".join(
+                [
+                    f"<b>Новая заявка на вывод</b> · {format_copyable_code(withdraw_ref)}",
+                    "",
+                    *_withdraw_admin_identity_lines(payload),
+                    f"<b>Статус:</b> {_withdraw_status_badge(str(payload['status']))}",
+                    f"<b>Создана:</b> {_format_datetime_msk(payload.get('requested_at'))}",
+                    f"<b>Обработана:</b> {_format_datetime_msk(payload.get('processed_at'))}",
+                    f"<b>Отправлена:</b> {_format_datetime_msk(payload.get('sent_at'))}",
+                ]
             ),
             parse_mode="HTML",
-            cta_text=f"🔎 Открыть {withdraw_ref}",
-            cta_flow="admin",
-            cta_action="withdrawal_detail",
-            cta_entity_id=str(payload["withdrawal_request_id"]),
-            cta_url_text="🔗 Подготовить USDT TON",
-            cta_url=transfer_url,
+            buttons=(
+                _callback_button(
+                    text=f"🔎 Открыть {withdraw_ref}",
+                    flow="admin",
+                    action="withdrawal_detail",
+                    entity_id=str(payload["withdrawal_request_id"]),
+                ),
+                _url_button(text="🔗 Подготовить USDT TON", url=transfer_url),
+            ),
         )
     if event_type == EVENT_WITHDRAW_CANCELLED_ADMIN:
         withdraw_ref = format_withdrawal_ref(int(payload["withdrawal_request_id"]))
         return RenderedTelegramNotification(
-            text=(
-                "<b>Заявка на вывод</b> "
-                f"· {_format_public_ref(withdraw_ref)} "
-                "<b>отменена заявителем</b>\n\n"
-                "<b>Роль:</b> "
-                f"{html.escape(_withdraw_requester_label(payload['requester_role']))}\n"
-                f"<b>Telegram:</b> {int(payload['requester_telegram_id'])} "
-                f"(@{html.escape(payload['requester_username'] or '-')})\n"
-                f"<b>Сумма:</b> {_format_usdt_value(payload['amount_usdt'])} USDT"
+            text="\n".join(
+                [
+                    (
+                        f"<b>Заявка на вывод</b> · {format_copyable_code(withdraw_ref)} "
+                        "<b>отменена заявителем</b>"
+                    ),
+                    "",
+                    *_withdraw_admin_identity_lines(payload),
+                ]
             ),
             parse_mode="HTML",
-            cta_text="💸 Выводы",
-            cta_flow="admin",
-            cta_action="withdrawals_section",
-            cta_entity_id=None,
+            buttons=(_callback_button(text="💸 Выводы", flow="admin", action="withdrawals_section"),),
         )
     if event_type == EVENT_WITHDRAW_SENT_ADMIN:
         withdraw_ref = format_withdrawal_ref(int(payload["withdrawal_request_id"]))
-        amount_text = f"{_format_usdt_value(payload['amount_usdt'])} USDT"
         lines = [
-            f"<b>Вывод отправлен</b> · {_format_public_ref(withdraw_ref)}",
+            f"<b>Вывод отправлен</b> · {format_copyable_code(withdraw_ref)}",
             "",
-            f"<b>Роль:</b> {html.escape(_withdraw_requester_label(payload['requester_role']))}",
-            (
-                f"<b>Telegram:</b> {int(payload['requester_telegram_id'])} "
-                f"(@{html.escape(payload['requester_username'] or '-')})"
-            ),
-            f"<b>Сумма:</b> {_format_public_ref(amount_text)}",
-            f"<b>Кошелек:</b> {_format_public_ref(str(payload['payout_address']))}",
+            *_withdraw_admin_identity_lines(payload),
             f"<b>Отправлена:</b> {_format_datetime_msk(payload.get('sent_at'))}",
         ]
         if payload.get("tx_hash"):
-            lines.append(f"<b>Хэш перевода:</b> {_format_public_ref(str(payload['tx_hash']))}")
+            lines.append(f"<b>Хэш перевода:</b> {format_copyable_code(str(payload['tx_hash']))}")
         return RenderedTelegramNotification(
             text="\n".join(lines),
             parse_mode="HTML",
-            cta_text=f"🔎 Открыть {withdraw_ref}",
-            cta_flow="admin",
-            cta_action="withdrawal_detail",
-            cta_entity_id=str(payload["withdrawal_request_id"]),
+            buttons=(
+                _callback_button(
+                    text=f"🔎 Открыть {withdraw_ref}",
+                    flow="admin",
+                    action="withdrawal_detail",
+                    entity_id=str(payload["withdrawal_request_id"]),
+                ),
+            ),
         )
     if event_type in {EVENT_WITHDRAW_REJECTED_REQUESTER, EVENT_WITHDRAW_SENT_REQUESTER}:
         subject = (
@@ -394,23 +395,26 @@ def render_telegram_notification(
         withdraw_ref = format_withdrawal_ref(int(payload["withdrawal_request_id"]))
         if event_type == EVENT_WITHDRAW_REJECTED_REQUESTER:
             lines = [
-                f"<b>{html.escape(subject)}</b> · {_format_public_ref(withdraw_ref)} <b>отклонена</b>"
+                f"<b>{html.escape(subject)}</b> · {format_copyable_code(withdraw_ref)} <b>отклонена</b>"
             ]
             if payload.get("note"):
                 lines.extend(["", f"<b>Причина:</b> {html.escape(str(payload['note']))}"])
         else:
             lines = [
-                f"<b>{html.escape(subject)}</b> · {_format_public_ref(withdraw_ref)} <b>отправлена</b>"
+                f"<b>{html.escape(subject)}</b> · {format_copyable_code(withdraw_ref)} <b>отправлена</b>"
             ]
             if payload.get("tx_hash"):
                 lines.extend(["", f"<b>Хэш перевода:</b> {html.escape(str(payload['tx_hash']))}"])
         return RenderedTelegramNotification(
             text="\n".join(lines),
             parse_mode="HTML",
-            cta_text="💰 Баланс",
-            cta_flow="seller" if payload["requester_role"] == "seller" else "buyer",
-            cta_action="balance",
-            cta_entity_id=None,
+            buttons=(
+                _callback_button(
+                    text="💰 Баланс",
+                    flow="seller" if payload["requester_role"] == "seller" else "buyer",
+                    action="balance",
+                ),
+            ),
         )
     if event_type == EVENT_MANUAL_BALANCE_CREDIT_TARGET:
         amount_text = (
@@ -421,22 +425,48 @@ def render_telegram_notification(
         return RenderedTelegramNotification(
             text=("<b>Баланс пополнен</b>\n\n" f"<b>Сумма:</b> {amount_text}"),
             parse_mode="HTML",
-            cta_text="💰 Баланс",
-            cta_flow="seller" if payload.get("recipient_role") == "seller" else "buyer",
-            cta_action="balance",
-            cta_entity_id=None,
+            buttons=(
+                _callback_button(
+                    text="💰 Баланс",
+                    flow="seller" if payload.get("recipient_role") == "seller" else "buyer",
+                    action="balance",
+                ),
+            ),
         )
     raise ValueError(f"unsupported notification event: {event_type}")
+
+
+def _callback_button(
+    *,
+    text: str,
+    flow: str,
+    action: str,
+    entity_id: str | None = None,
+) -> NotificationButton:
+    return NotificationButton(text=text, flow=flow, action=action, entity_id=entity_id)
+
+
+def _url_button(*, text: str, url: str) -> NotificationButton:
+    return NotificationButton(text=text, url=url)
+
+
+def _withdraw_admin_identity_lines(payload: dict[str, object]) -> list[str]:
+    amount_text = f"{_format_usdt_value(str(payload['amount_usdt']))} USDT"
+    username = str(payload.get("requester_username") or "-")
+    lines = [
+        f"<b>Роль:</b> {html.escape(_withdraw_requester_label(str(payload['requester_role'])))}",
+        f"<b>Telegram:</b> {int(payload['requester_telegram_id'])} (@{html.escape(username)})",
+        f"<b>Сумма:</b> {format_copyable_code(amount_text)}",
+    ]
+    if payload.get("payout_address"):
+        lines.append(f"<b>Кошелек:</b> {format_copyable_code(str(payload['payout_address']))}")
+    return lines
 
 
 def _format_usdt_value(value: str | Decimal) -> str:
     amount = _normalize_amount(Decimal(str(value)))
     text = format(amount, "f")
     return text.rstrip("0").rstrip(".")
-
-
-def _format_public_ref(value: str) -> str:
-    return f"<code>{html.escape(value.strip())}</code>"
 
 
 def _format_rub_approx(value: str | Decimal, *, rub_per_usdt: Decimal | None) -> str:

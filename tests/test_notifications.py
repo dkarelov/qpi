@@ -5,11 +5,12 @@ from decimal import Decimal
 
 import pytest
 from psycopg.rows import dict_row
+from telegram.error import BadRequest, NetworkError
 
 from libs.config.settings import BotApiSettings
 from libs.domain.buyer import BuyerService
 from libs.domain.ledger import FinanceService
-from libs.domain.models import NotificationOutboxItem
+from libs.domain.models import NotificationButton, NotificationOutboxItem, RenderedTelegramNotification
 from libs.domain.notifications import (
     EVENT_ASSIGNMENT_EARLY_PAYOUT_LISTING_DELETE_BUYER,
     EVENT_ASSIGNMENT_PICKED_UP_BUYER,
@@ -27,6 +28,8 @@ from libs.domain.notifications import (
     EVENT_WITHDRAW_REJECTED_REQUESTER,
     EVENT_WITHDRAW_SENT_ADMIN,
     EVENT_WITHDRAW_SENT_REQUESTER,
+    OUTBOX_STATUS_FAILED_PERMANENT,
+    OUTBOX_STATUS_PENDING,
     OUTBOX_STATUS_SENT,
     NotificationService,
 )
@@ -57,9 +60,70 @@ def _render_notification(
 ):
     return render_telegram_notification(
         item,
-        display_rub_per_usdt=display_rub_per_usdt,
         tonapi_usdt_jetton_master=tonapi_usdt_jetton_master,
+        display_rub_per_usdt=display_rub_per_usdt,
     )
+
+
+class _RaisingBot:
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    async def send_message(self, **_kwargs) -> None:
+        raise self._exc
+
+
+async def _enqueue_dispatchable_notification(
+    db_pool,
+    notification_service: NotificationService,
+    *,
+    dedupe_key: str,
+    attempt_count: int = 0,
+    telegram_id: int = 9301,
+) -> None:
+    async with db_pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await notification_service.enqueue_locked(
+                    cur,
+                    recipient_telegram_id=telegram_id,
+                    recipient_scope="buyer",
+                    event_type=EVENT_ASSIGNMENT_RESERVATION_EXPIRED_BUYER,
+                    dedupe_key=dedupe_key,
+                    payload_json={
+                        "assignment_id": 1,
+                        "listing_id": 2,
+                        "shop_id": 3,
+                        "display_title": "Товар",
+                        "shop_title": "Магазин",
+                        "reward_usdt": "3.000000",
+                    },
+                )
+                if attempt_count:
+                    await cur.execute(
+                        """
+                        UPDATE notification_outbox
+                        SET attempt_count = %s
+                        WHERE dedupe_key = %s
+                        """,
+                        (attempt_count, dedupe_key),
+                    )
+
+
+async def _load_notification_state(db_pool, *, dedupe_key: str) -> dict:
+    async with db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT status, attempt_count, last_error
+                FROM notification_outbox
+                WHERE dedupe_key = %s
+                """,
+                (dedupe_key,),
+            )
+            row = await cur.fetchone()
+            assert row is not None
+            return dict(row)
 
 
 def test_render_assignment_reservation_expired_notification_has_buyer_cta() -> None:
@@ -90,9 +154,9 @@ def test_render_assignment_reservation_expired_notification_has_buyer_cta() -> N
 
     assert "Бронь истекла" in rendered.text
     assert rendered.parse_mode == "HTML"
-    assert rendered.cta_flow == "buyer"
-    assert rendered.cta_action == "assignments"
-    assert rendered.cta_text == "📋 Покупки"
+    assert rendered.buttons == (
+        NotificationButton(text="📋 Покупки", flow="buyer", action="assignments"),
+    )
 
 
 def test_render_assignment_picked_up_buyer_review_required_links_to_review_instruction() -> None:
@@ -128,10 +192,14 @@ def test_render_assignment_picked_up_buyer_review_required_links_to_review_instr
         "Следующий шаг:</b> Оставьте отзыв на 5 звезд на сайте ВБ. "
         "Кэшбэк разблокируется после отзыва, но не раньше 05.06.2026 20:58 МСК."
     ) in rendered.text
-    assert rendered.cta_flow == "buyer"
-    assert rendered.cta_action == "submit_review_payload_prompt"
-    assert rendered.cta_entity_id == "31"
-    assert rendered.cta_text == "✍️ Оставить отзыв"
+    assert rendered.buttons == (
+        NotificationButton(
+            text="✍️ Оставить отзыв",
+            flow="buyer",
+            action="submit_review_payload_prompt",
+            entity_id="31",
+        ),
+    )
 
 
 def test_render_assignment_review_confirmed_seller_notification_contains_rating_and_text() -> None:
@@ -166,9 +234,9 @@ def test_render_assignment_review_confirmed_seller_notification_contains_rating_
     assert "Отзыв подтвержден" in rendered.text
     assert "Оценка:</b> 5 / 5" in rendered.text
     assert "Текст отзыва:</b> Отлично" in rendered.text
-    assert rendered.cta_flow == "seller"
-    assert rendered.cta_action == "listing_open"
-    assert rendered.cta_entity_id == "2"
+    assert rendered.buttons == (
+        NotificationButton(text="📦 Объявления", flow="seller", action="listing_open", entity_id="2"),
+    )
 
 
 def test_render_seller_token_invalidated_notification_uses_neutral_unauthorized_reason() -> None:
@@ -197,8 +265,9 @@ def test_render_seller_token_invalidated_notification_uses_neutral_unauthorized_
 
     assert "WB отклонил авторизацию токена" in rendered.text
     assert "WB отозвал токен" not in rendered.text
-    assert rendered.cta_flow == "seller"
-    assert rendered.cta_action == "shop_open"
+    assert rendered.buttons == (
+        NotificationButton(text="🏪 Магазины", flow="seller", action="shop_open", entity_id="2"),
+    )
 
 
 @pytest.mark.parametrize(
@@ -336,16 +405,19 @@ def test_render_withdraw_created_admin_notification_uses_full_detail_body() -> N
     assert "<b>Создана:</b> 04.04.2026 01:17 МСК" in rendered.text
     assert "<b>Обработана:</b> -" in rendered.text
     assert "<b>Отправлена:</b> -" in rendered.text
-    assert rendered.cta_text == "🔎 Открыть W3"
-    assert rendered.cta_flow == "admin"
-    assert rendered.cta_action == "withdrawal_detail"
-    assert rendered.cta_entity_id == "3"
-    assert rendered.cta_url_text == "🔗 Подготовить USDT TON"
-    assert rendered.cta_url is not None
-    assert rendered.cta_url.startswith("ton://transfer/UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH?")
-    assert "jetton=jetton-master" in rendered.cta_url
-    assert "amount=2538393" in rendered.cta_url
-    assert "text=QPI+withdrawal+W3" in rendered.cta_url
+    assert len(rendered.buttons) == 2
+    assert rendered.buttons[0] == NotificationButton(
+        text="🔎 Открыть W3",
+        flow="admin",
+        action="withdrawal_detail",
+        entity_id="3",
+    )
+    assert rendered.buttons[1].text == "🔗 Подготовить USDT TON"
+    assert rendered.buttons[1].url is not None
+    assert rendered.buttons[1].url.startswith("ton://transfer/UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH?")
+    assert "jetton=jetton-master" in rendered.buttons[1].url
+    assert "amount=2538393" in rendered.buttons[1].url
+    assert "text=QPI+withdrawal+W3" in rendered.buttons[1].url
     assert "#" not in rendered.text
 
 
@@ -385,10 +457,14 @@ def test_render_withdraw_sent_admin_notification_uses_copyable_details() -> None
     assert "<b>Сумма:</b> <code>2.538393 USDT</code>" in rendered.text
     assert "<b>Кошелек:</b> <code>UQBYf1gmISdOD-D2iAsxSZI2OZAVh9U79T8ZuTFjgmhOQaSH</code>" in rendered.text
     assert "<b>Хэш перевода:</b> <code>0xabc</code>" in rendered.text
-    assert rendered.cta_text == "🔎 Открыть W3"
-    assert rendered.cta_flow == "admin"
-    assert rendered.cta_action == "withdrawal_detail"
-    assert rendered.cta_entity_id == "3"
+    assert rendered.buttons == (
+        NotificationButton(
+            text="🔎 Открыть W3",
+            flow="admin",
+            action="withdrawal_detail",
+            entity_id="3",
+        ),
+    )
 
 
 def test_runtime_notification_markup_supports_callback_and_url_buttons() -> None:
@@ -426,7 +502,59 @@ def test_runtime_notification_markup_supports_callback_and_url_buttons() -> None
 
     assert markup is not None
     assert markup.inline_keyboard[0][0].callback_data == "v1:admin:withdrawal_detail:4"
-    assert markup.inline_keyboard[1][0].url == rendered.cta_url
+    assert markup.inline_keyboard[1][0].url == rendered.buttons[1].url
+
+
+def test_runtime_notification_markup_iterates_all_notification_buttons() -> None:
+    runtime = _build_runtime("postgresql://user:pass@127.0.0.1:5432/qpi_test")
+    rendered = RenderedTelegramNotification(
+        text="test",
+        parse_mode=None,
+        buttons=(
+            NotificationButton(text="Open", flow="admin", action="withdrawals_section"),
+            NotificationButton(text="First URL", url="https://example.test/first"),
+            NotificationButton(text="Second URL", url="https://example.test/second"),
+        ),
+    )
+
+    markup = runtime._notification_markup(rendered)
+
+    assert markup is not None
+    assert markup.inline_keyboard[0][0].callback_data == "v1:admin:withdrawals_section:"
+    assert markup.inline_keyboard[1][0].url == "https://example.test/first"
+    assert markup.inline_keyboard[2][0].url == "https://example.test/second"
+
+
+def test_render_telegram_notification_requires_configured_usdt_jetton_master() -> None:
+    item = NotificationOutboxItem(
+        notification_id=8,
+        recipient_telegram_id=9003,
+        recipient_scope="admin",
+        event_type=EVENT_WITHDRAW_CREATED_ADMIN,
+        dedupe_key="withdrawal:8:created:admin:9003",
+        payload_json={
+            "withdrawal_request_id": 8,
+            "requester_role": "buyer",
+            "requester_telegram_id": 2120394,
+            "requester_username": "buyer",
+            "amount_usdt": "1.200100",
+            "status": "withdraw_pending_admin",
+            "payout_address": "UQTEST",
+            "requested_at": "2026-04-03T22:17:00+00:00",
+            "processed_at": None,
+            "sent_at": None,
+        },
+        status="pending",
+        attempt_count=0,
+        next_attempt_at=datetime.now(tz=UTC),
+        last_error=None,
+        sent_at=None,
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
+    )
+
+    with pytest.raises(TypeError):
+        render_telegram_notification(item)
 
 
 @pytest.mark.parametrize(
@@ -705,6 +833,16 @@ async def test_complete_withdrawal_request_enqueues_requester_and_admin_notifica
         payout_address="UQ_TEST_ADDRESS",
         idempotency_key="withdraw-complete-notify-create",
     )
+    load_count = 0
+    original_load_context = service._notifications._load_withdraw_request_context_locked
+
+    async def counted_load_context(cur, *, request_id: int):
+        nonlocal load_count
+        load_count += 1
+        return await original_load_context(cur, request_id=request_id)
+
+    service._notifications._load_withdraw_request_context_locked = counted_load_context
+
     completed = await service.complete_withdrawal_request(
         request_id=request.withdrawal_request_id,
         admin_user_id=admin_id,
@@ -722,6 +860,7 @@ async def test_complete_withdrawal_request_enqueues_requester_and_admin_notifica
 
     assert completed.changed is True
     assert duplicate.changed is False
+    assert load_count == 1
 
     async with db_pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -925,6 +1064,70 @@ async def test_runtime_dispatch_sends_and_marks_notification_sent(db_pool, isola
             row = await cur.fetchone()
 
     assert row["status"] == OUTBOX_STATUS_SENT
+
+
+def test_runtime_notification_error_classifier_marks_bad_request_permanent() -> None:
+    assert TelegramWebhookRuntime._is_permanent_notification_error(BadRequest("bad button url")) is True
+    assert TelegramWebhookRuntime._is_permanent_notification_error(NetworkError("Timed out")) is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_dispatch_marks_bad_request_notification_failed_permanent(
+    db_pool,
+    isolated_database: str,
+) -> None:
+    runtime = _build_runtime(isolated_database)
+    runtime._notification_service = NotificationService(db_pool)
+    dedupe_key = "dispatch-bad-request"
+    await _enqueue_dispatchable_notification(db_pool, runtime._notification_service, dedupe_key=dedupe_key)
+
+    await runtime._dispatch_notifications_once(bot=_RaisingBot(BadRequest("bad button url")))
+
+    row = await _load_notification_state(db_pool, dedupe_key=dedupe_key)
+    assert row["status"] == OUTBOX_STATUS_FAILED_PERMANENT
+    assert row["attempt_count"] == 1
+    assert row["last_error"] == "bad button url"
+
+
+@pytest.mark.asyncio
+async def test_runtime_dispatch_retries_transient_notification_failure(
+    db_pool,
+    isolated_database: str,
+) -> None:
+    runtime = _build_runtime(isolated_database)
+    runtime._notification_service = NotificationService(db_pool)
+    dedupe_key = "dispatch-transient-retry"
+    await _enqueue_dispatchable_notification(db_pool, runtime._notification_service, dedupe_key=dedupe_key)
+
+    await runtime._dispatch_notifications_once(bot=_RaisingBot(NetworkError("Timed out")))
+
+    row = await _load_notification_state(db_pool, dedupe_key=dedupe_key)
+    assert row["status"] == OUTBOX_STATUS_PENDING
+    assert row["attempt_count"] == 1
+    assert row["last_error"] == "Timed out"
+
+
+@pytest.mark.asyncio
+async def test_runtime_dispatch_dead_letters_transient_notification_after_attempt_cap(
+    db_pool,
+    isolated_database: str,
+) -> None:
+    runtime = _build_runtime(isolated_database)
+    runtime._notification_service = NotificationService(db_pool)
+    dedupe_key = "dispatch-transient-exhausted"
+    await _enqueue_dispatchable_notification(
+        db_pool,
+        runtime._notification_service,
+        dedupe_key=dedupe_key,
+        attempt_count=23,
+    )
+
+    await runtime._dispatch_notifications_once(bot=_RaisingBot(NetworkError("Timed out")))
+
+    row = await _load_notification_state(db_pool, dedupe_key=dedupe_key)
+    assert row["status"] == OUTBOX_STATUS_FAILED_PERMANENT
+    assert row["attempt_count"] == 24
+    assert row["last_error"] == "Timed out"
 
 
 @pytest.mark.asyncio

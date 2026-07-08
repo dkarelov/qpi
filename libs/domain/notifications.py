@@ -497,14 +497,27 @@ class NotificationService:
         )
 
     async def enqueue_withdraw_sent_for_admins_locked(self, cur, *, request_id: int) -> None:
-        payload = await self._load_withdraw_request_context_locked(cur, request_id=request_id)
+        payload = await self.load_withdraw_request_context_locked(cur, request_id=request_id)
         if payload is None:
             return
+        await self.enqueue_withdraw_sent_for_admins_payload_locked(
+            cur,
+            request_id=request_id,
+            payload_json=payload,
+        )
+
+    async def enqueue_withdraw_sent_for_admins_payload_locked(
+        self,
+        cur,
+        *,
+        request_id: int,
+        payload_json: dict[str, Any],
+    ) -> None:
         await self.enqueue_admins_locked(
             cur,
             event_type=EVENT_WITHDRAW_SENT_ADMIN,
             dedupe_key_prefix=f"withdrawal_request:{request_id}:sent",
-            payload_json=payload,
+            payload_json=payload_json,
         )
 
     async def enqueue_withdraw_status_for_requester_locked(
@@ -514,16 +527,31 @@ class NotificationService:
         request_id: int,
         event_type: str,
     ) -> None:
-        payload = await self._load_withdraw_request_context_locked(cur, request_id=request_id)
+        payload = await self.load_withdraw_request_context_locked(cur, request_id=request_id)
         if payload is None:
             return
+        await self.enqueue_withdraw_status_for_requester_payload_locked(
+            cur,
+            request_id=request_id,
+            event_type=event_type,
+            payload_json=payload,
+        )
+
+    async def enqueue_withdraw_status_for_requester_payload_locked(
+        self,
+        cur,
+        *,
+        request_id: int,
+        event_type: str,
+        payload_json: dict[str, Any],
+    ) -> None:
         await self.enqueue_locked(
             cur,
-            recipient_telegram_id=payload["requester_telegram_id"],
-            recipient_scope=payload["requester_role"],
+            recipient_telegram_id=payload_json["requester_telegram_id"],
+            recipient_scope=payload_json["requester_role"],
             event_type=event_type,
-            dedupe_key=f"withdrawal_request:{request_id}:{event_type}:{payload['requester_role']}",
-            payload_json=payload,
+            dedupe_key=f"withdrawal_request:{request_id}:{event_type}:{payload_json['requester_role']}",
+            payload_json=payload_json,
         )
 
     async def enqueue_manual_balance_credit_locked(
@@ -802,6 +830,14 @@ class NotificationService:
         )
         row = await cur.fetchone()
         return dict(row) if row is not None else None
+
+    async def load_withdraw_request_context_locked(
+        self,
+        cur,
+        *,
+        request_id: int,
+    ) -> dict[str, Any] | None:
+        return await self._load_withdraw_request_context_locked(cur, request_id=request_id)
 
     def _assignment_payload(self, ctx: dict[str, Any]) -> dict[str, Any]:
         return {

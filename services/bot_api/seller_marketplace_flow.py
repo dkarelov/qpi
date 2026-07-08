@@ -34,7 +34,7 @@ from services.bot_api.presentation import (
     withdrawal_request_block_html,
 )
 from services.bot_api.seller_listing_creation_flow import SellerListingCreationFlow
-from services.bot_api.ton_links import USDT_EXACT_QUANT, build_ton_usdt_transfer_link
+from services.bot_api.ton_links import build_ton_usdt_transfer_link
 from services.bot_api.transport_effects import (
     ButtonSpec,
     ClearPrompt,
@@ -48,7 +48,6 @@ from services.bot_api.transport_effects import (
 )
 
 _ROLE_SELLER = "seller"
-_USDT_EXACT_QUANT = USDT_EXACT_QUANT
 
 
 @dataclass(frozen=True)

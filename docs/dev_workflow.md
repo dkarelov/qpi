@@ -430,7 +430,8 @@ curl -fsS --connect-timeout 5 --max-time 15 \
 - Alert query sketch for exhausted requests:
   - A: `moving_sum(series_sum("qpi.telegram.proxy.request_exhausted"{folderId="<folder-id>", service="custom"}), 10m)`
   - Trigger on A `> 0`.
-- If `notification_outbox` rows show high `attempt_count`, old `created_at`, delayed `sent_at`, and `last_error='Timed out'`, suspect Telegram API egress before investigating business logic.
+- Notification delivery treats Telegram `BadRequest`/`Forbidden` errors as permanent and marks rows `failed_permanent`; transient failures retry with exponential backoff and are dead-lettered after 24 attempts.
+- If `notification_outbox` rows show growing `attempt_count`, old `created_at`, delayed `sent_at`, and `last_error='Timed out'`, suspect Telegram API egress before investigating business logic.
 - A sent row can still retain an older `last_error`; read it together with `status`, `attempt_count`, and `sent_at`.
 - Delayed stateful notification payloads can become stale because they are rendered from JSON captured at enqueue time.
 - Follow-up engineering work remains: alert on old or high-attempt outbox rows, improve sent/error state clarity, and revalidate delayed stateful CTAs before sending.

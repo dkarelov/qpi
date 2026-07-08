@@ -520,12 +520,16 @@ class NotificationOutboxItem:
 
 
 @dataclass(frozen=True)
+class NotificationButton:
+    text: str
+    flow: str | None = None
+    action: str | None = None
+    entity_id: str | None = None
+    url: str | None = None
+
+
+@dataclass(frozen=True)
 class RenderedTelegramNotification:
     text: str
     parse_mode: str | None
-    cta_text: str | None
-    cta_flow: str | None
-    cta_action: str | None
-    cta_entity_id: str | None
-    cta_url_text: str | None = None
-    cta_url: str | None = None
+    buttons: tuple[NotificationButton, ...] = ()

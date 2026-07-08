@@ -8,6 +8,8 @@ from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from libs.config.settings import BotApiSettings
 from libs.domain.public_refs import (
     build_support_deep_link,
@@ -551,6 +553,15 @@ def test_ton_usdt_transfer_link_helper_uses_micro_units_and_encoded_memo() -> No
     assert "jetton=jetton-master" in link
     assert "amount=5000000" in link
     assert "text=QPI+withdrawal+W77" in link
+
+
+def test_ton_usdt_transfer_link_helper_rejects_empty_jetton_master() -> None:
+    with pytest.raises(ValueError, match="jetton_master must not be empty"):
+        build_ton_usdt_transfer_link(
+            destination_address="UQTESTADDRESS",
+            amount_usdt=Decimal("5.000000"),
+            jetton_master=" ",
+        )
 
 
 def test_telegram_wallet_link_builder_uses_wallet_start_url() -> None:

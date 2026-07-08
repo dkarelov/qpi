@@ -734,15 +734,22 @@ class FinanceService:
                         idempotency_key=idempotency_key,
                     )
 
-                await self._notifications.enqueue_withdraw_status_for_requester_locked(
-                    cur,
-                    request_id=request_id,
-                    event_type=EVENT_WITHDRAW_SENT_REQUESTER,
-                )
-                await self._notifications.enqueue_withdraw_sent_for_admins_locked(
+                withdraw_payload = await self._notifications.load_withdraw_request_context_locked(
                     cur,
                     request_id=request_id,
                 )
+                if withdraw_payload is not None:
+                    await self._notifications.enqueue_withdraw_status_for_requester_payload_locked(
+                        cur,
+                        request_id=request_id,
+                        event_type=EVENT_WITHDRAW_SENT_REQUESTER,
+                        payload_json=withdraw_payload,
+                    )
+                    await self._notifications.enqueue_withdraw_sent_for_admins_payload_locked(
+                        cur,
+                        request_id=request_id,
+                        payload_json=withdraw_payload,
+                    )
 
                 return StatusChangeResult(changed=True)
 

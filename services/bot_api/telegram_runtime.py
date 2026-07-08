@@ -232,6 +232,7 @@ _RUNTIME_REQUIRED_SCHEMA_COLUMNS = {
 _NOTIFICATION_DISPATCH_POLL_SECONDS = 2.0
 _NOTIFICATION_DISPATCH_BATCH_SIZE = 50
 _NOTIFICATION_DISPATCH_MAX_BACKOFF_SECONDS = 3600
+_NOTIFICATION_DISPATCH_MAX_ATTEMPTS = 24
 TELEGRAM_UPDATE_RECEIVED_METRIC = "qpi.telegram.update.received"
 TELEGRAM_UPDATE_DELIVERY_LAG_METRIC = "qpi.telegram.update.delivery_lag_seconds"
 TELEGRAM_CALLBACK_ANSWER_FAILURE_METRIC = "qpi.telegram.callback.answer_failure"
@@ -3024,20 +3025,36 @@ class TelegramWebhookRuntime:
                         error_message=str(exc)[:300],
                     )
                 else:
-                    retry_delay = self._notification_retry_delay(item.attempt_count + 1)
-                    await self._notification_service.mark_retry(
-                        notification_id=item.notification_id,
-                        error=str(exc),
-                        delay_seconds=retry_delay,
-                    )
-                    self._logger.warning(
-                        "notification_delivery_failed_retry",
-                        notification_id=item.notification_id,
-                        telegram_id=item.recipient_telegram_id,
-                        error_type=type(exc).__name__,
-                        error_message=str(exc)[:300],
-                        retry_delay_seconds=retry_delay,
-                    )
+                    next_attempt_count = item.attempt_count + 1
+                    if next_attempt_count >= _NOTIFICATION_DISPATCH_MAX_ATTEMPTS:
+                        await self._notification_service.mark_failed_permanent(
+                            notification_id=item.notification_id,
+                            error=str(exc),
+                        )
+                        self._logger.warning(
+                            "notification_delivery_failed_attempts_exhausted",
+                            notification_id=item.notification_id,
+                            telegram_id=item.recipient_telegram_id,
+                            error_type=type(exc).__name__,
+                            error_message=str(exc)[:300],
+                            attempt_count=next_attempt_count,
+                        )
+                    else:
+                        retry_delay = self._notification_retry_delay(next_attempt_count)
+                        await self._notification_service.mark_retry(
+                            notification_id=item.notification_id,
+                            error=str(exc),
+                            delay_seconds=retry_delay,
+                        )
+                        self._logger.warning(
+                            "notification_delivery_failed_retry",
+                            notification_id=item.notification_id,
+                            telegram_id=item.recipient_telegram_id,
+                            error_type=type(exc).__name__,
+                            error_message=str(exc)[:300],
+                            attempt_count=next_attempt_count,
+                            retry_delay_seconds=retry_delay,
+                        )
                 continue
             await self._notification_service.mark_sent(notification_id=item.notification_id)
             self._logger.info(
@@ -3049,21 +3066,27 @@ class TelegramWebhookRuntime:
 
     def _notification_markup(self, rendered) -> InlineKeyboardMarkup | None:
         rows: list[list[InlineKeyboardButton]] = []
-        if rendered.cta_flow and rendered.cta_action and rendered.cta_text:
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        text=rendered.cta_text,
-                        callback_data=build_callback(
-                            flow=rendered.cta_flow,
-                            action=rendered.cta_action,
-                            entity_id=rendered.cta_entity_id or "",
-                        ),
-                    )
-                ]
-            )
-        if rendered.cta_url_text and rendered.cta_url:
-            rows.append([InlineKeyboardButton(text=rendered.cta_url_text, url=rendered.cta_url)])
+        for button in rendered.buttons:
+            has_callback = button.flow is not None or button.action is not None or button.entity_id is not None
+            has_url = button.url is not None
+            if has_url and not has_callback:
+                rows.append([InlineKeyboardButton(text=button.text, url=button.url)])
+                continue
+            if not has_url and button.flow and button.action:
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text=button.text,
+                            callback_data=build_callback(
+                                flow=button.flow,
+                                action=button.action,
+                                entity_id=button.entity_id or "",
+                            ),
+                        )
+                    ]
+                )
+                continue
+            raise ValueError("notification button must define either a URL or a callback target")
         if not rows:
             return None
         return InlineKeyboardMarkup(rows)
@@ -3077,7 +3100,7 @@ class TelegramWebhookRuntime:
     def _is_permanent_notification_error(exc: Exception) -> bool:
         error_type = type(exc).__name__
         message = str(exc).lower()
-        return error_type == "Forbidden" or "chat not found" in message
+        return error_type in {"BadRequest", "Forbidden"} or "chat not found" in message
 
     @staticmethod
     def _withdraw_requester_label(requester_role: str) -> str:
